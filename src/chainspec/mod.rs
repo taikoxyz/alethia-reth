@@ -13,7 +13,12 @@ pub mod hardfork;
 pub mod parser;
 
 /// The Taiko Mainnet spec
-pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
+pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> =
+    LazyLock::new(|| make_taiko_chain_spec().into());
+
+/// Creates a new [`ChainSpec`] for the Taiko network.
+/// TODO: support other networks in the future.
+fn make_taiko_chain_spec() -> ChainSpec {
     // genesis contains empty alloc field because state at first bedrock block is imported
     // manually from trusted source
     let genesis = serde_json::from_str(include_str!("genesis/mainnet.json"))
@@ -33,5 +38,22 @@ pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
         prune_delete_limit: 10000,
         ..Default::default()
     }
-    .into()
-});
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_mainnet_genesis_json_hash() {
+        let genesis_header_hash = make_taiko_chain_spec()
+            .genesis_header
+            .hash_slow()
+            .to_string();
+
+        assert_eq!(
+            "0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9",
+            genesis_header_hash
+        );
+    }
+}

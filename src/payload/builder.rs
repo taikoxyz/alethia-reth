@@ -6,12 +6,11 @@ use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{State, database::StateProviderDatabase, primitives::U256},
-    transaction_pool::{PoolTransaction, TransactionPool},
 };
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
-use reth_ethereum::{EthPrimitives, TransactionSigned};
+use reth_ethereum::EthPrimitives;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
     ConfigureEvm, NextBlockEnvAttributes,
@@ -24,32 +23,25 @@ use crate::{factory::config::TaikoEvmConfig, payload::payload::TaikoPayloadBuild
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaikoPayloadBuilder<Pool, Client, EvmConfig = TaikoEvmConfig> {
+pub struct TaikoPayloadBuilder<Client, EvmConfig = TaikoEvmConfig> {
     /// Client providing access to node state.
     client: Client,
-    /// Transaction pool.
-    pool: Pool,
     /// The type responsible for creating the evm.
     evm_config: EvmConfig,
 }
 
-impl<Pool, Client, EvmConfig> TaikoPayloadBuilder<Pool, Client, EvmConfig> {
+impl<Client, EvmConfig> TaikoPayloadBuilder<Client, EvmConfig> {
     /// `TaikoPayloadBuilder` constructor.
-    pub const fn new(client: Client, pool: Pool, evm_config: EvmConfig) -> Self {
-        Self {
-            client,
-            pool,
-            evm_config,
-        }
+    pub const fn new(client: Client, evm_config: EvmConfig) -> Self {
+        Self { client, evm_config }
     }
 }
 
 // Default implementation of [PayloadBuilder] for unit type
-impl<Pool, Client, EvmConfig> PayloadBuilder for TaikoPayloadBuilder<Pool, Client, EvmConfig>
+impl<Client, EvmConfig> PayloadBuilder for TaikoPayloadBuilder<Client, EvmConfig>
 where
     EvmConfig: ConfigureEvm<Primitives = EthPrimitives, NextBlockEnvCtx = NextBlockEnvAttributes>,
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone,
-    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>,
 {
     type Attributes = TaikoPayloadBuilderAttributes;
     type BuiltPayload = EthBuiltPayload;

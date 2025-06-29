@@ -1,7 +1,7 @@
 use reth::{
-    api::{FullNodeTypes, NodeTypes},
+    api::{FullNodeComponents, FullNodeTypes, NodeTypes},
     builder::{
-        Node, NodeAdapter, NodeComponentsBuilder,
+        DebugNode, Node, NodeAdapter, NodeComponentsBuilder,
         components::{BasicPayloadServiceBuilder, ComponentsBuilder},
     },
     chainspec::ChainSpec,
@@ -62,5 +62,13 @@ where
 
     fn add_ons(&self) -> Self::AddOns {
         EthereumAddOns::default()
+    }
+}
+
+impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
+    type RpcBlock = alloy_rpc_types_eth::Block;
+
+    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> reth_ethereum_primitives::Block {
+        rpc_block.into_consensus().convert_transactions()
     }
 }

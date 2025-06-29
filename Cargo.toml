@@ -1,0 +1,23 @@
+[package]
+name = "taiko-reth"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.4.8" }
+cc = "=1.2.15"
+alloy-eips = { version = "1.0.9", default-features = false }
+alloy-genesis = { version = "1.0.9", default-features = false }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+alloy-consensus = { version = "1.0.9", default-features = false }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+alloy-evm = { version = "0.10", default-features = false }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+eyre = "0.6"
+clap = "4"
+tracing = { version = "0.1.0", default-features = false }

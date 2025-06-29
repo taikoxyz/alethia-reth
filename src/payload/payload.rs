@@ -1,15 +1,16 @@
 use std::fmt::Debug;
 
 use alloy_rlp::{Bytes, Decodable, Encodable};
+use alloy_rpc_types_engine::{ExecutionData, ExecutionPayload};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
-    api::PayloadBuilderAttributes,
+    api::{BuiltPayload, NodePrimitives, PayloadBuilderAttributes, PayloadTypes},
     payload::PayloadId,
-    primitives::Recovered,
+    primitives::{Recovered, SealedBlock},
     revm::primitives::{Address, B256, keccak256},
 };
 use reth_ethereum::TransactionSigned;
-use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
+use reth_ethereum_engine_primitives::{EthBuiltPayload, EthPayloadBuilderAttributes};
 
 use crate::payload::attributes::TaikoPayloadAttributes;
 
@@ -138,4 +139,26 @@ fn decode_transactions(
     bytes: &Bytes,
 ) -> Result<Vec<Recovered<TransactionSigned>>, alloy_rlp::Error> {
     Vec::<Recovered<TransactionSigned>>::decode(&mut &bytes[..])
+}
+
+/// A default payload type for [`EthEngineTypes`]
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[non_exhaustive]
+pub struct TaikoPayloadTypes;
+
+impl PayloadTypes for TaikoPayloadTypes {
+    type BuiltPayload = EthBuiltPayload;
+    type PayloadAttributes = TaikoPayloadAttributes;
+    type PayloadBuilderAttributes = TaikoPayloadBuilderAttributes;
+    type ExecutionData = ExecutionData;
+
+    fn block_to_payload(
+        block: SealedBlock<
+            <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
+        >,
+    ) -> Self::ExecutionData {
+        let (payload, sidecar) =
+            ExecutionPayload::from_block_unchecked(block.hash(), &block.into_block());
+        ExecutionData { payload, sidecar }
+    }
 }

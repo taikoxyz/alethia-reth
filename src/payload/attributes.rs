@@ -1,9 +1,11 @@
 use alloy_rlp::Bytes;
 use alloy_rpc_types_engine::PayloadAttributes;
+use alloy_rpc_types_eth::Withdrawal;
 use reth::revm::primitives::{Address, B256, U256};
+use serde::{Deserialize, Serialize};
 
-/// Optimism Payload Attributes
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Taiko Payload Attributes
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoPayloadAttributes {
@@ -15,7 +17,7 @@ pub struct TaikoPayloadAttributes {
     pub l1_origin: L1Origin,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoBlockMetadata {
@@ -27,7 +29,7 @@ pub struct TaikoBlockMetadata {
     pub extra_data: Bytes,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct L1Origin {
@@ -36,4 +38,18 @@ pub struct L1Origin {
     pub l1_block_height: Option<U256>,
     pub l1_block_hash: Option<B256>,
     pub build_payload_args_id: [u8; 8],
+}
+
+impl reth_payload_primitives::PayloadAttributes for TaikoPayloadAttributes {
+    fn timestamp(&self) -> u64 {
+        self.payload_attributes.timestamp
+    }
+
+    fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
+        self.payload_attributes.withdrawals.as_ref()
+    }
+
+    fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.payload_attributes.parent_beacon_block_root
+    }
 }

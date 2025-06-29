@@ -9,10 +9,7 @@ use reth::{
 };
 use reth_ethereum::EthPrimitives;
 
-use crate::{
-    chainspec::spec::TaikoChainSpec, evm::evm::TaikoEvmExtraContext,
-    factory::config::TaikoEvmConfig,
-};
+use crate::{evm::evm::TaikoEvmExtraContext, factory::config::TaikoEvmConfig};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]

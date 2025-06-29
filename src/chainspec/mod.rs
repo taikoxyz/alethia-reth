@@ -10,14 +10,10 @@ use reth::{
     revm::primitives::{U256, b256},
 };
 
-use crate::chainspec::{
-    hardfork::{TAIKO_MAINNET_HARDFORKS, TaikoHardfork},
-    spec::TaikoChainSpec,
-};
+use crate::chainspec::hardfork::{TAIKO_MAINNET_HARDFORKS, TaikoHardfork};
 
 pub mod hardfork;
 pub mod parser;
-pub mod spec;
 
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
@@ -41,87 +37,3 @@ pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
     }
     .into()
 });
-
-/// Chain spec builder for a Taiko chain.
-#[derive(Debug, Default, From)]
-pub struct TaikoChainSpecBuilder {
-    /// [`ChainSpecBuilder`]
-    inner: ChainSpecBuilder,
-}
-
-impl TaikoChainSpecBuilder {
-    /// Construct a new builder from the Taiko mainnet chain spec.
-    pub fn mainnet() -> Self {
-        let mut inner = ChainSpecBuilder::default()
-            .chain(TAIKO_MAINNET.chain)
-            .genesis(TAIKO_MAINNET.genesis.clone());
-        let forks = TAIKO_MAINNET.hardforks.clone();
-        inner = inner.with_forks(forks);
-
-        Self { inner }
-    }
-}
-
-impl TaikoChainSpecBuilder {
-    /// Set the chain ID
-    pub fn chain(mut self, chain: Chain) -> Self {
-        self.inner = self.inner.chain(chain);
-        self
-    }
-
-    /// Set the genesis block.
-    pub fn genesis(mut self, genesis: Genesis) -> Self {
-        self.inner = self.inner.genesis(genesis);
-        self
-    }
-
-    /// Add the given fork with the given activation condition to the spec.
-    pub fn with_fork<H: Hardfork>(mut self, fork: H, condition: ForkCondition) -> Self {
-        self.inner = self.inner.with_fork(fork, condition);
-        self
-    }
-
-    /// Add the given forks with the given activation condition to the spec.
-    pub fn with_forks(mut self, forks: ChainHardforks) -> Self {
-        self.inner = self.inner.with_forks(forks);
-        self
-    }
-
-    /// Remove the given fork from the spec.
-    pub fn without_fork(mut self, fork: TaikoHardfork) -> Self {
-        self.inner = self.inner.without_fork(fork);
-        self
-    }
-
-    /// Enable Ontake at genesis
-    pub fn ontake_activated(mut self) -> Self {
-        self.inner = self.inner.paris_activated();
-        self.inner = self
-            .inner
-            .with_fork(TaikoHardfork::Ontake, ForkCondition::Block(0));
-        self
-    }
-
-    /// Enable Pacaya at genesis
-    pub fn pacaya_activated(mut self) -> Self {
-        self = self.ontake_activated();
-        self.inner = self
-            .inner
-            .with_fork(TaikoHardfork::Pacaya, ForkCondition::Block(0));
-        self
-    }
-
-    /// Build the resulting [`TaikoChainSpec`].
-    ///
-    /// # Panics
-    ///
-    /// This function panics if the chain ID and genesis is not set ([`Self::chain`] and
-    /// [`Self::genesis`])
-    pub fn build(self) -> TaikoChainSpec {
-        let mut inner = self.inner.build();
-        inner.genesis_header =
-            SealedHeader::seal_slow(make_genesis_header(&inner.genesis, &inner.hardforks));
-
-        TaikoChainSpec { inner }
-    }
-}

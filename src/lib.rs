@@ -1,29 +1,16 @@
-use eyre::Ok;
 use reth::{
-    api::{FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes},
+    api::{FullNodeComponents, FullNodeTypes, NodeTypes},
     builder::{
-        DebugNode, Node, NodeAdapter, NodeComponentsBuilder,
+        DebugNode, Node,
         components::{BasicPayloadServiceBuilder, ComponentsBuilder},
-        rpc::{RpcAddOns, RpcHandle},
     },
     chainspec::ChainSpec,
     providers::EthStorage,
-    revm::context::TxEnv,
-    rpc::{
-        eth::{EthApiFor, FullEthApiServer},
-        server_types::eth::EthApiError,
-    },
 };
 use reth_ethereum::EthPrimitives;
-use reth_evm::{ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes};
-use reth_node_ethereum::{
-    EthereumEthApiBuilder,
-    node::{
-        EthereumConsensusBuilder, EthereumEngineValidatorBuilder, EthereumNetworkBuilder,
-        EthereumPoolBuilder,
-    },
+use reth_node_ethereum::node::{
+    EthereumConsensusBuilder, EthereumNetworkBuilder, EthereumPoolBuilder,
 };
-use reth_rpc_eth_types::error::FromEvmError;
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
@@ -60,9 +47,7 @@ where
         EthereumConsensusBuilder,
     >;
 
-    type AddOns = TaikoAddOns<
-        NodeAdapter<N, <Self::ComponentsBuilder as NodeComponentsBuilder<N>>::Components>,
-    >;
+    type AddOns = ();
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         ComponentsBuilder::default()
@@ -76,9 +61,7 @@ where
             .consensus(EthereumConsensusBuilder::default())
     }
 
-    fn add_ons(&self) -> Self::AddOns {
-        TaikoAddOns::default()
-    }
+    fn add_ons(&self) -> Self::AddOns {}
 }
 
 impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
@@ -86,50 +69,5 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
 
     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> reth_ethereum_primitives::Block {
         rpc_block.into_consensus().convert_transactions()
-    }
-}
-
-/// Add-ons w.r.t. taiko.
-#[derive(Debug)]
-pub struct TaikoAddOns<N: FullNodeComponents>
-where
-    EthApiFor<N>: FullEthApiServer<Provider = N::Provider, Pool = N::Pool>,
-{
-    /// Rpc add-ons responsible for launching the RPC servers and instantiating the RPC handlers
-    /// and eth-api.
-    pub inner: RpcAddOns<N, EthereumEthApiBuilder, EthereumEngineValidatorBuilder>,
-}
-
-impl<N: FullNodeComponents> Default for TaikoAddOns<N>
-where
-    EthApiFor<N>: FullEthApiServer<Provider = N::Provider, Pool = N::Pool>,
-{
-    fn default() -> Self {
-        Self {
-            inner: Default::default(),
-        }
-    }
-}
-
-impl<N> NodeAddOns<N> for TaikoAddOns<N>
-where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                ChainSpec = ChainSpec,
-                Primitives = EthPrimitives,
-                Payload = TaikoPayloadTypes,
-            >,
-            Evm: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes>,
-        >,
-    EthApiError: FromEvmError<N::Evm>,
-    EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
-{
-    type Handle = RpcHandle<N, EthApiFor<N>>;
-
-    async fn launch_add_ons(
-        self,
-        ctx: reth_node_api::AddOnsContext<'_, N>,
-    ) -> eyre::Result<Self::Handle> {
-        todo!()
     }
 }

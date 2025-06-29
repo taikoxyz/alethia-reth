@@ -22,6 +22,7 @@ use crate::factory::builder::TaikoExecutorBuilder;
 pub mod chainspec;
 pub mod evm;
 pub mod factory;
+pub mod payload;
 
 #[derive(Debug, Clone, Default)]
 pub struct TaikoNode {}

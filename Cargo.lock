@@ -9511,6 +9511,8 @@ dependencies = [
  "alloy-evm",
  "alloy-genesis",
  "alloy-hardforks",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-serde",
  "cc",
@@ -9518,6 +9520,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "reth",
+ "reth-basic-payload-builder",
  "reth-cli",
  "reth-cli-util",
  "reth-ethereum",
@@ -9530,6 +9533,7 @@ dependencies = [
  "reth-trie-db",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
 ]
 

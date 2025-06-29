@@ -30,3 +30,9 @@ alloy-serde = { version = "1.0.9", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+alloy-rlp = { version = "0.3.10", default-features = false, features = [
+  "core-net",
+] }
+alloy-rpc-types-engine = { version = "1.0.9", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }

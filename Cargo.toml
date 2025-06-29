@@ -29,3 +29,4 @@ alloy-hardforks = "0.2.2"
 alloy-serde = { version = "1.0.9", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }

@@ -9518,6 +9518,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "reth",
+ "reth-cli",
  "reth-cli-util",
  "reth-ethereum",
  "reth-ethereum-engine-primitives",

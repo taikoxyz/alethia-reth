@@ -1,11 +1,8 @@
 //! Rust Taiko (taiko-reth) binary executable.
 
 use clap::Parser;
-use reth::{
-    args::RessArgs, builder::NodeHandle, chainspec::EthereumChainSpecParser, cli::Cli,
-    ress::install_ress_subprotocol,
-};
-use taiko_reth::TaikoNode;
+use reth::{args::RessArgs, builder::NodeHandle, cli::Cli, ress::install_ress_subprotocol};
+use taiko_reth::{TaikoNode, chainspec::parser::TaikoChainSpecParser};
 use tracing::info;
 
 #[global_allocator]
@@ -20,7 +17,7 @@ fn main() {
     }
 
     if let Err(err) =
-        Cli::<EthereumChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
+        Cli::<TaikoChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
             info!(target: "reth::cli", "Launching node");
             let NodeHandle {
                 node,

@@ -9,7 +9,7 @@ use reth::{
     revm::primitives::{Address, Bytes, ruint::Uint},
 };
 use reth_ethereum::EthPrimitives;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{evm::evm::TaikoEvmExtraContext, factory::config::TaikoEvmConfig};
 
@@ -33,6 +33,19 @@ where
             .block_by_id(ctx.head().number.into())
             .unwrap()
             .unwrap();
+
+        info!(
+            "Building EVM for block {} at height {}",
+            block.header.number,
+            ctx.head().number
+        );
+        info!(
+            "Block {} has {} transactions",
+            block.header.number,
+            block.clone().into_body().transactions.len()
+        );
+        info!("Block  {:?}", block);
+        info!("Block hash: {:?}", block.header.hash_slow());
 
         let txs = block.clone().into_body().transactions;
 

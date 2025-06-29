@@ -67,6 +67,10 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
                 total_difficulty: U256::ZERO,
             },
         ),
+        (
+            EthereumHardfork::Shanghai.boxed(),
+            ForkCondition::Timestamp(0),
+        ),
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(538_304)),
         (
             TaikoHardfork::Pacaya.boxed(),

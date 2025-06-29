@@ -19,13 +19,14 @@ pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> = LazyLock::new(|| {
     let genesis = serde_json::from_str(include_str!("genesis/mainnet.json"))
         .expect("Can't deserialize Taiko Mainnet genesis json");
     let hardforks = TAIKO_MAINNET_HARDFORKS.clone();
+    let genesis_header = SealedHeader::new(
+        make_genesis_header(&genesis, &hardforks),
+        b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9"),
+    );
 
     ChainSpec {
         chain: Chain::from_named(NamedChain::Taiko),
-        genesis_header: SealedHeader::new(
-            make_genesis_header(&genesis, &hardforks),
-            b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9"),
-        ),
+        genesis_header,
         genesis,
         paris_block_and_final_difficulty: Some((0, U256::from(0))),
         hardforks,

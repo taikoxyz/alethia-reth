@@ -25,6 +25,7 @@
   "difficulty": "0",
   "gasLimit": "15000000",
   "extradata": "",
+  "baseFeePerGas": "10000000",
   "stateRoot": "0x6db0b876b40a651c0a08b36e286c52afaa5d7cef7a4dc50c162704e3cc11921b",
   "alloc": {
     "0x69AA0361Dbb0527d4F1e5312403Bd41788fe61Fe": {

@@ -19,6 +19,7 @@ use reth_trie_db::MerklePatriciaTrie;
 
 use crate::factory::builder::TaikoExecutorBuilder;
 
+pub mod chainspec;
 pub mod evm;
 pub mod factory;
 

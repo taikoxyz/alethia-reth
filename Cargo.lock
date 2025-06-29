@@ -9505,13 +9505,17 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 name = "taiko-reth"
 version = "0.1.0"
 dependencies = [
+ "alloy-chains",
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm",
  "alloy-genesis",
+ "alloy-hardforks",
  "alloy-rpc-types-eth",
+ "alloy-serde",
  "cc",
  "clap",
+ "derive_more",
  "eyre",
  "reth",
  "reth-cli-util",
@@ -9523,6 +9527,8 @@ dependencies = [
  "reth-network-peers",
  "reth-node-ethereum",
  "reth-trie-db",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

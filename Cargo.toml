@@ -23,3 +23,9 @@ eyre = "0.6"
 clap = "4"
 tracing = { version = "0.1.0", default-features = false }
 alloy-rpc-types-eth = { version = "1.0.9", default-features = false }
+derive_more = { version = "2", default-features = false, features = ["full"] }
+alloy-chains = { version = "0.2.0", default-features = false }
+alloy-hardforks = "0.2.2"
+alloy-serde = { version = "1.0.9", default-features = false }
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

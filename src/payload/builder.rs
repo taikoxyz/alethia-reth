@@ -65,14 +65,18 @@ where
         &self,
         _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
-        todo!()
+        MissingPayloadBehaviour::AwaitInProgress
     }
 
     fn build_empty_payload(
         &self,
         config: PayloadConfig<Self::Attributes>,
     ) -> Result<EthBuiltPayload, PayloadBuilderError> {
-        todo!()
+        let args = BuildArguments::new(Default::default(), config, Default::default(), None);
+
+        self.try_build(args)?
+            .into_payload()
+            .ok_or_else(|| PayloadBuilderError::MissingPayload)
     }
 }
 
@@ -90,7 +94,7 @@ where
         mut cached_reads,
         config,
         cancel,
-        best_payload,
+        best_payload: _,
     } = args;
     let PayloadConfig {
         parent_header,

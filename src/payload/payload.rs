@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 
-use alloy_eips::{Decodable2718, eip2718::WithEncoded};
-use alloy_rlp::{Bytes, Encodable};
+use alloy_rlp::{Bytes, Decodable, Encodable};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     api::PayloadBuilderAttributes,
@@ -57,13 +56,17 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             parent_beacon_block_root: attributes.payload_attributes.parent_beacon_block_root,
         };
 
-        todo!();
-
-        // Ok(Self {
-        //     payload_attributes: payload_attributes,
-        //     tx_list_hash: keccak256(attributes.block_metadata.tx_list.clone()),
-        //     // TODO: add more values
-        // })
+        Ok(Self {
+            payload_attributes: payload_attributes,
+            tx_list_hash: keccak256(attributes.block_metadata.tx_list.clone()),
+            beneficiary: attributes.block_metadata.beneficiary,
+            gas_limit: attributes.block_metadata.gas_limit,
+            timestamp: attributes.block_metadata.timestamp,
+            mix_hash: attributes.payload_attributes.prev_randao,
+            base_fee_per_gas: attributes.base_fee_per_gas.try_into().unwrap(),
+            extra_data: attributes.block_metadata.extra_data,
+            transactions: decode_transactions(&attributes.block_metadata.tx_list)?,
+        })
     }
 
     fn payload_id(&self) -> PayloadId {
@@ -129,4 +132,10 @@ pub(crate) fn payload_id_taiko(
     let mut out = hasher.finalize();
     out[0] = payload_version;
     PayloadId::new(out.as_slice()[..8].try_into().expect("sufficient length"))
+}
+
+fn decode_transactions(
+    bytes: &Bytes,
+) -> Result<Vec<Recovered<TransactionSigned>>, alloy_rlp::Error> {
+    Vec::<Recovered<TransactionSigned>>::decode(&mut &bytes[..])
 }

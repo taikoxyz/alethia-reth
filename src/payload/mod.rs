@@ -1,49 +1,48 @@
-use alloy_hardforks::EthereumHardforks;
 use reth::{
-    api::{FullNodeTypes, NodeTypes, PayloadTypes, PrimitivesTy, TxTy},
+    api::{FullNodeTypes, NodeTypes},
     builder::{BuilderContext, components::PayloadBuilderBuilder},
+    chainspec::ChainSpec,
+    providers::EthStorage,
     transaction_pool::{PoolTransaction, TransactionPool},
 };
-use reth_ethereum::EthPrimitives;
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_evm::ConfigureEvm;
+use reth_ethereum::{EthPrimitives, TransactionSigned};
+use reth_trie_db::MerklePatriciaTrie;
 
-use crate::payload::{
-    attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilder,
-    payload::TaikoPayloadBuilderAttributes,
+use crate::{
+    factory::config::TaikoEvmConfig,
+    payload::{builder::TaikoPayloadBuilder, engine::TaikoEngineTypes},
 };
 
 pub mod attributes;
 pub mod builder;
+pub mod engine;
 pub mod payload;
 
 #[derive(Debug, Default, Clone)]
 pub struct TaikoPayloadBuilderBuilder;
 
-impl<Types, Node, Pool, Evm> PayloadBuilderBuilder<Node, Pool, Evm> for TaikoPayloadBuilderBuilder
+impl<Node, Pool> PayloadBuilderBuilder<Node, Pool, TaikoEvmConfig> for TaikoPayloadBuilderBuilder
 where
-    Types: NodeTypes<ChainSpec: EthereumHardforks, Primitives = EthPrimitives>,
-    Node: FullNodeTypes<Types = Types>,
-    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
+    Node: FullNodeTypes<
+        Types: NodeTypes<
+            Primitives = EthPrimitives,
+            ChainSpec = ChainSpec,
+            StateCommitment = MerklePatriciaTrie,
+            Storage = EthStorage,
+            Payload = TaikoEngineTypes,
+        >,
+    >,
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>
         + Unpin
         + 'static,
-    Evm: ConfigureEvm<
-            Primitives = PrimitivesTy<Types>,
-            NextBlockEnvCtx = reth_evm::NextBlockEnvAttributes,
-        > + 'static,
-    Types::Payload: PayloadTypes<
-            BuiltPayload = EthBuiltPayload,
-            PayloadAttributes = TaikoPayloadAttributes,
-            PayloadBuilderAttributes = TaikoPayloadBuilderAttributes,
-        >,
 {
-    type PayloadBuilder = TaikoPayloadBuilder<Node::Provider, Evm>;
+    type PayloadBuilder = TaikoPayloadBuilder<Node::Provider, TaikoEvmConfig>;
 
     async fn build_payload_builder(
         self,
         ctx: &BuilderContext<Node>,
         pool: Pool,
-        evm_config: Evm,
+        evm_config: TaikoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
         let _ = pool;
         Ok(TaikoPayloadBuilder::new(ctx.provider().clone(), evm_config))

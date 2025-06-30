@@ -5,13 +5,17 @@ use reth::{
     api::{FullNodeTypes, NodeTypes},
     builder::{BuilderContext, components::ExecutorBuilder},
     chainspec::ChainSpec,
-    providers::BlockReaderIdExt,
+    providers::{BlockReaderIdExt, EthStorage},
     revm::primitives::{Address, Bytes, ruint::Uint},
 };
 use reth_ethereum::EthPrimitives;
+use reth_trie_db::MerklePatriciaTrie;
 use tracing::{info, warn};
 
-use crate::{evm::evm::TaikoEvmExtraContext, factory::config::TaikoEvmConfig};
+use crate::{
+    evm::evm::TaikoEvmExtraContext, factory::config::TaikoEvmConfig,
+    payload::engine::TaikoEngineTypes,
+};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -19,7 +23,13 @@ pub struct TaikoExecutorBuilder;
 
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
 where
-    Types: NodeTypes<ChainSpec = ChainSpec, Primitives = EthPrimitives>,
+    Types: NodeTypes<
+            Primitives = EthPrimitives,
+            ChainSpec = ChainSpec,
+            StateCommitment = MerklePatriciaTrie,
+            Storage = EthStorage,
+            Payload = TaikoEngineTypes,
+        >,
     Node: FullNodeTypes<Types = Types>,
 {
     type EVM = TaikoEvmConfig;

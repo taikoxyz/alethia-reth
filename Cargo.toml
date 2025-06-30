@@ -40,6 +40,9 @@ reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 
 [features]
 default = []

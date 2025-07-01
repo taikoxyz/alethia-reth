@@ -1,15 +1,17 @@
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::Transaction;
 use alloy_hardforks::EthereumHardforks;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
+    chainspec::ChainSpec,
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{State, database::StateProviderDatabase, primitives::U256},
 };
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
+use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
@@ -17,9 +19,17 @@ use reth_evm::{
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
+use reth_evm_ethereum::RethReceiptBuilder;
+use reth_node_api::PayloadAttributesBuilder;
 use tracing::{debug, trace, warn};
 
-use crate::{factory::config::TaikoEvmConfig, payload::payload::TaikoPayloadBuilderAttributes};
+use crate::{
+    factory::{
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, config::TaikoEvmConfig,
+        factory::TaikoEvmFactory,
+    },
+    payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBuilderAttributes},
+};
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +50,17 @@ impl<Client, EvmConfig> TaikoPayloadBuilder<Client, EvmConfig> {
 // Default implementation of [PayloadBuilder] for unit type
 impl<Client, EvmConfig> PayloadBuilder for TaikoPayloadBuilder<Client, EvmConfig>
 where
-    EvmConfig: ConfigureEvm<Primitives = EthPrimitives, NextBlockEnvCtx = NextBlockEnvAttributes>,
+    EvmConfig: ConfigureEvm<
+            Primitives = EthPrimitives,
+            Error = Infallible,
+            NextBlockEnvCtx = NextBlockEnvAttributes,
+            BlockExecutorFactory = TaikoBlockExecutorFactory<
+                RethReceiptBuilder,
+                Arc<ChainSpec>,
+                TaikoEvmFactory,
+            >,
+            BlockAssembler = TaikoBlockAssembler,
+        >,
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone,
 {
     type Attributes = TaikoPayloadBuilderAttributes;
@@ -79,7 +99,17 @@ pub fn taiko_payload<EvmConfig, Client>(
     args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
-    EvmConfig: ConfigureEvm<Primitives = EthPrimitives, NextBlockEnvCtx = NextBlockEnvAttributes>,
+    EvmConfig: ConfigureEvm<
+            Primitives = EthPrimitives,
+            Error = Infallible,
+            NextBlockEnvCtx = NextBlockEnvAttributes,
+            BlockExecutorFactory = TaikoBlockExecutorFactory<
+                RethReceiptBuilder,
+                Arc<ChainSpec>,
+                TaikoEvmFactory,
+            >,
+            BlockAssembler = TaikoBlockAssembler,
+        >,
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks>,
 {
     let BuildArguments {
@@ -159,4 +189,10 @@ where
         payload,
         cached_reads,
     })
+}
+
+impl PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributesBuilder<ChainSpec> {
+    fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
+        todo!()
+    }
 }

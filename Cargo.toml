@@ -43,6 +43,9 @@ reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 
 [features]
 default = []

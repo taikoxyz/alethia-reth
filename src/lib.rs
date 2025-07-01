@@ -29,7 +29,8 @@ use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     factory::{
-        block::TaikoBlockExecutorFactory, builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
+        builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
     },
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
@@ -72,6 +73,7 @@ pub struct TaikoAddOns<
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
+                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV,
@@ -96,6 +98,7 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
+                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV: Default,
@@ -131,6 +134,7 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
+                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV: EngineValidatorBuilder<N>,
@@ -163,6 +167,7 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
+                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EthereumEthApiBuilder: EthApiBuilder<N, EthApi = EthApiFor<N>>,
@@ -194,6 +199,7 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
+                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV: EngineValidatorBuilder<N>,
@@ -204,15 +210,6 @@ where
         todo!()
     }
 }
-
-pub type TaikoNodeComponentBuilder<Node, Payload = TaikoPayloadBuilderBuilder> = ComponentsBuilder<
-    Node,
-    EthereumPoolBuilder,
-    BasicPayloadServiceBuilder<Payload>,
-    EthereumNetworkBuilder,
-    TaikoExecutorBuilder,
-    EthereumConsensusBuilder,
->;
 
 impl<N> Node<N> for TaikoNode
 where
@@ -269,6 +266,7 @@ impl<
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
+                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
 > DebugNode<N> for TaikoNode

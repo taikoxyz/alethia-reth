@@ -20,8 +20,7 @@ use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, config::TaikoEvmConfig,
-        factory::TaikoEvmFactory,
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, factory::TaikoEvmFactory,
     },
     payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
 };

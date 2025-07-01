@@ -141,7 +141,7 @@ fn decode_transactions(
     Vec::<Recovered<TransactionSigned>>::decode(&mut &bytes[..])
 }
 
-/// A default payload type for [`EthEngineTypes`]
+/// A default payload type for [`TaikoPayloadTypes`]
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[non_exhaustive]
 pub struct TaikoPayloadTypes;

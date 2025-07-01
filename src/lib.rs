@@ -1,7 +1,5 @@
 use std::{convert::Infallible, sync::Arc};
 
-use alloy_rpc_types_eth::Block;
-use cc::Error;
 use reth::{
     api::{FullNodeComponents, FullNodeTypes, NodeTypes},
     builder::{
@@ -10,10 +8,9 @@ use reth::{
     },
     chainspec::ChainSpec,
     providers::EthStorage,
-    revm::primitives::hardfork::SpecId::BERLIN,
 };
 use reth_ethereum::EthPrimitives;
-use reth_evm::{ConfigureEvm, Evm, NextBlockEnvAttributes};
+use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{AddOnsContext, NodeAddOns};
 use reth_node_builder::{
@@ -25,18 +22,14 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::{
     EthereumEthApiBuilder,
-    node::{
-        EthereumConsensusBuilder, EthereumEngineValidatorBuilder, EthereumNetworkBuilder,
-        EthereumPoolBuilder,
-    },
+    node::{EthereumConsensusBuilder, EthereumNetworkBuilder, EthereumPoolBuilder},
 };
 use reth_rpc::eth::EthApiFor;
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        builder::TaikoExecutorBuilder, config::TaikoEvmConfig, factory::TaikoEvmFactory,
+        block::TaikoBlockExecutorFactory, builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
     },
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
@@ -47,6 +40,7 @@ pub mod evm;
 pub mod factory;
 pub mod payload;
 pub mod rpc;
+pub mod test;
 
 #[derive(Debug, Clone, Default)]
 pub struct TaikoNode;
@@ -78,7 +72,6 @@ pub struct TaikoAddOns<
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
-                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV,
@@ -103,13 +96,19 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
-                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
+    EV: Default,
 {
     fn default() -> Self {
         // Self(RpcAddOns::default())
-        todo!()
+        let add_ons = RpcAddOns::new(
+            EthereumEthApiBuilder::default(),
+            EV::default(),
+            BasicEngineApiBuilder::default(),
+        );
+
+        TaikoAddOns(add_ons)
     }
 }
 
@@ -132,7 +131,6 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
-                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV: EngineValidatorBuilder<N>,
@@ -143,8 +141,7 @@ where
         self,
         ctx: reth_node_api::AddOnsContext<'_, N>,
     ) -> eyre::Result<Self::Handle> {
-        // self.0.launch_add_ons(ctx).await
-        todo!("Implement launch_add_ons for TaikoAddOns");
+        self.0.launch_add_ons(ctx).await
     }
 }
 impl<N, EV> RethRpcAddOns<N> for TaikoAddOns<N, EV>
@@ -166,7 +163,6 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
-                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EthereumEthApiBuilder: EthApiBuilder<N, EthApi = EthApiFor<N>>,
@@ -175,8 +171,7 @@ where
     type EthApi = EthApiFor<N>;
 
     fn hooks_mut(&mut self) -> &mut reth_node_builder::rpc::RpcHooks<N, Self::EthApi> {
-        // self.0.hooks_mut()
-        todo!("Implement hooks_mut for TaikoAddOns");
+        self.0.hooks_mut()
     }
 }
 
@@ -199,7 +194,6 @@ where
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
-                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
     EV: EngineValidatorBuilder<N>,
@@ -207,10 +201,18 @@ where
     type Validator = TaikoEngineValidator;
 
     async fn engine_validator(&self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
-        // TaikoEngineValidatorBuilder::default().build(ctx).await
-        todo!("Implement engine_validator for TaikoAddOns");
+        todo!()
     }
 }
+
+pub type TaikoNodeComponentBuilder<Node, Payload = TaikoPayloadBuilderBuilder> = ComponentsBuilder<
+    Node,
+    EthereumPoolBuilder,
+    BasicPayloadServiceBuilder<Payload>,
+    EthereumNetworkBuilder,
+    TaikoExecutorBuilder,
+    EthereumConsensusBuilder,
+>;
 
 impl<N> Node<N> for TaikoNode
 where
@@ -267,7 +269,6 @@ impl<
                     Arc<ChainSpec>,
                     TaikoEvmFactory,
                 >,
-                BlockAssembler = TaikoBlockAssembler,
             >,
         >,
 > DebugNode<N> for TaikoNode

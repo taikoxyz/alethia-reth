@@ -2,6 +2,8 @@
 
 use clap::Parser;
 use reth::{args::RessArgs, builder::NodeHandle, cli::Cli, ress::install_ress_subprotocol};
+use reth_node_builder::WithLaunchContext;
+use reth_node_ethereum::EthereumNode;
 use taiko_reth::{TaikoNode, chainspec::parser::TaikoChainSpecParser};
 use tracing::info;
 
@@ -9,8 +11,6 @@ use tracing::info;
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
-    reth_cli_util::sigsegv_handler::install();
-
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
@@ -22,10 +22,7 @@ fn main() {
             let NodeHandle {
                 node,
                 node_exit_future,
-            } = builder
-                .node(TaikoNode::default())
-                .launch_with_debug_capabilities()
-                .await?;
+            } = builder.node(TaikoNode::default()).launch().await?;
 
             // Install ress subprotocol.
             if ress_args.enabled {

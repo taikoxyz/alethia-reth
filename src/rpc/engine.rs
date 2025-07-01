@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
 use alloy_rpc_types_engine::ExecutionData;
@@ -7,6 +7,8 @@ use reth::{
     providers::EthStorage,
 };
 use reth_ethereum::{Block, EthPrimitives};
+use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{
     AddOnsContext, EngineApiMessageVersion, EngineObjectValidationError, EngineValidator,
     FullNodeComponents, InvalidPayloadAttributesError, NewPayloadError, NodeTypes,
@@ -16,7 +18,13 @@ use reth_node_api::{
 use reth_node_builder::rpc::EngineValidatorBuilder;
 use reth_trie_db::MerklePatriciaTrie;
 
-use crate::payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes};
+use crate::{
+    factory::{
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, config::TaikoEvmConfig,
+        factory::TaikoEvmFactory,
+    },
+    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
+};
 
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
@@ -26,14 +34,25 @@ pub struct TaikoEngineValidatorBuilder;
 impl<N> EngineValidatorBuilder<N> for TaikoEngineValidatorBuilder
 where
     N: FullNodeComponents<
-        Types: NodeTypes<
-            Primitives = EthPrimitives,
-            ChainSpec = ChainSpec,
-            StateCommitment = MerklePatriciaTrie,
-            Storage = EthStorage,
-            Payload = TaikoEngineTypes,
+            Types: NodeTypes<
+                Primitives = EthPrimitives,
+                ChainSpec = ChainSpec,
+                StateCommitment = MerklePatriciaTrie,
+                Storage = EthStorage,
+                Payload = TaikoEngineTypes,
+            >,
+            Evm: ConfigureEvm<
+                Primitives = EthPrimitives,
+                Error = Infallible,
+                NextBlockEnvCtx = NextBlockEnvAttributes,
+                BlockExecutorFactory = TaikoBlockExecutorFactory<
+                    RethReceiptBuilder,
+                    Arc<ChainSpec>,
+                    TaikoEvmFactory,
+                >,
+                BlockAssembler = TaikoBlockAssembler,
+            >,
         >,
-    >,
 {
     type Validator = TaikoEngineValidator;
 

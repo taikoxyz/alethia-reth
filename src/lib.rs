@@ -206,7 +206,10 @@ where
     type Validator = TaikoEngineValidator;
 
     async fn engine_validator(&self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
-        todo!()
+        TaikoEngineValidatorBuilder::default()
+            .build(ctx)
+            .await
+            .map_err(eyre::Error::from)
     }
 }
 

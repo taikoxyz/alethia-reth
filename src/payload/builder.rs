@@ -1,12 +1,15 @@
-use std::{convert::Infallible, sync::Arc};
-
 use alloy_consensus::Transaction;
 use alloy_hardforks::EthereumHardforks;
+use alloy_rlp::Bytes;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     chainspec::ChainSpec,
     providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{State, database::StateProviderDatabase, primitives::U256},
+    revm::{
+        State,
+        database::StateProviderDatabase,
+        primitives::{Address, B256, U256},
+    },
 };
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -21,6 +24,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::PayloadAttributesBuilder;
+use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -28,7 +32,10 @@ use crate::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, config::TaikoEvmConfig,
         factory::TaikoEvmFactory,
     },
-    payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBuilderAttributes},
+    payload::{
+        attributes::{L1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
+        payload::TaikoPayloadBuilderAttributes,
+    },
 };
 
 /// Taiko payload builder
@@ -193,6 +200,24 @@ where
 
 impl PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributesBuilder<ChainSpec> {
     fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
-        todo!()
+        TaikoPayloadAttributes {
+            payload_attributes: self.build(timestamp),
+            base_fee_per_gas: U256::ZERO,
+            block_metadata: TaikoBlockMetadata {
+                beneficiary: Address::random(),
+                timestamp: timestamp,
+                gas_limit: 241_000_000,
+                mix_hash: B256::random(),
+                tx_list: Bytes::new(),
+                extra_data: Bytes::new(),
+            },
+            l1_origin: L1Origin {
+                block_id: U256::ZERO,
+                l2_block_hash: B256::ZERO,
+                l1_block_hash: None,
+                l1_block_height: None,
+                build_payload_args_id: [0; 8],
+            },
+        }
     }
 }

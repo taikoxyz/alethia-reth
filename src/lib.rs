@@ -40,7 +40,6 @@ pub mod evm;
 pub mod factory;
 pub mod payload;
 pub mod rpc;
-pub mod test;
 
 #[derive(Debug, Clone, Default)]
 pub struct TaikoNode;

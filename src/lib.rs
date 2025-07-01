@@ -1,5 +1,13 @@
 use std::{convert::Infallible, sync::Arc};
 
+use crate::{
+    factory::{
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
+        builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
+    },
+    payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
+    rpc::engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
+};
 use reth::{
     api::{FullNodeComponents, FullNodeTypes, NodeTypes},
     builder::{
@@ -26,15 +34,6 @@ use reth_node_ethereum::{
 };
 use reth_rpc::eth::EthApiFor;
 use reth_trie_db::MerklePatriciaTrie;
-
-use crate::{
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
-    },
-    payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
-    rpc::engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
-};
 
 pub mod chainspec;
 pub mod evm;

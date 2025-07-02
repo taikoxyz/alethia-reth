@@ -6,7 +6,10 @@ use crate::{
         builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
     },
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
-    rpc::engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
+    rpc::{
+        builder::TaikoEngineApiBuilder,
+        engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
+    },
 };
 use reth::{
     api::{FullNodeComponents, FullNodeTypes, NodeTypes},
@@ -24,8 +27,8 @@ use reth_node_api::{AddOnsContext, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeComponentsBuilder,
     rpc::{
-        BasicEngineApiBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
-        RethRpcAddOns, RpcAddOns, RpcHandle,
+        EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder, RethRpcAddOns, RpcAddOns,
+        RpcHandle,
     },
 };
 use reth_node_ethereum::{
@@ -75,7 +78,7 @@ pub struct TaikoAddOns<
             >,
         >,
     EV,
->(pub RpcAddOns<N, EthereumEthApiBuilder, EV>);
+>(pub RpcAddOns<N, EthereumEthApiBuilder, EV, TaikoEngineApiBuilder<EV>>);
 
 impl<N, EV> Default for TaikoAddOns<N, EV>
 where
@@ -105,7 +108,7 @@ where
         let add_ons = RpcAddOns::new(
             EthereumEthApiBuilder::default(),
             EV::default(),
-            BasicEngineApiBuilder::default(),
+            TaikoEngineApiBuilder::default(),
         );
 
         TaikoAddOns(add_ons)

@@ -48,6 +48,16 @@ reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-payload-validator = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-rpc-engine-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+async-trait = "0.1.68"
+
+# rpc
+jsonrpsee = "0.25.1"
+jsonrpsee-core = "0.25.1"
+jsonrpsee-server = "0.25.1"
+jsonrpsee-http-client = "0.25.1"
+jsonrpsee-types = "0.25.1"
 
 [features]
 default = []

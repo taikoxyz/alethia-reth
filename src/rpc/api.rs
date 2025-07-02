@@ -1,35 +1,60 @@
 use std::sync::Arc;
 
-use alloy_eips::{eip4844::BlobAndProofV2, eip7685::RequestsOrHash};
 use alloy_hardforks::EthereumHardforks;
 use alloy_rpc_types_engine::{
-    BlobAndProofV1, ClientVersionV1, ExecutionPayloadBodiesV1, ExecutionPayloadInputV2,
-    ExecutionPayloadV1, ExecutionPayloadV3, ForkchoiceState, ForkchoiceUpdated, PayloadId,
-    PayloadStatus,
+    ClientVersionV1, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
 };
 use async_trait::async_trait;
 use jsonrpsee::RpcModule;
+use jsonrpsee::proc_macros::rpc;
 use jsonrpsee_core::RpcResult;
 use reth::{
-    payload::PayloadStore,
-    revm::primitives::{
-        B256,
-        alloy_primitives::{BlockHash, U64},
-    },
-    rpc::api::IntoEngineApiRpcModule,
-    tasks::TaskSpawner,
+    payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, tasks::TaskSpawner,
     transaction_pool::TransactionPool,
 };
 use reth_node_api::{BeaconConsensusEngineHandle, EngineTypes, EngineValidator, PayloadTypes};
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_rpc::EngineApi;
-use reth_rpc_engine_api::{EngineApiServer, EngineCapabilities};
+use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
+use tracing::info;
 
 use crate::rpc::types::TaikoExecutionData;
+
+/// The list of all supported Engine capabilities available over the engine endpoint.
+pub const TAIKO_ENGINE_CAPABILITIES: &[&str] = &[
+    "engine_forkchoiceUpdatedV2",
+    "engine_getPayloadV2",
+    "engine_newPayloadV2",
+];
+
+/// Extension trait that gives access to Taiko engine API RPC methods.
+///
+/// Note:
+/// > The provider should use a JWT authentication layer.
+#[cfg_attr(not(feature = "client"), rpc(server, namespace = "engine"), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned))]
+#[cfg_attr(feature = "client", rpc(server, client, namespace = "engine", client_bounds(Engine::PayloadAttributes: jsonrpsee::core::Serialize + Clone), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned)))]
+pub trait TaikoEngineApi<Engine: EngineTypes> {
+    #[method(name = "newPayloadV2")]
+    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus>;
+
+    #[method(name = "forkchoiceUpdatedV2")]
+    async fn fork_choice_updated_v2(
+        &self,
+        fork_choice_state: ForkchoiceState,
+        payload_attributes: Option<Engine::PayloadAttributes>,
+    ) -> RpcResult<ForkchoiceUpdated>;
+
+    #[method(name = "getPayloadV2")]
+    async fn get_payload_v2(
+        &self,
+        payload_id: PayloadId,
+    ) -> RpcResult<Engine::ExecutionPayloadEnvelopeV2>;
+}
 
 pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec> {
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
 }
+
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>
 where
@@ -66,9 +91,10 @@ where
         Self { inner }
     }
 }
+
 // This is the concrete ethereum engine API implementation.
 #[async_trait]
-impl<Provider, EngineT, Pool, Validator, ChainSpec> EngineApiServer<EngineT>
+impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT>
     for TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
     Provider: HeaderProvider + BlockReader + StateProviderFactory + 'static,
@@ -77,39 +103,12 @@ where
     Validator: EngineValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
-    async fn new_payload_v1(&self, payload: ExecutionPayloadV1) -> RpcResult<PayloadStatus> {
-        todo!()
-    }
-
-    async fn new_payload_v2(&self, payload: ExecutionPayloadInputV2) -> RpcResult<PayloadStatus> {
-        todo!()
-    }
-
-    async fn new_payload_v3(
-        &self,
-        payload: ExecutionPayloadV3,
-        versioned_hashes: Vec<B256>,
-        parent_beacon_block_root: B256,
-    ) -> RpcResult<PayloadStatus> {
-        todo!()
-    }
-
-    async fn new_payload_v4(
-        &self,
-        payload: ExecutionPayloadV3,
-        versioned_hashes: Vec<B256>,
-        parent_beacon_block_root: B256,
-        requests: RequestsOrHash,
-    ) -> RpcResult<PayloadStatus> {
-        todo!()
-    }
-
-    async fn fork_choice_updated_v1(
-        &self,
-        fork_choice_state: ForkchoiceState,
-        payload_attributes: Option<EngineT::PayloadAttributes>,
-    ) -> RpcResult<ForkchoiceUpdated> {
-        todo!()
+    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
+        info!("Taiko Received new payload: {:?}", payload);
+        self.inner
+            .new_payload_v2(payload)
+            .await
+            .map_err(|e| EngineApiError::from(e).into())
     }
 
     async fn fork_choice_updated_v2(
@@ -117,89 +116,24 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        todo!()
-    }
-    async fn fork_choice_updated_v3(
-        &self,
-        fork_choice_state: ForkchoiceState,
-        payload_attributes: Option<EngineT::PayloadAttributes>,
-    ) -> RpcResult<ForkchoiceUpdated> {
-        todo!()
-    }
-
-    async fn get_payload_v1(
-        &self,
-        payload_id: PayloadId,
-    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV1> {
-        todo!()
+        info!(
+            "Taiko Received fork choice update: {:?}, attributes: {:?}",
+            fork_choice_state, payload_attributes
+        );
+        self.inner
+            .fork_choice_updated_v2(fork_choice_state, payload_attributes)
+            .await
+            .map_err(|e| EngineApiError::from(e).into())
     }
 
     async fn get_payload_v2(
         &self,
         payload_id: PayloadId,
     ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
-        todo!()
-    }
-
-    async fn get_payload_v3(
-        &self,
-        payload_id: PayloadId,
-    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV3> {
-        todo!()
-    }
-
-    async fn get_payload_v4(
-        &self,
-        payload_id: PayloadId,
-    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV4> {
-        todo!()
-    }
-
-    async fn get_payload_v5(
-        &self,
-        payload_id: PayloadId,
-    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV5> {
-        todo!()
-    }
-
-    async fn get_payload_bodies_by_hash_v1(
-        &self,
-        block_hashes: Vec<BlockHash>,
-    ) -> RpcResult<ExecutionPayloadBodiesV1> {
-        todo!()
-    }
-
-    async fn get_payload_bodies_by_range_v1(
-        &self,
-        start: U64,
-        count: U64,
-    ) -> RpcResult<ExecutionPayloadBodiesV1> {
-        todo!()
-    }
-
-    async fn get_client_version_v1(
-        &self,
-        client: ClientVersionV1,
-    ) -> RpcResult<Vec<ClientVersionV1>> {
-        todo!()
-    }
-
-    async fn exchange_capabilities(&self, _capabilities: Vec<String>) -> RpcResult<Vec<String>> {
-        todo!()
-    }
-
-    async fn get_blobs_v1(
-        &self,
-        versioned_hashes: Vec<B256>,
-    ) -> RpcResult<Vec<Option<BlobAndProofV1>>> {
-        todo!()
-    }
-
-    async fn get_blobs_v2(
-        &self,
-        versioned_hashes: Vec<B256>,
-    ) -> RpcResult<Option<Vec<BlobAndProofV2>>> {
-        todo!()
+        self.inner
+            .get_payload_v2(payload_id)
+            .await
+            .map_err(|e| EngineApiError::from(e).into())
     }
 }
 
@@ -207,7 +141,7 @@ impl<Provider, EngineT, Pool, Validator, ChainSpec> IntoEngineApiRpcModule
     for TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
     EngineT: EngineTypes,
-    Self: EngineApiServer<EngineT>,
+    Self: TaikoEngineApiServer<EngineT>,
 {
     fn into_rpc_module(self) -> RpcModule<()> {
         self.into_rpc().remove_context()

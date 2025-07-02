@@ -1,7 +1,14 @@
 use std::{convert::Infallible, sync::Arc};
 
+use crate::{
+    factory::{
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, factory::TaikoEvmFactory,
+    },
+    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
+    rpc::types::TaikoExecutionData,
+};
 use alloy_consensus::{BlockHeader, Header};
-use alloy_rpc_types_engine::ExecutionData;
+use alloy_rpc_types_engine::PayloadError;
 use reth::{
     chainspec::ChainSpec, payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock,
     providers::EthStorage,
@@ -16,14 +23,9 @@ use reth_node_api::{
     validate_version_specific_fields,
 };
 use reth_node_builder::rpc::EngineValidatorBuilder;
+use reth_payload_validator::shanghai;
+use reth_primitives_traits::Block as SealedBlock;
 use reth_trie_db::MerklePatriciaTrie;
-
-use crate::{
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, factory::TaikoEvmFactory,
-    },
-    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
-};
 
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
@@ -83,13 +85,36 @@ impl TaikoEngineValidator {
 
 impl PayloadValidator for TaikoEngineValidator {
     type Block = Block;
-    type ExecutionData = ExecutionData;
+    type ExecutionData = TaikoExecutionData;
 
     fn ensure_well_formed_payload(
         &self,
-        payload: ExecutionData,
+        payload: Self::ExecutionData,
     ) -> Result<RecoveredBlock<Self::Block>, NewPayloadError> {
-        let sealed_block = self.inner.ensure_well_formed_payload(payload)?;
+        let TaikoExecutionData {
+            payload,
+            sidecar,
+            taiko_sidecar,
+        } = payload;
+
+        let expected_hash = payload.block_hash();
+
+        // First parse the block
+        let mut block = payload.try_into_block_with_sidecar(&sidecar)?;
+        block.header.transactions_root = taiko_sidecar.tx_hash;
+        let sealed_block = block.seal_slow();
+
+        // Ensure the hash included in the payload matches the block hash
+        if expected_hash != sealed_block.hash() {
+            return Err(PayloadError::BlockHash {
+                execution: sealed_block.hash(),
+                consensus: expected_hash,
+            })
+            .map_err(|e| NewPayloadError::Other(e.into()));
+        }
+
+        shanghai::ensure_well_formed_fields(sealed_block.body(), true)?;
+
         sealed_block
             .try_recover()
             .map_err(|e| NewPayloadError::Other(e.into()))
@@ -98,7 +123,7 @@ impl PayloadValidator for TaikoEngineValidator {
 
 impl<Types> EngineValidator<Types> for TaikoEngineValidator
 where
-    Types: PayloadTypes<PayloadAttributes = TaikoPayloadAttributes, ExecutionData = ExecutionData>,
+    Types: PayloadTypes<PayloadAttributes = TaikoPayloadAttributes, ExecutionData = TaikoExecutionData>,
 {
     fn validate_version_specific_fields(
         &self,

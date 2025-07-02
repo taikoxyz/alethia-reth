@@ -1,12 +1,15 @@
 use alloy_rpc_types_engine::{
-    ExecutionData, ExecutionPayload, ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3,
+    ExecutionPayload, ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3,
     ExecutionPayloadEnvelopeV4, ExecutionPayloadEnvelopeV5, ExecutionPayloadV1,
 };
 use reth::primitives::SealedBlock;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{BuiltPayload, EngineTypes, NodePrimitives, PayloadTypes};
 
-use crate::payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBuilderAttributes};
+use crate::{
+    payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBuilderAttributes},
+    rpc::types::{TaikoExecutionData, TaikoExecutionDataSidecar},
+};
 
 /// The types used in the default Taiko consensus engine.
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
@@ -14,7 +17,7 @@ use crate::payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBu
 pub struct TaikoEngineTypes;
 
 impl PayloadTypes for TaikoEngineTypes {
-    type ExecutionData = ExecutionData;
+    type ExecutionData = TaikoExecutionData;
     type BuiltPayload = EthBuiltPayload;
     type PayloadAttributes = TaikoPayloadAttributes;
     type PayloadBuilderAttributes = TaikoPayloadBuilderAttributes;
@@ -24,9 +27,21 @@ impl PayloadTypes for TaikoEngineTypes {
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
         >,
     ) -> Self::ExecutionData {
+        let tx_hash = block.transactions_root;
+        let withdrawals_hash = block.withdrawals_root;
+
         let (payload, sidecar) =
             ExecutionPayload::from_block_unchecked(block.hash(), &block.into_block());
-        ExecutionData { payload, sidecar }
+
+        TaikoExecutionData {
+            payload,
+            sidecar,
+            taiko_sidecar: TaikoExecutionDataSidecar {
+                tx_hash: tx_hash,
+                withdrawals_hash: withdrawals_hash,
+                taiko_block: true,
+            },
+        }
     }
 }
 

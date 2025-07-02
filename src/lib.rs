@@ -102,7 +102,6 @@ where
     EV: Default,
 {
     fn default() -> Self {
-        // Self(RpcAddOns::default())
         let add_ons = RpcAddOns::new(
             EthereumEthApiBuilder::default(),
             EV::default(),
@@ -146,6 +145,7 @@ where
         self.0.launch_add_ons(ctx).await
     }
 }
+
 impl<N, EV> RethRpcAddOns<N> for TaikoAddOns<N, EV>
 where
     N: FullNodeComponents<

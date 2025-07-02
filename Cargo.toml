@@ -60,6 +60,6 @@ jsonrpsee-http-client = "0.25.1"
 jsonrpsee-types = "0.25.1"
 
 [features]
-default = []
+default = ["serde"]
 serde = ["serde/derive"]
 client = []

@@ -11,7 +11,7 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_rpc_types_engine::PayloadError;
 use reth::{
     chainspec::ChainSpec, payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock,
-    providers::EthStorage,
+    providers::EthStorage, revm::primitives::B256,
 };
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
@@ -92,15 +92,15 @@ impl PayloadValidator for TaikoEngineValidator {
         payload: Self::ExecutionData,
     ) -> Result<RecoveredBlock<Self::Block>, NewPayloadError> {
         let TaikoExecutionData {
-            payload,
-            sidecar,
+            execution_payload: payload,
             taiko_sidecar,
         } = payload;
 
-        let expected_hash = payload.block_hash();
+        // let expected_hash = payload.block_hash;
+        let expected_hash = B256::random();
 
         // First parse the block
-        let mut block = payload.try_into_block_with_sidecar(&sidecar)?;
+        let mut block = payload.try_into_block()?;
         block.header.transactions_root = taiko_sidecar.tx_hash;
         let sealed_block = block.seal_slow();
 

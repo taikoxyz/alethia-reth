@@ -1,6 +1,6 @@
 use alloy_rpc_types_engine::{
-    ExecutionPayload, ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3,
-    ExecutionPayloadEnvelopeV4, ExecutionPayloadEnvelopeV5, ExecutionPayloadV1,
+    ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
+    ExecutionPayloadEnvelopeV5, ExecutionPayloadV1,
 };
 use reth::primitives::SealedBlock;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
@@ -30,16 +30,29 @@ impl PayloadTypes for TaikoEngineTypes {
         let tx_hash = block.transactions_root;
         let withdrawals_hash = block.withdrawals_root;
 
-        let (payload, sidecar) =
-            ExecutionPayload::from_block_unchecked(block.hash(), &block.into_block());
+        let payload = ExecutionPayloadV1::from_block_unchecked(block.hash(), &block.into_block());
 
         TaikoExecutionData {
-            payload,
-            sidecar,
+            execution_payload: ExecutionPayloadV1 {
+                parent_hash: payload.parent_hash,
+                prev_randao: payload.prev_randao,
+                block_number: payload.block_number,
+                gas_limit: payload.gas_limit,
+                gas_used: payload.gas_used,
+                timestamp: payload.timestamp,
+                block_hash: payload.block_hash,
+                fee_recipient: payload.fee_recipient,
+                state_root: payload.state_root,
+                receipts_root: payload.receipts_root,
+                logs_bloom: payload.logs_bloom,
+                extra_data: payload.extra_data,
+                base_fee_per_gas: payload.base_fee_per_gas,
+                transactions: payload.transactions,
+            },
             taiko_sidecar: TaikoExecutionDataSidecar {
                 tx_hash: tx_hash,
                 withdrawals_hash: withdrawals_hash,
-                taiko_block: true,
+                taiko_block: Some(true),
             },
         }
     }

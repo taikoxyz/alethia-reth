@@ -23,9 +23,9 @@ use reth_node_api::{
     validate_version_specific_fields,
 };
 use reth_node_builder::rpc::EngineValidatorBuilder;
-use reth_payload_validator::shanghai;
 use reth_primitives_traits::Block as SealedBlock;
 use reth_trie_db::MerklePatriciaTrie;
+use tracing::info;
 
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
@@ -97,11 +97,12 @@ impl PayloadValidator for TaikoEngineValidator {
         } = payload;
 
         // let expected_hash = payload.block_hash;
-        let expected_hash = B256::random();
+        let expected_hash = payload.block_hash;
 
         // First parse the block
         let mut block = payload.try_into_block()?;
         block.header.transactions_root = taiko_sidecar.tx_hash;
+        block.header.withdrawals_root = taiko_sidecar.withdrawals_hash;
         let sealed_block = block.seal_slow();
 
         // Ensure the hash included in the payload matches the block hash
@@ -113,7 +114,10 @@ impl PayloadValidator for TaikoEngineValidator {
             .map_err(|e| NewPayloadError::Other(e.into()));
         }
 
-        shanghai::ensure_well_formed_fields(sealed_block.body(), true)?;
+        info!(
+            "Taiko payload validated: block hash matches expected hash: {}",
+            expected_hash
+        );
 
         sealed_block
             .try_recover()
@@ -130,7 +134,8 @@ where
         version: EngineApiMessageVersion,
         payload_or_attrs: PayloadOrAttributes<'_, Self::ExecutionData, TaikoPayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
-        validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
+        // validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
+        Ok(())
     }
 
     fn ensure_well_formed_attributes(
@@ -138,13 +143,14 @@ where
         version: EngineApiMessageVersion,
         attributes: &TaikoPayloadAttributes,
     ) -> Result<(), EngineObjectValidationError> {
-        validate_version_specific_fields(
-            self.chain_spec(),
-            version,
-            PayloadOrAttributes::<Self::ExecutionData, TaikoPayloadAttributes>::PayloadAttributes(
-                attributes,
-            ),
-        )
+        // validate_version_specific_fields(
+        //     self.chain_spec(),
+        //     version,
+        //     PayloadOrAttributes::<Self::ExecutionData, TaikoPayloadAttributes>::PayloadAttributes(
+        //         attributes,
+        //     ),
+        // )
+        Ok(())
     }
 
     fn validate_payload_attributes_against_header(

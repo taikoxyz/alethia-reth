@@ -1,6 +1,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use crate::{
+    consensus::builder::TaikoConsensusBuilder,
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
         builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
@@ -33,12 +34,13 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::{
     EthereumEthApiBuilder,
-    node::{EthereumConsensusBuilder, EthereumNetworkBuilder, EthereumPoolBuilder},
+    node::{EthereumNetworkBuilder, EthereumPoolBuilder},
 };
 use reth_rpc::eth::EthApiFor;
 use reth_trie_db::MerklePatriciaTrie;
 
 pub mod chainspec;
+pub mod consensus;
 pub mod evm;
 pub mod factory;
 pub mod payload;
@@ -233,7 +235,7 @@ where
         BasicPayloadServiceBuilder<TaikoPayloadBuilderBuilder>,
         EthereumNetworkBuilder,
         TaikoExecutorBuilder,
-        EthereumConsensusBuilder,
+        TaikoConsensusBuilder,
     >;
 
     type AddOns = TaikoAddOns<
@@ -250,7 +252,7 @@ where
                 TaikoPayloadBuilderBuilder::default(),
             ))
             .network(EthereumNetworkBuilder::default())
-            .consensus(EthereumConsensusBuilder::default())
+            .consensus(TaikoConsensusBuilder::default())
     }
 
     fn add_ons(&self) -> Self::AddOns {

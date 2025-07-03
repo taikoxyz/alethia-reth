@@ -16,7 +16,6 @@ use reth_node_api::{BeaconConsensusEngineHandle, EngineTypes, EngineValidator, P
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
-use tracing::{error, info};
 
 use crate::rpc::types::TaikoExecutionData;
 
@@ -104,11 +103,10 @@ where
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
-        info!("Taiko Received new payload: {:?}", payload);
-        self.inner.new_payload_v2(payload).await.map_err(|e| {
-            error!("Error processing new payload: {:?}", e);
-            EngineApiError::from(e).into()
-        })
+        self.inner
+            .new_payload_v2(payload)
+            .await
+            .map_err(|e| EngineApiError::from(e).into())
     }
 
     async fn fork_choice_updated_v2(
@@ -116,10 +114,6 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        info!(
-            "Taiko Received fork choice update: {:?}, attributes: {:?}",
-            fork_choice_state, payload_attributes
-        );
         self.inner
             .fork_choice_updated_v2(fork_choice_state, payload_attributes)
             .await

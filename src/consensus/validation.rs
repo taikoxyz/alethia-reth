@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH};
-use alloy_hardforks::EthereumHardforks;
 use reth::{
     beacon_consensus::{EthBeaconConsensus, validate_block_post_execution},
     chainspec::ChainSpec,
     consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
-    consensus_common::validation::{validate_body_against_header, validate_shanghai_withdrawals},
+    consensus_common::validation::validate_body_against_header,
     primitives::SealedBlock,
 };
 use reth_node_api::{BlockBody, NodePrimitives};
@@ -81,12 +80,9 @@ where
 /// Validate a block without regard for state:
 ///
 /// - Compares the ommer hash in the block header to the block body
-/// - Compares the transactions root in the block header to the block body
-/// - Pre-execution transaction validation
-/// - (Optionally) Compares the receipts root in the block header to the block body
 pub fn validate_block_pre_execution<B>(
     block: &SealedBlock<B>,
-    chain_spec: &ChainSpec,
+    _: &ChainSpec,
 ) -> Result<(), ConsensusError>
 where
     B: Block,
@@ -101,16 +97,6 @@ where
             }
             .into(),
         ));
-    }
-
-    // Check transaction root
-    if let Err(error) = block.ensure_transaction_root_valid() {
-        return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
-    }
-
-    // EIP-4895: Beacon chain push withdrawals as operations
-    if chain_spec.is_shanghai_active_at_timestamp(block.timestamp()) {
-        validate_shanghai_withdrawals(block)?;
     }
 
     Ok(())

@@ -9529,6 +9529,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-cli",
  "reth-cli-util",
+ "reth-codecs",
  "reth-db-api",
  "reth-engine-local",
  "reth-engine-primitives",

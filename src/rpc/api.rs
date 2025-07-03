@@ -8,12 +8,16 @@ use async_trait::async_trait;
 use jsonrpsee::RpcModule;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee_core::RpcResult;
+use reth::revm::primitives::U256;
 use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, tasks::TaskSpawner,
     transaction_pool::TransactionPool,
 };
+use reth_db_api::tables;
+use reth_db_api::transaction::DbTxMut;
 use reth_node_api::{BeaconConsensusEngineHandle, EngineTypes, EngineValidator, PayloadTypes};
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
+use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
 
@@ -52,12 +56,14 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
 
 pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec> {
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
+    provider: Provider,
 }
 
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>
 where
-    Provider: HeaderProvider + BlockReader + StateProviderFactory + 'static,
+    Provider:
+        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     PayloadT: PayloadTypes,
     Pool: TransactionPool + 'static,
     Validator: EngineValidator<PayloadT>,
@@ -74,9 +80,12 @@ where
         capabilities: EngineCapabilities,
         validator: Validator,
         accept_execution_requests_hash: bool,
-    ) -> Self {
+    ) -> Self
+    where
+        Provider: Clone,
+    {
         let inner = EngineApi::new(
-            provider,
+            provider.clone(),
             chain_spec,
             beacon_consensus,
             payload_store,
@@ -87,7 +96,7 @@ where
             validator,
             accept_execution_requests_hash,
         );
-        Self { inner }
+        Self { inner, provider }
     }
 }
 
@@ -96,13 +105,21 @@ where
 impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT>
     for TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
-    Provider: HeaderProvider + BlockReader + StateProviderFactory + 'static,
+    Provider:
+        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     EngineT: EngineTypes<ExecutionData = TaikoExecutionData>,
     Pool: TransactionPool + 'static,
     Validator: EngineValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
+        // let tx = self
+        //     .provider
+        //     .database_provider_rw()
+        //     .unwrap()
+        //     .into_tx()
+        //     .put::<tables::HeaderTerminalDifficulties>(0, U256::from(0).into());
+
         self.inner
             .new_payload_v2(payload)
             .await

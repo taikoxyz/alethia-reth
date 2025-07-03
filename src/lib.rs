@@ -41,6 +41,7 @@ use reth_trie_db::MerklePatriciaTrie;
 
 pub mod chainspec;
 pub mod consensus;
+pub mod db;
 pub mod evm;
 pub mod factory;
 pub mod payload;

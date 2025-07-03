@@ -7,7 +7,7 @@ use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
 use reth_provider::EthStorage;
 use reth_trie_db::MerklePatriciaTrie;
 
-use crate::{consensus::TaikoBeaconConsensus, payload::engine::TaikoEngineTypes};
+use crate::{consensus::validation::TaikoBeaconConsensus, payload::engine::TaikoEngineTypes};
 
 /// A basic Taiko consensus builder.
 #[derive(Debug, Default, Clone)]

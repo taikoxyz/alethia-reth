@@ -20,7 +20,6 @@ use reth_node_api::{
     AddOnsContext, EngineApiMessageVersion, EngineObjectValidationError, EngineValidator,
     FullNodeComponents, InvalidPayloadAttributesError, NewPayloadError, NodeTypes,
     PayloadAttributes, PayloadOrAttributes, PayloadTypes, PayloadValidator,
-    validate_version_specific_fields,
 };
 use reth_node_builder::rpc::EngineValidatorBuilder;
 use reth_primitives_traits::Block as SealedBlock;
@@ -131,24 +130,20 @@ where
 {
     fn validate_version_specific_fields(
         &self,
-        version: EngineApiMessageVersion,
-        payload_or_attrs: PayloadOrAttributes<'_, Self::ExecutionData, TaikoPayloadAttributes>,
+        _: EngineApiMessageVersion,
+        _: PayloadOrAttributes<'_, Self::ExecutionData, TaikoPayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
-        validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
+        // No need to validate validate_withdrawals_presence and validate_parent_beacon_block_root_presence
+        Ok(())
     }
 
     fn ensure_well_formed_attributes(
         &self,
-        version: EngineApiMessageVersion,
-        attributes: &TaikoPayloadAttributes,
+        _: EngineApiMessageVersion,
+        _: &TaikoPayloadAttributes,
     ) -> Result<(), EngineObjectValidationError> {
-        validate_version_specific_fields(
-            self.chain_spec(),
-            version,
-            PayloadOrAttributes::<Self::ExecutionData, TaikoPayloadAttributes>::PayloadAttributes(
-                attributes,
-            ),
-        )
+        // No need to validate validate_withdrawals_presence and validate_parent_beacon_block_root_presence
+        Ok(())
     }
 
     fn validate_payload_attributes_against_header(

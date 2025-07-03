@@ -11,7 +11,7 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_rpc_types_engine::PayloadError;
 use reth::{
     chainspec::ChainSpec, payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock,
-    providers::EthStorage, revm::primitives::B256,
+    providers::EthStorage,
 };
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
@@ -134,8 +134,7 @@ where
         version: EngineApiMessageVersion,
         payload_or_attrs: PayloadOrAttributes<'_, Self::ExecutionData, TaikoPayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
-        // validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
-        Ok(())
+        validate_version_specific_fields(self.chain_spec(), version, payload_or_attrs)
     }
 
     fn ensure_well_formed_attributes(
@@ -143,14 +142,13 @@ where
         version: EngineApiMessageVersion,
         attributes: &TaikoPayloadAttributes,
     ) -> Result<(), EngineObjectValidationError> {
-        // validate_version_specific_fields(
-        //     self.chain_spec(),
-        //     version,
-        //     PayloadOrAttributes::<Self::ExecutionData, TaikoPayloadAttributes>::PayloadAttributes(
-        //         attributes,
-        //     ),
-        // )
-        Ok(())
+        validate_version_specific_fields(
+            self.chain_spec(),
+            version,
+            PayloadOrAttributes::<Self::ExecutionData, TaikoPayloadAttributes>::PayloadAttributes(
+                attributes,
+            ),
+        )
     }
 
     fn validate_payload_attributes_against_header(

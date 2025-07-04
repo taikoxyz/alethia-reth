@@ -1,7 +1,7 @@
 use core::fmt;
 
 use alloy_rlp::BufMut;
-use reth::revm::primitives::{B256, U256};
+use reth::revm::primitives::{B256, U256, alloy_primitives};
 use reth_codecs::Compact;
 use reth_db_api::{TableSet, TableType, TableViewer, table::TableInfo, tables};
 use serde::{Deserialize, Serialize};
@@ -15,12 +15,12 @@ pub struct StoredL1Origin {
     pub build_payload_args_id: [u8; 8],
 }
 
-// tables!(
-//   table StoredL1OriginTable {
-//     type Key = U256;
-//     type Value = StoredL1Origin;
-//   }
-// )
+tables! {
+  table StoredL1OriginTable {
+    type Key = u64;
+    type Value = StoredL1Origin;
+  }
+}
 
 impl Compact for StoredL1Origin {
     fn to_compact<B>(&self, buf: &mut B) -> usize
@@ -98,5 +98,20 @@ impl Compact for StoredL1Origin {
             },
             buf,
         )
+    }
+}
+
+impl reth_db_api::table::Compress for StoredL1Origin {
+    type Compressed = Vec<u8>;
+
+    fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
+        let _ = Compact::to_compact(self, buf);
+    }
+}
+
+impl reth_db_api::table::Decompress for StoredL1Origin {
+    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+        let (obj, _) = Compact::from_compact(value, value.len());
+        Ok(obj)
     }
 }

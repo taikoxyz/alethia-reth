@@ -9525,6 +9525,7 @@ dependencies = [
  "jsonrpsee-http-client",
  "jsonrpsee-server",
  "jsonrpsee-types",
+ "parity-scale-codec",
  "reth",
  "reth-basic-payload-builder",
  "reth-cli",

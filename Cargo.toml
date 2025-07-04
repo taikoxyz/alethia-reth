@@ -52,6 +52,7 @@ reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v
 reth-rpc-engine-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 async-trait = "0.1.68"
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+parity-scale-codec = "3.2.1"
 
 # rpc
 jsonrpsee = "0.25.1"

@@ -205,7 +205,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributes
             base_fee_per_gas: U256::ZERO,
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
-                timestamp: timestamp,
+                timestamp: U256::from(timestamp),
                 gas_limit: 241_000_000,
                 mix_hash: B256::random(),
                 tx_list: Bytes::new(),
@@ -216,7 +216,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributes
                 l2_block_hash: B256::ZERO,
                 l1_block_hash: None,
                 l1_block_height: None,
-                build_payload_args_id: [0; 8],
+                build_payload_args_id: None,
             },
         }
     }

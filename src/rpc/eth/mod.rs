@@ -51,7 +51,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             l2_block_hash: l1_origin.l2_block_hash,
             l1_block_height: l1_origin.l1_block_height,
             l1_block_hash: l1_origin.l1_block_hash,
-            build_payload_args_id: l1_origin.build_payload_args_id,
+            build_payload_args_id: None,
         }))
     }
 

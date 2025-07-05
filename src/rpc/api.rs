@@ -18,6 +18,7 @@ use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
+use tracing::info;
 
 use crate::db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
@@ -135,10 +136,10 @@ where
         if let Some(payload) = payload_attributes {
             let stored_l1_origin = StoredL1Origin {
                 block_id: payload.l1_origin.block_id,
-                l2_block_hash: payload.l1_origin.l2_block_hash,
+                l2_block_hash: status.payload_status.latest_valid_hash.unwrap(),
                 l1_block_hash: payload.l1_origin.l1_block_hash,
                 l1_block_height: payload.l1_origin.l1_block_height,
-                build_payload_args_id: payload.l1_origin.build_payload_args_id,
+                build_payload_args_id: payload.l1_origin.build_payload_args_id.unwrap(),
             };
             self.provider
                 .database_provider_rw()

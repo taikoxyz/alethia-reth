@@ -61,7 +61,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             tx_list_hash: keccak256(attributes.block_metadata.tx_list.clone()),
             beneficiary: attributes.block_metadata.beneficiary,
             gas_limit: attributes.block_metadata.gas_limit,
-            timestamp: attributes.block_metadata.timestamp,
+            timestamp: attributes.block_metadata.timestamp.to(),
             mix_hash: attributes.payload_attributes.prev_randao,
             base_fee_per_gas: attributes.base_fee_per_gas.try_into().unwrap(),
             extra_data: attributes.block_metadata.extra_data,

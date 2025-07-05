@@ -1,0 +1,69 @@
+use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use reth_db_api::transaction::DbTx;
+use reth_provider::{DBProvider, DatabaseProviderFactory};
+
+use crate::{
+    db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
+    payload::attributes::L1Origin,
+};
+/// trait interface for a custom rpc namespace: `taiko`
+///
+/// This defines the Taiko namespace where all methods are configured as trait functions.
+#[cfg_attr(not(test), rpc(server, namespace = "taiko"))]
+#[cfg_attr(test, rpc(server, client, namespace = "taiko"))]
+pub trait TaikoExtApi {
+    #[method(name = "l1OriginByID")]
+    fn l1_origin_by_id(&self, id: u64) -> RpcResult<L1Origin>;
+    #[method(name = "headL1Origin")]
+    fn head_l1_origin(&self) -> RpcResult<L1Origin>;
+}
+
+pub struct TaikoExt<Provider: DatabaseProviderFactory> {
+    provider: Provider,
+}
+
+impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
+    pub fn new(provider: Provider) -> Self {
+        Self { provider }
+    }
+}
+
+impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
+    fn l1_origin_by_id(&self, id: u64) -> RpcResult<L1Origin> {
+        let l1_origin = self
+            .provider
+            .database_provider_ro()
+            .unwrap()
+            .into_tx()
+            .get::<StoredL1OriginTable>(id)
+            .unwrap()
+            .unwrap();
+
+        Ok(L1Origin {
+            block_id: l1_origin.block_id,
+            l2_block_hash: l1_origin.l2_block_hash,
+            l1_block_height: l1_origin.l1_block_height,
+            l1_block_hash: l1_origin.l1_block_hash,
+            build_payload_args_id: l1_origin.build_payload_args_id,
+        })
+    }
+
+    fn head_l1_origin(&self) -> RpcResult<L1Origin> {
+        let head_l1_origin = self
+            .provider
+            .database_provider_ro()
+            .unwrap()
+            .into_tx()
+            .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
+            .unwrap()
+            .unwrap();
+
+        Ok(L1Origin {
+            block_id: head_l1_origin.block_id,
+            l2_block_hash: head_l1_origin.l2_block_hash,
+            l1_block_height: head_l1_origin.l1_block_height,
+            l1_block_hash: head_l1_origin.l1_block_hash,
+            build_payload_args_id: head_l1_origin.build_payload_args_id,
+        })
+    }
+}

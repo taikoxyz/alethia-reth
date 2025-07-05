@@ -53,3 +53,9 @@ pub struct L1Origin {
     pub l1_block_hash: Option<B256>,
     pub build_payload_args_id: [u8; 8],
 }
+
+impl L1Origin {
+    pub fn is_preconf_block(&self) -> bool {
+        self.l1_block_height.is_none() || self.l1_block_height == Some(U256::ZERO)
+    }
+}

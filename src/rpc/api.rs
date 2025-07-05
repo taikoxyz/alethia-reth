@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use jsonrpsee::RpcModule;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee_core::RpcResult;
-use reth::revm::primitives::U256;
 use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, tasks::TaskSpawner,
     transaction_pool::TransactionPool,
@@ -20,7 +19,9 @@ use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
 
-use crate::db::model::{StoredL1Origin, StoredL1OriginTable};
+use crate::db::model::{
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
+};
 use crate::payload::attributes::TaikoPayloadAttributes;
 use crate::rpc::types::TaikoExecutionData;
 
@@ -132,21 +133,30 @@ where
             .await?;
 
         if let Some(payload) = payload_attributes {
+            let stored_l1_origin = StoredL1Origin {
+                block_id: payload.l1_origin.block_id,
+                l2_block_hash: payload.l1_origin.l2_block_hash,
+                l1_block_hash: payload.l1_origin.l1_block_hash,
+                l1_block_height: payload.l1_origin.l1_block_height,
+                build_payload_args_id: payload.l1_origin.build_payload_args_id,
+            };
             self.provider
                 .database_provider_rw()
                 .unwrap()
                 .into_tx()
                 .put::<StoredL1OriginTable>(
                     payload.l1_origin.block_id.to::<u64>(),
-                    StoredL1Origin {
-                        block_id: payload.l1_origin.block_id,
-                        l2_block_hash: payload.l1_origin.l2_block_hash,
-                        l1_block_hash: payload.l1_origin.l1_block_hash,
-                        l1_block_height: payload.l1_origin.l1_block_height,
-                        build_payload_args_id: payload.l1_origin.build_payload_args_id,
-                    },
+                    stored_l1_origin.clone(),
                 )
                 .unwrap();
+            if payload.l1_origin.is_preconf_block() {
+                self.provider
+                    .database_provider_rw()
+                    .unwrap()
+                    .into_tx()
+                    .put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, stored_l1_origin)
+                    .unwrap();
+            }
         };
 
         Ok(status)

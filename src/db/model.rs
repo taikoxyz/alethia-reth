@@ -1,10 +1,15 @@
 use core::fmt;
 
 use alloy_rlp::BufMut;
-use reth::revm::primitives::{B256, U256, alloy_primitives};
+use reth::revm::primitives::{
+    B256, U256,
+    alloy_primitives::{self},
+};
 use reth_codecs::Compact;
 use reth_db_api::{TableSet, TableType, TableViewer, table::TableInfo, tables};
 use serde::{Deserialize, Serialize};
+
+pub const STORED_L1_HEAD_ORIGIN_KEY: u64 = 0;
 
 #[derive(Debug, Default, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct StoredL1Origin {
@@ -17,6 +22,11 @@ pub struct StoredL1Origin {
 
 tables! {
   table StoredL1OriginTable {
+    type Key = u64;
+    type Value = StoredL1Origin;
+  }
+
+  table StoredL1HeadOriginTable {
     type Key = u64;
     type Value = StoredL1Origin;
   }

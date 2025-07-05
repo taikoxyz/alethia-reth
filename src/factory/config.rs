@@ -72,7 +72,6 @@ impl ConfigureEvm for TaikoEvmConfig {
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
-        // configure evm env based on parent block
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().chain().id())
             .with_spec(revm_spec(self.chain_spec(), header));

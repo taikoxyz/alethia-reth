@@ -1,7 +1,10 @@
 //! Rust Taiko (taiko-reth) binary executable.
 use clap::Parser;
 use reth::{args::RessArgs, builder::NodeHandle, cli::Cli, ress::install_ress_subprotocol};
+use reth_rpc::eth::EthApiTypes;
 use reth_rpc::eth::RpcNodeCore;
+use taiko_reth::rpc::eth::pool::TaikoAuthTxPoolExt;
+use taiko_reth::rpc::eth::pool::TaikoAuthTxPoolExtApiServer;
 use taiko_reth::{
     TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
@@ -34,8 +37,17 @@ fn main() {
                     ctx.modules.merge_configured(taiko_rpc_ext.into_rpc())?;
 
                     let taiko_auth_rpc_ext = TaikoAuthExt::new(provider);
+
                     ctx.auth_module
                         .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
+
+                    let taiko_auth_tx_pool_ext = TaikoAuthTxPoolExt::new(
+                        ctx.node().pool().clone(),
+                        *ctx.registry.eth_api().tx_resp_builder(),
+                    );
+
+                    ctx.auth_module
+                        .merge_auth_methods(taiko_auth_tx_pool_ext.into_rpc())?;
 
                     Ok(())
                 })

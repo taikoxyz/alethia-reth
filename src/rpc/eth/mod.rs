@@ -11,12 +11,13 @@ use crate::{
 
 pub mod auth;
 pub mod error;
+pub mod pool;
 
 /// trait interface for a custom rpc namespace: `taiko`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
-#[cfg_attr(not(test), rpc(server, namespace = "taiko"))]
-#[cfg_attr(test, rpc(server, client, namespace = "taiko"))]
+#[cfg_attr(not(feature = "client"), rpc(server, namespace = "taiko"))]
+#[cfg_attr(feature = "client", rpc(server, client, namespace = "taiko"))]
 pub trait TaikoExtApi {
     #[method(name = "l1OriginByID")]
     fn l1_origin_by_id(&self, id: u64) -> RpcResult<Option<L1Origin>>;

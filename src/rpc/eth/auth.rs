@@ -1,6 +1,8 @@
+use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth::revm::primitives::U256;
 use reth_db_api::transaction::DbTxMut;
+
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
 
@@ -14,15 +16,16 @@ use crate::{
 /// trait interface for a custom auth rpc namespace: `taiko`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
-#[cfg_attr(not(test), rpc(server, namespace = "taiko"))]
-#[cfg_attr(test, rpc(server, client, namespace = "taiko"))]
+#[cfg_attr(not(feature = "client"), rpc(server, namespace = "taiko"))]
+#[cfg_attr(feature = "client", rpc(server, client, namespace = "taiko"))]
 pub trait TaikoAuthExtApi {
     #[method(name = "setHeadL1Origin")]
-    fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;
     #[method(name = "updateL1Origin")]
-    fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>>;
+    async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>>;
 }
 
+#[derive(Clone)]
 pub struct TaikoAuthExt<Provider: DatabaseProviderFactory> {
     provider: Provider,
 }
@@ -33,8 +36,12 @@ impl<Provider: DatabaseProviderFactory> TaikoAuthExt<Provider> {
     }
 }
 
-impl<Provider: DatabaseProviderFactory + 'static> TaikoAuthExtApiServer for TaikoAuthExt<Provider> {
-    fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
+#[async_trait]
+impl<Provider> TaikoAuthExtApiServer for TaikoAuthExt<Provider>
+where
+    Provider: DatabaseProviderFactory + 'static,
+{
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
         let provider = self
             .provider
             .database_provider_rw()
@@ -48,7 +55,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoAuthExtApiServer for Taik
         Ok(id)
     }
 
-    fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {
+    async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {
         let provider = self
             .provider
             .database_provider_rw()

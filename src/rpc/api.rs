@@ -13,7 +13,6 @@ use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, tasks::TaskSpawner,
     transaction_pool::TransactionPool,
 };
-use reth_db_api::tables;
 use reth_db_api::transaction::DbTxMut;
 use reth_node_api::{BeaconConsensusEngineHandle, EngineTypes, EngineValidator, PayloadTypes};
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
@@ -21,6 +20,8 @@ use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
 
+use crate::db::model::{StoredL1Origin, StoredL1OriginTable};
+use crate::payload::attributes::TaikoPayloadAttributes;
 use crate::rpc::types::TaikoExecutionData;
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
@@ -107,19 +108,13 @@ impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT
 where
     Provider:
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
-    EngineT: EngineTypes<ExecutionData = TaikoExecutionData>,
+    EngineT:
+        EngineTypes<ExecutionData = TaikoExecutionData, PayloadAttributes = TaikoPayloadAttributes>,
     Pool: TransactionPool + 'static,
     Validator: EngineValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
-        // let tx = self
-        //     .provider
-        //     .database_provider_rw()
-        //     .unwrap()
-        //     .into_tx()
-        //     .put::<tables::HeaderTerminalDifficulties>(0, U256::from(0).into());
-
         self.inner
             .new_payload_v2(payload)
             .await
@@ -131,10 +126,30 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        self.inner
-            .fork_choice_updated_v2(fork_choice_state, payload_attributes)
-            .await
-            .map_err(|e| EngineApiError::from(e).into())
+        let status = self
+            .inner
+            .fork_choice_updated_v2(fork_choice_state, payload_attributes.clone())
+            .await?;
+
+        if let Some(payload) = payload_attributes {
+            self.provider
+                .database_provider_rw()
+                .unwrap()
+                .into_tx()
+                .put::<StoredL1OriginTable>(
+                    payload.l1_origin.block_id.to::<u64>(),
+                    StoredL1Origin {
+                        block_id: payload.l1_origin.block_id,
+                        l2_block_hash: payload.l1_origin.l2_block_hash,
+                        l1_block_hash: payload.l1_origin.l1_block_hash,
+                        l1_block_height: payload.l1_origin.l1_block_height,
+                        build_payload_args_id: payload.l1_origin.build_payload_args_id,
+                    },
+                )
+                .unwrap();
+        };
+
+        Ok(status)
     }
 
     async fn get_payload_v2(

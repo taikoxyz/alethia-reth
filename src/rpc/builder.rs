@@ -8,7 +8,10 @@ use reth_node_api::{AddOnsContext, EngineTypes, FullNodeComponents, NodeTypes, P
 use reth_node_builder::rpc::{EngineApiBuilder, EngineValidatorBuilder};
 use reth_rpc_engine_api::EngineCapabilities;
 
-use crate::rpc::{api::TaikoEngineApi, types::TaikoExecutionData};
+use crate::{
+    payload::attributes::TaikoPayloadAttributes,
+    rpc::{api::TaikoEngineApi, types::TaikoExecutionData},
+};
 
 /// Builder for basic [`EngineApi`] implementation.
 ///
@@ -25,7 +28,10 @@ where
     N: FullNodeComponents<
         Types: NodeTypes<
             ChainSpec: EthereumHardforks,
-            Payload: PayloadTypes<ExecutionData = TaikoExecutionData> + EngineTypes,
+            Payload: PayloadTypes<
+                ExecutionData = TaikoExecutionData,
+                PayloadAttributes = TaikoPayloadAttributes,
+            > + EngineTypes,
         >,
     >,
     EV: EngineValidatorBuilder<N>,

@@ -44,7 +44,7 @@ pub trait TaikoAuthTxPoolExtApi<T: RpcObject> {
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
-    ) -> RpcResult<PreBuiltTxList<T>>;
+    ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 }
 
 #[derive(Clone)]
@@ -61,7 +61,7 @@ impl<Pool, Eth> TaikoAuthTxPoolExt<Pool, Eth> {
         }
     }
 }
-// method=taikoAuth_txPoolContentWithMinTip result="{\"txList\":[{\"type\":\"0x0\",\"chainId\":\"0x28c59\",\"nonce\":\"0x0\",\"gasPrice\":\"0x2540be400\",\"gas\":\"0x186a0\",\"to\":\"0xb40ae7cc03e65c4cb2484b6399fb542b9a9b206b\",\"value\":\"0x0\",\"input\":\"0x\",\"r\":\"0x6cd0e3bb7b2a70c9062e7498034fc428acf9281359e2bb1a3b5c364bd5783f37\",\"s\":\"0x34fd2c5b70e7ce66b0a2516d381d2f44d3e8e69c3c7a9a2a3071f669e0e70703\",\"v\":\"0x518d6\",\"hash\":\"0x9fdfeaa0a8dc6b2a2404087b040864faab7cde3aef416c1e332017d78491b46a\",\"blockHash\":null,\"blockNumber\":null,\"transactionIndex\":null,\"from\":\"0x90f79bf6eb2c4f870365e785982e1f101e93b906\"}],\"estimatedGasUsed\":0,\"bytesLength\":0}"
+
 #[async_trait]
 impl<Pool, Eth> TaikoAuthTxPoolExtApiServer<Eth::Transaction> for TaikoAuthTxPoolExt<Pool, Eth>
 where
@@ -77,7 +77,7 @@ where
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
-    ) -> RpcResult<PreBuiltTxList<Eth::Transaction>> {
+    ) -> RpcResult<Vec<PreBuiltTxList<Eth::Transaction>>> {
         let pending = self.pool.all_transactions().pending;
 
         let mut result = vec![];
@@ -90,10 +90,10 @@ where
             );
         }
 
-        Ok(PreBuiltTxList {
+        Ok(vec![PreBuiltTxList {
             tx_list: result,
             estimated_gas_used: 0,
             bytes_length: 0,
-        })
+        }])
     }
 }

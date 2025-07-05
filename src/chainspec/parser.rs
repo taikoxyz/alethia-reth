@@ -3,7 +3,7 @@ use std::sync::Arc;
 use reth::chainspec::ChainSpec;
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 
-use crate::chainspec::TAIKO_MAINNET;
+use crate::chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
 
 /// Chains supported by taiko-reth. First value should be used as the default.
 pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "hekla", "devnet"];
@@ -15,6 +15,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "hekla", "devnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<ChainSpec>, eyre::Error> {
     Ok(match s {
         "mainnet" => TAIKO_MAINNET.clone(),
+        "devnet" => TAIKO_DEVNET.clone(),
         _ => Arc::new(parse_genesis(s)?.into()),
     })
 }

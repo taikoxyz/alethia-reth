@@ -7,6 +7,9 @@ use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
     payload::attributes::L1Origin,
 };
+
+pub mod auth;
+
 /// trait interface for a custom rpc namespace: `taiko`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
@@ -14,7 +17,7 @@ use crate::{
 #[cfg_attr(test, rpc(server, client, namespace = "taiko"))]
 pub trait TaikoExtApi {
     #[method(name = "l1OriginByID")]
-    fn l1_origin_by_id(&self, id: u64) -> RpcResult<L1Origin>;
+    fn l1_origin_by_id(&self, id: u64) -> RpcResult<Option<L1Origin>>;
     #[method(name = "headL1Origin")]
     fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>>;
 }
@@ -30,7 +33,7 @@ impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
 }
 
 impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
-    fn l1_origin_by_id(&self, id: u64) -> RpcResult<L1Origin> {
+    fn l1_origin_by_id(&self, id: u64) -> RpcResult<Option<L1Origin>> {
         let l1_origin = self
             .provider
             .database_provider_ro()
@@ -40,13 +43,13 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             .unwrap()
             .unwrap();
 
-        Ok(L1Origin {
+        Ok(Some(L1Origin {
             block_id: l1_origin.block_id,
             l2_block_hash: l1_origin.l2_block_hash,
             l1_block_height: l1_origin.l1_block_height,
             l1_block_hash: l1_origin.l1_block_hash,
             build_payload_args_id: l1_origin.build_payload_args_id,
-        })
+        }))
     }
 
     fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>> {
@@ -59,13 +62,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
             .map_err(|_| EthApiError::InternalEthError)?;
         if let Some(l1_origin) = head_l1_origin {
-            Ok(Some(L1Origin {
-                block_id: l1_origin.block_id,
-                l2_block_hash: l1_origin.l2_block_hash,
-                l1_block_height: l1_origin.l1_block_height,
-                l1_block_hash: l1_origin.l1_block_hash,
-                build_payload_args_id: l1_origin.build_payload_args_id,
-            }))
+            self.l1_origin_by_id(l1_origin)
         } else {
             Ok(None)
         }

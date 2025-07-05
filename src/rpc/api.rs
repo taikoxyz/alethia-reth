@@ -154,7 +154,10 @@ where
                     .database_provider_rw()
                     .unwrap()
                     .into_tx()
-                    .put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, stored_l1_origin)
+                    .put::<StoredL1HeadOriginTable>(
+                        STORED_L1_HEAD_ORIGIN_KEY,
+                        payload.l1_origin.block_id.to::<u64>(),
+                    )
                     .unwrap();
             }
         };

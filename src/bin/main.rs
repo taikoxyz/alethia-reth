@@ -5,7 +5,10 @@ use reth_rpc::eth::RpcNodeCore;
 use taiko_reth::{
     TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
-    rpc::eth::{TaikoExt, TaikoExtApiServer},
+    rpc::eth::{
+        TaikoExt, TaikoExtApiServer,
+        auth::{TaikoAuthExt, TaikoAuthExtApiServer},
+    },
 };
 use tracing::info;
 #[global_allocator]
@@ -27,8 +30,12 @@ fn main() {
                 .node(TaikoNode::default())
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
-                    let taiko_rpc_ext = TaikoExt::new(provider);
+                    let taiko_rpc_ext = TaikoExt::new(provider.clone());
                     ctx.modules.merge_configured(taiko_rpc_ext.into_rpc())?;
+
+                    let taiko_auth_rpc_ext = TaikoAuthExt::new(provider);
+                    ctx.auth_module
+                        .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
 
                     Ok(())
                 })

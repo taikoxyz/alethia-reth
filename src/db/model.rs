@@ -28,7 +28,7 @@ tables! {
 
   table StoredL1HeadOriginTable {
     type Key = u64;
-    type Value = StoredL1Origin;
+    type Value = u64;
   }
 }
 

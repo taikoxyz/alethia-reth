@@ -6,9 +6,11 @@ use reth_rpc_eth_types::EthApiError;
 use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
     payload::attributes::L1Origin,
+    rpc::eth::error::TaikoApiError,
 };
 
 pub mod auth;
+pub mod error;
 
 /// trait interface for a custom rpc namespace: `taiko`
 ///
@@ -57,10 +59,12 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             .provider
             .database_provider_ro()
             .map_err(|_| EthApiError::InternalEthError)?;
+
         let head_l1_origin = provider
             .into_tx()
             .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-            .map_err(|_| EthApiError::InternalEthError)?;
+            .map_err(|_| TaikoApiError::GethNotFound)?;
+
         if let Some(l1_origin) = head_l1_origin {
             self.l1_origin_by_id(l1_origin)
         } else {

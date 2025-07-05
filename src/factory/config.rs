@@ -14,7 +14,7 @@ use reth_ethereum::EthPrimitives;
 use reth_evm::{
     ConfigureEvm, EvmEnv, EvmEnvFor, NextBlockEnvAttributes, eth::EthBlockExecutionCtx,
 };
-use reth_evm_ethereum::RethReceiptBuilder;
+use reth_evm_ethereum::{RethReceiptBuilder, revm_spec};
 
 use crate::{
     evm::evm::TaikoEvmExtraContext,
@@ -73,7 +73,9 @@ impl ConfigureEvm for TaikoEvmConfig {
 
     fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
         // configure evm env based on parent block
-        let cfg_env = CfgEnv::new().with_chain_id(self.chain_spec().chain().id());
+        let cfg_env = CfgEnv::new()
+            .with_chain_id(self.chain_spec().chain().id())
+            .with_spec(revm_spec(self.chain_spec(), header));
 
         let block_env = BlockEnv {
             number: header.number(),

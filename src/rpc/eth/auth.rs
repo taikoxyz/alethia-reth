@@ -13,11 +13,11 @@ use crate::{
     payload::attributes::L1Origin,
 };
 
-/// trait interface for a custom auth rpc namespace: `taiko`
+/// trait interface for a custom auth rpc namespace: `taikoAuth`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
-#[cfg_attr(not(feature = "client"), rpc(server, namespace = "taiko"))]
-#[cfg_attr(feature = "client", rpc(server, client, namespace = "taiko"))]
+#[cfg_attr(not(feature = "client"), rpc(server, namespace = "taikoAuth"))]
+#[cfg_attr(feature = "client", rpc(server, client, namespace = "taikoAuth"))]
 pub trait TaikoAuthExtApi {
     #[method(name = "setHeadL1Origin")]
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;

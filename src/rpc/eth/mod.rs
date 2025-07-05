@@ -1,6 +1,7 @@
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_db_api::transaction::DbTx;
 use reth_provider::{DBProvider, DatabaseProviderFactory};
+use reth_rpc_eth_types::EthApiError;
 
 use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
@@ -15,7 +16,7 @@ pub trait TaikoExtApi {
     #[method(name = "l1OriginByID")]
     fn l1_origin_by_id(&self, id: u64) -> RpcResult<L1Origin>;
     #[method(name = "headL1Origin")]
-    fn head_l1_origin(&self) -> RpcResult<L1Origin>;
+    fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>>;
 }
 
 pub struct TaikoExt<Provider: DatabaseProviderFactory> {
@@ -48,22 +49,25 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
         })
     }
 
-    fn head_l1_origin(&self) -> RpcResult<L1Origin> {
-        let head_l1_origin = self
+    fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>> {
+        let provider = self
             .provider
             .database_provider_ro()
-            .unwrap()
+            .map_err(|_| EthApiError::InternalEthError)?;
+        let head_l1_origin = provider
             .into_tx()
             .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-            .unwrap()
-            .unwrap();
-
-        Ok(L1Origin {
-            block_id: head_l1_origin.block_id,
-            l2_block_hash: head_l1_origin.l2_block_hash,
-            l1_block_height: head_l1_origin.l1_block_height,
-            l1_block_hash: head_l1_origin.l1_block_hash,
-            build_payload_args_id: head_l1_origin.build_payload_args_id,
-        })
+            .map_err(|_| EthApiError::InternalEthError)?;
+        if let Some(l1_origin) = head_l1_origin {
+            Ok(Some(L1Origin {
+                block_id: l1_origin.block_id,
+                l2_block_hash: l1_origin.l2_block_hash,
+                l1_block_height: l1_origin.l1_block_height,
+                l1_block_hash: l1_origin.l1_block_hash,
+                build_payload_args_id: l1_origin.build_payload_args_id,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }

@@ -1,4 +1,4 @@
-use alloy_rlp::{Bytes, Decodable, Encodable, Rlp};
+use alloy_rlp::{Bytes, Decodable, Encodable};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     api::PayloadBuilderAttributes,

@@ -136,33 +136,33 @@ where
             "Forkchoice updated: {:?}, payload attributes: {:?}",
             status, payload_attributes
         );
-        // if let Some(payload) = payload_attributes {
-        //     let stored_l1_origin = StoredL1Origin {
-        //         block_id: payload.l1_origin.block_id,
-        //         l2_block_hash: status.payload_status.latest_valid_hash.unwrap(),
-        //         l1_block_hash: payload.l1_origin.l1_block_hash,
-        //         l1_block_height: payload.l1_origin.l1_block_height,
-        //         build_payload_args_id: payload.l1_origin.build_payload_args_id,
-        //     };
-        //     info!(
-        //         "Storing L1 origin: {:?} for block id: {}",
-        //         stored_l1_origin, payload.l1_origin.block_id
-        //     );
+        if let Some(payload) = payload_attributes {
+            let stored_l1_origin = StoredL1Origin {
+                block_id: payload.l1_origin.block_id,
+                l2_block_hash: status.payload_status.latest_valid_hash.unwrap(),
+                l1_block_hash: payload.l1_origin.l1_block_hash,
+                l1_block_height: payload.l1_origin.l1_block_height,
+                build_payload_args_id: payload.l1_origin.build_payload_args_id,
+            };
+            info!(
+                "Storing L1 origin: {:?} for block id: {}",
+                stored_l1_origin, payload.l1_origin.block_id
+            );
 
-        //     let tx = self.provider.database_provider_rw().unwrap().into_tx();
-        //     tx.put::<StoredL1OriginTable>(
-        //         payload.l1_origin.block_id.to::<u64>(),
-        //         stored_l1_origin.clone(),
-        //     )
-        //     .unwrap();
-        //     if payload.l1_origin.is_preconf_block() {
-        //         tx.put::<StoredL1HeadOriginTable>(
-        //             STORED_L1_HEAD_ORIGIN_KEY,
-        //             payload.l1_origin.block_id.to::<u64>(),
-        //         )
-        //         .unwrap();
-        //     }
-        // };
+            let tx = self.provider.database_provider_rw().unwrap().into_tx();
+            tx.put::<StoredL1OriginTable>(
+                payload.l1_origin.block_id.to::<u64>(),
+                stored_l1_origin.clone(),
+            )
+            .unwrap();
+            if payload.l1_origin.is_preconf_block() {
+                tx.put::<StoredL1HeadOriginTable>(
+                    STORED_L1_HEAD_ORIGIN_KEY,
+                    payload.l1_origin.block_id.to::<u64>(),
+                )
+                .unwrap();
+            }
+        };
 
         info!(
             "Forkchoice updated: latest valid hash: {:?}, payload status: {:?}",

@@ -24,6 +24,11 @@ impl TaikoBlockAssembler {
     pub fn chain_spec(&self) -> Arc<ChainSpec> {
         self.block_assembler.chain_spec.clone()
     }
+
+    pub fn with_extra_data(mut self, extra_data: Vec<u8>) -> Self {
+        self.block_assembler.extra_data = extra_data.into();
+        self
+    }
 }
 
 impl<F> BlockAssembler<F> for TaikoBlockAssembler
@@ -40,6 +45,8 @@ where
         &self,
         input: BlockAssemblerInput<'_, '_, F>,
     ) -> Result<Self::Block, BlockExecutionError> {
+        // self.with_extra_data(input.execution_ctx.extra_data);
+        // TODO: add extra data to the block header
         Ok(self
             .block_assembler
             .assemble_block(input)?

@@ -11,7 +11,6 @@ use reth::revm::{
     primitives::{Address, hardfork::SpecId},
 };
 use reth_evm::precompiles::PrecompilesMap;
-use tracing::info;
 
 use crate::{
     evm::evm::{TaikoEvm, TaikoEvmExtraContext},

@@ -10,7 +10,6 @@ use reth::{
 };
 use reth_ethereum::EthPrimitives;
 use reth_trie_db::MerklePatriciaTrie;
-use tracing::{info, warn};
 
 use crate::{
     evm::evm::TaikoEvmExtraContext, factory::config::TaikoEvmConfig,
@@ -44,19 +43,6 @@ where
             .unwrap()
             .unwrap();
 
-        info!(
-            "Building EVM for block {} at height {}",
-            block.header.number,
-            ctx.head().number
-        );
-        info!(
-            "Block {} has {} transactions",
-            block.header.number,
-            block.clone().into_body().transactions.len()
-        );
-        info!("Block  {:?}", block);
-        info!("Block hash: {:?}", block.header.hash_slow());
-
         let txs = block.clone().into_body().transactions;
 
         let mut anchor_caller: Option<Address> = None;
@@ -65,10 +51,6 @@ where
         // If the block is not the genesis block, we can extract the anchor transaction.
         if ctx.head().number != 0 {
             if txs.len() == 0 {
-                warn!(
-                    "Block {} has no transactions, cannot extract anchor transaction.",
-                    block.header.number
-                );
                 return future::ready(Err(eyre::eyre!(
                     "Block {} has no transactions, cannot extract anchor transaction.",
                     block.header.number

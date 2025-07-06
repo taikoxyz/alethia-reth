@@ -83,7 +83,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             difficulty: U256::ZERO,
             prevrandao: header.mix_hash(),
             gas_limit: header.gas_limit(),
-            basefee: header.base_fee_per_gas().unwrap_or_default(),
+            basefee: header.base_fee_per_gas().unwrap(),
             blob_excess_gas_and_price: None,
         };
 
@@ -103,30 +103,16 @@ impl ConfigureEvm for TaikoEvmConfig {
                 parent.number + 1,
             ));
 
+        // TODO: fetch the real base fee
         let basefee = Some(INITIAL_BASE_FEE);
 
-        let mut gas_limit = attributes.gas_limit;
-
-        // If we are on the London fork boundary, we need to multiply the parent's gas limit by the
-        // elasticity multiplier to get the new gas limit.
-
-        let elasticity_multiplier = self
-            .chain_spec()
-            .base_fee_params_at_timestamp(attributes.timestamp)
-            .elasticity_multiplier;
-
-        // multiply the gas limit by the elasticity multiplier
-        gas_limit *= elasticity_multiplier as u64;
-
-        // set the base fee to the initial base fee from the EIP-1559 spec
-
-        let block_env = BlockEnv {
+        let block_env: BlockEnv = BlockEnv {
             number: parent.number + 1,
             beneficiary: attributes.suggested_fee_recipient,
             timestamp: attributes.timestamp,
             difficulty: U256::ZERO,
             prevrandao: Some(attributes.prev_randao),
-            gas_limit,
+            gas_limit: attributes.gas_limit,
             // calculate basefee based on parent block's gas usage
             basefee: basefee.unwrap_or_default(),
             // calculate excess gas based on parent block's blob gas usage

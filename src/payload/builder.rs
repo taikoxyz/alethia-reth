@@ -216,7 +216,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributes
                 l2_block_hash: B256::ZERO,
                 l1_block_hash: None,
                 l1_block_height: None,
-                build_payload_args_id: None,
+                build_payload_args_id: [0; 8],
             },
         }
     }

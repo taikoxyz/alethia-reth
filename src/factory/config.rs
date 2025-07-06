@@ -14,7 +14,7 @@ use reth_ethereum::EthPrimitives;
 use reth_evm::{
     ConfigureEvm, EvmEnv, EvmEnvFor, NextBlockEnvAttributes, eth::EthBlockExecutionCtx,
 };
-use reth_evm_ethereum::{RethReceiptBuilder, revm_spec};
+use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
 
 use crate::{
     evm::evm::TaikoEvmExtraContext,
@@ -95,7 +95,13 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg = CfgEnv::new().with_chain_id(self.chain_spec().chain().id());
+        let cfg = CfgEnv::new()
+            .with_chain_id(self.chain_spec().chain().id())
+            .with_spec(revm_spec_by_timestamp_and_block_number(
+                self.chain_spec(),
+                attributes.timestamp,
+                parent.number + 1,
+            ));
 
         let basefee = Some(INITIAL_BASE_FEE);
 

@@ -70,7 +70,7 @@ where
                     l2_block_hash: l1_origin.l2_block_hash,
                     l1_block_height: l1_origin.l1_block_height,
                     l1_block_hash: l1_origin.l1_block_hash,
-                    build_payload_args_id: l1_origin.build_payload_args_id.unwrap(),
+                    build_payload_args_id: l1_origin.build_payload_args_id,
                 },
             )
             .map_err(|_| EthApiError::InternalEthError)?;

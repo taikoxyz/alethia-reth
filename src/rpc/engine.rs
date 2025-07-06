@@ -1,5 +1,3 @@
-use std::{convert::Infallible, sync::Arc};
-
 use crate::{
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, factory::TaikoEvmFactory,
@@ -24,6 +22,7 @@ use reth_node_api::{
 use reth_node_builder::rpc::EngineValidatorBuilder;
 use reth_primitives_traits::Block as SealedBlock;
 use reth_trie_db::MerklePatriciaTrie;
+use std::{convert::Infallible, sync::Arc};
 use tracing::info;
 
 /// Builder for [`EthereumEngineValidator`].

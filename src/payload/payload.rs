@@ -1,15 +1,20 @@
-use std::fmt::Debug;
-
-use alloy_rlp::{Bytes, Decodable, Encodable};
+use alloy_rlp::{Bytes, Decodable, Encodable, Rlp};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     api::PayloadBuilderAttributes,
     payload::PayloadId,
     primitives::Recovered,
-    revm::primitives::{Address, B256, keccak256},
+    revm::primitives::{
+        Address, B256,
+        hex::{self, FromHex},
+        keccak256,
+    },
 };
 use reth_ethereum::TransactionSigned;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
+use reth_primitives_traits::SignerRecoverable;
+use std::fmt::Debug;
+use tracing::warn;
 
 use crate::payload::attributes::TaikoPayloadAttributes;
 
@@ -56,7 +61,27 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             parent_beacon_block_root: attributes.payload_attributes.parent_beacon_block_root,
         };
 
-        Ok(Self {
+        let transactions =
+            decode_transactions(&decode_hex_bytes(&attributes.block_metadata.tx_list).unwrap())
+                .map_err(|e| {
+                    warn!(
+                        "Failed to decode transactions: {e}, bytes: {:?}",
+                        &decode_hex_bytes(&attributes.block_metadata.tx_list).unwrap()
+                    );
+                    e
+                })?
+                .into_iter()
+                .map(|tx| {
+                    tx.try_into_recovered()
+                        .map_err(|e| {
+                            warn!("Failed to recover transaction: {e}");
+                            e
+                        })
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+
+        let res = Self {
             payload_attributes: payload_attributes,
             tx_list_hash: keccak256(attributes.block_metadata.tx_list.clone()),
             beneficiary: attributes.block_metadata.beneficiary,
@@ -65,8 +90,10 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             mix_hash: attributes.payload_attributes.prev_randao,
             base_fee_per_gas: attributes.base_fee_per_gas.try_into().unwrap(),
             extra_data: attributes.block_metadata.extra_data,
-            transactions: decode_transactions(&attributes.block_metadata.tx_list)?,
-        })
+            transactions: transactions,
+        };
+
+        Ok(res)
     }
 
     fn payload_id(&self) -> PayloadId {
@@ -134,8 +161,34 @@ pub(crate) fn payload_id_taiko(
     PayloadId::new(out.as_slice()[..8].try_into().expect("sufficient length"))
 }
 
-fn decode_transactions(
-    bytes: &Bytes,
-) -> Result<Vec<Recovered<TransactionSigned>>, alloy_rlp::Error> {
-    Vec::<Recovered<TransactionSigned>>::decode(&mut &bytes[..])
+fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
+    Vec::<TransactionSigned>::decode(&mut &bytes[..])
+}
+
+fn decode_hex_bytes(input: &Bytes) -> Result<Bytes, hex::FromHexError> {
+    let s = std::str::from_utf8(input)
+        .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '?', index: 0 })?;
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let decoded = Vec::from_hex(s)?;
+    Ok(Bytes::from(decoded))
+}
+
+#[cfg(test)]
+mod test {
+    use reth::revm::primitives::hex;
+
+    use super::*;
+
+    #[test]
+    fn test_decode_transactions() {
+        let empty_decoded = decode_transactions(&Bytes::from_static(&hex!("0xc0")));
+
+        assert_eq!(0, empty_decoded.unwrap().len());
+
+        let with_anchor_decoded = decode_transactions(&Bytes::from_static(&hex!(
+            "0xf90220b901b302f901af83028c59808083989680830f424094167001000000000000000000000000000001000180b9014448080a450000000000000000000000000000000000000000000000000000000000000028d2c559ea42da728e0d0154b95699eeac543c768755611756ab0d1ce2b0abe95600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000003200000000000000000000000000000000000000000000000000000000004c4b4000000000000000000000000000000000000000000000000000000000502989660000000000000000000000000000000000000000000000000000000023c3460000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000000c080a079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798a060ad1bd4369cd9156712860a4aaf49c474fa9290bbbc600069f666de1fd28cbdf868808502540be400830186a0943edb876b8928dd168f3785576a79afa7d07dc7978080830518d5a072ae800154047cf587c08937484082b436a4a0d236bfdf731603dfe5c7580a64a054161df1ea94ec7933b643fd6fbfefbb453350a47dfe4a4ec3cd840c0c5f915c"
+        )));
+
+        assert_eq!(true, with_anchor_decoded.unwrap().len() > 0);
+    }
 }

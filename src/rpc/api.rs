@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use alloy_hardforks::EthereumHardforks;
 use alloy_rpc_types_engine::{
     ClientVersionV1, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
@@ -18,6 +16,7 @@ use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
+use std::sync::Arc;
 use tracing::info;
 
 use crate::db::model::{
@@ -133,6 +132,10 @@ where
             .fork_choice_updated_v2(fork_choice_state, payload_attributes.clone())
             .await?;
 
+        info!(
+            "Forkchoice updated: {:?}, payload attributes: {:?}",
+            status, payload_attributes
+        );
         if let Some(payload) = payload_attributes {
             let stored_l1_origin = StoredL1Origin {
                 block_id: payload.l1_origin.block_id,

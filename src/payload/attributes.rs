@@ -52,6 +52,7 @@ pub struct L1Origin {
     pub l2_block_hash: B256,
     pub l1_block_height: Option<U256>,
     pub l1_block_hash: Option<B256>,
+    #[serde(rename = "buildPayloadArgsID")]
     pub build_payload_args_id: Option<[u8; 8]>,
 }
 

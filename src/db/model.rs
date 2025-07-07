@@ -1,7 +1,6 @@
 use core::fmt;
 
 use alloy_rlp::BufMut;
-use parity_scale_codec::Encode;
 use reth::revm::primitives::{
     B256, U256,
     alloy_primitives::{self},

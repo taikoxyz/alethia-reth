@@ -11,6 +11,7 @@ use crate::{
     rpc::{
         builder::TaikoEngineApiBuilder,
         engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
+        eth::{api::TaikoEthApi, builder::TaikoEthApiBuilder},
     },
 };
 use reth::{
@@ -23,7 +24,7 @@ use reth::{
     providers::EthStorage,
 };
 use reth_ethereum::EthPrimitives;
-use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{AddOnsContext, NodeAddOns};
 use reth_node_builder::{
@@ -37,7 +38,6 @@ use reth_node_ethereum::{
     EthereumEthApiBuilder,
     node::{EthereumNetworkBuilder, EthereumPoolBuilder},
 };
-use reth_rpc::eth::EthApiFor;
 use reth_trie_db::MerklePatriciaTrie;
 
 pub mod chainspec;
@@ -82,7 +82,7 @@ pub struct TaikoAddOns<
             >,
         >,
     EV,
->(pub RpcAddOns<N, EthereumEthApiBuilder, EV, TaikoEngineApiBuilder<EV>>);
+>(pub RpcAddOns<N, TaikoEthApiBuilder, EV, TaikoEngineApiBuilder<EV>>);
 
 impl<N, EV> Default for TaikoAddOns<N, EV>
 where
@@ -110,7 +110,7 @@ where
 {
     fn default() -> Self {
         let add_ons = RpcAddOns::new(
-            EthereumEthApiBuilder::default(),
+            TaikoEthApiBuilder::default(),
             EV::default(),
             TaikoEngineApiBuilder::default(),
         );
@@ -143,7 +143,7 @@ where
         >,
     EV: EngineValidatorBuilder<N>,
 {
-    type Handle = RpcHandle<N, EthApiFor<N>>;
+    type Handle = RpcHandle<N, TaikoEthApi<N::Provider, N::Pool, N::Network, N::Evm>>;
 
     async fn launch_add_ons(
         self,
@@ -175,10 +175,9 @@ where
                 BlockAssembler = TaikoBlockAssembler,
             >,
         >,
-    EthereumEthApiBuilder: EthApiBuilder<N, EthApi = EthApiFor<N>>,
     EV: EngineValidatorBuilder<N>,
 {
-    type EthApi = EthApiFor<N>;
+    type EthApi = TaikoEthApi<N::Provider, N::Pool, N::Network, N::Evm>;
 
     fn hooks_mut(&mut self) -> &mut reth_node_builder::rpc::RpcHooks<N, Self::EthApi> {
         self.0.hooks_mut()

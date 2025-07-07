@@ -6,14 +6,14 @@ use crate::{
     payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
     rpc::types::TaikoExecutionData,
 };
-use alloy_consensus::{BlockHeader, Header};
+use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::PayloadError;
 use reth::{
     chainspec::ChainSpec, payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock,
     providers::EthStorage,
 };
 use reth_ethereum::{Block, EthPrimitives};
-use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{
     AddOnsContext, EngineApiMessageVersion, EngineObjectValidationError, EngineValidator,
@@ -100,8 +100,16 @@ impl PayloadValidator for TaikoEngineValidator {
 
         // First parse the block
         let mut block = payload.try_into_block()?;
-        block.header.transactions_root = taiko_sidecar.tx_hash;
-        block.header.withdrawals_root = taiko_sidecar.withdrawals_hash;
+        if !taiko_sidecar.tx_hash.is_zero() {
+            block.header.transactions_root = taiko_sidecar.tx_hash;
+        }
+        if let Some(withdrawals_hash) = taiko_sidecar.withdrawals_hash {
+            if !withdrawals_hash.is_zero() {
+                block.header.withdrawals_root = taiko_sidecar.withdrawals_hash;
+            } else {
+                block.header.withdrawals_root = Some(EMPTY_ROOT_HASH);
+            }
+        }
         let sealed_block = block.seal_slow();
 
         // Ensure the hash included in the payload matches the block hash

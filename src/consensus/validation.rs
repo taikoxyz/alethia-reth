@@ -5,7 +5,9 @@ use reth::{
     beacon_consensus::{EthBeaconConsensus, validate_block_post_execution},
     chainspec::ChainSpec,
     consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
-    consensus_common::validation::validate_body_against_header,
+    consensus_common::validation::{
+        validate_against_parent_hash_number, validate_body_against_header,
+    },
     primitives::SealedBlock,
 };
 use reth_node_api::{BlockBody, NodePrimitives};
@@ -68,12 +70,22 @@ where
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)
     }
+
     fn validate_header_against_parent(
         &self,
         header: &SealedHeader<H>,
         parent: &SealedHeader<H>,
     ) -> Result<(), ConsensusError> {
-        self.inner.validate_header_against_parent(header, parent)
+        validate_against_parent_hash_number(header.header(), parent)?;
+
+        if header.timestamp() < parent.timestamp() {
+            return Err(ConsensusError::TimestampIsInPast {
+                parent_timestamp: parent.timestamp(),
+                timestamp: header.timestamp(),
+            });
+        }
+
+        Ok(())
     }
 }
 

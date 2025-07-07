@@ -9,7 +9,9 @@ use crate::{
     rpc::eth::error::TaikoApiError,
 };
 
+pub mod api;
 pub mod auth;
+pub mod builder;
 pub mod error;
 pub mod pool;
 

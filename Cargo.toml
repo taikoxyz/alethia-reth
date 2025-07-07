@@ -23,6 +23,7 @@ eyre = "0.6"
 clap = "4"
 tracing = { version = "0.1.0", default-features = false }
 alloy-rpc-types-eth = { version = "1.0.9", default-features = false }
+alloy-primitives = { version = "1.0.9", default-features = false }
 derive_more = { version = "2", default-features = false, features = ["full"] }
 alloy-chains = { version = "0.2.0", default-features = false }
 alloy-hardforks = "0.2.2"
@@ -57,6 +58,10 @@ thiserror = { version = "2.0.0", default-features = false }
 alloy-rpc-types-txpool = { version = "1.0.9", default-features = false }
 alloy-json-rpc = { version = "1.0.9", default-features = false }
 alloy-network = { version = "1.0.9", default-features = false }
+revm-database-interface = { version = "4.0.0", default-features = false }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+alloy-signer = { version = "1.0.9", default-features = false }
+parking_lot = "0.12"
 
 # rpc
 jsonrpsee = "0.25.1"

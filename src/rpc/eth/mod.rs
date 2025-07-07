@@ -40,22 +40,27 @@ impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
 
 impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<L1Origin>> {
-        let l1_origin = self
+        let provider = self
             .provider
             .database_provider_ro()
-            .unwrap()
+            .map_err(|_| EthApiError::InternalEthError)?;
+
+        let l1_origin = provider
             .into_tx()
             .get::<StoredL1OriginTable>(id.to())
-            .unwrap()
-            .unwrap();
+            .map_err(|_| TaikoApiError::GethNotFound)?;
 
-        Ok(Some(L1Origin {
-            block_id: l1_origin.block_id,
-            l2_block_hash: l1_origin.l2_block_hash,
-            l1_block_height: l1_origin.l1_block_height,
-            l1_block_hash: l1_origin.l1_block_hash,
-            build_payload_args_id: l1_origin.build_payload_args_id,
-        }))
+        if let Some(l1_origin) = l1_origin {
+            Ok(Some(L1Origin {
+                block_id: l1_origin.block_id,
+                l2_block_hash: l1_origin.l2_block_hash,
+                l1_block_height: l1_origin.l1_block_height,
+                l1_block_hash: l1_origin.l1_block_hash,
+                build_payload_args_id: l1_origin.build_payload_args_id,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>> {

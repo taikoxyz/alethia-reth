@@ -29,18 +29,13 @@ use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{AddOnsContext, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeComponentsBuilder,
-    rpc::{
-        EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder, RethRpcAddOns, RpcAddOns,
-        RpcHandle,
-    },
+    rpc::{EngineValidatorAddOn, EngineValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle},
 };
-use reth_node_ethereum::{
-    EthereumEthApiBuilder,
-    node::{EthereumNetworkBuilder, EthereumPoolBuilder},
-};
+use reth_node_ethereum::node::{EthereumNetworkBuilder, EthereumPoolBuilder};
 use reth_trie_db::MerklePatriciaTrie;
 
 pub mod chainspec;
+pub mod cli;
 pub mod consensus;
 pub mod db;
 pub mod evm;

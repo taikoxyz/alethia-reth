@@ -1,3 +1,4 @@
+use alloy_primitives::U256;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_db_api::transaction::DbTx;
 use reth_provider::{DBProvider, DatabaseProviderFactory};
@@ -22,7 +23,7 @@ pub mod pool;
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taiko"))]
 pub trait TaikoExtApi {
     #[method(name = "l1OriginByID")]
-    fn l1_origin_by_id(&self, id: u64) -> RpcResult<Option<L1Origin>>;
+    fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<L1Origin>>;
     #[method(name = "headL1Origin")]
     fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>>;
 }
@@ -38,13 +39,13 @@ impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
 }
 
 impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
-    fn l1_origin_by_id(&self, id: u64) -> RpcResult<Option<L1Origin>> {
+    fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<L1Origin>> {
         let l1_origin = self
             .provider
             .database_provider_ro()
             .unwrap()
             .into_tx()
-            .get::<StoredL1OriginTable>(id)
+            .get::<StoredL1OriginTable>(id.to())
             .unwrap()
             .unwrap();
 
@@ -69,7 +70,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             .map_err(|_| TaikoApiError::GethNotFound)?;
 
         if let Some(l1_origin) = head_l1_origin {
-            self.l1_origin_by_id(l1_origin)
+            self.l1_origin_by_id(U256::from(l1_origin))
         } else {
             Ok(None)
         }

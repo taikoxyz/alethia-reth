@@ -1,5 +1,6 @@
 use core::fmt;
 
+use alloy_primitives::BlockNumber;
 use alloy_rlp::BufMut;
 use reth::revm::primitives::{
     B256, U256,
@@ -22,13 +23,13 @@ pub struct StoredL1Origin {
 
 tables! {
   table StoredL1OriginTable {
-    type Key = u64;
+    type Key = BlockNumber;
     type Value = StoredL1Origin;
   }
 
   table StoredL1HeadOriginTable {
-    type Key = u64;
-    type Value = u64;
+    type Key = BlockNumber;
+    type Value = BlockNumber;
   }
 }
 

@@ -53,6 +53,8 @@ reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v
 reth-rpc-engine-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 async-trait = "0.1.68"
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 parity-scale-codec = "3.2.1"
 thiserror = { version = "2.0.0", default-features = false }
 alloy-rpc-types-txpool = { version = "1.0.9", default-features = false }
@@ -62,6 +64,7 @@ revm-database-interface = { version = "4.0.0", default-features = false }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 alloy-signer = { version = "1.0.9", default-features = false }
 parking_lot = "0.12"
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 
 # rpc
 jsonrpsee = "0.25.1"

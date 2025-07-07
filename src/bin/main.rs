@@ -1,8 +1,8 @@
 //! Rust Taiko (taiko-reth) binary executable.
-use clap::Parser;
-use reth::{args::RessArgs, builder::NodeHandle, cli::Cli, ress::install_ress_subprotocol};
+use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
 use reth_rpc::eth::EthApiTypes;
 use reth_rpc::eth::RpcNodeCore;
+use taiko_reth::cli::TaikoCli;
 use taiko_reth::rpc::eth::pool::TaikoAuthTxPoolExt;
 use taiko_reth::rpc::eth::pool::TaikoAuthTxPoolExtApiServer;
 use taiko_reth::{
@@ -23,8 +23,8 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    if let Err(err) =
-        Cli::<TaikoChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
+    if let Err(err) = TaikoCli::<TaikoChainSpecParser, RessArgs>::parse_args().run(
+        async move |builder, ress_args| {
             info!(target: "reth::cli", "Launching node");
             let NodeHandle {
                 node,
@@ -67,8 +67,8 @@ fn main() {
             }
 
             node_exit_future.await
-        })
-    {
+        },
+    ) {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }

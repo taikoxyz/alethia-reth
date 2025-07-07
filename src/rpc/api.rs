@@ -128,7 +128,7 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        let status = self
+        let mut status = self
             .inner
             .fork_choice_updated_v2(fork_choice_state, payload_attributes.clone())
             .await?;
@@ -161,7 +161,14 @@ where
                 )
                 .unwrap();
             }
+
+            if status.payload_id == None {
+                status = status
+                    .with_payload_id(PayloadId(stored_l1_origin.build_payload_args_id.into()));
+            }
         };
+
+        info!("Payload status: {:?}", status);
 
         Ok(status)
     }

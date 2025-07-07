@@ -4,7 +4,8 @@ use crate::{
     consensus::builder::TaikoConsensusBuilder,
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        builder::TaikoExecutorBuilder, factory::TaikoEvmFactory,
+        builder::TaikoExecutorBuilder, config::TaikoNextBlockEnvAttributes,
+        factory::TaikoEvmFactory,
     },
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::{
@@ -71,7 +72,7 @@ pub struct TaikoAddOns<
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,
@@ -96,7 +97,7 @@ where
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,
@@ -131,7 +132,7 @@ where
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,
@@ -165,7 +166,7 @@ where
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,
@@ -197,7 +198,7 @@ where
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,
@@ -267,7 +268,7 @@ impl<
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,

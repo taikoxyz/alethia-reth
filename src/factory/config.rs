@@ -1,19 +1,18 @@
 use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
-use alloy_eips::eip1559::INITIAL_BASE_FEE;
+use alloy_rlp::Bytes;
+use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     chainspec::ChainSpec,
     primitives::{BlockTy, SealedBlock, SealedHeader},
     revm::{
         context::{BlockEnv, CfgEnv},
-        primitives::U256,
+        primitives::{Address, B256, U256},
     },
 };
 use reth_ethereum::EthPrimitives;
-use reth_evm::{
-    ConfigureEvm, EvmEnv, EvmEnvFor, NextBlockEnvAttributes, eth::EthBlockExecutionCtx,
-};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, eth::EthBlockExecutionCtx};
 use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
 
 use crate::{
@@ -58,7 +57,7 @@ impl TaikoEvmConfig {
 impl ConfigureEvm for TaikoEvmConfig {
     type Primitives = EthPrimitives;
     type Error = Infallible;
-    type NextBlockEnvCtx = NextBlockEnvAttributes;
+    type NextBlockEnvCtx = TaikoNextBlockEnvAttributes;
     type BlockExecutorFactory =
         TaikoBlockExecutorFactory<RethReceiptBuilder, Arc<ChainSpec>, TaikoEvmFactory>;
     type BlockAssembler = TaikoBlockAssembler;
@@ -87,6 +86,10 @@ impl ConfigureEvm for TaikoEvmConfig {
             blob_excess_gas_and_price: None,
         };
 
+        // TODO: fix extra data handling
+        // self.block_assembler
+        //     .with_extra_data(header.extra_data.to_vec());
+
         EvmEnv { cfg_env, block_env }
     }
 
@@ -103,9 +106,6 @@ impl ConfigureEvm for TaikoEvmConfig {
                 parent.number + 1,
             ));
 
-        // TODO: fetch the real base fee
-        let basefee = Some(INITIAL_BASE_FEE);
-
         let block_env: BlockEnv = BlockEnv {
             number: parent.number + 1,
             beneficiary: attributes.suggested_fee_recipient,
@@ -113,9 +113,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             difficulty: U256::ZERO,
             prevrandao: Some(attributes.prev_randao),
             gas_limit: attributes.gas_limit,
-            // calculate basefee based on parent block's gas usage
-            basefee: basefee.unwrap_or_default(),
-            // calculate excess gas based on parent block's blob gas usage
+            basefee: attributes.base_fee_per_gas,
             blob_excess_gas_and_price: None,
         };
 
@@ -137,13 +135,30 @@ impl ConfigureEvm for TaikoEvmConfig {
     fn context_for_next_block(
         &self,
         parent: &SealedHeader,
-        attributes: Self::NextBlockEnvCtx,
+        _: Self::NextBlockEnvCtx,
     ) -> reth_evm::ExecutionCtxFor<'_, Self> {
         EthBlockExecutionCtx {
             parent_hash: parent.hash(),
-            parent_beacon_block_root: attributes.parent_beacon_block_root,
+            parent_beacon_block_root: None,
             ommers: &[],
-            withdrawals: attributes.withdrawals.map(Cow::Owned),
+            withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
         }
     }
+}
+
+/// Context relevant for execution of a next block w.r.t Taiko.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaikoNextBlockEnvAttributes {
+    /// The timestamp of the next block.
+    pub timestamp: u64,
+    /// The suggested fee recipient for the next block.
+    pub suggested_fee_recipient: Address,
+    /// The randomness value for the next block.
+    pub prev_randao: B256,
+    /// Block gas limit.
+    pub gas_limit: u64,
+    /// Encoded base fee share pctg parameters to include into block's `extra_data` field.
+    pub extra_data: Bytes,
+    /// The base fee per gas for the next block.
+    pub base_fee_per_gas: u64,
 }

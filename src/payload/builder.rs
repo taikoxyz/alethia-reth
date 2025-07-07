@@ -18,7 +18,7 @@ use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
-    ConfigureEvm, NextBlockEnvAttributes,
+    ConfigureEvm,
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
@@ -29,7 +29,9 @@ use tracing::{debug, trace, warn};
 
 use crate::{
     factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, config::TaikoEvmConfig,
+        assembler::TaikoBlockAssembler,
+        block::TaikoBlockExecutorFactory,
+        config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         factory::TaikoEvmFactory,
     },
     payload::{
@@ -60,7 +62,7 @@ where
     EvmConfig: ConfigureEvm<
             Primitives = EthPrimitives,
             Error = Infallible,
-            NextBlockEnvCtx = NextBlockEnvAttributes,
+            NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
                 Arc<ChainSpec>,
@@ -109,7 +111,7 @@ where
     EvmConfig: ConfigureEvm<
             Primitives = EthPrimitives,
             Error = Infallible,
-            NextBlockEnvCtx = NextBlockEnvAttributes,
+            NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
                 Arc<ChainSpec>,
@@ -141,13 +143,13 @@ where
         .builder_for_next_block(
             &mut db,
             &parent_header,
-            NextBlockEnvAttributes {
+            TaikoNextBlockEnvAttributes {
                 timestamp: attributes.timestamp(),
                 suggested_fee_recipient: attributes.suggested_fee_recipient(),
                 prev_randao: attributes.prev_randao(),
                 gas_limit: attributes.gas_limit,
-                parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                withdrawals: Some(attributes.withdrawals().clone()),
+                base_fee_per_gas: attributes.base_fee_per_gas,
+                extra_data: attributes.extra_data.clone(),
             },
         )
         .map_err(PayloadBuilderError::other)?;

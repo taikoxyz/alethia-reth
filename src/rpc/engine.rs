@@ -1,6 +1,7 @@
 use crate::{
     factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, factory::TaikoEvmFactory,
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
+        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
     },
     payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
     rpc::types::TaikoExecutionData,
@@ -43,7 +44,7 @@ where
             Evm: ConfigureEvm<
                 Primitives = EthPrimitives,
                 Error = Infallible,
-                NextBlockEnvCtx = NextBlockEnvAttributes,
+                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
                     Arc<ChainSpec>,

@@ -1,4 +1,5 @@
 use crate::{
+    chainspec::spec::TaikoChainSpec,
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
         config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
@@ -9,8 +10,7 @@ use crate::{
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::PayloadError;
 use reth::{
-    chainspec::ChainSpec, payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock,
-    providers::EthStorage,
+    payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock, providers::EthStorage,
 };
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::ConfigureEvm;
@@ -36,7 +36,7 @@ where
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -47,7 +47,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,
@@ -64,12 +64,12 @@ where
 /// Validator for the Taiko engine API.
 #[derive(Debug, Clone)]
 pub struct TaikoEngineValidator {
-    inner: EthereumExecutionPayloadValidator<ChainSpec>,
+    inner: EthereumExecutionPayloadValidator<TaikoChainSpec>,
 }
 
 impl TaikoEngineValidator {
     /// Instantiates a new validator.
-    pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
+    pub const fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
         Self {
             inner: EthereumExecutionPayloadValidator::new(chain_spec),
         }
@@ -77,7 +77,7 @@ impl TaikoEngineValidator {
 
     /// Returns the chain spec used by the validator.
     #[inline]
-    fn chain_spec(&self) -> &ChainSpec {
+    fn chain_spec(&self) -> &TaikoChainSpec {
         self.inner.chain_spec()
     }
 }

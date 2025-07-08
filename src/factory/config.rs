@@ -4,7 +4,6 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_rlp::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
-    chainspec::ChainSpec,
     primitives::{BlockTy, SealedBlock, SealedHeader},
     revm::{
         context::{BlockEnv, CfgEnv},
@@ -16,6 +15,7 @@ use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, eth::EthBlockExecutionCtx};
 use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
 
 use crate::{
+    chainspec::spec::TaikoChainSpec,
     evm::evm::TaikoEvmExtraContext,
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory, factory::TaikoEvmFactory,
@@ -30,13 +30,16 @@ pub struct TaikoEvmConfig {
 }
 
 impl TaikoEvmConfig {
-    pub fn new(chain_spec: Arc<ChainSpec>, extra_context: TaikoEvmExtraContext) -> Self {
+    pub fn new(chain_spec: Arc<TaikoChainSpec>, extra_context: TaikoEvmExtraContext) -> Self {
         let evm_factory = TaikoEvmFactory::new(extra_context);
         Self::new_with_evm_factory(chain_spec, evm_factory)
     }
 
     /// Creates a new Ethereum EVM configuration with the given chain spec and EVM factory.
-    pub fn new_with_evm_factory(chain_spec: Arc<ChainSpec>, evm_factory: TaikoEvmFactory) -> Self {
+    pub fn new_with_evm_factory(
+        chain_spec: Arc<TaikoChainSpec>,
+        evm_factory: TaikoEvmFactory,
+    ) -> Self {
         Self {
             block_assembler: TaikoBlockAssembler::new(chain_spec.clone()),
             executor_factory: TaikoBlockExecutorFactory::new(
@@ -49,7 +52,7 @@ impl TaikoEvmConfig {
     }
 
     /// Returns the chain spec associated with this configuration.
-    pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
+    pub const fn chain_spec(&self) -> &Arc<TaikoChainSpec> {
         self.executor_factory.spec()
     }
 }
@@ -59,7 +62,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     type Error = Infallible;
     type NextBlockEnvCtx = TaikoNextBlockEnvAttributes;
     type BlockExecutorFactory =
-        TaikoBlockExecutorFactory<RethReceiptBuilder, Arc<ChainSpec>, TaikoEvmFactory>;
+        TaikoBlockExecutorFactory<RethReceiptBuilder, Arc<TaikoChainSpec>, TaikoEvmFactory>;
     type BlockAssembler = TaikoBlockAssembler;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
@@ -72,8 +75,8 @@ impl ConfigureEvm for TaikoEvmConfig {
 
     fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
         let cfg_env = CfgEnv::new()
-            .with_chain_id(self.chain_spec().chain().id())
-            .with_spec(revm_spec(self.chain_spec(), header));
+            .with_chain_id(self.chain_spec().inner.chain().id())
+            .with_spec(revm_spec(&self.chain_spec().inner, header));
 
         let block_env = BlockEnv {
             number: header.number(),
@@ -99,9 +102,9 @@ impl ConfigureEvm for TaikoEvmConfig {
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
         let cfg = CfgEnv::new()
-            .with_chain_id(self.chain_spec().chain().id())
+            .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec(revm_spec_by_timestamp_and_block_number(
-                self.chain_spec(),
+                &self.chain_spec().inner,
                 attributes.timestamp,
                 parent.number + 1,
             ));

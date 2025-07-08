@@ -1,6 +1,5 @@
 use std::{convert::Infallible, sync::Arc};
 
-use reth::chainspec::ChainSpec;
 use reth_ethereum::EthPrimitives;
 use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -11,6 +10,7 @@ use reth_provider::EthStorage;
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
+    chainspec::spec::TaikoChainSpec,
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
         config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
@@ -35,7 +35,7 @@ where
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -46,7 +46,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,

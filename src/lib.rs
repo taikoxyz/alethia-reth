@@ -1,12 +1,14 @@
 use std::{convert::Infallible, sync::Arc};
 
 use crate::{
+    chainspec::spec::TaikoChainSpec,
     consensus::builder::TaikoConsensusBuilder,
     factory::{
         assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
         builder::TaikoExecutorBuilder, config::TaikoNextBlockEnvAttributes,
         factory::TaikoEvmFactory,
     },
+    network::TaikoNetworkBuilder,
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::{
         builder::TaikoEngineApiBuilder,
@@ -20,7 +22,6 @@ use reth::{
         DebugNode, Node,
         components::{BasicPayloadServiceBuilder, ComponentsBuilder},
     },
-    chainspec::ChainSpec,
     providers::EthStorage,
 };
 use reth_ethereum::EthPrimitives;
@@ -31,7 +32,7 @@ use reth_node_builder::{
     NodeAdapter, NodeComponentsBuilder,
     rpc::{EngineValidatorAddOn, EngineValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle},
 };
-use reth_node_ethereum::node::{EthereumNetworkBuilder, EthereumPoolBuilder};
+use reth_node_ethereum::node::EthereumPoolBuilder;
 use reth_trie_db::MerklePatriciaTrie;
 
 pub mod chainspec;
@@ -40,6 +41,7 @@ pub mod consensus;
 pub mod db;
 pub mod evm;
 pub mod factory;
+pub mod network;
 pub mod payload;
 pub mod rpc;
 
@@ -48,7 +50,7 @@ pub struct TaikoNode;
 
 impl NodeTypes for TaikoNode {
     type Primitives = EthPrimitives;
-    type ChainSpec = ChainSpec;
+    type ChainSpec = TaikoChainSpec;
     type StateCommitment = MerklePatriciaTrie;
     type Storage = EthStorage;
     type Payload = TaikoEngineTypes;
@@ -59,7 +61,7 @@ pub struct TaikoAddOns<
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -70,7 +72,7 @@ pub struct TaikoAddOns<
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,
@@ -84,7 +86,7 @@ where
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -95,7 +97,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,
@@ -119,7 +121,7 @@ where
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -130,7 +132,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,
@@ -153,7 +155,7 @@ where
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -164,7 +166,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,
@@ -184,7 +186,7 @@ where
     N: FullNodeComponents<
             Types: NodeTypes<
                 Primitives = EthPrimitives,
-                ChainSpec = ChainSpec,
+                ChainSpec = TaikoChainSpec,
                 StateCommitment = MerklePatriciaTrie,
                 Storage = EthStorage,
                 Payload = TaikoEngineTypes,
@@ -195,7 +197,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,
@@ -218,7 +220,7 @@ where
     N: FullNodeTypes<
         Types: NodeTypes<
             Primitives = EthPrimitives,
-            ChainSpec = ChainSpec,
+            ChainSpec = TaikoChainSpec,
             StateCommitment = MerklePatriciaTrie,
             Storage = EthStorage,
             Payload = TaikoEngineTypes,
@@ -229,7 +231,7 @@ where
         N,
         EthereumPoolBuilder,
         BasicPayloadServiceBuilder<TaikoPayloadBuilderBuilder>,
-        EthereumNetworkBuilder,
+        TaikoNetworkBuilder,
         TaikoExecutorBuilder,
         TaikoConsensusBuilder,
     >;
@@ -247,7 +249,7 @@ where
             .payload(BasicPayloadServiceBuilder::new(
                 TaikoPayloadBuilderBuilder::default(),
             ))
-            .network(EthereumNetworkBuilder::default())
+            .network(TaikoNetworkBuilder::default())
             .consensus(TaikoConsensusBuilder::default())
     }
 
@@ -265,7 +267,7 @@ impl<
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,

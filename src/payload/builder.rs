@@ -3,7 +3,6 @@ use alloy_hardforks::EthereumHardforks;
 use alloy_rlp::Bytes;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
-    chainspec::ChainSpec,
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{
         State,
@@ -28,6 +27,7 @@ use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 
 use crate::{
+    chainspec::spec::TaikoChainSpec,
     factory::{
         assembler::TaikoBlockAssembler,
         block::TaikoBlockExecutorFactory,
@@ -65,7 +65,7 @@ where
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
-                Arc<ChainSpec>,
+                Arc<TaikoChainSpec>,
                 TaikoEvmFactory,
             >,
             BlockAssembler = TaikoBlockAssembler,
@@ -114,7 +114,7 @@ where
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
-                Arc<ChainSpec>,
+                Arc<TaikoChainSpec>,
                 TaikoEvmFactory,
             >,
             BlockAssembler = TaikoBlockAssembler,
@@ -200,7 +200,9 @@ where
     })
 }
 
-impl PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributesBuilder<ChainSpec> {
+impl PayloadAttributesBuilder<TaikoPayloadAttributes>
+    for LocalPayloadAttributesBuilder<TaikoChainSpec>
+{
     fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
         TaikoPayloadAttributes {
             payload_attributes: self.build(timestamp),

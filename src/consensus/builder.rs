@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
-use reth::chainspec::ChainSpec;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
 use reth_provider::EthStorage;
 use reth_trie_db::MerklePatriciaTrie;
 
-use crate::{consensus::validation::TaikoBeaconConsensus, payload::engine::TaikoEngineTypes};
+use crate::{
+    chainspec::spec::TaikoChainSpec, consensus::validation::TaikoBeaconConsensus,
+    payload::engine::TaikoEngineTypes,
+};
 
 /// A basic Taiko consensus builder.
 #[derive(Debug, Default, Clone)]
@@ -19,7 +21,7 @@ where
     Node: FullNodeTypes<
         Types: NodeTypes<
             Primitives = EthPrimitives,
-            ChainSpec = ChainSpec,
+            ChainSpec = TaikoChainSpec,
             StateCommitment = MerklePatriciaTrie,
             Storage = EthStorage,
             Payload = TaikoEngineTypes,

@@ -1,7 +1,6 @@
 use reth::{
     api::{FullNodeTypes, NodeTypes},
     builder::{BuilderContext, components::PayloadBuilderBuilder},
-    chainspec::ChainSpec,
     providers::EthStorage,
     transaction_pool::{PoolTransaction, TransactionPool},
 };
@@ -9,6 +8,7 @@ use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
+    chainspec::spec::TaikoChainSpec,
     factory::config::TaikoEvmConfig,
     payload::{builder::TaikoPayloadBuilder, engine::TaikoEngineTypes},
 };
@@ -26,7 +26,7 @@ where
     Node: FullNodeTypes<
         Types: NodeTypes<
             Primitives = EthPrimitives,
-            ChainSpec = ChainSpec,
+            ChainSpec = TaikoChainSpec,
             StateCommitment = MerklePatriciaTrie,
             Storage = EthStorage,
             Payload = TaikoEngineTypes,

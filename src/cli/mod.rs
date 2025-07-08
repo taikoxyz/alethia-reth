@@ -1,10 +1,10 @@
 use std::{fmt, sync::Arc};
 
 use clap::Parser;
+use eyre::Ok;
 use reth::{
     CliRunner,
     beacon_consensus::EthBeaconConsensus,
-    chainspec::{ChainSpec, EthereumChainSpecParser},
     cli::{Cli, Commands},
     network::EthNetworkPrimitives,
     prometheus_exporter::install_prometheus_recorder,
@@ -13,11 +13,15 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{launcher::FnLauncher, node::NoArgs};
 use reth_db::DatabaseEnv;
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_node_ethereum::{EthExecutorProvider, EthereumNode};
+use reth_node_ethereum::EthExecutorProvider;
 use reth_tracing::FileWorkerGuard;
 use tracing::info;
 
-use crate::cli::command::TaikoNodeCommand;
+use crate::{
+    TaikoNode,
+    chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
+    cli::command::TaikoNodeCommand,
+};
 
 pub mod command;
 pub mod tables;
@@ -27,7 +31,7 @@ pub mod tables;
 /// This is the entrypoint to the executable.
 #[derive(Debug)]
 pub struct TaikoCli<
-    C: ChainSpecParser = EthereumChainSpecParser,
+    C: ChainSpecParser = TaikoChainSpecParser,
     Ext: clap::Args + fmt::Debug = NoArgs,
 > {
     pub inner: Cli<C, Ext>,
@@ -53,7 +57,9 @@ where
     }
 }
 
-impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> TaikoCli<C, Ext> {
+impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debug>
+    TaikoCli<C, Ext>
+{
     pub fn run<L, Fut>(self, launcher: L) -> eyre::Result<()>
     where
         L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,
@@ -73,7 +79,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Ta
                 .inner
                 .logs
                 .log_file_directory
-                .join(chain_spec.chain.to_string());
+                .join(chain_spec.inner.chain.to_string());
         }
         let _guard = self.init_tracing()?;
         info!(target: "reth::taiko::cli", "Initialized tracing, debug log directory: {}", self.inner.logs.log_file_directory);
@@ -83,7 +89,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Ta
 
         let components = |spec: Arc<C::ChainSpec>| {
             (
-                EthExecutorProvider::ethereum(spec.clone()),
+                EthExecutorProvider::ethereum(Arc::new(spec.inner.clone())),
                 EthBeaconConsensus::new(spec),
             )
         };
@@ -92,40 +98,39 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Ta
                 TaikoNodeCommand(command).execute(ctx, FnLauncher::new::<C, Ext>(launcher))
             }),
             Commands::Init(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
             Commands::InitState(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
             Commands::Import(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode, _, _>(components))
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode, _, _>(components))
             }
             Commands::ImportEra(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
             Commands::DumpGenesis(command) => runner.run_blocking_until_ctrl_c(command.execute()),
             Commands::Db(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
             Commands::Download(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
             Commands::Stage(command) => runner.run_command_until_exit(|ctx| {
-                command.execute::<EthereumNode, _, _, EthNetworkPrimitives>(ctx, components)
+                command.execute::<TaikoNode, _, _, EthNetworkPrimitives>(ctx, components)
             }),
             Commands::P2P(command) => {
                 runner.run_until_ctrl_c(command.execute::<EthNetworkPrimitives>())
             }
-            #[cfg(feature = "dev")]
-            Commands::TestVectors(command) => runner.run_until_ctrl_c(command.execute()),
             Commands::Config(command) => runner.run_until_ctrl_c(command.execute()),
-            Commands::Debug(command) => {
-                runner.run_command_until_exit(|ctx| command.execute::<EthereumNode>(ctx))
+            Commands::Debug(_) => {
+                info!(target: "reth::cli", "Debug command is not implemented yet.");
+                Ok(())
             }
             Commands::Recover(command) => {
-                runner.run_command_until_exit(|ctx| command.execute::<EthereumNode>(ctx))
+                runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
             }
-            Commands::Prune(command) => runner.run_until_ctrl_c(command.execute::<EthereumNode>()),
+            Commands::Prune(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
         }
     }
 
@@ -134,6 +139,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Ta
     /// If file logging is enabled, this function returns a guard that must be kept alive to ensure
     /// that all logs are flushed to disk.
     pub fn init_tracing(&self) -> eyre::Result<Option<FileWorkerGuard>> {
-        self.inner.init_tracing()
+        let guard = self.inner.logs.init_tracing()?;
+        Ok(guard)
     }
 }

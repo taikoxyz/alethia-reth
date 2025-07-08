@@ -11,20 +11,19 @@ use alloy_evm::{
     },
 };
 use reth::{
-    chainspec::ChainSpec,
     primitives::Log,
     revm::{Inspector, State},
 };
 use reth_ethereum::primitives::Transaction;
 use reth_evm_ethereum::RethReceiptBuilder;
 
-use crate::factory::factory::TaikoEvmFactory;
+use crate::{chainspec::spec::TaikoChainSpec, factory::factory::TaikoEvmFactory};
 
 /// Taiko block executor factory.
 #[derive(Debug, Clone, Default)]
 pub struct TaikoBlockExecutorFactory<
     R = RethReceiptBuilder,
-    Spec = Arc<ChainSpec>,
+    Spec = Arc<TaikoChainSpec>,
     EvmFactory = TaikoEvmFactory,
 > {
     /// Receipt builder.

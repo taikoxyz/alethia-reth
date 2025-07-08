@@ -9,7 +9,7 @@ use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
 use alloy_signer::Either;
 use jsonrpsee::tokio;
 use reth::{
-    chainspec::{ChainSpec, EthChainSpec},
+    chainspec::EthChainSpec,
     network::NetworkInfo,
     revm::{
         context::{Block, TxEnv},
@@ -55,9 +55,12 @@ use reth_rpc_eth_types::{
 };
 use revm_database_interface::Database;
 
-use crate::factory::{
-    assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-    config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
+use crate::{
+    chainspec::spec::TaikoChainSpec,
+    factory::{
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
+        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
+    },
 };
 
 pub struct TaikoEthApi<Provider: BlockReader, Pool, Network, EvmConfig>(
@@ -221,7 +224,7 @@ where
                 NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
                 BlockExecutorFactory = TaikoBlockExecutorFactory<
                     RethReceiptBuilder,
-                    Arc<ChainSpec>,
+                    Arc<TaikoChainSpec>,
                     TaikoEvmFactory,
                 >,
                 BlockAssembler = TaikoBlockAssembler,

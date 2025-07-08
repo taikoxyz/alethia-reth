@@ -4,7 +4,6 @@ use alloy_consensus::EthereumTxEnvelope;
 use reth::{
     api::{FullNodeTypes, NodeTypes},
     builder::{BuilderContext, components::ExecutorBuilder},
-    chainspec::ChainSpec,
     providers::{BlockReaderIdExt, EthStorage},
     revm::primitives::{Address, Bytes, ruint::Uint},
 };
@@ -12,8 +11,8 @@ use reth_ethereum::EthPrimitives;
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
-    evm::evm::TaikoEvmExtraContext, factory::config::TaikoEvmConfig,
-    payload::engine::TaikoEngineTypes,
+    chainspec::spec::TaikoChainSpec, evm::evm::TaikoEvmExtraContext,
+    factory::config::TaikoEvmConfig, payload::engine::TaikoEngineTypes,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -24,7 +23,7 @@ impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
 where
     Types: NodeTypes<
             Primitives = EthPrimitives,
-            ChainSpec = ChainSpec,
+            ChainSpec = TaikoChainSpec,
             StateCommitment = MerklePatriciaTrie,
             Storage = EthStorage,
             Payload = TaikoEngineTypes,

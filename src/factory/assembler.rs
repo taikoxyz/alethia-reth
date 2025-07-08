@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use reth::{chainspec::ChainSpec, primitives::Block};
+use reth::primitives::Block;
 use reth_ethereum::{Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutorFactory},
@@ -9,19 +9,21 @@ use reth_evm::{
 };
 use reth_evm_ethereum::EthBlockAssembler;
 
+use crate::chainspec::spec::TaikoChainSpec;
+
 #[derive(Clone, Debug)]
 pub struct TaikoBlockAssembler {
-    block_assembler: EthBlockAssembler<ChainSpec>,
+    block_assembler: EthBlockAssembler<TaikoChainSpec>,
 }
 
 impl TaikoBlockAssembler {
-    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
+    pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
         Self {
             block_assembler: EthBlockAssembler::new(chain_spec),
         }
     }
 
-    pub fn chain_spec(&self) -> Arc<ChainSpec> {
+    pub fn chain_spec(&self) -> Arc<TaikoChainSpec> {
         self.block_assembler.chain_spec.clone()
     }
 

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH};
 use reth::{
     beacon_consensus::{EthBeaconConsensus, validate_block_post_execution},
-    chainspec::ChainSpec,
     consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
     consensus_common::validation::{
         validate_against_parent_hash_number, validate_body_against_header,
@@ -14,19 +13,21 @@ use reth_node_api::{BlockBody, NodePrimitives};
 use reth_primitives_traits::{Block, BlockHeader, GotExpected, RecoveredBlock, SealedHeader};
 use reth_provider::BlockExecutionResult;
 
+use crate::chainspec::spec::TaikoChainSpec;
+
 /// Taiko consensus implementation.
 ///
 /// Provides basic checks as outlined in the execution specs.
 #[derive(Debug, Clone)]
 pub struct TaikoBeaconConsensus {
     /// Configuration
-    inner: EthBeaconConsensus<ChainSpec>,
-    chain_spec: Arc<ChainSpec>,
+    inner: EthBeaconConsensus<TaikoChainSpec>,
+    chain_spec: Arc<TaikoChainSpec>,
 }
 
 impl TaikoBeaconConsensus {
     /// Create a new instance of [`TaikoBeaconConsensus`]
-    pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
+    pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec.clone()),
             chain_spec,
@@ -94,7 +95,7 @@ where
 /// - Compares the ommer hash in the block header to the block body
 pub fn validate_block_pre_execution<B>(
     block: &SealedBlock<B>,
-    _: &ChainSpec,
+    _: &TaikoChainSpec,
 ) -> Result<(), ConsensusError>
 where
     B: Block,

@@ -9544,6 +9544,7 @@ dependencies = [
  "reth-engine-primitives",
  "reth-ethereum",
  "reth-ethereum-engine-primitives",
+ "reth-ethereum-forks",
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",

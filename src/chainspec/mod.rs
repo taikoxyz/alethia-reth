@@ -11,6 +11,7 @@ use crate::chainspec::hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_MAINNET_HARDFORKS
 
 pub mod hardfork;
 pub mod parser;
+pub mod spec;
 
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<ChainSpec>> =

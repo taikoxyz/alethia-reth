@@ -64,6 +64,7 @@ revm-database-interface = { version = "4.0.0", default-features = false }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 alloy-signer = { version = "1.0.9", default-features = false }
 parking_lot = "0.12"
+reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 
 # rpc

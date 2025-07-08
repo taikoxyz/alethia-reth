@@ -45,7 +45,7 @@ impl TaikoEvmExtraContext {
 /// Custom EVM for Taiko.
 pub struct TaikoEvm<CTX, INSP> {
     pub inner: RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PrecompilesMap>,
-    extra_context: TaikoEvmExtraContext,
+    pub extra_context: TaikoEvmExtraContext,
 }
 
 impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {

@@ -1,17 +1,24 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
 
 use alloy_evm::{Database, Evm, EvmEnv, eth::EthEvmContext};
+use alloy_primitives::hex;
 use reth::revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
         BlockEnv, TxEnv,
-        result::{EVMError, HaltReason, ResultAndState},
+        result::{EVMError, ExecutionResult, HaltReason, Output, ResultAndState, SuccessReason},
     },
     primitives::{Address, Bytes, TxKind, U256, hardfork::SpecId},
 };
 use reth_evm::precompiles::PrecompilesMap;
+use tracing::debug;
 
-use crate::evm::evm::TaikoEvm;
+use crate::evm::evm::{TaikoEvm, TaikoEvmExtraContext};
+
+pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
 
 pub struct TaikoEvmWrapper<DB: Database, INSP> {
     inner: TaikoEvm<EthEvmContext<DB>, INSP>,
@@ -106,6 +113,30 @@ where
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // NOTE: we use this workaround to mark the nonce of the Anchor transaction in the current block.
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) {
+            let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data).unwrap();
+            debug!(
+                "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}",
+                basefee_share_pctg, caller_nonce
+            );
+            self.inner.extra_context =
+                TaikoEvmExtraContext::new(basefee_share_pctg, Some(caller), Some(caller_nonce));
+
+            // Return a dummy result and state to avoid further processing.
+            return Ok(ResultAndState {
+                result: ExecutionResult::Success {
+                    reason: SuccessReason::Return,
+                    gas_used: 0,
+                    gas_refunded: 0,
+                    logs: vec![],
+                    output: Output::Call(Bytes::new()),
+                },
+                state: HashMap::default(),
+            });
+        }
+
+        self.inner.extra_context = TaikoEvmExtraContext::new(0, None, None);
         let tx = TxEnv {
             caller,
             kind: TxKind::Call(contract),
@@ -202,4 +233,13 @@ where
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
         &mut self.inner.inner.inspector
     }
+}
+
+fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
+    if bytes.len() != 16 {
+        return None;
+    }
+    let basefee_share_pctg = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
+    let caller_nonce = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
+    Some((basefee_share_pctg, caller_nonce))
 }

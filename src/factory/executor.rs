@@ -1,11 +1,10 @@
-use std::borrow::Cow;
-
 use alloy_consensus::{Transaction, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded,
     eth::{EthBlockExecutionCtx, receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
 };
+use alloy_primitives::{Address, Bytes};
 use reth::{
     primitives::Log,
     revm::{
@@ -20,10 +19,12 @@ use reth_evm::{
         StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
-    state_change::{balance_increment_state, post_block_balance_increments},
 };
 use reth_provider::BlockExecutionResult;
 use revm_database_interface::DatabaseCommit;
+use tracing::info;
+
+use crate::factory::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 /// Block executor for Ethereum.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -43,6 +44,8 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
+    /// The initial nonce of the golden touch address before any transactions are executed.
+    golden_touch_address_initialial_nonce: Option<u64>,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -60,6 +63,7 @@ where
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
+            golden_touch_address_initialial_nonce: None,
         }
     }
 }
@@ -89,6 +93,29 @@ where
             .apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
+
+        // Initialize the golden touch address nonce if it is not already set.
+        if self.golden_touch_address_initialial_nonce.is_none() {
+            let res = self
+                .evm
+                .db_mut()
+                .database
+                .basic(Address::default())
+                .unwrap();
+
+            let mut caller_nonce = 0;
+            if let Some(info) = res {
+                caller_nonce = info.nonce;
+            }
+            self.evm
+                .transact_system_call(
+                    Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
+                    Address::ZERO,
+                    encode_anchor_system_call_data(10, caller_nonce),
+                )
+                .unwrap();
+            self.golden_touch_address_initialial_nonce = Some(caller_nonce);
+        }
 
         Ok(())
     }
@@ -149,31 +176,6 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
-        let balance_increments = post_block_balance_increments(
-            &self.spec,
-            self.evm.block(),
-            self.ctx.ommers,
-            self.ctx.withdrawals.as_deref(),
-        );
-
-        // increment balances
-        self.evm
-            .db_mut()
-            .increment_balances(balance_increments.clone())
-            .map_err(|_| BlockValidationError::IncrementBalanceFailed)?;
-
-        // call state hook with changes due to balance increments.
-        self.system_caller.try_on_state_with(|| {
-            balance_increment_state(&balance_increments, self.evm.db_mut()).map(|state| {
-                (
-                    StateChangeSource::PostBlock(
-                        reth_evm::block::StateChangePostBlockSource::BalanceIncrements,
-                    ),
-                    Cow::Owned(state),
-                )
-            })
-        })?;
-
         Ok((
             self.evm,
             BlockExecutionResult {
@@ -195,4 +197,11 @@ where
     fn evm(&self) -> &Self::Evm {
         &self.evm
     }
+}
+
+fn encode_anchor_system_call_data(basefee_share_pctg: u64, caller_nonce: u64) -> Bytes {
+    let mut buf = [0u8; 16];
+    buf[..8].copy_from_slice(&basefee_share_pctg.to_be_bytes());
+    buf[8..].copy_from_slice(&caller_nonce.to_be_bytes());
+    Bytes::from(buf.to_vec())
 }

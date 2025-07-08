@@ -64,9 +64,7 @@ impl EvmFactory for TaikoEvmFactory {
                 EthPrecompiles::default().precompiles,
             ));
 
-        let taiko_evm = TaikoEvm::new(evm, self.extra_context);
-
-        TaikoEvmWrapper::new(taiko_evm, false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm, self.extra_context), false)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -85,8 +83,6 @@ impl EvmFactory for TaikoEvmFactory {
             ))
             .with_inspector(inspector);
 
-        let taiko_evm = TaikoEvm::new(evm, self.extra_context);
-
-        TaikoEvmWrapper::new(taiko_evm, true)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm, self.extra_context), false)
     }
 }

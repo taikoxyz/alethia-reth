@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{cell::RefCell, str::FromStr};
 
 use reth::revm::{
     Database, Inspector,
@@ -17,9 +17,11 @@ use reth::revm::{
 
 use crate::evm::evm::TaikoEvmExtraContext;
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
     pub _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
+    anchor_pre_execution_check_flag: RefCell<bool>,
+    anchor_post_execution_check_flag: RefCell<bool>,
     extra_context: TaikoEvmExtraContext,
 }
 
@@ -27,6 +29,8 @@ impl<CTX, ERROR, FRAME> TaikoEvmHandler<CTX, ERROR, FRAME> {
     pub fn new(extra_context: TaikoEvmExtraContext) -> Self {
         Self {
             _phantom: core::marker::PhantomData,
+            anchor_pre_execution_check_flag: RefCell::new(false),
+            anchor_post_execution_check_flag: RefCell::new(false),
             extra_context,
         }
     }
@@ -57,15 +61,27 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        reward_beneficiary(_evm.ctx(), _exec_result.gas_mut(), &self.extra_context)
-            .map_err(From::from)
+        let result = reward_beneficiary(
+            _evm.ctx(),
+            _exec_result.gas_mut(),
+            &self.extra_context,
+            &self.anchor_post_execution_check_flag,
+        )
+        .map_err(From::from);
+        *self.anchor_post_execution_check_flag.borrow_mut() = true;
+        result
     }
 
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        validate_against_state_and_deduct_caller(evm.ctx(), &self.extra_context)
+        let result = validate_against_state_and_deduct_caller(
+            evm.ctx(),
+            &self.anchor_pre_execution_check_flag,
+        );
+        *self.anchor_pre_execution_check_flag.borrow_mut() = true;
+        result
     }
 }
 
@@ -92,13 +108,12 @@ pub fn reward_beneficiary<CTX: ContextTr>(
     context: &mut CTX,
     gas: &mut Gas,
     extra_context: &TaikoEvmExtraContext,
+    anchor_post_execution_check_flag: &RefCell<bool>,
 ) -> Result<(), <CTX::Db as Database>::Error> {
     let block = context.block();
     let tx = context.tx();
     let beneficiary = block.beneficiary();
     let basefee = block.basefee() as u128;
-    let tx_caller = tx.caller();
-    let tx_nonce = tx.nonce();
     let effective_gas_price = tx.effective_gas_price(basefee);
     // Transfer fee to coinbase/beneficiary.
     // EIP-1559 discard basefee for coinbase transfer. Basefee amount of gas is discarded.
@@ -110,9 +125,7 @@ pub fn reward_beneficiary<CTX: ContextTr>(
     let coinbase_account = context.journal().load_account(beneficiary)?;
 
     coinbase_account.data.mark_touch();
-    if extra_context.anchor_caller_address() != Some(tx_caller)
-        && extra_context.anchor_caller_nonce() != Some(tx_nonce)
-    {
+    if *anchor_post_execution_check_flag.borrow() == true {
         let fee_coinbase = total_fee.saturating_mul(U256::from(extra_context.basefee_share_pctg()))
             / U256::from(100u64);
         let fee_treasury = total_fee.saturating_sub(fee_coinbase);
@@ -132,11 +145,7 @@ pub fn reward_beneficiary<CTX: ContextTr>(
             .info
             .balance
             .saturating_add(fee_treasury);
-    } else {
-        coinbase_account.data.info.balance =
-            coinbase_account.data.info.balance.saturating_add(total_fee);
     }
-
     Ok(())
 }
 
@@ -146,7 +155,7 @@ pub fn validate_against_state_and_deduct_caller<
     ERROR: From<InvalidTransaction> + From<<CTX::Db as Database>::Error>,
 >(
     context: &mut CTX,
-    extra_context: &TaikoEvmExtraContext,
+    anchor_pre_execution_check_flag: &RefCell<bool>,
 ) -> Result<(), ERROR> {
     let basefee = context.block().basefee() as u128;
     let blob_price = context.block().blob_gasprice().unwrap_or_default();
@@ -167,10 +176,8 @@ pub fn validate_against_state_and_deduct_caller<
         is_nonce_check_disabled,
     )?;
 
-    // If the caller and nonce match the anchor caller, we disable balance check.
-    if extra_context.anchor_caller_address() == Some(tx.caller())
-        && extra_context.anchor_caller_nonce() == Some(tx.nonce())
-    {
+    // If the transaction is an anchor transaction, we disable the balance check.
+    if *anchor_pre_execution_check_flag.borrow() == false {
         is_balance_check_disabled = true;
     }
 

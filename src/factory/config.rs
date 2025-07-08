@@ -1,6 +1,16 @@
 use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
+use crate::{
+    chainspec::spec::TaikoChainSpec,
+    evm::evm::TaikoEvmExtraContext,
+    factory::{
+        assembler::TaikoBlockAssembler,
+        block::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
+        factory::TaikoEvmFactory,
+    },
+};
 use alloy_consensus::{BlockHeader, Header};
+use alloy_evm::Database;
 use alloy_rlp::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
@@ -11,18 +21,8 @@ use reth::{
     },
 };
 use reth_ethereum::EthPrimitives;
-use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
 use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
-
-use crate::{
-    chainspec::spec::TaikoChainSpec,
-    evm::evm::TaikoEvmExtraContext,
-    factory::{
-        assembler::TaikoBlockAssembler,
-        block::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
-        factory::TaikoEvmFactory,
-    },
-};
 
 #[derive(Debug, Clone)]
 pub struct TaikoEvmConfig {
@@ -154,6 +154,10 @@ impl ConfigureEvm for TaikoEvmConfig {
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data.into(),
         }
+    }
+
+    fn evm_with_env<DB: Database>(&self, db: DB, evm_env: EvmEnvFor<Self>) -> EvmFor<Self, DB> {
+        self.evm_factory().create_evm(db, evm_env)
     }
 
     // fn create_block_builder<'a, DB, I>(

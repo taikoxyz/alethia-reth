@@ -1,14 +1,11 @@
 use std::{borrow::Cow, sync::Arc};
 
-use alloy_consensus::{Header, TxReceipt};
+use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
     Database, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
     block::{BlockExecutorFactory, BlockExecutorFor},
-    eth::{
-        EthBlockExecutionCtx, EthBlockExecutor, receipt_builder::ReceiptBuilder,
-        spec::EthExecutorSpec,
-    },
+    eth::{EthBlockExecutionCtx, receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
 };
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
@@ -16,10 +13,12 @@ use reth::{
     primitives::Log,
     revm::{Inspector, State},
 };
-use reth_ethereum::primitives::Transaction;
 use reth_evm_ethereum::RethReceiptBuilder;
 
-use crate::{chainspec::spec::TaikoChainSpec, factory::factory::TaikoEvmFactory};
+use crate::{
+    chainspec::spec::TaikoChainSpec,
+    factory::{executor::TaikoBlockExecutor, factory::TaikoEvmFactory},
+};
 
 /// Context for Ethereum block execution.
 #[derive(Debug, Clone)]
@@ -105,8 +104,7 @@ where
         DB: Database + 'a,
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
-        // TODO: Handle the `basefee_per_gas` and `extra_data` in the context.
-        EthBlockExecutor::new(
+        TaikoBlockExecutor::new(
             evm,
             EthBlockExecutionCtx {
                 parent_hash: ctx.parent_hash,

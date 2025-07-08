@@ -159,28 +159,6 @@ impl ConfigureEvm for TaikoEvmConfig {
     fn evm_with_env<DB: Database>(&self, db: DB, evm_env: EvmEnvFor<Self>) -> EvmFor<Self, DB> {
         self.evm_factory().create_evm(db, evm_env)
     }
-
-    // fn create_block_builder<'a, DB, I>(
-    //     &'a self,
-    //     evm: EvmFor<Self, &'a mut State<DB>, I>,
-    //     parent: &'a SealedHeader<HeaderTy<Self::Primitives>>,
-    //     ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
-    // ) -> impl BlockBuilder<
-    //     Primitives = Self::Primitives,
-    //     Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, DB, I>,
-    // >
-    // where
-    //     DB: Database,
-    //     I: InspectorFor<Self, &'a mut State<DB>> + 'a,
-    // {
-    //     BasicBlockBuilder {
-    //         executor: self.create_executor(evm, ctx.clone()),
-    //         ctx,
-    //         assembler: self.block_assembler(),
-    //         parent,
-    //         transactions: Vec::new(),
-    //     }
-    // }
 }
 
 /// Context relevant for execution of a next block w.r.t Taiko.

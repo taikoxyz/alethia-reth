@@ -18,7 +18,7 @@ use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
 use std::sync::Arc;
-use tracing::info;
+use tracing::debug;
 
 use crate::db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
@@ -141,7 +141,7 @@ where
                 l1_block_height: payload.l1_origin.l1_block_height,
                 build_payload_args_id: payload.l1_origin.build_payload_args_id,
             };
-            info!(
+            debug!(
                 "Storing L1 origin: {:?} for block id: {}",
                 stored_l1_origin, payload.l1_origin.block_id
             );
@@ -167,8 +167,6 @@ where
                     .with_payload_id(PayloadId(stored_l1_origin.build_payload_args_id.into()));
             }
         };
-
-        info!("Payload status: {:?}", status);
 
         Ok(status)
     }

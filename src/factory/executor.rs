@@ -22,7 +22,6 @@ use reth_evm::{
 };
 use reth_provider::BlockExecutionResult;
 use revm_database_interface::DatabaseCommit;
-use tracing::info;
 
 use crate::factory::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 

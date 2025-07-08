@@ -1,8 +1,9 @@
-use alloy_rlp::Bytes;
+use alloy_primitives::Bytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
 use reth::revm::primitives::{Address, B256, U256};
 use reth_node_api::PayloadAttributes;
+use serde_with::{base64::Base64, serde_as};
 
 /// Taiko Payload Attributes
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -31,6 +32,7 @@ impl PayloadAttributes for TaikoPayloadAttributes {
     }
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -40,6 +42,7 @@ pub struct TaikoBlockMetadata {
     pub timestamp: U256,
     pub mix_hash: B256,
     pub tx_list: Bytes,
+    #[serde_as(as = "Base64")]
     pub extra_data: Bytes,
 }
 

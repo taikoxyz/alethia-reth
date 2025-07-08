@@ -1,6 +1,6 @@
 use alloy_consensus::Transaction;
 use alloy_hardforks::EthereumHardforks;
-use alloy_rlp::Bytes;
+use alloy_primitives::Bytes;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},

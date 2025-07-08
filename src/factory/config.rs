@@ -11,7 +11,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::Database;
-use alloy_rlp::Bytes;
+use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     primitives::{BlockTy, SealedBlock, SealedHeader},

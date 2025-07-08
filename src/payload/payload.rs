@@ -1,14 +1,11 @@
-use alloy_rlp::{Bytes, Decodable, Encodable};
+use alloy_primitives::Bytes;
+use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     api::PayloadBuilderAttributes,
     payload::PayloadId,
     primitives::Recovered,
-    revm::primitives::{
-        Address, B256,
-        hex::{self, FromHex},
-        keccak256,
-    },
+    revm::primitives::{Address, B256, keccak256},
 };
 use reth_ethereum::TransactionSigned;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
@@ -61,25 +58,24 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             parent_beacon_block_root: attributes.payload_attributes.parent_beacon_block_root,
         };
 
-        let transactions =
-            decode_transactions(&decode_hex_bytes(&attributes.block_metadata.tx_list).unwrap())
-                .map_err(|e| {
-                    warn!(
-                        "Failed to decode transactions: {e}, bytes: {:?}",
-                        &decode_hex_bytes(&attributes.block_metadata.tx_list).unwrap()
-                    );
-                    e
-                })?
-                .into_iter()
-                .map(|tx| {
-                    tx.try_into_recovered()
-                        .map_err(|e| {
-                            warn!("Failed to recover transaction: {e}");
-                            e
-                        })
-                        .unwrap()
-                })
-                .collect::<Vec<_>>();
+        let transactions = decode_transactions(&attributes.block_metadata.tx_list)
+            .map_err(|e| {
+                warn!(
+                    "Failed to decode transactions: {e}, bytes: {:?}",
+                    &attributes.block_metadata.tx_list
+                );
+                e
+            })?
+            .into_iter()
+            .map(|tx| {
+                tx.try_into_recovered()
+                    .map_err(|e| {
+                        warn!("Failed to recover transaction: {e}");
+                        e
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
 
         let res = Self {
             payload_attributes: payload_attributes,
@@ -163,14 +159,6 @@ pub(crate) fn payload_id_taiko(
 
 fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
     Vec::<TransactionSigned>::decode(&mut &bytes[..])
-}
-
-fn decode_hex_bytes(input: &Bytes) -> Result<Bytes, hex::FromHexError> {
-    let s = std::str::from_utf8(input)
-        .map_err(|_| hex::FromHexError::InvalidHexCharacter { c: '?', index: 0 })?;
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let decoded = Vec::from_hex(s)?;
-    Ok(Bytes::from(decoded))
 }
 
 #[cfg(test)]

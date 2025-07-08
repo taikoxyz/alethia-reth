@@ -24,7 +24,7 @@ use reth_node_builder::rpc::EngineValidatorBuilder;
 use reth_primitives_traits::Block as SealedBlock;
 use reth_trie_db::MerklePatriciaTrie;
 use std::{convert::Infallible, sync::Arc};
-use tracing::info;
+use tracing::debug;
 
 /// Builder for [`EthereumEngineValidator`].
 #[derive(Debug, Default, Clone)]
@@ -121,7 +121,7 @@ impl PayloadValidator for TaikoEngineValidator {
             .map_err(|e| NewPayloadError::Other(e.into()));
         }
 
-        info!(
+        debug!(
             "Taiko payload validated: block hash matches expected hash: {}",
             expected_hash
         );

@@ -66,10 +66,11 @@ where
         future::ready(Ok(TaikoEvmConfig::new(
             ctx.chain_spec(),
             TaikoEvmExtraContext::new(
-                decode_ontake_extra_data(block.header.extra_data),
+                decode_ontake_extra_data(block.header.extra_data.clone()),
                 anchor_caller,
                 anchor_nonce,
             ),
+            block.header.extra_data.clone().into(),
         )))
     }
 }

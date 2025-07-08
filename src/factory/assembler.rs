@@ -1,15 +1,19 @@
 use std::sync::Arc;
 
+use alloy_consensus::{BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, proofs};
+use alloy_eips::merge::BEACON_NONCE;
+use alloy_hardforks::EthereumHardforks;
+use alloy_primitives::logs_bloom;
 use reth::primitives::Block;
 use reth_ethereum::{Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutorFactory},
-    eth::EthBlockExecutionCtx,
     execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_evm_ethereum::EthBlockAssembler;
+use reth_provider::BlockExecutionResult;
 
-use crate::chainspec::spec::TaikoChainSpec;
+use crate::{chainspec::spec::TaikoChainSpec, factory::block::TaikoBlockExecutionCtx};
 
 #[derive(Clone, Debug)]
 pub struct TaikoBlockAssembler {
@@ -36,7 +40,7 @@ impl TaikoBlockAssembler {
 impl<F> BlockAssembler<F> for TaikoBlockAssembler
 where
     F: for<'a> BlockExecutorFactory<
-            ExecutionCtx<'a> = EthBlockExecutionCtx<'a>,
+            ExecutionCtx<'a> = TaikoBlockExecutionCtx<'a>,
             Transaction = TransactionSigned,
             Receipt = Receipt,
         >,
@@ -47,11 +51,68 @@ where
         &self,
         input: BlockAssemblerInput<'_, '_, F>,
     ) -> Result<Self::Block, BlockExecutionError> {
-        // self.with_extra_data(input.execution_ctx.extra_data);
-        // TODO: add extra data to the block header
-        Ok(self
+        let BlockAssemblerInput {
+            evm_env,
+            execution_ctx: ctx,
+            parent: _,
+            transactions,
+            output:
+                BlockExecutionResult {
+                    receipts,
+                    requests: _,
+                    gas_used,
+                },
+            state_root,
+            ..
+        } = input;
+
+        let timestamp = evm_env.block_env.timestamp;
+
+        let transactions_root = proofs::calculate_transaction_root(&transactions);
+        let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
+        let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| r.logs()));
+
+        let withdrawals = self
             .block_assembler
-            .assemble_block(input)?
-            .map_header(From::from))
+            .chain_spec
+            .is_shanghai_active_at_timestamp(timestamp)
+            .then(|| ctx.withdrawals.map(|w| w.into_owned()).unwrap_or_default());
+
+        let withdrawals_root = withdrawals
+            .as_deref()
+            .map(|w| proofs::calculate_withdrawals_root(w));
+
+        let header = Header {
+            parent_hash: ctx.parent_hash,
+            ommers_hash: EMPTY_OMMER_ROOT_HASH,
+            beneficiary: evm_env.block_env.beneficiary,
+            state_root,
+            transactions_root,
+            receipts_root,
+            withdrawals_root,
+            logs_bloom,
+            timestamp,
+            mix_hash: evm_env.block_env.prevrandao.unwrap_or_default(),
+            nonce: BEACON_NONCE.into(),
+            base_fee_per_gas: Some(evm_env.block_env.basefee),
+            number: evm_env.block_env.number,
+            gas_limit: evm_env.block_env.gas_limit,
+            difficulty: evm_env.block_env.difficulty,
+            gas_used: *gas_used,
+            extra_data: ctx.extra_data,
+            parent_beacon_block_root: ctx.parent_beacon_block_root,
+            blob_gas_used: None,
+            excess_blob_gas: None,
+            requests_hash: None,
+        };
+
+        Ok(Block {
+            header,
+            body: BlockBody {
+                transactions,
+                ommers: Default::default(),
+                withdrawals,
+            },
+        })
     }
 }

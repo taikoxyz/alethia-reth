@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
-use alloy_consensus::TxReceipt;
+use alloy_consensus::{Header, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
     Database, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
@@ -10,6 +10,8 @@ use alloy_evm::{
         spec::EthExecutorSpec,
     },
 };
+use alloy_primitives::{B256, Bytes};
+use alloy_rpc_types_eth::Withdrawals;
 use reth::{
     primitives::Log,
     revm::{Inspector, State},
@@ -18,6 +20,23 @@ use reth_ethereum::primitives::Transaction;
 use reth_evm_ethereum::RethReceiptBuilder;
 
 use crate::{chainspec::spec::TaikoChainSpec, factory::factory::TaikoEvmFactory};
+
+/// Context for Ethereum block execution.
+#[derive(Debug, Clone)]
+pub struct TaikoBlockExecutionCtx<'a> {
+    /// Parent block hash.
+    pub parent_hash: B256,
+    /// Parent beacon block root.
+    pub parent_beacon_block_root: Option<B256>,
+    /// Block ommers
+    pub ommers: &'a [Header],
+    /// Block withdrawals.
+    pub withdrawals: Option<Cow<'a, Withdrawals>>,
+    /// Block base fee per gas.
+    pub basefee_per_gas: u64,
+    /// Block extra data.
+    pub extra_data: Bytes,
+}
 
 /// Taiko block executor factory.
 #[derive(Debug, Clone, Default)]
@@ -69,7 +88,7 @@ where
     Self: 'static,
 {
     type EvmFactory = EvmF;
-    type ExecutionCtx<'a> = EthBlockExecutionCtx<'a>;
+    type ExecutionCtx<'a> = TaikoBlockExecutionCtx<'a>;
     type Transaction = R::Transaction;
     type Receipt = R::Receipt;
 
@@ -86,6 +105,17 @@ where
         DB: Database + 'a,
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
-        EthBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)
+        // TODO: Handle the `basefee_per_gas` and `extra_data` in the context.
+        EthBlockExecutor::new(
+            evm,
+            EthBlockExecutionCtx {
+                parent_hash: ctx.parent_hash,
+                parent_beacon_block_root: ctx.parent_beacon_block_root,
+                ommers: ctx.ommers,
+                withdrawals: ctx.withdrawals,
+            },
+            &self.spec,
+            &self.receipt_builder,
+        )
     }
 }

@@ -24,7 +24,7 @@ use reth_evm::{
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::PayloadAttributesBuilder;
 use std::{convert::Infallible, sync::Arc};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     chainspec::spec::TaikoChainSpec,
@@ -139,6 +139,8 @@ where
         .with_bundle_update()
         .build();
 
+    debug!(target: "payload_builder", id=%attributes.payload_id(), parent_header = ?parent_header.hash(), parent_number = parent_header.number, attributes = ?attributes, "building payload for block");
+
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,
@@ -191,6 +193,8 @@ where
     let BlockBuilderOutcome { block, .. } = builder.finish(&state_provider)?;
 
     let sealed_block = Arc::new(block.sealed_block().clone());
+
+    info!("Sealed block: {:#?}", sealed_block);
 
     let payload = EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, None);
 

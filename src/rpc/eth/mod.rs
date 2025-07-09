@@ -59,7 +59,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
                 build_payload_args_id: l1_origin.build_payload_args_id,
             }))
         } else {
-            Ok(None)
+            Err(TaikoApiError::GethNotFound.into())
         }
     }
 
@@ -77,7 +77,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
         if let Some(l1_origin) = head_l1_origin {
             self.l1_origin_by_id(U256::from(l1_origin))
         } else {
-            Ok(None)
+            Err(TaikoApiError::GethNotFound.into())
         }
     }
 }

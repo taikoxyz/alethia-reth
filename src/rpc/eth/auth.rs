@@ -20,7 +20,7 @@ use crate::{
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taikoAuth"))]
 pub trait TaikoAuthExtApi {
     #[method(name = "setHeadL1Origin")]
-    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64>;
     #[method(name = "updateL1Origin")]
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>>;
 }
@@ -41,7 +41,7 @@ impl<Provider> TaikoAuthExtApiServer for TaikoAuthExt<Provider>
 where
     Provider: DatabaseProviderFactory + 'static,
 {
-    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64> {
         let provider = self
             .provider
             .database_provider_rw()
@@ -52,7 +52,7 @@ where
             .put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
             .map_err(|_| EthApiError::InternalEthError)?;
 
-        Ok(id)
+        Ok(id.to())
     }
 
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {

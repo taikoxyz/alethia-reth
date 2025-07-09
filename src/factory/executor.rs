@@ -99,7 +99,7 @@ where
                 .evm
                 .db_mut()
                 .database
-                .basic(Address::default())
+                .basic(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
                 .unwrap();
 
             let mut caller_nonce = 0;

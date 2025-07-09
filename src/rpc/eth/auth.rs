@@ -52,9 +52,6 @@ where
         tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
             .map_err(|_| EthApiError::InternalEthError)?;
 
-        tx.get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-            .map_err(|_| EthApiError::InternalEthError)?;
-
         tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 
         Ok(id.to())

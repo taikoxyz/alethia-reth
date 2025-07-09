@@ -1,7 +1,14 @@
+use crate::db::model::{
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
+};
+use crate::payload::attributes::TaikoPayloadAttributes;
+use crate::rpc::types::TaikoExecutionData;
+use alloy_consensus::{BlockHeader, Sealable};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
 use alloy_rpc_types_engine::{
-    ClientVersionV1, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
+    ClientVersionV1, ExecutionPayloadEnvelopeV2, ForkchoiceState, ForkchoiceUpdated, PayloadId,
+    PayloadStatus,
 };
 use async_trait::async_trait;
 use jsonrpsee::RpcModule;
@@ -13,19 +20,12 @@ use reth::{
 };
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
-use reth_node_api::{BeaconConsensusEngineHandle, EngineTypes, EngineValidator, PayloadTypes};
+use reth_ethereum_engine_primitives::EthBuiltPayload;
+use reth_node_api::{EngineTypes, EngineValidator, PayloadTypes};
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
-use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
-use std::sync::Arc;
-use tracing::debug;
-
-use crate::db::model::{
-    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
-};
-use crate::payload::attributes::TaikoPayloadAttributes;
-use crate::rpc::types::TaikoExecutionData;
+use reth_rpc_engine_api::EngineApiError;
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] = &[
@@ -61,6 +61,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
 pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec> {
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
     provider: Provider,
+    payload_store: PayloadStore<PayloadT>,
 }
 
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
@@ -74,33 +75,18 @@ where
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     pub fn new(
+        engine_api: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
         provider: Provider,
-        chain_spec: Arc<ChainSpec>,
-        beacon_consensus: BeaconConsensusEngineHandle<PayloadT>,
         payload_store: PayloadStore<PayloadT>,
-        tx_pool: Pool,
-        task_spawner: Box<dyn TaskSpawner>,
-        client: ClientVersionV1,
-        capabilities: EngineCapabilities,
-        validator: Validator,
-        accept_execution_requests_hash: bool,
     ) -> Self
     where
         Provider: Clone,
     {
-        let inner = EngineApi::new(
-            provider.clone(),
-            chain_spec,
-            beacon_consensus,
+        Self {
+            inner: engine_api,
+            provider,
             payload_store,
-            tx_pool,
-            task_spawner,
-            client,
-            capabilities,
-            validator,
-            accept_execution_requests_hash,
-        );
-        Self { inner, provider }
+        }
     }
 }
 
@@ -111,8 +97,11 @@ impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT
 where
     Provider:
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
-    EngineT:
-        EngineTypes<ExecutionData = TaikoExecutionData, PayloadAttributes = TaikoPayloadAttributes>,
+    EngineT: EngineTypes<
+            ExecutionData = TaikoExecutionData,
+            PayloadAttributes = TaikoPayloadAttributes,
+            BuiltPayload = EthBuiltPayload,
+        >,
     Pool: TransactionPool + 'static,
     Validator: EngineValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -135,17 +124,20 @@ where
             .await?;
 
         if let Some(payload) = payload_attributes {
+            let new_payload = self
+                .payload_store
+                .best_payload(status.payload_id.expect("payload_id must be not empty"))
+                .await
+                .unwrap()
+                .unwrap();
+
             let stored_l1_origin = StoredL1Origin {
                 block_id: payload.l1_origin.block_id,
-                l2_block_hash: status.payload_status.latest_valid_hash.unwrap(),
+                l2_block_hash: new_payload.block().hash_slow(),
                 l1_block_hash: payload.l1_origin.l1_block_hash,
                 l1_block_height: payload.l1_origin.l1_block_height,
                 build_payload_args_id: payload.l1_origin.build_payload_args_id,
             };
-            debug!(
-                "Storing L1 origin: {:?} for block id: {}",
-                stored_l1_origin, payload.l1_origin.block_id
-            );
 
             let provider = self.provider.database_provider_rw().unwrap();
 

@@ -4,8 +4,10 @@ use reth::{
     payload::PayloadStore,
     version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
 };
+use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{AddOnsContext, EngineTypes, FullNodeComponents, NodeTypes, PayloadTypes};
 use reth_node_builder::rpc::{EngineApiBuilder, EngineValidatorBuilder};
+use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineCapabilities;
 
 use crate::{
@@ -31,6 +33,7 @@ where
             Payload: PayloadTypes<
                 ExecutionData = TaikoExecutionData,
                 PayloadAttributes = TaikoPayloadAttributes,
+                BuiltPayload = EthBuiltPayload,
             > + EngineTypes,
         >,
     >,
@@ -56,7 +59,7 @@ where
             version: CARGO_PKG_VERSION.to_string(),
             commit: VERGEN_GIT_SHA.to_string(),
         };
-        Ok(TaikoEngineApi::new(
+        let inner_engine_api = EngineApi::new(
             ctx.node.provider().clone(),
             ctx.config.chain.clone(),
             ctx.beacon_engine_handle.clone(),
@@ -67,6 +70,12 @@ where
             EngineCapabilities::default(),
             engine_validator,
             ctx.config.engine.accept_execution_requests_hash,
+        );
+
+        Ok(TaikoEngineApi::new(
+            inner_engine_api,
+            ctx.node.provider().clone(),
+            PayloadStore::new(ctx.node.payload_builder_handle().clone()),
         ))
     }
 }

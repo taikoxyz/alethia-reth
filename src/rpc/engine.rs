@@ -9,9 +9,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::PayloadError;
-use reth::{
-    payload::EthereumExecutionPayloadValidator, primitives::RecoveredBlock, providers::EthStorage,
-};
+use reth::{primitives::RecoveredBlock, providers::EthStorage};
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -64,21 +62,13 @@ where
 /// Validator for the Taiko engine API.
 #[derive(Debug, Clone)]
 pub struct TaikoEngineValidator {
-    inner: EthereumExecutionPayloadValidator<TaikoChainSpec>,
+    pub chain_spec: Arc<TaikoChainSpec>,
 }
 
 impl TaikoEngineValidator {
     /// Instantiates a new validator.
     pub const fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self {
-            inner: EthereumExecutionPayloadValidator::new(chain_spec),
-        }
-    }
-
-    /// Returns the chain spec used by the validator.
-    #[inline]
-    fn chain_spec(&self) -> &TaikoChainSpec {
-        self.inner.chain_spec()
+        Self { chain_spec }
     }
 }
 

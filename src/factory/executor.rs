@@ -172,9 +172,7 @@ where
         Ok(Some(gas_used))
     }
 
-    fn finish(
-        mut self,
-    ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
+    fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         Ok((
             self.evm,
             BlockExecutionResult {

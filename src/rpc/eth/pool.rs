@@ -68,6 +68,8 @@ where
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus: ConsensusTx>> + 'static,
     Eth: TransactionCompat<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
 {
+    #[allow(unused_variables)]
+    // TODO: Implement the logic for fetching transactions with minimum tip and executing them.
     async fn tx_pool_content_with_min_tip(
         &self,
         beneficiary: Address,

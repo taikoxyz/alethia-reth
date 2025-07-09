@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth::revm::primitives::U256;
+use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
-
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
 
@@ -47,10 +47,15 @@ where
             .database_provider_rw()
             .map_err(|_| EthApiError::InternalEthError)?;
 
-        provider
-            .into_tx()
-            .put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
+        let tx = provider.into_tx();
+
+        tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
             .map_err(|_| EthApiError::InternalEthError)?;
+
+        tx.get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
+            .map_err(|_| EthApiError::InternalEthError)?;
+
+        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 
         Ok(id.to())
     }
@@ -61,19 +66,21 @@ where
             .database_provider_rw()
             .map_err(|_| EthApiError::InternalEthError)?;
 
-        provider
-            .into_tx()
-            .put::<StoredL1OriginTable>(
-                l1_origin.block_id.to(),
-                StoredL1Origin {
-                    block_id: l1_origin.block_id,
-                    l2_block_hash: l1_origin.l2_block_hash,
-                    l1_block_height: l1_origin.l1_block_height,
-                    l1_block_hash: l1_origin.l1_block_hash,
-                    build_payload_args_id: l1_origin.build_payload_args_id,
-                },
-            )
-            .map_err(|_| EthApiError::InternalEthError)?;
+        let tx = provider.into_tx();
+
+        tx.put::<StoredL1OriginTable>(
+            l1_origin.block_id.to(),
+            StoredL1Origin {
+                block_id: l1_origin.block_id,
+                l2_block_hash: l1_origin.l2_block_hash,
+                l1_block_height: l1_origin.l1_block_height,
+                l1_block_hash: l1_origin.l1_block_hash,
+                build_payload_args_id: l1_origin.build_payload_args_id,
+            },
+        )
+        .map_err(|_| EthApiError::InternalEthError)?;
+
+        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 
         Ok(Some(l1_origin))
     }

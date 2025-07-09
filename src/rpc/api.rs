@@ -3,20 +3,15 @@ use crate::db::model::{
 };
 use crate::payload::attributes::TaikoPayloadAttributes;
 use crate::rpc::types::TaikoExecutionData;
-use alloy_consensus::{BlockHeader, Sealable};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
-use alloy_rpc_types_engine::{
-    ClientVersionV1, ExecutionPayloadEnvelopeV2, ForkchoiceState, ForkchoiceUpdated, PayloadId,
-    PayloadStatus,
-};
+use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
 use async_trait::async_trait;
 use jsonrpsee::RpcModule;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee_core::RpcResult;
 use reth::{
-    payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, tasks::TaskSpawner,
-    transaction_pool::TransactionPool,
+    payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, transaction_pool::TransactionPool,
 };
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
@@ -126,7 +121,7 @@ where
         if let Some(payload) = payload_attributes {
             let new_payload = self
                 .payload_store
-                .best_payload(status.payload_id.expect("payload_id must be not empty"))
+                .best_payload(status.payload_id.expect("payload_id must not be empty"))
                 .await
                 .unwrap()
                 .unwrap();

@@ -71,7 +71,7 @@ impl Compact for StoredL1Origin {
         start_len - buf.remaining_mut()
     }
 
-    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+    fn from_compact(buf: &[u8], _len: usize) -> (Self, &[u8]) {
         let mut offset = 0;
 
         let block_id = U256::from_be_bytes::<32>(buf[offset..offset + 32].try_into().unwrap());

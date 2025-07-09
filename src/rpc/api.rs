@@ -11,6 +11,7 @@ use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, tasks::TaskSpawner,
     transaction_pool::TransactionPool,
 };
+use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_node_api::{BeaconConsensusEngineHandle, EngineTypes, EngineValidator, PayloadTypes};
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
@@ -146,7 +147,9 @@ where
                 stored_l1_origin, payload.l1_origin.block_id
             );
 
-            let tx = self.provider.database_provider_rw().unwrap().into_tx();
+            let provider = self.provider.database_provider_rw().unwrap();
+
+            let tx = provider.into_tx();
 
             tx.put::<StoredL1OriginTable>(
                 payload.l1_origin.block_id.to::<BlockNumber>(),
@@ -166,6 +169,8 @@ where
                 status = status
                     .with_payload_id(PayloadId(stored_l1_origin.build_payload_args_id.into()));
             }
+
+            tx.commit().unwrap();
         };
 
         Ok(status)

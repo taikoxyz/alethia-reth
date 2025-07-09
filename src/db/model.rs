@@ -33,81 +33,95 @@ tables! {
   }
 }
 
+// TODO: improve this implementation.
 impl Compact for StoredL1Origin {
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: BufMut + AsMut<[u8]>,
     {
-        let mut len = 0;
+        let start_len = buf.remaining_mut();
 
-        len += self.block_id.to_compact(buf);
-
+        buf.put_slice(&self.block_id.to_be_bytes::<32>());
         buf.put_slice(self.l2_block_hash.as_slice());
-        len += 32;
 
-        if let Some(height) = self.l1_block_height {
-            buf.put_u8(1);
-            len += 1;
-            len += height.to_compact(buf);
-        } else {
-            buf.put_u8(0);
-            len += 1;
+        // Option<U256>
+        match &self.l1_block_height {
+            Some(val) => {
+                buf.put_u8(1);
+                buf.put_slice(&val.to_be_bytes::<32>());
+            }
+            None => {
+                buf.put_u8(0);
+            }
         }
 
-        if let Some(hash) = self.l1_block_hash {
-            buf.put_u8(1);
-            buf.put_slice(hash.as_slice());
-            len += 33;
-        } else {
-            buf.put_u8(0);
-            len += 1;
+        // Option<B256>
+        match &self.l1_block_hash {
+            Some(val) => {
+                buf.put_u8(1);
+                buf.put_slice(val.as_slice());
+            }
+            None => {
+                buf.put_u8(0);
+            }
         }
 
         buf.put_slice(&self.build_payload_args_id);
-        len += 8;
 
-        len
+        start_len - buf.remaining_mut()
     }
 
-    fn from_compact(buf: &[u8], _length: usize) -> (Self, &[u8]) {
-        let mut buf = buf;
+    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+        let mut offset = 0;
 
-        let (block_id, rest) = U256::from_compact(buf, buf.len());
-        buf = rest;
+        let block_id = U256::from_be_bytes::<32>(buf[offset..offset + 32].try_into().unwrap());
+        offset += 32;
 
-        let l2_block_hash = B256::from_slice(&buf[..32]);
-        buf = &buf[32..];
+        let l2_block_hash = B256::from_slice(&buf[offset..offset + 32]);
+        offset += 32;
 
-        let (l1_block_height, rest) = match buf[0] {
-            1 => {
-                let (height, rest) = U256::from_compact(&buf[1..], buf.len() - 1);
-                (Some(height), rest)
+        let l1_block_height = match buf[offset] {
+            0 => {
+                offset += 1;
+                None
             }
-            _ => (None, &buf[1..]),
-        };
-        buf = rest;
-
-        let (l1_block_hash, rest) = match buf[0] {
             1 => {
-                let hash = B256::from_slice(&buf[1..33]);
-                (Some(hash), &buf[33..])
+                offset += 1;
+                let v = U256::from_be_bytes::<32>(buf[offset..offset + 32].try_into().unwrap());
+                offset += 32;
+                Some(v)
             }
-            _ => (None, &buf[1..]),
+            _ => panic!("invalid prefix for l1_block_height"),
         };
-        buf = rest;
 
-        let build_payload_args_id = buf[..8].try_into().expect("fixed size array");
-        buf = &buf[8..];
+        let l1_block_hash = match buf[offset] {
+            0 => {
+                offset += 1;
+                None
+            }
+            1 => {
+                offset += 1;
+                let v = B256::from_slice(&buf[offset..offset + 32]);
+                offset += 32;
+                Some(v)
+            }
+            _ => panic!("invalid prefix for l1_block_hash"),
+        };
+
+        let build_payload_args_id: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+
+        let remaining = &buf[offset..];
 
         (
-            Self {
+            StoredL1Origin {
                 block_id,
                 l2_block_hash,
                 l1_block_height,
                 l1_block_hash,
                 build_payload_args_id,
             },
-            buf,
+            remaining,
         )
     }
 }

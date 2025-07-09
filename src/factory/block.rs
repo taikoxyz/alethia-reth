@@ -5,7 +5,7 @@ use alloy_eips::Encodable2718;
 use alloy_evm::{
     Database, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
     block::{BlockExecutorFactory, BlockExecutorFor},
-    eth::{EthBlockExecutionCtx, receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
+    eth::{receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
 };
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
@@ -106,11 +106,13 @@ where
     {
         TaikoBlockExecutor::new(
             evm,
-            EthBlockExecutionCtx {
+            TaikoBlockExecutionCtx {
                 parent_hash: ctx.parent_hash,
                 parent_beacon_block_root: ctx.parent_beacon_block_root,
                 ommers: ctx.ommers,
                 withdrawals: ctx.withdrawals,
+                basefee_per_gas: ctx.basefee_per_gas,
+                extra_data: ctx.extra_data,
             },
             &self.spec,
             &self.receipt_builder,

@@ -2,9 +2,9 @@ use alloy_consensus::{Transaction, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded,
-    eth::{EthBlockExecutionCtx, receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
+    eth::{receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
 };
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Bytes, Uint};
 use reth::{
     primitives::Log,
     revm::{
@@ -23,7 +23,7 @@ use reth_evm::{
 use reth_provider::BlockExecutionResult;
 use revm_database_interface::DatabaseCommit;
 
-use crate::factory::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
+use crate::factory::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, block::TaikoBlockExecutionCtx};
 
 /// Block executor for Ethereum.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -31,7 +31,7 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     spec: Spec,
 
     /// Context for block execution.
-    pub ctx: EthBlockExecutionCtx<'a>,
+    pub ctx: TaikoBlockExecutionCtx<'a>,
     /// Inner EVM.
     evm: Evm,
     /// Utility to call system smart contracts.
@@ -53,7 +53,7 @@ where
     R: ReceiptBuilder,
 {
     /// Creates a new [`EthBlockExecutor`]
-    pub fn new(evm: Evm, ctx: EthBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
+    pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
         Self {
             evm,
             ctx,
@@ -110,7 +110,10 @@ where
                 .transact_system_call(
                     Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
                     Address::ZERO,
-                    encode_anchor_system_call_data(10, caller_nonce),
+                    encode_anchor_system_call_data(
+                        decode_ontake_extra_data(self.ctx.extra_data.clone()),
+                        caller_nonce,
+                    ),
                 )
                 .unwrap();
             self.golden_touch_address_initialial_nonce = Some(caller_nonce);
@@ -201,4 +204,9 @@ fn encode_anchor_system_call_data(basefee_share_pctg: u64, caller_nonce: u64) ->
     buf[..8].copy_from_slice(&basefee_share_pctg.to_be_bytes());
     buf[8..].copy_from_slice(&caller_nonce.to_be_bytes());
     Bytes::from(buf.to_vec())
+}
+
+fn decode_ontake_extra_data(extradata: Bytes) -> u64 {
+    let value = Uint::<256, 4>::from_be_slice(&extradata);
+    value.as_limbs()[0] as u64
 }

@@ -44,8 +44,6 @@ where
             >,
         >,
     ERROR: EvmTrError<EVM>,
-    // TODO `FrameResult` should be a generic trait.
-    // TODO `FrameInit` should be a generic.
     FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>,
 {
     type Evm = EVM;
@@ -101,16 +99,17 @@ pub fn reward_beneficiary<CTX: ContextTr>(
     let effective_gas_price = tx.effective_gas_price(basefee);
     // Transfer fee to coinbase/beneficiary.
     // EIP-1559 discard basefee for coinbase transfer. Basefee amount of gas is discarded.
-    let tx_caller: Address = tx.caller();
-    let tx_nonce = tx.nonce();
     let coinbase_gas_price = effective_gas_price.saturating_sub(basefee);
     let spent = gas.spent();
     let refunded = gas.refunded();
     let total_fee = U256::from(coinbase_gas_price * (spent - refunded as u64) as u128);
+    // Get the caller address and nonce from the transaction, to check if it is an anchor transaction.
+    let tx_caller: Address = tx.caller();
+    let tx_nonce = tx.nonce();
 
     let coinbase_account = context.journal().load_account(beneficiary)?;
 
-    debug!(target: "taiko-evm", "Sender account: {:?} {:?}", tx_caller, tx_nonce);
+    debug!(target: "taiko-evm", "Sender account: {:?} nonce: {:?}", tx_caller, tx_nonce);
     coinbase_account.data.mark_touch();
     if extra_context.anchor_caller_address() != Some(tx_caller)
         || extra_context.anchor_caller_nonce() != Some(tx_nonce)
@@ -168,7 +167,7 @@ pub fn validate_against_state_and_deduct_caller<
         is_nonce_check_disabled,
     )?;
 
-    debug!(target: "taiko-evm", "Caller account: {:?} {:?}", tx.caller(), tx.nonce());
+    debug!(target: "taiko-evm", "Sender account: {:?} nonce: {:?}", tx.caller(), tx.nonce());
     // If the transaction is an anchor transaction, we disable the balance check.
     if extra_context.anchor_caller_address() == Some(tx.caller())
         && extra_context.anchor_caller_nonce() == Some(tx.nonce())

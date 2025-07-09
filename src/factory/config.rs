@@ -32,30 +32,23 @@ pub struct TaikoEvmConfig {
 }
 
 impl TaikoEvmConfig {
-    pub fn new(
-        chain_spec: Arc<TaikoChainSpec>,
-        extra_context: TaikoEvmExtraContext,
-        extra_data: Bytes,
-    ) -> Self {
-        let evm_factory = TaikoEvmFactory::new(extra_context);
-        Self::new_with_evm_factory(chain_spec, evm_factory, extra_data)
+    pub fn new(chain_spec: Arc<TaikoChainSpec>, extra_context: TaikoEvmExtraContext) -> Self {
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::new(extra_context))
     }
 
     /// Creates a new Ethereum EVM configuration with the given chain spec and EVM factory.
     pub fn new_with_evm_factory(
         chain_spec: Arc<TaikoChainSpec>,
         evm_factory: TaikoEvmFactory,
-        extra_data: Bytes,
     ) -> Self {
         Self {
-            block_assembler: TaikoBlockAssembler::new(chain_spec.clone())
-                .with_extra_data(extra_data.into()),
+            block_assembler: TaikoBlockAssembler::new(chain_spec.clone()),
             executor_factory: TaikoBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,
                 evm_factory,
             ),
-            evm_factory: evm_factory,
+            evm_factory,
         }
     }
 

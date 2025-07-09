@@ -94,6 +94,8 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
             )
         };
         match self.inner.command {
+            // NOTE: We use the custom `TaikoNodeCommand` to handle the node commands, to initialize all Taiko related
+            // database tables.
             Commands::Node(command) => runner.run_command_until_exit(|ctx| {
                 TaikoNodeCommand(command).execute(ctx, FnLauncher::new::<C, Ext>(launcher))
             }),

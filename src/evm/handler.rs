@@ -18,6 +18,9 @@ use tracing::debug;
 
 use crate::evm::evm::TaikoEvmExtraContext;
 
+/// Handler for Taiko EVM, it implements the `Handler` trait
+/// and provides methods to handle the execution of transactions and the
+/// reward for the beneficiary.
 #[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
     pub _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
@@ -25,6 +28,7 @@ pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
 }
 
 impl<CTX, ERROR, FRAME> TaikoEvmHandler<CTX, ERROR, FRAME> {
+    /// Creates a new instance of [`TaikoEvmHandler`] with the given extra context.
     pub fn new(extra_context: TaikoEvmExtraContext) -> Self {
         Self {
             _phantom: core::marker::PhantomData,
@@ -33,6 +37,7 @@ impl<CTX, ERROR, FRAME> TaikoEvmHandler<CTX, ERROR, FRAME> {
     }
 }
 
+/// The implementation of Taiko network transaction execution.
 impl<EVM, ERROR, FRAME> Handler for TaikoEvmHandler<EVM, ERROR, FRAME>
 where
     EVM: EvmTr<
@@ -46,11 +51,18 @@ where
     ERROR: EvmTrError<EVM>,
     FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>,
 {
+    /// The EVM type containing Context, Instruction, and Precompiles implementations.
     type Evm = EVM;
+    /// The error type returned by this handler.
     type Error = ERROR;
+    /// The Frame type containing data for frame execution. Supports Call, Create and EofCreate frames.
     type Frame = FRAME;
+    /// The halt reason type included in the output
     type HaltReason = HaltReason;
 
+    /// Transfers transaction fees to the block beneficiary's account, also transfers the base fee income
+    /// to the network treasury and then share the base fee income with the coinbase based on the
+    /// configuration.
     fn reward_beneficiary(
         &self,
         _evm: &mut Self::Evm,
@@ -60,6 +72,15 @@ where
             .map_err(From::from)
     }
 
+    /// Prepares the EVM state for execution.
+    ///
+    /// Loads the beneficiary account (EIP-3651: Warm COINBASE) and all accounts/storage from the access list (EIP-2929).
+    ///
+    /// Deducts the maximum possible fee from the caller's balance.
+    ///
+    /// For EIP-7702 transactions, applies the authorization list and delegates successful authorizations.
+    /// Returns the gas refund amount from EIP-7702. Authorizations are applied before execution begins.
+    /// NOTE: for Anchor transaction, the balance check is disabled, so the caller's balance is not deducted.
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
@@ -68,6 +89,7 @@ where
     }
 }
 
+/// Trait that extends [`Handler`] with inspection functionality, here we just use the default implementation.
 impl<EVM, ERROR, FRAME> InspectorHandler for TaikoEvmHandler<EVM, ERROR, FRAME>
 where
     EVM: InspectorEvmTr<
@@ -86,8 +108,11 @@ where
     type IT = EthInterpreter;
 }
 
+/// Transfers transaction fees to the block beneficiary's account, also transfers the base fee income
+/// to the network treasury and then share the base fee income with the coinbase based on the
+/// configuration.
 #[inline]
-pub fn reward_beneficiary<CTX: ContextTr>(
+fn reward_beneficiary<CTX: ContextTr>(
     context: &mut CTX,
     gas: &mut Gas,
     extra_context: &TaikoEvmExtraContext,
@@ -121,11 +146,15 @@ pub fn reward_beneficiary<CTX: ContextTr>(
         target: "taiko-evm", "Rewarding beneficiary, sender account: {:?} nonce: {:?} at block: {:?}",
         tx_caller, tx_nonce, block_number
     );
+
+    // If the transaction is not an anchor transaction, we share the base fee income with the coinbase and treasury.
     if extra_context.anchor_caller_address() != Some(tx_caller)
         || extra_context.anchor_caller_nonce() != Some(tx_nonce)
     {
+        // Total base fee income.
         let total_fee = U256::from(basefee * (spent - refunded as u64) as u128);
 
+        // Share the base fee income with the coinbase and treasury.
         let fee_coinbase = total_fee.saturating_mul(U256::from(extra_context.basefee_share_pctg()))
             / U256::from(100u64);
         let fee_treasury = total_fee.saturating_sub(fee_coinbase);
@@ -152,6 +181,7 @@ pub fn reward_beneficiary<CTX: ContextTr>(
             fee_coinbase, fee_treasury, extra_context.basefee_share_pctg(), block_number
         );
     } else {
+        // If the transaction is an anchor transaction, we do not share the base fee income.
         debug!(
             target: "taiko-evm", "Anchor transaction detected, no rewrad, sender account: {:?} nonce: {:?} at block: {:?}",
             tx_caller, tx_nonce, block_number
@@ -160,6 +190,8 @@ pub fn reward_beneficiary<CTX: ContextTr>(
     Ok(())
 }
 
+/// Prepares the EVM state for execution.
+/// NOTE: for Anchor transaction, the balance check is disabled, so the caller's balance is not deducted.
 #[inline]
 pub fn validate_against_state_and_deduct_caller<
     CTX: ContextTr,
@@ -231,6 +263,7 @@ pub fn validate_against_state_and_deduct_caller<
     Ok(())
 }
 
+/// Generates the network treasury address based on the chain ID.
 fn get_treasury_address(chain_id: u64) -> Address {
     let prefix = chain_id.to_string();
     let suffix = "10001";

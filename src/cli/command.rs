@@ -96,6 +96,7 @@ where
         let data_dir = node_config.datadir();
         let db_path = data_dir.db();
 
+        // Initialize the database with extra tables for Taiko.
         tracing::info!(target: "reth::taiko::cli", path = ?db_path, "Opening database");
         let database = Arc::new(
             init_db_for::<PathBuf, TaikoTables>(db_path.clone(), self.0.db.database_args())?

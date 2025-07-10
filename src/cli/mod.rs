@@ -42,12 +42,14 @@ where
     C: ChainSpecParser,
     Ext: clap::Args + fmt::Debug,
 {
+    /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
         Self {
             inner: Cli::<C, Ext>::parse(),
         }
     }
 
+    /// Parsers only the default CLI arguments from the given iterator
     pub fn try_parse_args_from<I, T>(itr: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,
@@ -60,6 +62,11 @@ where
 impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debug>
     TaikoCli<C, Ext>
 {
+    /// Execute the configured cli command.
+    ///
+    /// This accepts a closure that is used to launch the node via the
+    /// [`TaikoNodeCommand`], to ensure that all Taiko related database tables are initialized
+    /// before the node is started.
     pub fn run<L, Fut>(self, launcher: L) -> eyre::Result<()>
     where
         L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,
@@ -68,6 +75,7 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
         self.with_runner(CliRunner::try_default_runtime()?, launcher)
     }
 
+    /// Execute the configured cli command with the provided [`CliRunner`].
     pub fn with_runner<L, Fut>(mut self, runner: CliRunner, launcher: L) -> eyre::Result<()>
     where
         L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,

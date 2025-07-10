@@ -1,9 +1,11 @@
 use crate::db::model::Tables as TaikoDbTables;
 use reth_db::{TableSet, Tables, table::TableInfo};
 
+/// A set of tables used by Taiko network.
 pub struct TaikoTables;
 
 impl TableSet for TaikoTables {
+    /// Returns an iterator over the tables, combines the default Reth tables with the Taiko-specific tables.
     fn tables() -> Box<dyn Iterator<Item = Box<dyn TableInfo>>> {
         Box::new(
             Tables::ALL

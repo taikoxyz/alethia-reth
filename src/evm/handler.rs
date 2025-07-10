@@ -102,18 +102,30 @@ pub fn reward_beneficiary<CTX: ContextTr>(
     let coinbase_gas_price = effective_gas_price.saturating_sub(basefee);
     let spent = gas.spent();
     let refunded = gas.refunded();
-    let total_fee = U256::from(coinbase_gas_price * (spent - refunded as u64) as u128);
     // Get the caller address and nonce from the transaction, to check if it is an anchor transaction.
     let tx_caller: Address = tx.caller();
     let tx_nonce = tx.nonce();
     let block_number = context.block().number();
     let coinbase_account = context.journal().load_account(beneficiary)?;
+    coinbase_account.data.mark_touch();
+    coinbase_account.data.info.balance =
+        coinbase_account
+            .data
+            .info
+            .balance
+            .saturating_add(U256::from(
+                coinbase_gas_price * (gas.spent() - gas.refunded() as u64) as u128,
+            ));
 
-    debug!(target: "taiko-evm", "Sender account: {:?} nonce: {:?} at block: {:?}", tx_caller, tx_nonce, block_number);
+    debug!(
+        target: "taiko-evm", "Rewarding beneficiary, sender account: {:?} nonce: {:?} at block: {:?}",
+        tx_caller, tx_nonce, block_number
+    );
     if extra_context.anchor_caller_address() != Some(tx_caller)
         || extra_context.anchor_caller_nonce() != Some(tx_nonce)
     {
-        coinbase_account.data.mark_touch();
+        let total_fee = U256::from(basefee * (spent - refunded as u64) as u128);
+
         let fee_coinbase = total_fee.saturating_mul(U256::from(extra_context.basefee_share_pctg()))
             / U256::from(100u64);
         let fee_treasury = total_fee.saturating_sub(fee_coinbase);
@@ -136,11 +148,14 @@ pub fn reward_beneficiary<CTX: ContextTr>(
             .saturating_add(fee_treasury);
         debug!(
             target: "taiko-evm",
-            "Share basefee with coinbase: {} and treasury: {}, share percentage: {}",
-            fee_coinbase, fee_treasury, extra_context.basefee_share_pctg()
+            "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
+            fee_coinbase, fee_treasury, extra_context.basefee_share_pctg(), block_number
         );
     } else {
-        debug!(target: "taiko-evm", "Anchor transaction detected, no reward and basefee sharing.");
+        debug!(
+            target: "taiko-evm", "Anchor transaction detected, no rewrad, sender account: {:?} nonce: {:?} at block: {:?}",
+            tx_caller, tx_nonce, block_number
+        );
     }
     Ok(())
 }
@@ -158,6 +173,7 @@ pub fn validate_against_state_and_deduct_caller<
     let mut is_balance_check_disabled = context.cfg().is_balance_check_disabled();
     let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
     let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
+    let block = context.block().number();
 
     let (tx, journal) = context.tx_journal();
 
@@ -172,15 +188,15 @@ pub fn validate_against_state_and_deduct_caller<
         is_nonce_check_disabled,
     )?;
 
-    debug!(target: "taiko-evm", "Sender account: {:?} nonce: {:?}", tx.caller(), tx.nonce());
+    debug!(target: "taiko-evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
     // If the transaction is an anchor transaction, we disable the balance check.
     if extra_context.anchor_caller_address() == Some(tx.caller())
         && extra_context.anchor_caller_nonce() == Some(tx.nonce())
     {
-        debug!(target: "taiko-evm", "Anchor transaction detected, disabling balance check.");
+        debug!(target: "taiko-evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
         is_balance_check_disabled = true;
     } else {
-        debug!(target: "taiko-evm", "Anchor transaction not detected, balance check enabled.");
+        debug!(target: "taiko-evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
     }
 
     let max_balance_spending = tx.max_balance_spending()?;
@@ -225,7 +241,7 @@ fn get_treasury_address(chain_id: u64) -> Address {
 
     let hex_str = format!("0x{}{}{}", prefix, padding, suffix);
 
-    Address::from_str(&hex_str).expect("invalid address string")
+    Address::from_str(&hex_str).unwrap()
 }
 
 #[cfg(test)]

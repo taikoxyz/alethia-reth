@@ -24,7 +24,7 @@ use reth_trie_db::MerklePatriciaTrie;
 use std::{convert::Infallible, sync::Arc};
 use tracing::debug;
 
-/// Builder for [`EthereumEngineValidator`].
+/// Builder for [`TaikoEngineValidator`].
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TaikoEngineValidatorBuilder;

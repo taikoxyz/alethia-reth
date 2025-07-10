@@ -106,15 +106,14 @@ pub fn reward_beneficiary<CTX: ContextTr>(
     // Get the caller address and nonce from the transaction, to check if it is an anchor transaction.
     let tx_caller: Address = tx.caller();
     let tx_nonce = tx.nonce();
-
+    let block_number = context.block().number();
     let coinbase_account = context.journal().load_account(beneficiary)?;
 
-    debug!(target: "taiko-evm", "Sender account: {:?} nonce: {:?}", tx_caller, tx_nonce);
-    coinbase_account.data.mark_touch();
+    debug!(target: "taiko-evm", "Sender account: {:?} nonce: {:?} at block: {:?}", tx_caller, tx_nonce, block_number);
     if extra_context.anchor_caller_address() != Some(tx_caller)
         || extra_context.anchor_caller_nonce() != Some(tx_nonce)
     {
-        debug!(target: "taiko-evm", "Share basefee with coinbase and treasury.");
+        coinbase_account.data.mark_touch();
         let fee_coinbase = total_fee.saturating_mul(U256::from(extra_context.basefee_share_pctg()))
             / U256::from(100u64);
         let fee_treasury = total_fee.saturating_sub(fee_coinbase);
@@ -129,11 +128,17 @@ pub fn reward_beneficiary<CTX: ContextTr>(
             .journal()
             .load_account(get_treasury_address(chain_id))?;
 
+        treasury_account.data.mark_touch();
         treasury_account.data.info.balance = treasury_account
             .data
             .info
             .balance
             .saturating_add(fee_treasury);
+        debug!(
+            target: "taiko-evm",
+            "Share basefee with coinbase: {} and treasury: {}, share percentage: {}",
+            fee_coinbase, fee_treasury, extra_context.basefee_share_pctg()
+        );
     } else {
         debug!(target: "taiko-evm", "Anchor transaction detected, no reward and basefee sharing.");
     }
@@ -221,4 +226,18 @@ fn get_treasury_address(chain_id: u64) -> Address {
     let hex_str = format!("0x{}{}{}", prefix, padding, suffix);
 
     Address::from_str(&hex_str).expect("invalid address string")
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_get_treasury_address() {
+        let treasury = get_treasury_address(167000);
+        assert_eq!(
+            treasury,
+            Address::from_str("0x1670000000000000000000000000000000010001").unwrap()
+        );
+    }
 }

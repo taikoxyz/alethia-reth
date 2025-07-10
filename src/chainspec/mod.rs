@@ -24,7 +24,7 @@ pub static TAIKO_DEVNET: LazyLock<Arc<TaikoChainSpec>> =
 // Creates a new [`ChainSpec`] for the Taiko Mainnet network.
 fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
-        "genesis/mainnet.json",
+        include_str!("genesis/mainnet.json"),
         b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9"),
     )
 }
@@ -32,7 +32,7 @@ fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
 // Creates a new [`ChainSpec`] for the Taiko Devnet network.
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
-        "genesis/devnet.json",
+        include_str!("genesis/devnet.json"),
         b256!("0xddd9d042b4256c630ebd9106f868dd8fc870721ef2e2722ee426890624db648d"),
     )
 }

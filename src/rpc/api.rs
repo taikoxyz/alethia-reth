@@ -10,13 +10,14 @@ use async_trait::async_trait;
 use jsonrpsee::RpcModule;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee_core::RpcResult;
+use jsonrpsee_types::ErrorCode;
 use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, transaction_pool::TransactionPool,
 };
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{EngineTypes, EngineValidator, PayloadTypes};
+use reth_node_api::{EngineTypes, EngineValidator, PayloadBuilderError, PayloadTypes};
 use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
@@ -119,40 +120,47 @@ where
             .await?;
 
         if let Some(payload) = payload_attributes {
-            let new_payload = self
+            let built_payload = self
                 .payload_store
                 .best_payload(status.payload_id.expect("payload_id must not be empty"))
                 .await
-                .unwrap()
-                .unwrap();
+                .ok_or(EngineApiError::GetPayloadError(
+                    PayloadBuilderError::MissingPayload,
+                ))?
+                .map_err(|_| {
+                    EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload)
+                })?;
 
             let stored_l1_origin = StoredL1Origin {
                 block_id: payload.l1_origin.block_id,
-                l2_block_hash: new_payload.block().hash_slow(),
+                l2_block_hash: built_payload.block().hash_slow(),
                 l1_block_hash: payload.l1_origin.l1_block_hash,
                 l1_block_height: payload.l1_origin.l1_block_height,
                 build_payload_args_id: payload.l1_origin.build_payload_args_id,
             };
 
-            let provider = self.provider.database_provider_rw().unwrap();
-
-            let tx = provider.into_tx();
+            let tx = self
+                .provider
+                .database_provider_rw()
+                .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?
+                .into_tx();
 
             tx.put::<StoredL1OriginTable>(
                 payload.l1_origin.block_id.to::<BlockNumber>(),
                 stored_l1_origin.clone(),
             )
-            .unwrap();
+            .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
 
             if !payload.l1_origin.is_preconf_block() {
                 tx.put::<StoredL1HeadOriginTable>(
                     STORED_L1_HEAD_ORIGIN_KEY,
                     payload.l1_origin.block_id.to::<BlockNumber>(),
                 )
-                .unwrap();
+                .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
             }
 
-            tx.commit().unwrap();
+            tx.commit()
+                .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
         };
 
         Ok(status)

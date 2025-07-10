@@ -1,6 +1,3 @@
-use crate::db::model::{
-    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
-};
 use crate::payload::attributes::TaikoPayloadAttributes;
 use crate::rpc::types::TaikoExecutionData;
 use alloy_hardforks::EthereumHardforks;
@@ -22,6 +19,10 @@ use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
+
+use crate::db::model::{
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
+};
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] = &[
@@ -54,6 +55,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
     ) -> RpcResult<Engine::ExecutionPayloadEnvelopeV2>;
 }
 
+/// A concrete implementation of the `TaikoEngineApi` trait.
 pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec> {
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
     provider: Provider,
@@ -70,6 +72,7 @@ where
     Validator: EngineValidator<PayloadT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
+    /// Creates a new instance of `TaikoEngineApi` with the given parameters.
     pub fn new(
         engine_api: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
         provider: Provider,
@@ -102,6 +105,7 @@ where
     Validator: EngineValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
+    /// Creates a new execution payload with the given execution data.
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
         self.inner
             .new_payload_v2(payload)
@@ -109,6 +113,7 @@ where
             .map_err(|e| EngineApiError::from(e).into())
     }
 
+    /// Updates the fork choice with the given state and payload attributes.
     async fn fork_choice_updated_v2(
         &self,
         fork_choice_state: ForkchoiceState,
@@ -166,6 +171,7 @@ where
         Ok(status)
     }
 
+    /// Retrieves the execution payload by its ID.
     async fn get_payload_v2(
         &self,
         payload_id: PayloadId,
@@ -183,6 +189,8 @@ where
     EngineT: EngineTypes,
     Self: TaikoEngineApiServer<EngineT>,
 {
+    /// Consumes the type and returns all the methods and subscriptions defined in the trait and
+    /// returns them as a single [`RpcModule`]
     fn into_rpc_module(self) -> RpcModule<()> {
         self.into_rpc().remove_context()
     }

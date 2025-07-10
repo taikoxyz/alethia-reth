@@ -10,6 +10,7 @@ use reth::{
 use reth_node_api::NodePrimitives;
 use serde::{Deserialize, Serialize};
 
+/// A pre-built transaction list that contains the current mempool content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct PreBuiltTxList<T> {
@@ -28,7 +29,7 @@ impl<T> Default for PreBuiltTxList<T> {
     }
 }
 
-/// trait interface for a custom auth rpc namespace: `taikoAuth`
+/// Trait interface for a custom auth rpc namespace: `taikoAuth`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "taikoAuth"))]
@@ -47,6 +48,7 @@ pub trait TaikoAuthTxPoolExtApi<T: RpcObject> {
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 }
 
+/// A concrete implementation of the `TaikoAuthTxPoolExtApi` trait.
 #[derive(Clone)]
 pub struct TaikoAuthTxPoolExt<Pool, Eth> {
     pool: Pool,
@@ -54,6 +56,7 @@ pub struct TaikoAuthTxPoolExt<Pool, Eth> {
 }
 
 impl<Pool, Eth> TaikoAuthTxPoolExt<Pool, Eth> {
+    /// Creates a new instance of `TaikoAuthTxPoolExt` with the given pool and transaction response builder.
     pub fn new(pool: Pool, tx_resp_builder: Eth) -> Self {
         Self {
             pool,

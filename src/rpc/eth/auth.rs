@@ -25,12 +25,14 @@ pub trait TaikoAuthExtApi {
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>>;
 }
 
+/// A concrete implementation of the `TaikoAuthExtApi` trait.
 #[derive(Clone)]
 pub struct TaikoAuthExt<Provider: DatabaseProviderFactory> {
     provider: Provider,
 }
 
 impl<Provider: DatabaseProviderFactory> TaikoAuthExt<Provider> {
+    /// Creates a new instance of `TaikoAuthExt` with the given provider.
     pub fn new(provider: Provider) -> Self {
         Self { provider }
     }
@@ -41,6 +43,7 @@ impl<Provider> TaikoAuthExtApiServer for TaikoAuthExt<Provider>
 where
     Provider: DatabaseProviderFactory + 'static,
 {
+    /// Sets the L1 head origin in the database.
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64> {
         let tx = self
             .provider
@@ -56,6 +59,7 @@ where
         Ok(id.to())
     }
 
+    /// Updates the L1 origin in the database.
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {
         let tx = self
             .provider

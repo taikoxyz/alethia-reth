@@ -1,12 +1,3 @@
-use crate::{
-    chainspec::spec::TaikoChainSpec,
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
-    },
-    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
-    rpc::types::TaikoExecutionData,
-};
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::PayloadError;
 use reth::{primitives::RecoveredBlock, providers::EthStorage};
@@ -22,7 +13,16 @@ use reth_node_builder::rpc::EngineValidatorBuilder;
 use reth_primitives_traits::Block as SealedBlock;
 use reth_trie_db::MerklePatriciaTrie;
 use std::{convert::Infallible, sync::Arc};
-use tracing::debug;
+
+use crate::{
+    chainspec::spec::TaikoChainSpec,
+    factory::{
+        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
+        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
+    },
+    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
+    rpc::types::TaikoExecutionData,
+};
 
 /// Builder for [`TaikoEngineValidator`].
 #[derive(Debug, Default, Clone)]
@@ -52,8 +52,10 @@ where
             >,
         >,
 {
+    /// The consensus implementation to build.
     type Validator = TaikoEngineValidator;
 
+    /// Creates the engine validator.
     async fn build(self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
         Ok(TaikoEngineValidator::new(ctx.config.chain.clone()))
     }
@@ -73,9 +75,16 @@ impl TaikoEngineValidator {
 }
 
 impl PayloadValidator for TaikoEngineValidator {
+    /// The block type used by the engine.
     type Block = Block;
+    /// The execution payload type used by the engine.
     type ExecutionData = TaikoExecutionData;
 
+    /// Ensures that the given payload does not violate any consensus rules that concern the block's
+    /// layout.
+    ///
+    /// This function must convert the payload into the executable block and pre-validate its
+    /// fields.
     fn ensure_well_formed_payload(
         &self,
         payload: Self::ExecutionData,
@@ -85,10 +94,9 @@ impl PayloadValidator for TaikoEngineValidator {
             taiko_sidecar,
         } = payload;
 
-        // let expected_hash = payload.block_hash;
         let expected_hash = payload.block_hash;
 
-        // First parse the block
+        // First parse the block.
         let mut block = payload.try_into_block()?;
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
@@ -111,11 +119,6 @@ impl PayloadValidator for TaikoEngineValidator {
             .map_err(|e| NewPayloadError::Other(e.into()));
         }
 
-        debug!(
-            "Taiko payload validated: block hash matches expected hash: {}",
-            expected_hash
-        );
-
         sealed_block
             .try_recover()
             .map_err(|e| NewPayloadError::Other(e.into()))
@@ -126,6 +129,8 @@ impl<Types> EngineValidator<Types> for TaikoEngineValidator
 where
     Types: PayloadTypes<PayloadAttributes = TaikoPayloadAttributes, ExecutionData = TaikoExecutionData>,
 {
+    /// Validates the presence or exclusion of fork-specific fields based on the payload attributes
+    /// and the message version.
     fn validate_version_specific_fields(
         &self,
         _: EngineApiMessageVersion,
@@ -135,6 +140,7 @@ where
         Ok(())
     }
 
+    /// Ensures that the payload attributes are valid for the given [`EngineApiMessageVersion`].
     fn ensure_well_formed_attributes(
         &self,
         _: EngineApiMessageVersion,
@@ -144,6 +150,7 @@ where
         Ok(())
     }
 
+    /// Validates the payload attributes with respect to the header.
     fn validate_payload_attributes_against_header(
         &self,
         attributes: &TaikoPayloadAttributes,

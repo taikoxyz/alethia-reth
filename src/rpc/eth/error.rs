@@ -4,7 +4,6 @@ use reth_rpc_server_types::result::rpc_error_with_code;
 /// Errors that can occur when interacting with the `taiko_` namespace
 #[derive(Debug, thiserror::Error)]
 pub enum TaikoApiError {
-    /// When a raw transaction is empty
     #[error("not found")]
     GethNotFound,
 }

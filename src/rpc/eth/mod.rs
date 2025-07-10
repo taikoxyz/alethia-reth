@@ -28,17 +28,20 @@ pub trait TaikoExtApi {
     fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>>;
 }
 
+/// The Taiko RPC extension implementation.
 pub struct TaikoExt<Provider: DatabaseProviderFactory> {
     provider: Provider,
 }
 
 impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
+    /// Creates a new instance of `TaikoExt` with the given provider.
     pub fn new(provider: Provider) -> Self {
         Self { provider }
     }
 }
 
 impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
+    /// Retrieves the L1 origin by its ID from the database.
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<L1Origin>> {
         let provider = self
             .provider
@@ -63,6 +66,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
         }
     }
 
+    /// Retrieves the head L1 origin from the database.
     fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>> {
         let provider = self
             .provider

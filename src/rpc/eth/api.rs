@@ -63,6 +63,7 @@ use crate::{
     },
 };
 
+/// `Eth` API implementation for Taiko network.
 pub struct TaikoEthApi<Provider: BlockReader, Pool, Network, EvmConfig>(
     pub EthApi<Provider, Pool, Network, EvmConfig>,
 );
@@ -82,10 +83,14 @@ where
     Self: Send + Sync,
     Provider: BlockReader,
 {
+    /// Extension of [`FromEthApiError`], with network specific errors.
     type Error = EthApiError;
+    /// Blockchain primitive types, specific to network, e.g. block and transaction.
     type NetworkTypes = Ethereum;
+    /// Conversion methods for transaction RPC type.
     type TransactionCompat = EthTxBuilder;
 
+    /// Returns reference to transaction response builder.
     fn tx_resp_builder(&self) -> &Self::TransactionCompat {
         &self.0.tx_resp_builder
     }
@@ -99,29 +104,40 @@ where
     Network: Send + Sync + Clone,
     EvmConfig: Send + Sync + Clone + Unpin,
 {
+    /// Blockchain data primitives.
     type Primitives = Provider::Primitives;
+    /// The provider type used to interact with the node.
     type Provider = Provider;
+    /// The transaction pool of the node.
     type Pool = Pool;
+    /// The node's EVM configuration.
     type Evm = EvmConfig;
+    /// Network API.
     type Network = Network;
+    /// Builder for new blocks.
     type PayloadBuilder = ();
 
+    /// Returns the transaction pool of the node.
     fn pool(&self) -> &Self::Pool {
         self.0.pool()
     }
 
+    /// Returns the node's evm config.
     fn evm_config(&self) -> &Self::Evm {
         self.0.evm_config()
     }
 
+    /// Returns the handle to the network
     fn network(&self) -> &Self::Network {
         self.0.network()
     }
 
+    /// Returns the handle to the payload builder service.
     fn payload_builder(&self) -> &Self::PayloadBuilder {
         &()
     }
 
+    /// Returns the provider of the node.
     fn provider(&self) -> &Self::Provider {
         self.0.provider()
     }
@@ -135,6 +151,7 @@ where
     Network: Send + Sync + Clone,
     EvmConfig: Send + Sync + Clone + Unpin,
 {
+    /// Returns handle to RPC cache service.
     #[inline]
     fn cache(&self) -> &EthStateCache<ProviderBlock<Provider>, ProviderReceipt<Provider>> {
         self.0.cache()
@@ -157,16 +174,23 @@ where
     Self: Clone + Send + Sync + 'static,
     Provider: BlockReader,
 {
+    /// Returns a handle for spawning IO heavy blocking tasks.
+    ///
+    /// Runtime access in default trait method implementations.
     #[inline]
     fn io_task_spawner(&self) -> impl TaskSpawner {
         self.0.task_spawner()
     }
 
+    /// Returns a handle for spawning CPU heavy blocking tasks.
+    ///
+    /// Thread pool access in default trait method implementations.
     #[inline]
     fn tracing_task_pool(&self) -> &BlockingTaskPool {
         self.0.blocking_task_pool()
     }
 
+    /// Returns handle to semaphore for pool of CPU heavy blocking tasks.
     #[inline]
     fn tracing_task_guard(&self) -> &BlockingTaskGuard {
         self.0.blocking_task_guard()
@@ -178,6 +202,8 @@ impl<Provider, Pool, Network, EvmConfig> AddDevSigners
 where
     Provider: BlockReader,
 {
+    /// Generates 20 random developer accounts.
+    /// Used in DEV mode.
     fn with_dev_accounts(&self) {
         *self.0.signers().write() = DevSigner::random_signers(20)
     }
@@ -192,6 +218,7 @@ where
     >,
     Provider: BlockReader + ChainSpecProvider,
 {
+    /// Helper method for `eth_getBlockReceipts` and `eth_getTransactionReceipt`.
     async fn build_transaction_receipt(
         &self,
         tx: TransactionSigned,
@@ -249,11 +276,13 @@ where
         + ChainSpecProvider<ChainSpec: EthChainSpec + EthereumHardforks>
         + StateProviderFactory,
 {
+    /// Returns a handle for reading gas price.
     #[inline]
     fn gas_oracle(&self) -> &GasPriceOracle<Self::Provider> {
         self.0.gas_oracle()
     }
 
+    /// Returns a handle for reading fee history data from memory.
     #[inline]
     fn fee_history_cache(&self) -> &FeeHistoryCache {
         self.0.fee_history_cache()
@@ -316,16 +345,24 @@ where
         > + SpawnBlocking,
     Provider: BlockReader,
 {
+    /// Returns default gas limit to use for `eth_call` and tracing RPC methods.
+    ///
+    /// Data access in default trait method implementations.
     #[inline]
     fn call_gas_limit(&self) -> u64 {
         self.0.gas_cap()
     }
 
+    /// Returns the maximum number of blocks accepted for `eth_simulateV1`.
     #[inline]
     fn max_simulate_blocks(&self) -> u64 {
         self.0.max_simulate_blocks()
     }
 
+    /// Configures a new `TxEnv`  for the [`TransactionRequest`]
+    ///
+    /// All `TxEnv` fields are derived from the given [`TransactionRequest`], if fields are
+    /// `None`, they fall back to the [`EvmEnv`]'s settings.
     fn create_txn_env(
         &self,
         evm_env: &EvmEnv<SpecFor<Self::Evm>>,
@@ -436,6 +473,7 @@ where
     Self: LoadState + SpawnBlocking,
     Provider: BlockReader,
 {
+    /// Returns the maximum number of blocks into the past for generating state proofs.
     fn max_proof_window(&self) -> u64 {
         self.0.eth_proof_window()
     }
@@ -467,6 +505,9 @@ where
         >,
     Provider: BlockReader + ChainSpecProvider,
 {
+    /// Helper function for `eth_getBlockReceipts`.
+    ///
+    /// Returns all transaction receipts in block, or `None` if block wasn't found.
     async fn block_receipts(
         &self,
         block_id: BlockId,
@@ -545,6 +586,7 @@ where
             Receipt = reth_ethereum_primitives::Receipt,
         >,
 {
+    /// Returns a handle to the pending block.
     #[inline]
     fn pending_block(
         &self,
@@ -554,6 +596,7 @@ where
         self.0.pending_block()
     }
 
+    /// Returns [`ConfigureEvm::NextBlockEnvCtx`] for building a local pending block.
     fn next_env_attributes(
         &self,
         parent: &SealedHeader<ProviderHeader<Self::Provider>>,
@@ -577,6 +620,7 @@ where
     Self: LoadTransaction<Provider: BlockReaderIdExt>,
     Provider: BlockReader<Transaction = ProviderTx<Self::Provider>>,
 {
+    /// Returns a handle for signing data.
     #[inline]
     fn signers(&self) -> &parking_lot::RwLock<Vec<Box<dyn EthSigner<ProviderTx<Self::Provider>>>>> {
         self.0.signers()
@@ -628,12 +672,15 @@ where
         >,
     Provider: BlockReader,
 {
+    /// The transaction type signers are using.
     type Transaction = ProviderTx<Provider>;
 
+    /// Returns the block number is started on.
     fn starting_block(&self) -> U256 {
         self.0.starting_block()
     }
 
+    /// Returns a handle to the signers owned by provider.
     fn signers(
         &self,
     ) -> &parking_lot::RwLock<Vec<Box<dyn reth_rpc_eth_api::helpers::EthSigner<Self::Transaction>>>>

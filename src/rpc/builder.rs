@@ -39,6 +39,7 @@ where
     >,
     EV: EngineValidatorBuilder<N>,
 {
+    /// The engine API RPC module.
     type EngineApi = TaikoEngineApi<
         N::Provider,
         <N::Types as NodeTypes>::Payload,
@@ -47,6 +48,10 @@ where
         <N::Types as NodeTypes>::ChainSpec,
     >;
 
+    /// Builds the engine API instance given the provided [`AddOnsContext`].
+    ///
+    /// [`Self::EngineApi`] will be converted into the method handlers of the authenticated RPC
+    /// server (engine API).
     async fn build_engine_api(self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::EngineApi> {
         let Self {
             engine_validator_builder,

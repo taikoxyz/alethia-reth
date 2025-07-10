@@ -19,7 +19,7 @@ use crate::{
     rpc::eth::api::TaikoEthApi,
 };
 
-/// Builds [`EthApi`](reth_rpc::EthApi) for Taiko.
+/// Builds [`TaikoEthApi`] for the Taiko node.
 #[derive(Debug, Default)]
 pub struct TaikoEthApiBuilder(EthereumEthApiBuilder);
 
@@ -53,8 +53,10 @@ where
             >,
         >,
 {
+    /// The Ethapi implementation this builder will build.
     type EthApi = TaikoEthApi<N::Provider, N::Pool, N::Network, N::Evm>;
 
+    /// Builds the [`TaikoEthApi`] from the given context.
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
         let api = reth_rpc::EthApiBuilder::new(
             ctx.components.provider().clone(),

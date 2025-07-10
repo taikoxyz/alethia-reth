@@ -14,7 +14,7 @@ cd taiko-reth
 Build by `Cargo`:
 
 ```bash
-cargo build --release --bin taiko-reth
+cargo build --release
 ```
 
 The main binary will be located at `target/release/taiko-reth`.
@@ -38,7 +38,7 @@ To run the compiled node:
 To see available command-line options and subcommands, run:
 
 ```bash
-./target/release/taiko-node --help
+./target/release/taiko-reth --help
 ```
 
 _(Note: Replace `[OPTIONS]` with the necessary configuration flags for your setup. Refer to the `--help` output for details.)_

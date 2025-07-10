@@ -9,7 +9,7 @@ RUN apt-get update && \
 
 COPY ./ .
 
-RUN cargo build --release --bin taiko-reth
+RUN cargo build --release
 
 FROM ubuntu:22.04
 

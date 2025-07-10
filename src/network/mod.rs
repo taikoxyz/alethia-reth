@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::chainspec::spec::TaikoChainSpec;
 
-/// A basic ethereum payload service.
+/// A basic Taiko network builder service.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TaikoNetworkBuilder;
 
@@ -24,8 +24,10 @@ where
         > + Unpin
         + 'static,
 {
+    /// The network built.
     type Network = NetworkHandle<EthNetworkPrimitives>;
 
+    /// Launches the network implementation and returns the handle to it.
     async fn build_network(
         self,
         ctx: &BuilderContext<Node>,

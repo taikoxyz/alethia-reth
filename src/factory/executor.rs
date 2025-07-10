@@ -25,7 +25,7 @@ use revm_database_interface::DatabaseCommit;
 
 use crate::factory::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, block::TaikoBlockExecutionCtx};
 
-/// Block executor for Ethereum.
+/// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     /// Reference to the specification object.
     spec: Spec,
@@ -52,7 +52,7 @@ where
     Spec: Clone,
     R: ReceiptBuilder,
 {
-    /// Creates a new [`EthBlockExecutor`]
+    /// Creates a new [`TaikoBlockExecutor`]
     pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
         Self {
             evm,
@@ -77,10 +77,16 @@ where
     Spec: EthExecutorSpec,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
+    /// Input transaction type.
     type Transaction = R::Transaction;
+    /// Receipt type this executor produces.
     type Receipt = R::Receipt;
+    /// EVM used by the executor.
     type Evm = E;
 
+    /// Applies any necessary changes before executing the block's transactions.
+    /// NOTE: Here we use a system call to set the Anchor transact sender account information and
+    /// decode the base fee share percentage from the block's extra data.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
         let state_clear_flag = self
@@ -111,7 +117,8 @@ where
                     Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
                     Address::ZERO,
                     encode_anchor_system_call_data(
-                        decode_ontake_extra_data(self.ctx.extra_data.clone()),
+                        // Decode the base fee share percentage from the block's extra data.
+                        decode_post_ontake_extra_data(self.ctx.extra_data.clone()),
                         caller_nonce,
                     ),
                 )
@@ -122,6 +129,11 @@ where
         Ok(())
     }
 
+    /// Executes a single transaction and applies execution result to internal state. Invokes the
+    /// given closure with an internal [`ExecutionResult`] produced by the EVM, and commits the
+    /// transaction to the state on [`CommitChanges::Yes`].
+    ///
+    /// Returns [`None`] if transaction was skipped via [`CommitChanges::No`].
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutableTx<Self>,
@@ -175,6 +187,8 @@ where
         Ok(Some(gas_used))
     }
 
+    /// Applies any necessary changes after executing the block's transactions, completes execution
+    /// and returns the underlying EVM along with execution result.
     fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         Ok((
             self.evm,
@@ -186,19 +200,24 @@ where
         ))
     }
 
+    /// Sets a hook to be called after each state change during execution.
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
         self.system_caller.with_state_hook(hook);
     }
 
+    /// Exposes mutable reference to EVM.
     fn evm_mut(&mut self) -> &mut Self::Evm {
         &mut self.evm
     }
 
+    /// Exposes immutable reference to EVM.
     fn evm(&self) -> &Self::Evm {
         &self.evm
     }
 }
 
+// Encode the anchor system call data for the Anchor contract sender account information
+// and the base fee share percentage.
 fn encode_anchor_system_call_data(basefee_share_pctg: u64, caller_nonce: u64) -> Bytes {
     let mut buf = [0u8; 16];
     buf[..8].copy_from_slice(&basefee_share_pctg.to_be_bytes());
@@ -206,7 +225,8 @@ fn encode_anchor_system_call_data(basefee_share_pctg: u64, caller_nonce: u64) ->
     Bytes::from(buf.to_vec())
 }
 
-fn decode_ontake_extra_data(extradata: Bytes) -> u64 {
+// Decode the extra data from the post Ontake block to extract the base fee share percentage.
+fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0] as u64
 }

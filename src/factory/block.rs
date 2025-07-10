@@ -20,7 +20,7 @@ use crate::{
     factory::{executor::TaikoBlockExecutor, factory::TaikoEvmFactory},
 };
 
-/// Context for Ethereum block execution.
+/// Context for Taiko block execution.
 #[derive(Debug, Clone)]
 pub struct TaikoBlockExecutionCtx<'a> {
     /// Parent block hash.
@@ -86,15 +86,24 @@ where
     EvmF: EvmFactory<Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>>,
     Self: 'static,
 {
+    /// The EVM factory used by the executor.
     type EvmFactory = EvmF;
+    /// Context required for block execution.
+    ///
+    /// This is similar to [`crate::EvmEnv`], but only contains context unrelated to EVM and
+    /// required for execution of an entire block.
     type ExecutionCtx<'a> = TaikoBlockExecutionCtx<'a>;
+    /// Transaction type used by the executor.
     type Transaction = R::Transaction;
+    /// Receipt type produced by the executor.
     type Receipt = R::Receipt;
 
+    /// Reference to EVM factory used by the executor.
     fn evm_factory(&self) -> &Self::EvmFactory {
         &self.evm_factory
     }
 
+    /// Creates an Taiko block executor with given EVM and execution context.
     fn create_executor<'a, DB, I>(
         &'a self,
         evm: EvmF::Evm<&'a mut State<DB>, I>,

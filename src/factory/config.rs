@@ -1,14 +1,5 @@
 use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
-use crate::{
-    chainspec::spec::TaikoChainSpec,
-    evm::evm::TaikoEvmExtraContext,
-    factory::{
-        assembler::TaikoBlockAssembler,
-        block::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
-        factory::TaikoEvmFactory,
-    },
-};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::Database;
 use alloy_primitives::Bytes;
@@ -24,6 +15,17 @@ use reth_ethereum::EthPrimitives;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
 use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
 
+use crate::{
+    chainspec::spec::TaikoChainSpec,
+    evm::evm::TaikoEvmExtraContext,
+    factory::{
+        assembler::TaikoBlockAssembler,
+        block::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
+        factory::TaikoEvmFactory,
+    },
+};
+
+/// A complete configuration of EVM for Taiko network.
 #[derive(Debug, Clone)]
 pub struct TaikoEvmConfig {
     pub executor_factory: TaikoBlockExecutorFactory,
@@ -32,11 +34,12 @@ pub struct TaikoEvmConfig {
 }
 
 impl TaikoEvmConfig {
+    /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>, extra_context: TaikoEvmExtraContext) -> Self {
         Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::new(extra_context))
     }
 
-    /// Creates a new Ethereum EVM configuration with the given chain spec and EVM factory.
+    /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
     pub fn new_with_evm_factory(
         chain_spec: Arc<TaikoChainSpec>,
         evm_factory: TaikoEvmFactory,
@@ -59,21 +62,31 @@ impl TaikoEvmConfig {
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
+    /// The primitives type used by the EVM.
     type Primitives = EthPrimitives;
+    /// The error type that is returned by [`Self::next_evm_env`].
     type Error = Infallible;
+    /// Context required for configuring next block environment.
+    ///
+    /// Contains values that can't be derived from the parent block.
     type NextBlockEnvCtx = TaikoNextBlockEnvAttributes;
+    /// Configured [`BlockExecutorFactory`], contains [`EvmFactory`] internally.
     type BlockExecutorFactory =
         TaikoBlockExecutorFactory<RethReceiptBuilder, Arc<TaikoChainSpec>, TaikoEvmFactory>;
+    /// The assembler to build a Taiko block.
     type BlockAssembler = TaikoBlockAssembler;
 
+    /// Returns reference to the configured [`BlockExecutorFactory`].
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
         &self.executor_factory
     }
 
+    /// Returns reference to the configured [`BlockAssembler`].
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
     }
 
+    /// Creates a new [`EvmEnv`] for the given header.
     fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
@@ -93,6 +106,11 @@ impl ConfigureEvm for TaikoEvmConfig {
         EvmEnv { cfg_env, block_env }
     }
 
+    /// Returns the configured [`EvmEnv`] for `parent + 1` block.
+    ///
+    /// This is intended for usage in block building after the merge and requires additional
+    /// attributes that can't be derived from the parent block: attributes that are determined by
+    /// the CL, such as the timestamp, suggested fee recipient, and randomness value.
     fn next_evm_env(
         &self,
         parent: &Header,
@@ -120,6 +138,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         Ok((cfg, block_env).into())
     }
 
+    /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for a given block.
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
@@ -134,6 +153,8 @@ impl ConfigureEvm for TaikoEvmConfig {
         }
     }
 
+    /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for `parent + 1`
+    /// block.
     fn context_for_next_block(
         &self,
         parent: &SealedHeader,
@@ -149,6 +170,8 @@ impl ConfigureEvm for TaikoEvmConfig {
         }
     }
 
+    /// Returns a new EVM with the given database configured with the given environment settings,
+    /// including the spec id and transaction environment.
     fn evm_with_env<DB: Database>(&self, db: DB, evm_env: EvmEnvFor<Self>) -> EvmFor<Self, DB> {
         self.evm_factory().create_evm(db, evm_env)
     }

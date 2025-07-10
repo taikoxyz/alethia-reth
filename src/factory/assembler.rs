@@ -15,22 +15,26 @@ use reth_provider::BlockExecutionResult;
 
 use crate::{chainspec::spec::TaikoChainSpec, factory::block::TaikoBlockExecutionCtx};
 
+/// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 #[derive(Clone, Debug)]
 pub struct TaikoBlockAssembler {
     block_assembler: EthBlockAssembler<TaikoChainSpec>,
 }
 
 impl TaikoBlockAssembler {
+    /// Creates a new instance of the [`TaikoBlockAssembler`] with the given chain specification.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
         Self {
             block_assembler: EthBlockAssembler::new(chain_spec),
         }
     }
 
+    /// Returns a reference to the chain specification.
     pub fn chain_spec(&self) -> Arc<TaikoChainSpec> {
         self.block_assembler.chain_spec.clone()
     }
 
+    /// Updates the block `extra_data` with the given value.
     pub fn with_extra_data(mut self, extra_data: Vec<u8>) -> Self {
         self.block_assembler.extra_data = extra_data.into();
         self
@@ -45,8 +49,10 @@ where
             Receipt = Receipt,
         >,
 {
+    /// The block type produced by the assembler.
     type Block = Block;
 
+    /// Builds a Taiko network block.
     fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, F>,

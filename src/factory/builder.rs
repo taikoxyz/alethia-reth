@@ -13,6 +13,7 @@ use crate::{
     factory::config::TaikoEvmConfig, payload::engine::TaikoEngineTypes,
 };
 
+/// A builder for the Taiko block executor.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct TaikoExecutorBuilder;
@@ -28,8 +29,10 @@ where
         >,
     Node: FullNodeTypes<Types = Types>,
 {
+    /// The EVM config to use.
     type EVM = TaikoEvmConfig;
 
+    /// Creates the EVM config.
     fn build_evm(
         self,
         ctx: &BuilderContext<Node>,

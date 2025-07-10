@@ -20,13 +20,14 @@ use crate::evm::evm::{TaikoEvm, TaikoEvmExtraContext};
 
 pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
 
+/// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, INSP> {
     inner: TaikoEvm<EthEvmContext<DB>, INSP>,
     inspect: bool,
 }
 
 impl<DB: Database, INSP> TaikoEvmWrapper<DB, INSP> {
-    /// Creates a new Taiko EVM instance.
+    /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: TaikoEvm<EthEvmContext<DB>, INSP>, inspect: bool) -> Self {
         Self {
             inner: evm,
@@ -66,17 +67,34 @@ impl<DB: Database, I> DerefMut for TaikoEvmWrapper<DB, I> {
     }
 }
 
+/// An instance of an ethereum virtual machine.
+///
+/// An EVM is commonly initialized with the corresponding block context and state and it's only
+/// purpose is to execute transactions.
+///
+/// Executing a transaction will return the outcome of the transaction.
 impl<DB, I> Evm for TaikoEvmWrapper<DB, I>
 where
     DB: Database,
     I: Inspector<EthEvmContext<DB>>,
 {
+    /// Database type held by the EVM.
     type DB = DB;
+    /// The transaction object that the EVM will execute.
     type Tx = TxEnv;
+    /// Error type returned by EVM. Contains either errors related to invalid transactions or
+    /// internal irrecoverable execution errors.
     type Error = EVMError<DB::Error>;
+    /// Halt reason. Enum over all possible reasons for halting the execution. When execution halts,
+    /// it means that transaction is valid, however, it's execution was interrupted (e.g because of
+    /// running out of gas or overflowing stack).
     type HaltReason = HaltReason;
+    /// Identifier of the EVM specification. EVM is expected to use this identifier to determine
+    /// which features are enabled.
     type Spec = SpecId;
+    /// Precompiles used by the EVM.
     type Precompiles = PrecompilesMap;
+    /// Evm inspector.
     type Inspector = I;
 
     /// Reference to [`BlockEnv`].
@@ -107,13 +125,16 @@ where
     /// Note: this will only keep the target `contract` in the state. This is done because revm is
     /// loading [`BlockEnv::beneficiary`] into state by default, and we need to avoid it by also
     /// covering edge cases when beneficiary is set to the system contract address.
+    /// NOTE: we use this call as a workaround to mark the Anchor transaction and base fee share percentage in
+    /// the current block.
     fn transact_system_call(
         &mut self,
         caller: Address,
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        // NOTE: we use this workaround to mark the nonce of the Anchor transaction in the current block.
+        // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
+        // in this block.
         if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) {
             let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data).ok_or(
                 EVMError::Custom("invalid encoded anchor system call data".to_string()),
@@ -216,27 +237,36 @@ where
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }
 
+    /// Determines whether additional transactions should be inspected or not.
+    ///
+    /// See also [`EvmFactory::create_evm_with_inspector`].
     fn set_inspector_enabled(&mut self, enabled: bool) {
         self.inspect = enabled;
     }
 
+    /// Getter of precompiles.
     fn precompiles(&self) -> &Self::Precompiles {
         &self.inner.inner.precompiles
     }
 
+    /// Mutable getter of precompiles.
     fn precompiles_mut(&mut self) -> &mut Self::Precompiles {
         &mut self.inner.inner.precompiles
     }
 
+    /// Getter of inspector.
     fn inspector(&self) -> &Self::Inspector {
         &self.inner.inner.inspector
     }
 
+    /// Mutable getter of inspector.
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
         &mut self.inner.inner.inspector
     }
 }
 
+// Decode the anchor system call data from the given bytes, if
+// the bytes are not of the expected length or format, return None.
 fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
     if bytes.len() != 16 {
         return None;

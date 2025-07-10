@@ -8,7 +8,7 @@ use reth::revm::{
     handler::EthPrecompiles,
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
-    primitives::{Address, hardfork::SpecId},
+    primitives::hardfork::SpecId,
 };
 use reth_evm::precompiles::PrecompilesMap;
 
@@ -17,39 +17,37 @@ use crate::{
     factory::alloy::TaikoEvmWrapper,
 };
 
+/// A factory type for creating instances of the Taiko EVM given a certain input.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct TaikoEvmFactory {
     pub extra_context: TaikoEvmExtraContext,
 }
 
 impl TaikoEvmFactory {
+    /// Creates a new instance of [`TaikoEvmFactory`] with the given extra context.
     pub fn new(extra_context: TaikoEvmExtraContext) -> Self {
         Self { extra_context }
-    }
-
-    pub fn basefee_share_pctg(&self) -> u64 {
-        self.extra_context.basefee_share_pctg()
-    }
-
-    pub fn anchor_caller_address(&self) -> Option<Address> {
-        self.extra_context.anchor_caller_address()
-    }
-
-    pub fn anchor_caller_nonce(&self) -> Option<u64> {
-        self.extra_context.anchor_caller_nonce()
     }
 }
 
 impl EvmFactory for TaikoEvmFactory {
+    /// The EVM type that this factory creates.
     type Evm<DB: Database, I: Inspector<EthEvmContext<DB>, EthInterpreter>> =
         TaikoEvmWrapper<DB, I>;
+    /// Transaction environment.
     type Tx = TxEnv;
+    /// EVM error.
     type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    /// Halt reason.
     type HaltReason = HaltReason;
+    /// The EVM context for inspectors.
     type Context<DB: Database> = EthEvmContext<DB>;
+    /// The EVM specification identifier
     type Spec = SpecId;
+    /// Precompiles used by the EVM.
     type Precompiles = PrecompilesMap;
 
+    /// Creates a new instance of an EVM.
     fn create_evm<DB: Database>(
         &self,
         db: DB,
@@ -67,6 +65,7 @@ impl EvmFactory for TaikoEvmFactory {
         TaikoEvmWrapper::new(TaikoEvm::new(evm, self.extra_context), false)
     }
 
+    /// Creates a new instance of an EVM with an inspector.
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,

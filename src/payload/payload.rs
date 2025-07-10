@@ -15,11 +15,12 @@ use tracing::debug;
 
 use crate::payload::attributes::TaikoPayloadAttributes;
 
-/// Optimism Payload Builder Attributes
+/// Taiko Payload Builder Attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaikoPayloadBuilderAttributes {
     /// Inner ethereum payload builder attributes
     pub payload_attributes: EthPayloadBuilderAttributes,
+    // Taiko realated attributes.
     pub tx_list_hash: B256,
     pub beneficiary: Address,
     pub gas_limit: u64,
@@ -31,12 +32,15 @@ pub struct TaikoPayloadBuilderAttributes {
 }
 
 impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
+    /// The payload attributes that can be used to construct this type. Used as the argument in
+    /// [`PayloadBuilderAttributes::try_new`].
     type RpcPayloadAttributes = TaikoPayloadAttributes;
+    /// The error type used in [`PayloadBuilderAttributes::try_new`].
     type Error = alloy_rlp::Error;
 
     /// Creates a new payload builder for the given parent block and the attributes.
     ///
-    /// Derives the unique [`PayloadId`] for the given parent and attributes
+    /// Derives the unique [`PayloadId`] for the given parent and attributes.
     fn try_new(
         parent: B256,
         attributes: TaikoPayloadAttributes,
@@ -95,30 +99,37 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
         Ok(res)
     }
 
+    /// Returns the id for the running payload job.
     fn payload_id(&self) -> PayloadId {
         self.payload_attributes.id
     }
 
+    /// Returns the parent for the running payload job.
     fn parent(&self) -> B256 {
         self.payload_attributes.parent
     }
 
+    /// Returns the timestamp for the running payload job.
     fn timestamp(&self) -> u64 {
         self.timestamp
     }
 
+    /// Returns the parent beacon block root for the running payload job.
     fn parent_beacon_block_root(&self) -> Option<B256> {
         self.payload_attributes.parent_beacon_block_root
     }
 
+    /// Returns the suggested fee recipient for the running payload job.
     fn suggested_fee_recipient(&self) -> Address {
         self.beneficiary
     }
 
+    /// Returns the random beacon value for the running payload job.
     fn prev_randao(&self) -> B256 {
         self.mix_hash
     }
 
+    /// Returns the withdrawals for the running payload job.
     fn withdrawals(&self) -> &Withdrawals {
         &self.payload_attributes.withdrawals
     }

@@ -18,6 +18,7 @@ pub mod builder;
 pub mod engine;
 pub mod payload;
 
+/// The builder to spwan [`TaikoPayloadBuilder`] payload building tasks.
 #[derive(Debug, Default, Clone)]
 pub struct TaikoPayloadBuilderBuilder;
 
@@ -36,8 +37,12 @@ where
         + Unpin
         + 'static,
 {
+    /// Payload builder implementation.
     type PayloadBuilder = TaikoPayloadBuilder<Node::Provider, TaikoEvmConfig>;
 
+    /// Spawns the payload service and returns the handle to it.
+    ///
+    /// The [`BuilderContext`] is provided to allow access to the node's configuration.
     async fn build_payload_builder(
         self,
         ctx: &BuilderContext<Node>,

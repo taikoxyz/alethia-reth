@@ -72,9 +72,23 @@ where
         >,
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone,
 {
+    /// The payload attributes type to accept for building.
     type Attributes = TaikoPayloadBuilderAttributes;
+    /// /// The type of the built payload.
     type BuiltPayload = EthBuiltPayload;
 
+    /// Tries to build a transaction payload using provided arguments.
+    ///
+    /// Constructs a transaction payload based on the given arguments,
+    /// returning a `Result` indicating success or an error if building fails.
+    ///
+    /// # Arguments
+    ///
+    /// - `args`: Build arguments containing necessary components.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating the build outcome or an error.
     fn try_build(
         &self,
         args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
@@ -82,6 +96,9 @@ where
         taiko_payload(self.evm_config.clone(), self.client.clone(), args)
     }
 
+    /// Invoked when the payload job is being resolved and there is no payload yet.
+    ///
+    /// This can happen if the CL requests a payload before the first payload has been built.
     fn on_missing_payload(
         &self,
         _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
@@ -89,6 +106,7 @@ where
         MissingPayloadBehaviour::AwaitInProgress
     }
 
+    /// Builds an empty payload without any transaction.
     fn build_empty_payload(
         &self,
         config: PayloadConfig<Self::Attributes>,
@@ -101,8 +119,9 @@ where
     }
 }
 
+// Build a Taiko network payload using the given attributes.
 #[inline]
-pub fn taiko_payload<EvmConfig, Client>(
+fn taiko_payload<EvmConfig, Client>(
     evm_config: EvmConfig,
     client: Client,
     args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
@@ -199,9 +218,12 @@ where
     Ok(BuildOutcome::Freeze(payload))
 }
 
+/// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder<TaikoChainSpec>`,
+/// to build `TaikoPayloadAttributes` from the local payload attributes builder.
 impl PayloadAttributesBuilder<TaikoPayloadAttributes>
     for LocalPayloadAttributesBuilder<TaikoChainSpec>
 {
+    /// Return a new payload attribute from the builder.
     fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
         TaikoPayloadAttributes {
             payload_attributes: self.build(timestamp),

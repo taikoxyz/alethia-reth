@@ -32,7 +32,7 @@ cargo test   # Runs cargo test
 To run the compiled node:
 
 ```bash
-./target/release/taiko-node [OPTIONS]
+./target/release/taiko-reth [OPTIONS]
 ```
 
 To see available command-line options and subcommands, run:

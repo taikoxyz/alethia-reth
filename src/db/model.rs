@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub const STORED_L1_HEAD_ORIGIN_KEY: u64 = 0;
 
+/// Represents the L1 origin for a L2 block in Taiko network.
 #[derive(Debug, Default, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct StoredL1Origin {
     pub block_id: U256,
@@ -35,6 +36,7 @@ tables! {
 
 // TODO: improve this implementation.
 impl Compact for StoredL1Origin {
+    /// Takes a buffer which can be written to. *Ideally*, it returns the length written to.
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: BufMut + AsMut<[u8]>,
@@ -71,6 +73,12 @@ impl Compact for StoredL1Origin {
         start_len - buf.remaining_mut()
     }
 
+    /// Takes a buffer which can be read from. Returns the object and `buf` with its internal cursor
+    /// advanced (eg.`.advance(len)`).
+    ///
+    /// `len` can either be the `buf` remaining length, or the length of the compacted type.
+    ///
+    /// It will panic, if `len` is smaller than `buf.len()`.
     fn from_compact(buf: &[u8], _len: usize) -> (Self, &[u8]) {
         let mut offset = 0;
 

@@ -39,6 +39,10 @@ impl<N> FullConsensus<N> for TaikoBeaconConsensus
 where
     N: NodePrimitives,
 {
+    /// Validate a block with regard to execution results:
+    ///
+    /// - Compares the receipts root in the block header to the block body
+    /// - Compares the gas used in the block header to the actual gas usage after execution
     fn validate_block_post_execution(
         &self,
         block: &RecoveredBlock<N::Block>,
@@ -49,8 +53,15 @@ where
 }
 
 impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
+    /// The error type related to consensus.
     type Error = ConsensusError;
 
+    /// Ensures the block response data matches the header.
+    ///
+    /// This ensures the body response items match the header's hashes:
+    ///   - ommer hash
+    ///   - transaction root
+    ///   - withdrawals root
     fn validate_body_against_header(
         &self,
         body: &B::Body,
@@ -59,8 +70,22 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         validate_body_against_header(body, header.header())
     }
 
+    /// Validate a block without regard for state:
+    ///
+    /// - Compares the ommer hash in the block header to the block body
     fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
-        validate_block_pre_execution(block, &self.chain_spec)
+        let ommers_hash = block.body().calculate_ommers_root();
+        if Some(block.ommers_hash()) != ommers_hash {
+            return Err(ConsensusError::BodyOmmersHashDiff(
+                GotExpected {
+                    got: ommers_hash.unwrap_or(EMPTY_OMMER_ROOT_HASH),
+                    expected: block.ommers_hash(),
+                }
+                .into(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -68,10 +93,18 @@ impl<H> HeaderValidator<H> for TaikoBeaconConsensus
 where
     H: BlockHeader,
 {
+    /// Validate if header is correct and follows consensus specification.
+    ///
+    /// This is called on standalone header to check if all hashes are correct.
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)
     }
 
+    /// Validate that the header information regarding parent are correct.
+    ///
+    /// In Taiko network, we only need to validate block number, and timestamp,
+    /// and we allow a block's timestamp to be equal to its parent's timestamp. Basefee, and
+    /// gas limit checks are not needed.
     fn validate_header_against_parent(
         &self,
         header: &SealedHeader<H>,
@@ -88,29 +121,4 @@ where
 
         Ok(())
     }
-}
-
-/// Validate a block without regard for state:
-///
-/// - Compares the ommer hash in the block header to the block body
-pub fn validate_block_pre_execution<B>(
-    block: &SealedBlock<B>,
-    _: &TaikoChainSpec,
-) -> Result<(), ConsensusError>
-where
-    B: Block,
-{
-    // Check ommers hash
-    let ommers_hash = block.body().calculate_ommers_root();
-    if Some(block.ommers_hash()) != ommers_hash {
-        return Err(ConsensusError::BodyOmmersHashDiff(
-            GotExpected {
-                got: ommers_hash.unwrap_or(EMPTY_OMMER_ROOT_HASH),
-                expected: block.ommers_hash(),
-            }
-            .into(),
-        ));
-    }
-
-    Ok(())
 }

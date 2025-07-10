@@ -115,7 +115,9 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the nonce of the Anchor transaction in the current block.
         if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) {
-            let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data).unwrap();
+            let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data).ok_or(
+                EVMError::Custom("invalid encoded anchor system call data".to_string()),
+            )?;
             debug!(
                 "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}",
                 basefee_share_pctg, caller_nonce

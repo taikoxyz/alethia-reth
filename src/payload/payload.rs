@@ -11,7 +11,7 @@ use reth_ethereum::TransactionSigned;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_primitives_traits::SignerRecoverable;
 use std::fmt::Debug;
-use tracing::warn;
+use tracing::debug;
 
 use crate::payload::attributes::TaikoPayloadAttributes;
 
@@ -59,22 +59,22 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
         };
 
         let transactions = decode_transactions(&attributes.block_metadata.tx_list)
-            .map_err(|e| {
-                warn!(
-                    "Failed to decode transactions: {e}, bytes: {:?}",
+            .unwrap_or_else(|e| {
+                debug!(
+                    "Failed to decode transactions: {e}, bytes: {:?}, skipping all transactions",
                     &attributes.block_metadata.tx_list
                 );
-                e
-            })?
-            .into_iter()
-            .map(|tx| {
-                tx.try_into_recovered()
-                    .map_err(|e| {
-                        warn!("Failed to recover transaction: {e}");
-                        e
-                    })
-                    .unwrap()
+                Vec::new()
             })
+            .into_iter()
+            .map(|tx| match tx.try_into_recovered() {
+                Ok(recovered) => Some(recovered),
+                Err(e) => {
+                    debug!("Failed to recover transaction: {e}, skip this invalid transaction");
+                    None
+                }
+            })
+            .filter_map(|x| x)
             .collect::<Vec<_>>();
 
         let res = Self {
@@ -84,7 +84,10 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             gas_limit: attributes.block_metadata.gas_limit,
             timestamp: attributes.block_metadata.timestamp.to(),
             mix_hash: attributes.payload_attributes.prev_randao,
-            base_fee_per_gas: attributes.base_fee_per_gas.try_into().unwrap(),
+            base_fee_per_gas: attributes
+                .base_fee_per_gas
+                .try_into()
+                .map_err(|_| alloy_rlp::Error::Custom("invalid attributes.base_fee_per_gas"))?,
             extra_data: attributes.block_metadata.extra_data,
             transactions: transactions,
         };

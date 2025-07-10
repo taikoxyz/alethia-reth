@@ -563,7 +563,9 @@ where
             suggested_fee_recipient: parent.beneficiary(),
             prev_randao: B256::random(),
             gas_limit: parent.gas_limit(),
-            base_fee_per_gas: parent.base_fee_per_gas().unwrap_or_default(),
+            base_fee_per_gas: parent.base_fee_per_gas().ok_or(EthApiError::InvalidParams(
+                "invalid parent base_fee_per_gas".to_string(),
+            ))?,
             extra_data: parent.extra_data().clone().into(),
         })
     }

@@ -42,12 +42,11 @@ where
     Provider: DatabaseProviderFactory + 'static,
 {
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64> {
-        let provider = self
+        let tx = self
             .provider
             .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?;
-
-        let tx = provider.into_tx();
+            .map_err(|_| EthApiError::InternalEthError)?
+            .into_tx();
 
         tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
             .map_err(|_| EthApiError::InternalEthError)?;
@@ -58,12 +57,11 @@ where
     }
 
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {
-        let provider = self
+        let tx = self
             .provider
             .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?;
-
-        let tx = provider.into_tx();
+            .map_err(|_| EthApiError::InternalEthError)?
+            .into_tx();
 
         tx.put::<StoredL1OriginTable>(
             l1_origin.block_id.to(),

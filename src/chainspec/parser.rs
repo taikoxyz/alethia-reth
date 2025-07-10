@@ -25,10 +25,22 @@ pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TaikoChainSpec>, eyre::Er
 pub struct TaikoChainSpecParser;
 
 impl ChainSpecParser for TaikoChainSpecParser {
+    /// The chain specification type.
     type ChainSpec = TaikoChainSpec;
 
+    /// List of supported chains.
     const SUPPORTED_CHAINS: &'static [&'static str] = SUPPORTED_CHAINS;
 
+    /// Parses the given string into a chain spec.
+    ///
+    /// # Arguments
+    ///
+    /// * `s` - A string slice that holds the chain spec to be parsed.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the input string cannot be parsed into a valid
+    /// chain spec.
     fn parse(s: &str) -> eyre::Result<Arc<TaikoChainSpec>> {
         chain_value_parser(s)
     }

@@ -1,4 +1,4 @@
-//! Rust Taiko (taiko-reth) binary executable.
+//! Rust Taiko node (taiko-reth) binary executable.
 use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
 use reth_rpc::eth::EthApiTypes;
 use reth_rpc::eth::RpcNodeCore;
@@ -14,6 +14,7 @@ use taiko_reth::{
     },
 };
 use tracing::info;
+
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
@@ -25,7 +26,7 @@ fn main() {
 
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, RessArgs>::parse_args().run(
         async move |builder, ress_args| {
-            info!(target: "reth::cli", "Launching node");
+            info!(target: "reth::cli", "Launching Taiko node");
             let NodeHandle {
                 node,
                 node_exit_future,
@@ -33,19 +34,19 @@ fn main() {
                 .node(TaikoNode::default())
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
+
+                    // Extend the RPC modules with `taiko_` namespace RPCs extensions.
                     let taiko_rpc_ext = TaikoExt::new(provider.clone());
                     ctx.modules.merge_configured(taiko_rpc_ext.into_rpc())?;
 
+                    // Extend the RPC modules with `taikoAuth_` namespace RPCs extensions.
                     let taiko_auth_rpc_ext = TaikoAuthExt::new(provider);
-
                     ctx.auth_module
                         .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
-
                     let taiko_auth_tx_pool_ext = TaikoAuthTxPoolExt::new(
                         ctx.node().pool().clone(),
                         *ctx.registry.eth_api().tx_resp_builder(),
                     );
-
                     ctx.auth_module
                         .merge_auth_methods(taiko_auth_tx_pool_ext.into_rpc())?;
 

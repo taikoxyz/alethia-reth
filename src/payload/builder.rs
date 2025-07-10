@@ -196,10 +196,7 @@ where
 
     let payload = EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, None);
 
-    Ok(BuildOutcome::Better {
-        payload,
-        cached_reads,
-    })
+    Ok(BuildOutcome::Freeze(payload))
 }
 
 impl PayloadAttributesBuilder<TaikoPayloadAttributes>

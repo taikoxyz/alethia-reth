@@ -19,3 +19,13 @@ impl TableSet for TaikoTables {
         )
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_taiko_tables_len() {
+        assert!(TaikoTables::tables().count() > Tables::ALL.len());
+    }
+}

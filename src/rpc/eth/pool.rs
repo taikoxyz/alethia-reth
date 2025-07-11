@@ -180,7 +180,12 @@ where
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
 
-        let state_provider = self.provider.state_by_block_hash(parent.hash()).unwrap();
+        let state_provider = self
+            .provider
+            .state_by_block_hash(parent.hash())
+            .map_err(|_| {
+                EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
+            })?;
         let mut db = State::builder()
             .with_database(StateProviderDatabase::new(&state_provider))
             .with_bundle_update()

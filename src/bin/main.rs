@@ -40,12 +40,14 @@ fn main() {
                     ctx.modules.merge_configured(taiko_rpc_ext.into_rpc())?;
 
                     // Extend the RPC modules with `taikoAuth_` namespace RPCs extensions.
-                    let taiko_auth_rpc_ext = TaikoAuthExt::new(provider);
+                    let taiko_auth_rpc_ext = TaikoAuthExt::new(provider.clone());
                     ctx.auth_module
                         .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
                     let taiko_auth_tx_pool_ext = TaikoAuthTxPoolExt::new(
                         ctx.node().pool().clone(),
                         *ctx.registry.eth_api().tx_resp_builder(),
+                        provider,
+                        ctx.node().evm_config().clone(),
                     );
                     ctx.auth_module
                         .merge_auth_methods(taiko_auth_tx_pool_ext.into_rpc())?;

@@ -43,6 +43,7 @@ reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8"
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 
 # alloy
 alloy-eips = { version = "1.0.9", default-features = false }
@@ -63,6 +64,7 @@ alloy-hardforks = "0.2.2"
 alloy-rlp = { version = "0.3.10", default-features = false, features = [
   "core-net",
 ] }
+op-alloy-flz = { version = "0.13.1", default-features = false }
 
 # revm
 revm-database-interface = { version = "4.0.0", default-features = false }
@@ -91,6 +93,7 @@ serde_with = { version = "3", default-features = false, features = [
   "macros",
   "base64",
 ] }
+libflate = { version = "2.0.0" }
 
 [features]
 default = ["serde"]

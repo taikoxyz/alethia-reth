@@ -45,3 +45,21 @@ impl ChainSpecParser for TaikoChainSpecParser {
         chain_value_parser(s)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_chain_value_by_network_name() {
+        let mainnet =
+            TaikoChainSpecParser::parse("mainnet").expect("Failed to parse mainnet chain spec");
+        assert_eq!(mainnet.inner.chain, 167000);
+
+        let devnet =
+            TaikoChainSpecParser::parse("devnet").expect("Failed to parse devnet chain spec");
+        assert_eq!(devnet.inner.chain, 167001);
+
+        assert_eq!(chain_value_parser("supported_network").is_err(), true);
+    }
+}

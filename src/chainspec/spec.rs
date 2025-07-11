@@ -160,3 +160,24 @@ impl EthChainSpec for TaikoChainSpec {
         Some(U256::ZERO)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_chain_spec_is_optimism() {
+        let spec = TaikoChainSpec::default();
+
+        assert!(spec.is_optimism());
+    }
+
+    #[test]
+    fn test_chain_spec_default_none_value() {
+        let spec = TaikoChainSpec::default();
+
+        assert_eq!(spec.deposit_contract(), None);
+        assert_eq!(spec.blob_params_at_timestamp(0), None);
+        assert_eq!(spec.final_paris_total_difficulty(), Some(U256::ZERO));
+    }
+}

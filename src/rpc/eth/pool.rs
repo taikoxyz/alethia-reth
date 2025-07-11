@@ -26,9 +26,10 @@ use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
 use reth_provider::{BlockReaderIdExt, StateProviderFactory};
 use reth_revm::State;
+use reth_revm::database::StateProviderDatabase;
 use reth_rpc_eth_types::EthApiError;
 use serde::{Deserialize, Serialize};
-use tracing::trace;
+use tracing::{info, trace};
 
 use crate::{
     chainspec::spec::TaikoChainSpec,
@@ -178,8 +179,15 @@ where
             )))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
-        let mut db = State::builder().with_bundle_update().build();
+
+        let state_provider = self.provider.state_by_block_hash(parent.hash()).unwrap();
+        let mut db = State::builder()
+            .with_database(StateProviderDatabase::new(&state_provider))
+            .with_bundle_update()
+            .build();
         let mut prebuilt_lists = vec![PreBuiltTxList::default()];
+
+        info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
         let mut builder = self
             .evm_config
@@ -190,7 +198,7 @@ where
                     timestamp: parent.timestamp(),
                     suggested_fee_recipient: beneficiary,
                     prev_randao: parent.mix_hash().unwrap_or_default(),
-                    gas_limit: block_max_gas_limit,
+                    gas_limit: block_max_gas_limit * max_transactions_lists,
                     extra_data: parent.extra_data().clone(),
                     base_fee_per_gas: base_fee,
                 },
@@ -205,6 +213,8 @@ where
                     basefee: base_fee,
                     blob_fee: None,
                 });
+
+        info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
         while let Some(pool_tx) = best_txs.next() {
             // ensure if the local accounts are provided, the transaction is from a local account.

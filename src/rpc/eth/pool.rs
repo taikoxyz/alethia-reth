@@ -39,6 +39,8 @@ use crate::{
     },
 };
 
+const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 70;
+
 /// A pre-built transaction list that contains the mempool content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -170,6 +172,9 @@ where
             .into());
         }
 
+        let safe_max_bytes_per_tx_list =
+            max_bytes_per_tx_list * COMPRESSION_ESTIMATION_SAFTY_COEF / 100;
+
         let parent_block = self
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
@@ -219,7 +224,7 @@ where
                     blob_fee: None,
                 });
 
-        info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
+        info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?safe_max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
         while let Some(pool_tx) = best_txs.next() {
             // ensure if the local accounts are provided, the transaction is from a local account.
@@ -265,7 +270,7 @@ where
             let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
             if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size
-                > max_bytes_per_tx_list
+                > safe_max_bytes_per_tx_list
             {
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     // NOTE: we simply mark the transaction as underpriced if it is not fitting into the DA blob.

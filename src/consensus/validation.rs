@@ -9,7 +9,7 @@ use reth::{
     },
     primitives::SealedBlock,
 };
-use reth_node_api::{BlockBody, NodePrimitives};
+use reth_node_api::NodePrimitives;
 use reth_primitives_traits::{Block, BlockHeader, GotExpected, RecoveredBlock, SealedHeader};
 use reth_provider::BlockExecutionResult;
 
@@ -73,16 +73,22 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
     /// Validate a block without regard for state:
     ///
     /// - Compares the ommer hash in the block header to the block body
+    /// - Compares the transactions root in the block header to the block body
     fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
-        let ommers_hash = block.body().calculate_ommers_root();
-        if Some(block.ommers_hash()) != ommers_hash {
+        // In Taiko network, ommer hash is always empty.
+        if block.ommers_hash() != EMPTY_OMMER_ROOT_HASH {
             return Err(ConsensusError::BodyOmmersHashDiff(
                 GotExpected {
-                    got: ommers_hash.unwrap_or(EMPTY_OMMER_ROOT_HASH),
+                    got: block.ommers_hash(),
                     expected: block.ommers_hash(),
                 }
                 .into(),
             ));
+        }
+
+        // Check transaction root
+        if let Err(error) = block.ensure_transaction_root_valid() {
+            return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
         }
 
         Ok(())

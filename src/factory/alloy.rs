@@ -159,7 +159,6 @@ where
             });
         }
 
-        self.inner.extra_context = TaikoEvmExtraContext::new(0, None, None);
         let tx = TxEnv {
             caller,
             kind: TxKind::Call(contract),

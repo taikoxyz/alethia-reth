@@ -68,21 +68,6 @@ impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
         }
     }
 
-    /// Returns the base fee share percentage.
-    pub fn basefee_share_pctg(&self) -> u64 {
-        self.extra_context.basefee_share_pctg()
-    }
-
-    /// Returns the address of the Anchor transaction caller, if any.
-    pub fn anchor_caller_address(&self) -> Option<Address> {
-        self.extra_context.anchor_caller_address()
-    }
-
-    /// Returns the nonce of the Anchor transaction caller, if any.
-    pub fn anchor_caller_nonce(&self) -> Option<u64> {
-        self.extra_context.anchor_caller_nonce()
-    }
-
     /// Returns the extra context for the given [`TaikoEVM`].
     pub fn extra_context(&self) -> TaikoEvmExtraContext {
         self.extra_context

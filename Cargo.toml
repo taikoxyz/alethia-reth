@@ -2,44 +2,18 @@
 name = "taiko-reth"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "MIT"
 
 [[bin]]
 name = "taiko-reth"
 path = "src/bin/main.rs"
 
 [dependencies]
+# reth
 reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.4.8" }
-cc = "=1.2.15"
-alloy-eips = { version = "1.0.9", default-features = false }
-alloy-genesis = { version = "1.0.9", default-features = false }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-alloy-consensus = { version = "1.0.9", default-features = false }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-alloy-evm = { version = "0.10", default-features = false }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-eyre = "0.6"
-clap = "4"
-tracing = { version = "0.1.0", default-features = false }
-alloy-rpc-types-eth = { version = "1.0.9", default-features = false }
-alloy-primitives = { version = "1.0.9", default-features = false }
-derive_more = { version = "2", default-features = false, features = ["full"] }
-alloy-chains = { version = "0.2.0", default-features = false }
-alloy-hardforks = "0.2.2"
-alloy-serde = { version = "1.0.9", default-features = false }
-serde = { version = "1.0", default-features = false }
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-alloy-rlp = { version = "0.3.10", default-features = false, features = [
-  "core-net",
-] }
-alloy-rpc-types-engine = { version = "1.0.9", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
@@ -55,26 +29,43 @@ reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v
 reth-payload-validator = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-rpc-engine-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-async-trait = "0.1.68"
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-parity-scale-codec = "3.2.1"
-thiserror = { version = "2.0.0", default-features = false }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
+
+# alloy
+alloy-eips = { version = "1.0.9", default-features = false }
+alloy-genesis = { version = "1.0.9", default-features = false }
+alloy-consensus = { version = "1.0.9", default-features = false }
+alloy-evm = { version = "0.10", default-features = false }
+alloy-rpc-types-eth = { version = "1.0.9", default-features = false }
+alloy-primitives = { version = "1.0.9", default-features = false }
+alloy-serde = { version = "1.0.9", default-features = false }
 alloy-rpc-types-txpool = { version = "1.0.9", default-features = false }
 alloy-rpc-types-trace = { version = "1.0.9", default-features = false }
 alloy-json-rpc = { version = "1.0.9", default-features = false }
 alloy-network = { version = "1.0.9", default-features = false }
-revm-database-interface = { version = "4.0.0", default-features = false }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
 alloy-signer = { version = "1.0.9", default-features = false }
-parking_lot = "0.12"
-reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.4.8" }
-serde_with = { version = "3", default-features = false, features = [
-  "macros",
-  "base64",
+alloy-rpc-types-engine = { version = "1.0.9", default-features = false }
+alloy-chains = { version = "0.2.0", default-features = false }
+alloy-hardforks = "0.2.2"
+alloy-rlp = { version = "0.3.10", default-features = false, features = [
+  "core-net",
 ] }
+
+# revm
+revm-database-interface = { version = "4.0.0", default-features = false }
 
 # rpc
 jsonrpsee = "0.25.1"
@@ -82,6 +73,24 @@ jsonrpsee-core = "0.25.1"
 jsonrpsee-server = "0.25.1"
 jsonrpsee-http-client = "0.25.1"
 jsonrpsee-types = "0.25.1"
+
+# mis
+cc = "=1.2.15"
+eyre = "0.6"
+clap = "4"
+async-trait = "0.1.68"
+parity-scale-codec = "3.2.1"
+parking_lot = "0.12"
+tracing = { version = "0.1.0", default-features = false }
+derive_more = { version = "2", default-features = false, features = ["full"] }
+sha2 = { version = "0.10", default-features = false }
+thiserror = { version = "2.0.0", default-features = false }
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+serde_with = { version = "3", default-features = false, features = [
+  "macros",
+  "base64",
+] }
 
 [features]
 default = ["serde"]

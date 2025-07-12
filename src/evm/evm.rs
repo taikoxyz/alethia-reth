@@ -14,9 +14,7 @@ use reth_evm::precompiles::PrecompilesMap;
 /// for Anchor transaction pre-execution checks and base fee sharing.
 pub struct TaikoEvm<CTX, INSP> {
     pub inner: RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PrecompilesMap>,
-    pub basefee_share_pctg: u64,
-    pub anchor_caller_address: Address,
-    pub anchor_caller_nonce: u64,
+    pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 
 impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
@@ -26,9 +24,7 @@ impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
     ) -> Self {
         Self {
             inner,
-            basefee_share_pctg: 0,
-            anchor_caller_address: Address::ZERO,
-            anchor_caller_nonce: 0,
+            extra_execution_ctx: None,
         }
     }
 
@@ -38,9 +34,11 @@ impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
         anchor_caller_address: Address,
         anchor_caller_nonce: u64,
     ) {
-        self.basefee_share_pctg = basefee_share_pctg;
-        self.anchor_caller_address = anchor_caller_address;
-        self.anchor_caller_nonce = anchor_caller_nonce;
+        self.extra_execution_ctx = Some(TaikoEvmExtraExecutionCtx {
+            basefee_share_pctg,
+            anchor_caller_address,
+            anchor_caller_nonce,
+        });
     }
 }
 
@@ -89,5 +87,44 @@ where
     /// This enables atomic access to both components when needed.
     fn ctx_precompiles(&mut self) -> (&mut Self::Context, &mut Self::Precompiles) {
         self.inner.ctx_precompiles()
+    }
+}
+
+/// Extra context for Taiko EVM execution, used to provide additional
+/// context for Anchor transaction pre-execution checks and base fee sharing.
+#[derive(Debug, Clone, Default)]
+pub struct TaikoEvmExtraExecutionCtx {
+    basefee_share_pctg: u64,
+    anchor_caller_address: Address,
+    anchor_caller_nonce: u64,
+}
+
+impl TaikoEvmExtraExecutionCtx {
+    /// Creates a new instance of [`TaikoEvmExecutionExtraCtx`].
+    pub fn new(
+        basefee_share_pctg: u64,
+        anchor_caller_address: Address,
+        anchor_caller_nonce: u64,
+    ) -> Self {
+        Self {
+            basefee_share_pctg,
+            anchor_caller_address,
+            anchor_caller_nonce,
+        }
+    }
+
+    /// Returns the base fee share percentage.
+    pub fn basefee_share_pctg(&self) -> u64 {
+        self.basefee_share_pctg
+    }
+
+    /// Returns the anchor caller address.
+    pub fn anchor_caller_address(&self) -> Address {
+        self.anchor_caller_address
+    }
+
+    /// Returns the anchor caller nonce.
+    pub fn anchor_caller_nonce(&self) -> u64 {
+        self.anchor_caller_nonce
     }
 }

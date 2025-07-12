@@ -16,29 +16,23 @@ use reth::revm::{
 };
 use tracing::debug;
 
+use crate::evm::evm::TaikoEvmExtraExecutionCtx;
+
 /// Handler for Taiko EVM, it implements the `Handler` trait
 /// and provides methods to handle the execution of transactions and the
 /// reward for the beneficiary.
 #[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
     pub _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
-    basefee_share_pctg: u64,
-    anchor_caller_address: Address,
-    anchor_caller_nonce: u64,
+    extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 
 impl<CTX, ERROR, FRAME> TaikoEvmHandler<CTX, ERROR, FRAME> {
     /// Creates a new instance of [`TaikoEvmHandler`] with the given extra context.
-    pub fn new(
-        basefee_share_pctg: u64,
-        anchor_caller_address: Address,
-        anchor_caller_nonce: u64,
-    ) -> Self {
+    pub fn new(ctx: Option<TaikoEvmExtraExecutionCtx>) -> Self {
         Self {
             _phantom: core::marker::PhantomData,
-            basefee_share_pctg,
-            anchor_caller_address,
-            anchor_caller_nonce,
+            extra_execution_ctx: ctx,
         }
     }
 }
@@ -74,12 +68,13 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
+        let extra_ctx = self.extra_execution_ctx.clone().unwrap_or_default();
         reward_beneficiary(
             _evm.ctx(),
             _exec_result.gas_mut(),
-            self.basefee_share_pctg,
-            self.anchor_caller_address,
-            self.anchor_caller_nonce,
+            extra_ctx.basefee_share_pctg(),
+            extra_ctx.anchor_caller_address(),
+            extra_ctx.anchor_caller_nonce(),
         )
         .map_err(From::from)
     }
@@ -97,10 +92,11 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
+        let extra_ctx = self.extra_execution_ctx.clone().unwrap_or_default();
         validate_against_state_and_deduct_caller(
             evm.ctx(),
-            self.anchor_caller_address,
-            self.anchor_caller_nonce,
+            extra_ctx.anchor_caller_address(),
+            extra_ctx.anchor_caller_nonce(),
         )
     }
 }

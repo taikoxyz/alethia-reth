@@ -1,5 +1,5 @@
 use crate::payload::attributes::TaikoPayloadAttributes;
-use crate::rpc::types::TaikoExecutionData;
+use crate::rpc::engine::types::TaikoExecutionData;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};

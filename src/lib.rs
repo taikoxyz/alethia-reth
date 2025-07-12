@@ -40,8 +40,10 @@ use crate::{
     network::TaikoNetworkBuilder,
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::{
-        builder::TaikoEngineApiBuilder,
-        engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
+        engine::{
+            builder::TaikoEngineApiBuilder,
+            validator::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
+        },
         eth::{builder::TaikoEthApiBuilder, types::TaikoEthApi},
     },
 };

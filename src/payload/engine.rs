@@ -8,7 +8,7 @@ use reth_node_api::{BuiltPayload, EngineTypes, NodePrimitives, PayloadTypes};
 
 use crate::{
     payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBuilderAttributes},
-    rpc::types::{TaikoExecutionData, TaikoExecutionDataSidecar},
+    rpc::engine::types::{TaikoExecutionData, TaikoExecutionDataSidecar},
 };
 
 /// The types used in the Taiko consensus engine.

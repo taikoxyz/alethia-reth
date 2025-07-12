@@ -19,7 +19,7 @@ use crate::{
     chainspec::spec::TaikoChainSpec,
     evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
     payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
-    rpc::types::TaikoExecutionData,
+    rpc::engine::types::TaikoExecutionData,
 };
 
 /// Builder for [`TaikoEngineValidator`].

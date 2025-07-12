@@ -35,6 +35,17 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ]))
 });
 
+/// Taiko Hekla list of hardforks.
+pub static TAIKO_HEKLA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
+    ChainHardforks::new(extend_with_shared_hardforks(vec![
+        (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(840_512)),
+        (
+            TaikoHardfork::Pacaya.boxed(),
+            ForkCondition::Block(1_299_888),
+        ),
+    ]))
+});
+
 // Extend the given hardforks with shared common Ethereum hardforks.
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,

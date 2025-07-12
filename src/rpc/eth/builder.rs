@@ -6,8 +6,6 @@ use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_node_ethereum::EthereumEthApiBuilder;
-use reth_provider::EthStorage;
-use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
@@ -34,8 +32,6 @@ where
             Types: NodeTypes<
                 Primitives = EthPrimitives,
                 ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
                 Payload = TaikoEngineTypes,
             >,
             Evm: ConfigureEvm<

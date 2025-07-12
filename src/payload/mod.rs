@@ -1,11 +1,9 @@
 use reth::{
     api::{FullNodeTypes, NodeTypes},
     builder::{BuilderContext, components::PayloadBuilderBuilder},
-    providers::EthStorage,
     transaction_pool::{PoolTransaction, TransactionPool},
 };
 use reth_ethereum::{EthPrimitives, TransactionSigned};
-use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     chainspec::spec::TaikoChainSpec,
@@ -28,8 +26,6 @@ where
         Types: NodeTypes<
             Primitives = EthPrimitives,
             ChainSpec = TaikoChainSpec,
-            StateCommitment = MerklePatriciaTrie,
-            Storage = EthStorage,
             Payload = TaikoEngineTypes,
         >,
     >,

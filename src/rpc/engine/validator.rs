@@ -1,6 +1,6 @@
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::PayloadError;
-use reth::{primitives::RecoveredBlock, providers::EthStorage};
+use reth::primitives::RecoveredBlock;
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -11,7 +11,6 @@ use reth_node_api::{
 };
 use reth_node_builder::rpc::EngineValidatorBuilder;
 use reth_primitives_traits::Block as SealedBlock;
-use reth_trie_db::MerklePatriciaTrie;
 use std::{convert::Infallible, sync::Arc};
 
 use crate::{
@@ -33,8 +32,6 @@ where
             Types: NodeTypes<
                 Primitives = EthPrimitives,
                 ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
                 Payload = TaikoEngineTypes,
             >,
             Evm: ConfigureEvm<

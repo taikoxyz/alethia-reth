@@ -18,8 +18,6 @@ use reth_ethereum::EthPrimitives;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::BuilderContext;
-use reth_provider::EthStorage;
-use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     block::executor::TaikoBlockExecutor,
@@ -147,8 +145,6 @@ where
     Types: NodeTypes<
             Primitives = EthPrimitives,
             ChainSpec = TaikoChainSpec,
-            StateCommitment = MerklePatriciaTrie,
-            Storage = EthStorage,
             Payload = TaikoEngineTypes,
         >,
     Node: FullNodeTypes<Types = Types>,

@@ -1,7 +1,6 @@
 # taiko-reth
 
-A high-performance Rust execution client for the Taiko protocol.
-This project is **not** a fork of [Reth](https://github.com/paradigmxyz/reth), but an extension built on top of [Reth](https://github.com/paradigmxyz/reth) powerful `NodeBuilder` [API](https://reth.rs/introduction/why-reth#infinitely-customizable), designed to deliver the best possible developer and maintenance experience.
+A high-performance Rust execution client for the Taiko protocol, built on top of [Reth](https://github.com/paradigmxyz/reth) powerful [`NodeBuilder` API](https://reth.rs/introduction/why-reth#infinitely-customizable), designed to deliver the best possible developer and maintenance experience.
 
 > ⚠️ **Not ready for production**
 

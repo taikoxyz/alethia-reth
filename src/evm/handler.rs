@@ -24,6 +24,8 @@ use crate::evm::evm::TaikoEvmExtraExecutionCtx;
 #[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
     pub _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
+    // This field might will be `None` when during some execution simulation calls
+    // like `eth_call`.
     extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 
@@ -68,13 +70,10 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        let extra_ctx = self.extra_execution_ctx.clone().unwrap_or_default();
         reward_beneficiary(
             _evm.ctx(),
             _exec_result.gas_mut(),
-            extra_ctx.basefee_share_pctg(),
-            extra_ctx.anchor_caller_address(),
-            extra_ctx.anchor_caller_nonce(),
+            self.extra_execution_ctx.clone(),
         )
         .map_err(From::from)
     }
@@ -92,12 +91,7 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        let extra_ctx = self.extra_execution_ctx.clone().unwrap_or_default();
-        validate_against_state_and_deduct_caller(
-            evm.ctx(),
-            extra_ctx.anchor_caller_address(),
-            extra_ctx.anchor_caller_nonce(),
-        )
+        validate_against_state_and_deduct_caller(evm.ctx(), self.extra_execution_ctx.clone())
     }
 }
 
@@ -127,9 +121,7 @@ where
 fn reward_beneficiary<CTX: ContextTr>(
     context: &mut CTX,
     gas: &mut Gas,
-    basefee_share_pctg: u64,
-    anchor_caller_address: Address,
-    anchor_caller_nonce: u64,
+    extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 ) -> Result<(), <CTX::Db as Database>::Error> {
     let block = context.block();
     let tx = context.tx();
@@ -156,49 +148,54 @@ fn reward_beneficiary<CTX: ContextTr>(
                 coinbase_gas_price * (gas.spent() - gas.refunded() as u64) as u128,
             ));
 
-    debug!(
-        target: "taiko-evm", "Rewarding beneficiary, sender account: {:?} nonce: {:?} at block: {:?}",
-        tx_caller, tx_nonce, block_number
-    );
-
-    // If the transaction is not an anchor transaction, we share the base fee income with the coinbase and treasury.
-    if anchor_caller_address != tx_caller || anchor_caller_nonce != tx_nonce {
-        // Total base fee income.
-        let total_fee = U256::from(basefee * (spent - refunded as u64) as u128);
-
-        // Share the base fee income with the coinbase and treasury.
-        let fee_coinbase =
-            total_fee.saturating_mul(U256::from(basefee_share_pctg)) / U256::from(100u64);
-        let fee_treasury = total_fee.saturating_sub(fee_coinbase);
-        coinbase_account.data.info.balance = coinbase_account
-            .data
-            .info
-            .balance
-            .saturating_add(fee_coinbase);
-
-        let chain_id = context.cfg().chain_id();
-        let treasury_account = context
-            .journal()
-            .load_account(get_treasury_address(chain_id))?;
-
-        treasury_account.data.mark_touch();
-        treasury_account.data.info.balance = treasury_account
-            .data
-            .info
-            .balance
-            .saturating_add(fee_treasury);
+    // If the extra execution context is provided, which means we are building an L2 block,
+    // we share the base fee income with the coinbase and treasury.
+    if let Some(ctx) = extra_execution_ctx {
         debug!(
-            target: "taiko-evm",
-            "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
-            fee_coinbase, fee_treasury, basefee_share_pctg, block_number
-        );
-    } else {
-        // If the transaction is an anchor transaction, we do not share the base fee income.
-        debug!(
-            target: "taiko-evm", "Anchor transaction detected, no rewrad, sender account: {:?} nonce: {:?} at block: {:?}",
+            target: "taiko-evm", "Rewarding beneficiary, sender account: {:?} nonce: {:?} at block: {:?}",
             tx_caller, tx_nonce, block_number
         );
+
+        // If the transaction is not an anchor transaction, we share the base fee income with the coinbase and treasury.
+        if ctx.anchor_caller_address() != tx_caller || ctx.anchor_caller_nonce() != tx_nonce {
+            // Total base fee income.
+            let total_fee = U256::from(basefee * (spent - refunded as u64) as u128);
+
+            // Share the base fee income with the coinbase and treasury.
+            let fee_coinbase =
+                total_fee.saturating_mul(U256::from(ctx.basefee_share_pctg())) / U256::from(100u64);
+            let fee_treasury = total_fee.saturating_sub(fee_coinbase);
+            coinbase_account.data.info.balance = coinbase_account
+                .data
+                .info
+                .balance
+                .saturating_add(fee_coinbase);
+
+            let chain_id = context.cfg().chain_id();
+            let treasury_account = context
+                .journal()
+                .load_account(get_treasury_address(chain_id))?;
+
+            treasury_account.data.mark_touch();
+            treasury_account.data.info.balance = treasury_account
+                .data
+                .info
+                .balance
+                .saturating_add(fee_treasury);
+            debug!(
+                target: "taiko-evm",
+                "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
+                fee_coinbase, fee_treasury, ctx.basefee_share_pctg(), block_number
+            );
+        } else {
+            // If the transaction is an anchor transaction, we do not share the base fee income.
+            debug!(
+                target: "taiko-evm", "Anchor transaction detected, no rewrad, sender account: {:?} nonce: {:?} at block: {:?}",
+                tx_caller, tx_nonce, block_number
+            );
+        }
     }
+
     Ok(())
 }
 
@@ -210,8 +207,7 @@ pub fn validate_against_state_and_deduct_caller<
     ERROR: From<InvalidTransaction> + From<<CTX::Db as Database>::Error>,
 >(
     context: &mut CTX,
-    anchor_caller_address: Address,
-    anchor_caller_nonce: u64,
+    extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 ) -> Result<(), ERROR> {
     let basefee = context.block().basefee() as u128;
     let blob_price = context.block().blob_gasprice().unwrap_or_default();
@@ -233,13 +229,17 @@ pub fn validate_against_state_and_deduct_caller<
         is_nonce_check_disabled,
     )?;
 
-    debug!(target: "taiko-evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-    // If the transaction is an anchor transaction, we disable the balance check.
-    if anchor_caller_address == tx.caller() && anchor_caller_nonce == tx.nonce() {
-        debug!(target: "taiko-evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-        is_balance_check_disabled = true;
-    } else {
-        debug!(target: "taiko-evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+    // If the extra execution context is provided, which means we are building an L2 block,
+    // we skip the balance check for the anchor transaction.
+    if let Some(ctx) = extra_execution_ctx {
+        debug!(target: "taiko-evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+        // If the transaction is an anchor transaction, we disable the balance check.
+        if ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce() {
+            debug!(target: "taiko-evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+            is_balance_check_disabled = true;
+        } else {
+            debug!(target: "taiko-evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+        }
     }
 
     let max_balance_spending = tx.max_balance_spending()?;

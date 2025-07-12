@@ -48,7 +48,7 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     gas_used: u64,
     /// Flag indicating whether the executor has been initialized with the anchor transaction info
     /// in `apply_pre_execution_changes`.
-    initialized_with_anchor_info: bool,
+    evm_extra_execution_ctx_initialized: bool,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -66,7 +66,7 @@ where
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
-            initialized_with_anchor_info: false,
+            evm_extra_execution_ctx_initialized: false,
         }
     }
 }
@@ -104,7 +104,7 @@ where
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
         // Initialize the golden touch address nonce if it is not already set.
-        if !self.initialized_with_anchor_info {
+        if !self.evm_extra_execution_ctx_initialized {
             let account_info = self
                 .evm
                 .db_mut()
@@ -128,7 +128,7 @@ where
                     BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
                 })?;
 
-            self.initialized_with_anchor_info = true;
+            self.evm_extra_execution_ctx_initialized = true;
         }
 
         Ok(())

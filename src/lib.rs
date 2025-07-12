@@ -42,7 +42,7 @@ use crate::{
     rpc::{
         builder::TaikoEngineApiBuilder,
         engine::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
-        eth::{api::TaikoEthApi, builder::TaikoEthApiBuilder},
+        eth::{builder::TaikoEthApiBuilder, types::TaikoEthApi},
     },
 };
 

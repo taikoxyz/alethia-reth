@@ -14,7 +14,7 @@ use crate::{
     chainspec::spec::TaikoChainSpec,
     evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
     payload::engine::TaikoEngineTypes,
-    rpc::eth::api::TaikoEthApi,
+    rpc::eth::types::TaikoEthApi,
 };
 
 /// Builds [`TaikoEthApi`] for the Taiko node.

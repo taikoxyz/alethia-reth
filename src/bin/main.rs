@@ -3,15 +3,11 @@ use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
 use reth_rpc::eth::EthApiTypes;
 use reth_rpc::eth::RpcNodeCore;
 use taiko_reth::cli::TaikoCli;
-use taiko_reth::rpc::eth::pool::TaikoAuthTxPoolExt;
-use taiko_reth::rpc::eth::pool::TaikoAuthTxPoolExtApiServer;
+use taiko_reth::rpc::eth::eth::{TaikoExt, TaikoExtApiServer};
 use taiko_reth::{
     TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
-    rpc::eth::{
-        TaikoExt, TaikoExtApiServer,
-        auth::{TaikoAuthExt, TaikoAuthExtApiServer},
-    },
+    rpc::eth::auth::{TaikoAuthExt, TaikoAuthExtApiServer},
 };
 use tracing::info;
 
@@ -40,17 +36,14 @@ fn main() {
                     ctx.modules.merge_configured(taiko_rpc_ext.into_rpc())?;
 
                     // Extend the RPC modules with `taikoAuth_` namespace RPCs extensions.
-                    let taiko_auth_rpc_ext = TaikoAuthExt::new(provider.clone());
-                    ctx.auth_module
-                        .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
-                    let taiko_auth_tx_pool_ext = TaikoAuthTxPoolExt::new(
+                    let taiko_auth_rpc_ext = TaikoAuthExt::new(
+                        provider,
                         ctx.node().pool().clone(),
                         *ctx.registry.eth_api().tx_resp_builder(),
-                        provider,
                         ctx.node().evm_config().clone(),
                     );
                     ctx.auth_module
-                        .merge_auth_methods(taiko_auth_tx_pool_ext.into_rpc())?;
+                        .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
 
                     Ok(())
                 })

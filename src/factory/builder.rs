@@ -9,8 +9,8 @@ use reth_ethereum::EthPrimitives;
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
-    chainspec::spec::TaikoChainSpec, evm::evm::TaikoEvmExtraContext,
-    factory::config::TaikoEvmConfig, payload::engine::TaikoEngineTypes,
+    chainspec::spec::TaikoChainSpec, factory::config::TaikoEvmConfig,
+    payload::engine::TaikoEngineTypes,
 };
 
 /// A builder for the Taiko block executor.
@@ -37,9 +37,6 @@ where
         self,
         ctx: &BuilderContext<Node>,
     ) -> impl Future<Output = eyre::Result<Self::EVM>> + Send {
-        future::ready(Ok(TaikoEvmConfig::new(
-            ctx.chain_spec(),
-            TaikoEvmExtraContext::default(),
-        )))
+        future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
     }
 }

@@ -12,23 +12,11 @@ use reth::revm::{
 };
 use reth_evm::precompiles::PrecompilesMap;
 
-use crate::{
-    evm::evm::{TaikoEvm, TaikoEvmExtraContext},
-    factory::alloy::TaikoEvmWrapper,
-};
+use crate::{evm::evm::TaikoEvm, factory::alloy::TaikoEvmWrapper};
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
 #[derive(Default, Debug, Clone, Copy)]
-pub struct TaikoEvmFactory {
-    pub extra_context: TaikoEvmExtraContext,
-}
-
-impl TaikoEvmFactory {
-    /// Creates a new instance of [`TaikoEvmFactory`] with the given extra context.
-    pub fn new(extra_context: TaikoEvmExtraContext) -> Self {
-        Self { extra_context }
-    }
-}
+pub struct TaikoEvmFactory;
 
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.
@@ -62,7 +50,7 @@ impl EvmFactory for TaikoEvmFactory {
                 EthPrecompiles::default().precompiles,
             ));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm, self.extra_context), false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -82,6 +70,6 @@ impl EvmFactory for TaikoEvmFactory {
             ))
             .with_inspector(inspector);
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm, self.extra_context), false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
     }
 }

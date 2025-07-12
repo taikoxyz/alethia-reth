@@ -16,23 +16,29 @@ use reth::revm::{
 };
 use tracing::debug;
 
-use crate::evm::evm::TaikoEvmExtraContext;
-
 /// Handler for Taiko EVM, it implements the `Handler` trait
 /// and provides methods to handle the execution of transactions and the
 /// reward for the beneficiary.
 #[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
     pub _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
-    extra_context: TaikoEvmExtraContext,
+    basefee_share_pctg: u64,
+    anchor_caller_address: Address,
+    anchor_caller_nonce: u64,
 }
 
 impl<CTX, ERROR, FRAME> TaikoEvmHandler<CTX, ERROR, FRAME> {
     /// Creates a new instance of [`TaikoEvmHandler`] with the given extra context.
-    pub fn new(extra_context: TaikoEvmExtraContext) -> Self {
+    pub fn new(
+        basefee_share_pctg: u64,
+        anchor_caller_address: Address,
+        anchor_caller_nonce: u64,
+    ) -> Self {
         Self {
             _phantom: core::marker::PhantomData,
-            extra_context,
+            basefee_share_pctg,
+            anchor_caller_address,
+            anchor_caller_nonce,
         }
     }
 }
@@ -68,8 +74,14 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        reward_beneficiary(_evm.ctx(), _exec_result.gas_mut(), &self.extra_context)
-            .map_err(From::from)
+        reward_beneficiary(
+            _evm.ctx(),
+            _exec_result.gas_mut(),
+            self.basefee_share_pctg,
+            self.anchor_caller_address,
+            self.anchor_caller_nonce,
+        )
+        .map_err(From::from)
     }
 
     /// Prepares the EVM state for execution.
@@ -85,7 +97,11 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
-        validate_against_state_and_deduct_caller(evm.ctx(), &self.extra_context)
+        validate_against_state_and_deduct_caller(
+            evm.ctx(),
+            self.anchor_caller_address,
+            self.anchor_caller_nonce,
+        )
     }
 }
 
@@ -115,7 +131,9 @@ where
 fn reward_beneficiary<CTX: ContextTr>(
     context: &mut CTX,
     gas: &mut Gas,
-    extra_context: &TaikoEvmExtraContext,
+    basefee_share_pctg: u64,
+    anchor_caller_address: Address,
+    anchor_caller_nonce: u64,
 ) -> Result<(), <CTX::Db as Database>::Error> {
     let block = context.block();
     let tx = context.tx();
@@ -148,15 +166,13 @@ fn reward_beneficiary<CTX: ContextTr>(
     );
 
     // If the transaction is not an anchor transaction, we share the base fee income with the coinbase and treasury.
-    if extra_context.anchor_caller_address() != Some(tx_caller)
-        || extra_context.anchor_caller_nonce() != Some(tx_nonce)
-    {
+    if anchor_caller_address != tx_caller || anchor_caller_nonce != tx_nonce {
         // Total base fee income.
         let total_fee = U256::from(basefee * (spent - refunded as u64) as u128);
 
         // Share the base fee income with the coinbase and treasury.
-        let fee_coinbase = total_fee.saturating_mul(U256::from(extra_context.basefee_share_pctg()))
-            / U256::from(100u64);
+        let fee_coinbase =
+            total_fee.saturating_mul(U256::from(basefee_share_pctg)) / U256::from(100u64);
         let fee_treasury = total_fee.saturating_sub(fee_coinbase);
         coinbase_account.data.info.balance = coinbase_account
             .data
@@ -178,7 +194,7 @@ fn reward_beneficiary<CTX: ContextTr>(
         debug!(
             target: "taiko-evm",
             "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
-            fee_coinbase, fee_treasury, extra_context.basefee_share_pctg(), block_number
+            fee_coinbase, fee_treasury, basefee_share_pctg, block_number
         );
     } else {
         // If the transaction is an anchor transaction, we do not share the base fee income.
@@ -198,7 +214,8 @@ pub fn validate_against_state_and_deduct_caller<
     ERROR: From<InvalidTransaction> + From<<CTX::Db as Database>::Error>,
 >(
     context: &mut CTX,
-    extra_context: &TaikoEvmExtraContext,
+    anchor_caller_address: Address,
+    anchor_caller_nonce: u64,
 ) -> Result<(), ERROR> {
     let basefee = context.block().basefee() as u128;
     let blob_price = context.block().blob_gasprice().unwrap_or_default();
@@ -222,9 +239,7 @@ pub fn validate_against_state_and_deduct_caller<
 
     debug!(target: "taiko-evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
     // If the transaction is an anchor transaction, we disable the balance check.
-    if extra_context.anchor_caller_address() == Some(tx.caller())
-        && extra_context.anchor_caller_nonce() == Some(tx.nonce())
-    {
+    if anchor_caller_address == tx.caller() && anchor_caller_nonce == tx.nonce() {
         debug!(target: "taiko-evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
         is_balance_check_disabled = true;
     } else {
@@ -264,7 +279,7 @@ pub fn validate_against_state_and_deduct_caller<
 }
 
 /// Generates the network treasury address based on the chain ID.
-fn get_treasury_address(chain_id: u64) -> Address {
+pub fn get_treasury_address(chain_id: u64) -> Address {
     let prefix = chain_id.to_string();
     let suffix = "10001";
 

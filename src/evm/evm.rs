@@ -1,3 +1,4 @@
+use alloy_primitives::Address;
 use reth::revm::{
     context::{ContextTr, Evm as RevmEvm},
     handler::{
@@ -5,72 +6,41 @@ use reth::revm::{
         instructions::{EthInstructions, InstructionProvider},
     },
     interpreter::{Interpreter, InterpreterTypes, interpreter::EthInterpreter},
-    primitives::Address,
 };
 use reth_evm::precompiles::PrecompilesMap;
-
-/// Extra context for Taiko EVM execution, for
-/// Anchor transaction pre-execution checks and base fee sharing.
-#[derive(Default, Debug, Clone, Copy)]
-pub struct TaikoEvmExtraContext {
-    basefee_share_pctg: u64,
-    anchor_caller_address: Option<Address>,
-    anchor_caller_nonce: Option<u64>,
-}
-
-impl TaikoEvmExtraContext {
-    /// Creates a new instance of [`TaikoEvmExtraContext`].
-    pub fn new(
-        basefee_share_pctg: u64,
-        anchor_caller_address: Option<Address>,
-        anchor_caller_nonce: Option<u64>,
-    ) -> Self {
-        Self {
-            basefee_share_pctg,
-            anchor_caller_address,
-            anchor_caller_nonce,
-        }
-    }
-
-    /// Returns the base fee share percentage.
-    pub fn basefee_share_pctg(&self) -> u64 {
-        self.basefee_share_pctg
-    }
-
-    /// Returns the address of the Anchor transaction caller, if any.
-    pub fn anchor_caller_address(&self) -> Option<Address> {
-        self.anchor_caller_address
-    }
-
-    /// Returns the nonce of the Anchor transaction caller, if any.
-    pub fn anchor_caller_nonce(&self) -> Option<u64> {
-        self.anchor_caller_nonce
-    }
-}
 
 /// Custom EVM for Taiko, we extend the RevmEvm with
 /// [`TaikoEvmExtraContext`] to provide additional context
 /// for Anchor transaction pre-execution checks and base fee sharing.
 pub struct TaikoEvm<CTX, INSP> {
     pub inner: RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PrecompilesMap>,
-    pub extra_context: TaikoEvmExtraContext,
+    pub basefee_share_pctg: u64,
+    pub anchor_caller_address: Address,
+    pub anchor_caller_nonce: u64,
 }
 
 impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
     /// Creates a new instance of [`TaikoEvm`].
     pub fn new(
         inner: RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PrecompilesMap>,
-        extra_context: TaikoEvmExtraContext,
     ) -> Self {
         Self {
             inner,
-            extra_context,
+            basefee_share_pctg: 0,
+            anchor_caller_address: Address::ZERO,
+            anchor_caller_nonce: 0,
         }
     }
 
-    /// Returns the extra context for the given [`TaikoEVM`].
-    pub fn extra_context(&self) -> TaikoEvmExtraContext {
-        self.extra_context
+    pub fn with_extra_execution_context(
+        &mut self,
+        basefee_share_pctg: u64,
+        anchor_caller_address: Address,
+        anchor_caller_nonce: u64,
+    ) {
+        self.basefee_share_pctg = basefee_share_pctg;
+        self.anchor_caller_address = anchor_caller_address;
+        self.anchor_caller_nonce = anchor_caller_nonce;
     }
 }
 

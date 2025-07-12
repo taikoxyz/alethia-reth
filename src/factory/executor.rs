@@ -16,14 +16,17 @@ use reth_evm::{
     Evm, OnStateHook,
     block::{
         BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
-        StateChangeSource, SystemCaller,
+        InternalBlockExecutionError, StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
 use reth_provider::BlockExecutionResult;
 use revm_database_interface::DatabaseCommit;
 
-use crate::factory::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, block::TaikoBlockExecutionCtx};
+use crate::{
+    evm::handler::get_treasury_address,
+    factory::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, block::TaikoBlockExecutionCtx},
+};
 
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -43,8 +46,9 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
-    /// The initial nonce of the golden touch address before any transactions are executed.
-    golden_touch_address_initialial_nonce: Option<u64>,
+    /// Flag indicating whether the executor has been initialized with the anchor transaction info
+    /// in `apply_pre_execution_changes`.
+    initialized_with_anchor_info: bool,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -62,7 +66,7 @@ where
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
-            golden_touch_address_initialial_nonce: None,
+            initialized_with_anchor_info: false,
         }
     }
 }
@@ -100,30 +104,31 @@ where
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
         // Initialize the golden touch address nonce if it is not already set.
-        if self.golden_touch_address_initialial_nonce.is_none() {
-            let res = self
+        if !self.initialized_with_anchor_info {
+            let account_info = self
                 .evm
                 .db_mut()
                 .database
                 .basic(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
-                .unwrap();
+                .map_err(|e| {
+                    BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
+                })?;
 
-            let mut caller_nonce = 0;
-            if let Some(info) = res {
-                caller_nonce = info.nonce;
-            }
             self.evm
                 .transact_system_call(
                     Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
-                    Address::ZERO,
+                    get_treasury_address(self.evm().chain_id()),
                     encode_anchor_system_call_data(
                         // Decode the base fee share percentage from the block's extra data.
                         decode_post_ontake_extra_data(self.ctx.extra_data.clone()),
-                        caller_nonce,
+                        account_info.map_or(0, |account| account.nonce),
                     ),
                 )
-                .unwrap();
-            self.golden_touch_address_initialial_nonce = Some(caller_nonce);
+                .map_err(|e| {
+                    BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
+                })?;
+
+            self.initialized_with_anchor_info = true;
         }
 
         Ok(())

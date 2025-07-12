@@ -33,12 +33,6 @@ impl TaikoBlockAssembler {
     pub fn chain_spec(&self) -> Arc<TaikoChainSpec> {
         self.block_assembler.chain_spec.clone()
     }
-
-    /// Updates the block `extra_data` with the given value.
-    pub fn with_extra_data(mut self, extra_data: Vec<u8>) -> Self {
-        self.block_assembler.extra_data = extra_data.into();
-        self
-    }
 }
 
 impl<F> BlockAssembler<F> for TaikoBlockAssembler

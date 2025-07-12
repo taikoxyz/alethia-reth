@@ -41,7 +41,12 @@ where
     /// Transact the transaction that is set in the context, handle
     /// the execution with [TaikoEvmHandler] and return the result.
     fn replay(&mut self) -> Self::Output {
-        TaikoEvmHandler::<_, _, EthFrame<_, _, _>>::new(self.extra_context()).run(self)
+        TaikoEvmHandler::<_, _, EthFrame<_, _, _>>::new(
+            self.basefee_share_pctg,
+            self.anchor_caller_address,
+            self.anchor_caller_nonce,
+        )
+        .run(self)
     }
 }
 
@@ -82,8 +87,12 @@ where
 
     /// Inspect the EVM with the current inspector and previous transaction.
     fn inspect_replay(&mut self) -> Self::Output {
-        TaikoEvmHandler::<_, _, EthFrame<_, _, _>>::new(self.extra_context())
-            .inspect_run(&mut self.inner)
+        TaikoEvmHandler::<_, _, EthFrame<_, _, _>>::new(
+            self.basefee_share_pctg,
+            self.anchor_caller_address,
+            self.anchor_caller_nonce,
+        )
+        .inspect_run(&mut self.inner)
     }
 }
 

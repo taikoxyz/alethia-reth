@@ -17,7 +17,6 @@ use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_an
 
 use crate::{
     chainspec::spec::TaikoChainSpec,
-    evm::evm::TaikoEvmExtraContext,
     factory::{
         assembler::TaikoBlockAssembler,
         block::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
@@ -35,8 +34,8 @@ pub struct TaikoEvmConfig {
 
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
-    pub fn new(chain_spec: Arc<TaikoChainSpec>, extra_context: TaikoEvmExtraContext) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::new(extra_context))
+    pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::default())
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.

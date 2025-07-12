@@ -31,13 +31,11 @@ use reth_rpc_eth_types::EthApiError;
 use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
 
-use crate::{
-    chainspec::spec::TaikoChainSpec,
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
-    },
-};
+use crate::block::assembler::TaikoBlockAssembler;
+use crate::block::factory::TaikoBlockExecutorFactory;
+use crate::chainspec::spec::TaikoChainSpec;
+use crate::evm::config::TaikoNextBlockEnvAttributes;
+use crate::evm::factory::TaikoEvmFactory;
 
 const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 70;
 

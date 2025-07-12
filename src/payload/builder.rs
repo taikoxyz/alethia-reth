@@ -27,10 +27,9 @@ use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 
 use crate::{
+    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
-    factory::{
-        assembler::TaikoBlockAssembler,
-        block::TaikoBlockExecutorFactory,
+    evm::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         factory::TaikoEvmFactory,
     },

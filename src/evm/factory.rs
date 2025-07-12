@@ -12,7 +12,7 @@ use reth::revm::{
 };
 use reth_evm::precompiles::PrecompilesMap;
 
-use crate::{evm::evm::TaikoEvm, factory::alloy::TaikoEvmWrapper};
+use crate::evm::{alloy::TaikoEvmWrapper, evm::TaikoEvm};
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
 #[derive(Default, Debug, Clone, Copy)]

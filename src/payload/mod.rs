@@ -9,7 +9,7 @@ use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
     chainspec::spec::TaikoChainSpec,
-    factory::config::TaikoEvmConfig,
+    evm::config::TaikoEvmConfig,
     payload::{builder::TaikoPayloadBuilder, engine::TaikoEngineTypes},
 };
 

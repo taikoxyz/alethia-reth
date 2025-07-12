@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, future, sync::Arc};
 
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
@@ -9,15 +9,23 @@ use alloy_evm::{
 };
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
+use reth::builder::components::ExecutorBuilder;
 use reth::{
     primitives::Log,
     revm::{Inspector, State},
 };
+use reth_ethereum::EthPrimitives;
 use reth_evm_ethereum::RethReceiptBuilder;
+use reth_node_api::{FullNodeTypes, NodeTypes};
+use reth_node_builder::BuilderContext;
+use reth_provider::EthStorage;
+use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
+    block::executor::TaikoBlockExecutor,
     chainspec::spec::TaikoChainSpec,
-    factory::{executor::TaikoBlockExecutor, factory::TaikoEvmFactory},
+    evm::{config::TaikoEvmConfig, factory::TaikoEvmFactory},
+    payload::engine::TaikoEngineTypes,
 };
 
 /// Context for Taiko block execution.
@@ -126,5 +134,33 @@ where
             &self.spec,
             &self.receipt_builder,
         )
+    }
+}
+
+/// A builder for the Taiko block executor.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct TaikoExecutorBuilder;
+
+impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
+where
+    Types: NodeTypes<
+            Primitives = EthPrimitives,
+            ChainSpec = TaikoChainSpec,
+            StateCommitment = MerklePatriciaTrie,
+            Storage = EthStorage,
+            Payload = TaikoEngineTypes,
+        >,
+    Node: FullNodeTypes<Types = Types>,
+{
+    /// The EVM config to use.
+    type EVM = TaikoEvmConfig;
+
+    /// Creates the EVM config.
+    fn build_evm(
+        self,
+        ctx: &BuilderContext<Node>,
+    ) -> impl Future<Output = eyre::Result<Self::EVM>> + Send {
+        future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
     }
 }

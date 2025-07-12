@@ -15,11 +15,9 @@ use reth_trie_db::MerklePatriciaTrie;
 use std::{convert::Infallible, sync::Arc};
 
 use crate::{
+    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
-    },
+    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
     payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
     rpc::types::TaikoExecutionData,
 };

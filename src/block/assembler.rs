@@ -13,7 +13,7 @@ use reth_evm::{
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_provider::BlockExecutionResult;
 
-use crate::{chainspec::spec::TaikoChainSpec, factory::block::TaikoBlockExecutionCtx};
+use crate::{block::factory::TaikoBlockExecutionCtx, chainspec::spec::TaikoChainSpec};
 
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 #[derive(Clone, Debug)]

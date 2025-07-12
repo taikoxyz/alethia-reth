@@ -10,11 +10,9 @@ use reth_provider::EthStorage;
 use reth_trie_db::MerklePatriciaTrie;
 
 use crate::{
+    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
-    },
+    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
     payload::engine::TaikoEngineTypes,
     rpc::eth::api::TaikoEthApi,
 };

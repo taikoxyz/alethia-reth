@@ -16,12 +16,12 @@ use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
 use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
 
 use crate::{
-    chainspec::spec::TaikoChainSpec,
-    factory::{
+    block::{
         assembler::TaikoBlockAssembler,
-        block::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
-        factory::TaikoEvmFactory,
+        factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
     },
+    chainspec::spec::TaikoChainSpec,
+    evm::factory::TaikoEvmFactory,
 };
 
 /// A complete configuration of EVM for Taiko network.

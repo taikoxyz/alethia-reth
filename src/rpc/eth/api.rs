@@ -56,11 +56,9 @@ use reth_rpc_eth_types::{
 use revm_database_interface::Database;
 
 use crate::{
+    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory,
-    },
+    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
 };
 
 /// `Eth` API implementation for Taiko network.

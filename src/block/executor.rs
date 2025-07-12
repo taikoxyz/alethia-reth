@@ -24,8 +24,8 @@ use reth_provider::BlockExecutionResult;
 use revm_database_interface::DatabaseCommit;
 
 use crate::{
-    evm::handler::get_treasury_address,
-    factory::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, block::TaikoBlockExecutionCtx},
+    block::factory::TaikoBlockExecutionCtx,
+    evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address},
 };
 
 /// Block executor for Taiko network.

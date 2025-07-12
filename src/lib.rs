@@ -19,24 +19,24 @@ use reth_node_builder::{
 use reth_node_ethereum::node::EthereumPoolBuilder;
 use reth_trie_db::MerklePatriciaTrie;
 
+pub mod block;
 pub mod chainspec;
 pub mod cli;
 pub mod consensus;
 pub mod db;
 pub mod evm;
-pub mod factory;
 pub mod network;
 pub mod payload;
 pub mod rpc;
 
 use crate::{
+    block::{
+        assembler::TaikoBlockAssembler,
+        factory::{TaikoBlockExecutorFactory, TaikoExecutorBuilder},
+    },
     chainspec::spec::TaikoChainSpec,
     consensus::builder::TaikoConsensusBuilder,
-    factory::{
-        assembler::TaikoBlockAssembler, block::TaikoBlockExecutorFactory,
-        builder::TaikoExecutorBuilder, config::TaikoNextBlockEnvAttributes,
-        factory::TaikoEvmFactory,
-    },
+    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
     network::TaikoNetworkBuilder,
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::{

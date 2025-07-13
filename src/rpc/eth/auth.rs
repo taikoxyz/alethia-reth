@@ -47,7 +47,7 @@ use crate::{
     payload::attributes::L1Origin,
 };
 
-const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 70;
+const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 80;
 
 /// A pre-built transaction list that contains the mempool content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +229,7 @@ where
         let safe_max_bytes_per_tx_list =
             max_bytes_per_tx_list * COMPRESSION_ESTIMATION_SAFTY_COEF / 100;
 
+        // Fetch the parent block and its state, for building the prebuilt transaction lists later.
         let parent_block = self
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
@@ -253,6 +254,7 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
+        // Create the block builder based on the parent block and the provided attributes.
         let mut builder = self
             .evm_config
             .builder_for_next_block(
@@ -280,6 +282,7 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?safe_max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
+        // Start iterating over the best transactions in the pool.
         while let Some(pool_tx) = best_txs.next() {
             // ensure if the local accounts are provided, the transaction is from a local account.
             if let Some(local_accounts) = locals.as_ref() {

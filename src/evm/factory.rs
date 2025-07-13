@@ -5,12 +5,12 @@ use reth::revm::{
         TxEnv,
         result::{EVMError, HaltReason},
     },
-    handler::EthPrecompiles,
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
     primitives::hardfork::SpecId,
 };
 use reth_evm::precompiles::PrecompilesMap;
+use reth_revm::precompile::{PrecompileSpecId, Precompiles};
 
 use crate::evm::{alloy::TaikoEvmWrapper, evm::TaikoEvm};
 
@@ -21,7 +21,7 @@ pub struct TaikoEvmFactory;
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.
     type Evm<DB: Database, I: Inspector<EthEvmContext<DB>, EthInterpreter>> =
-        TaikoEvmWrapper<DB, I>;
+        TaikoEvmWrapper<DB, I, Self::Precompiles>;
     /// Transaction environment.
     type Tx = TxEnv;
     /// EVM error.
@@ -41,14 +41,15 @@ impl EvmFactory for TaikoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec>,
     ) -> Self::Evm<DB, NoOpInspector> {
+        let spec_id = input.cfg_env.spec;
         let evm = Context::mainnet()
-            .with_db(db)
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
+            .with_db(db)
             .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(
-                EthPrecompiles::default().precompiles,
-            ));
+            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
+                PrecompileSpecId::from_spec_id(spec_id),
+            )));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
     }
@@ -60,16 +61,17 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
+        let spec_id = input.cfg_env.spec;
         let evm = Context::mainnet()
-            .with_db(db)
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
+            .with_db(db)
             .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(
-                EthPrecompiles::default().precompiles,
-            ))
+            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
+                PrecompileSpecId::from_spec_id(spec_id),
+            )))
             .with_inspector(inspector);
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }
 }

@@ -95,7 +95,7 @@ where
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
         let state_clear_flag = self
             .spec
-            .is_spurious_dragon_active_at_block(self.evm.block().number);
+            .is_spurious_dragon_active_at_block(self.evm.block().number.to());
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
 
         self.system_caller

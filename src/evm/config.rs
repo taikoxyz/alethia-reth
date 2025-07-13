@@ -92,9 +92,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             .with_spec(revm_spec(&self.chain_spec().inner, header));
 
         let block_env = BlockEnv {
-            number: header.number(),
+            number: U256::from(header.number()),
             beneficiary: header.beneficiary(),
-            timestamp: header.timestamp(),
+            timestamp: U256::from(header.timestamp()),
             difficulty: U256::ZERO,
             prevrandao: header.mix_hash(),
             gas_limit: header.gas_limit(),
@@ -124,9 +124,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             ));
 
         let block_env: BlockEnv = BlockEnv {
-            number: parent.number + 1,
+            number: U256::from(parent.number + 1),
             beneficiary: attributes.suggested_fee_recipient,
-            timestamp: attributes.timestamp,
+            timestamp: U256::from(attributes.timestamp),
             difficulty: U256::ZERO,
             prevrandao: Some(attributes.prev_randao),
             gas_limit: attributes.gas_limit,

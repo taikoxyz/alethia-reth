@@ -108,13 +108,9 @@ where
     /// Builds an empty payload without any transaction.
     fn build_empty_payload(
         &self,
-        config: PayloadConfig<Self::Attributes>,
+        _config: PayloadConfig<Self::Attributes>,
     ) -> Result<EthBuiltPayload, PayloadBuilderError> {
-        let args = BuildArguments::new(Default::default(), config, Default::default(), None);
-
-        self.try_build(args)?
-            .into_payload()
-            .ok_or_else(|| PayloadBuilderError::MissingPayload)
+        Err(PayloadBuilderError::MissingPayload)
     }
 }
 

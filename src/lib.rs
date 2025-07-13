@@ -120,6 +120,7 @@ where
             TaikoEthApiBuilder::default(),
             EV::default(),
             TaikoEngineApiBuilder::default(),
+            Default::default(),
         );
 
         TaikoAddOns(add_ons)

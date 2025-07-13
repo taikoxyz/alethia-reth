@@ -11,7 +11,6 @@ use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth::{
     primitives::InvalidTransactionError,
     revm::primitives::Address,
-    rpc::compat::TransactionCompat,
     transaction_pool::{
         BestTransactionsAttributes, PoolConsensusTx, PoolTransaction, TransactionPool,
         error::InvalidPoolTransactionError,
@@ -30,6 +29,7 @@ use reth_node_api::{Block, NodePrimitives};
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
 use reth_revm::State;
 use reth_revm::database::StateProviderDatabase;
+use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
 use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
@@ -124,11 +124,11 @@ impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, 
 }
 
 #[async_trait]
-impl<Pool, Eth, Evm, Provider> TaikoAuthExtApiServer<Eth::Transaction>
+impl<Pool, Eth, Evm, Provider> TaikoAuthExtApiServer<RpcTransaction<Eth::Network>>
     for TaikoAuthExt<Pool, Eth, Evm, Provider>
 where
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>> + 'static,
-    Eth: TransactionCompat<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
+    Eth: RpcConvert<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
     Provider: DatabaseProviderFactory
         + BlockReaderIdExt<Header = alloy_consensus::Header>
         + StateProviderFactory
@@ -195,7 +195,7 @@ where
         max_bytes_per_tx_list: u64,
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
-    ) -> RpcResult<Vec<PreBuiltTxList<Eth::Transaction>>> {
+    ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         self.tx_pool_content_with_min_tip(
             beneficiary,
             base_fee,
@@ -218,7 +218,7 @@ where
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
-    ) -> RpcResult<Vec<PreBuiltTxList<Eth::Transaction>>> {
+    ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         if max_transactions_lists == 0 {
             return Err(EthApiError::InvalidParams(
                 "`maxBytesPerTxList` must not be `0`".to_string(),

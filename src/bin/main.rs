@@ -39,7 +39,7 @@ fn main() {
                     let taiko_auth_rpc_ext = TaikoAuthExt::new(
                         provider,
                         ctx.node().pool().clone(),
-                        *ctx.registry.eth_api().tx_resp_builder(),
+                        ctx.registry.eth_api().tx_resp_builder().clone(),
                         ctx.node().evm_config().clone(),
                     );
                     ctx.auth_module

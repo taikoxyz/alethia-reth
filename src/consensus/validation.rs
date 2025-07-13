@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH};
 use reth::{
-    beacon_consensus::{EthBeaconConsensus, validate_block_post_execution},
+    beacon_consensus::validate_block_post_execution,
     consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
     consensus_common::validation::{
         validate_against_parent_hash_number, validate_body_against_header,
+        validate_header_base_fee, validate_header_extra_data, validate_header_gas,
     },
     primitives::SealedBlock,
 };
@@ -20,18 +21,13 @@ use crate::chainspec::spec::TaikoChainSpec;
 /// Provides basic checks as outlined in the execution specs.
 #[derive(Debug, Clone)]
 pub struct TaikoBeaconConsensus {
-    /// Configuration
-    inner: EthBeaconConsensus<TaikoChainSpec>,
     chain_spec: Arc<TaikoChainSpec>,
 }
 
 impl TaikoBeaconConsensus {
     /// Create a new instance of [`TaikoBeaconConsensus`]
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self {
-            inner: EthBeaconConsensus::new(chain_spec.clone()),
-            chain_spec,
-        }
+        Self { chain_spec }
     }
 }
 
@@ -103,7 +99,23 @@ where
     ///
     /// This is called on standalone header to check if all hashes are correct.
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
-        self.inner.validate_header(header)
+        let header = header.header();
+
+        if !header.difficulty().is_zero() {
+            return Err(ConsensusError::TheMergeDifficultyIsNotZero);
+        }
+
+        if !header.nonce().is_some_and(|nonce| nonce.is_zero()) {
+            return Err(ConsensusError::TheMergeNonceIsNotZero);
+        }
+
+        if header.ommers_hash() != EMPTY_OMMER_ROOT_HASH {
+            return Err(ConsensusError::TheMergeOmmerRootIsNotEmpty);
+        }
+
+        validate_header_extra_data(header)?;
+        validate_header_gas(header)?;
+        validate_header_base_fee(header, &self.chain_spec)
     }
 
     /// Validate that the header information regarding parent are correct.

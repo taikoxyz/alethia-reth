@@ -3,16 +3,21 @@ use std::str::FromStr;
 use reth::revm::{
     Database, Inspector,
     context::{
-        Block, Cfg, ContextTr, JournalOutput, JournalTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{HaltReason, InvalidTransaction},
     },
     handler::{
-        EvmTr, EvmTrError, Frame, FrameResult, Handler, PrecompileProvider,
+        EvmTr, EvmTrError, FrameResult, Handler, PrecompileProvider,
         instructions::InstructionProvider, pre_execution::validate_account_nonce_and_code,
     },
-    inspector::{InspectorEvmTr, InspectorFrame, InspectorHandler},
-    interpreter::{FrameInput, Gas, InterpreterResult, interpreter::EthInterpreter},
+    inspector::{InspectorEvmTr, InspectorHandler},
+    interpreter::{Gas, InterpreterResult, interpreter::EthInterpreter},
     primitives::{Address, U256},
+};
+use reth_revm::{
+    handler::{EthFrame, FrameTr},
+    interpreter::interpreter_action::FrameInit,
+    state::EvmState,
 };
 use tracing::debug;
 
@@ -43,22 +48,21 @@ impl<CTX, ERROR, FRAME> TaikoEvmHandler<CTX, ERROR, FRAME> {
 impl<EVM, ERROR, FRAME> Handler for TaikoEvmHandler<EVM, ERROR, FRAME>
 where
     EVM: EvmTr<
-            Context: ContextTr<Journal: JournalTr<FinalOutput = JournalOutput>>,
+            Context: ContextTr<Journal: JournalTr<State = EvmState>>,
             Precompiles: PrecompileProvider<EVM::Context, Output = InterpreterResult>,
             Instructions: InstructionProvider<
                 Context = EVM::Context,
                 InterpreterTypes = EthInterpreter,
             >,
+            Frame = FRAME,
         >,
     ERROR: EvmTrError<EVM>,
-    FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>,
+    FRAME: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
 {
     /// The EVM type containing Context, Instruction, and Precompiles implementations.
     type Evm = EVM;
     /// The error type returned by this handler.
     type Error = ERROR;
-    /// The Frame type containing data for frame execution. Supports Call, Create and EofCreate frames.
-    type Frame = FRAME;
     /// The halt reason type included in the output
     type HaltReason = HaltReason;
 
@@ -96,20 +100,19 @@ where
 }
 
 /// Trait that extends [`Handler`] with inspection functionality, here we just use the default implementation.
-impl<EVM, ERROR, FRAME> InspectorHandler for TaikoEvmHandler<EVM, ERROR, FRAME>
+impl<EVM, ERROR> InspectorHandler for TaikoEvmHandler<EVM, ERROR, EthFrame<EthInterpreter>>
 where
     EVM: InspectorEvmTr<
             Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
-            Context: ContextTr<Journal: JournalTr<FinalOutput = JournalOutput>>,
+            Context: ContextTr<Journal: JournalTr<State = EvmState>>,
             Precompiles: PrecompileProvider<EVM::Context, Output = InterpreterResult>,
             Instructions: InstructionProvider<
                 Context = EVM::Context,
                 InterpreterTypes = EthInterpreter,
             >,
+            Frame = EthFrame<EthInterpreter>,
         >,
     ERROR: EvmTrError<EVM>,
-    FRAME: Frame<Evm = EVM, Error = ERROR, FrameResult = FrameResult, FrameInit = FrameInput>
-        + InspectorFrame<IT = EthInterpreter>,
 {
     type IT = EthInterpreter;
 }
@@ -123,30 +126,19 @@ fn reward_beneficiary<CTX: ContextTr>(
     gas: &mut Gas,
     extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 ) -> Result<(), <CTX::Db as Database>::Error> {
-    let block = context.block();
-    let tx = context.tx();
-    let beneficiary = block.beneficiary();
-    let basefee = block.basefee() as u128;
-    let effective_gas_price = tx.effective_gas_price(basefee);
-    // Transfer fee to coinbase/beneficiary.
-    // EIP-1559 discard basefee for coinbase transfer. Basefee amount of gas is discarded.
-    let coinbase_gas_price = effective_gas_price.saturating_sub(basefee);
-    let spent = gas.spent();
-    let refunded = gas.refunded();
-    // Get the caller address and nonce from the transaction, to check if it is an anchor transaction.
-    let tx_caller: Address = tx.caller();
-    let tx_nonce = tx.nonce();
     let block_number = context.block().number();
-    let coinbase_account = context.journal().load_account(beneficiary)?;
-    coinbase_account.data.mark_touch();
-    coinbase_account.data.info.balance =
-        coinbase_account
-            .data
-            .info
-            .balance
-            .saturating_add(U256::from(
-                coinbase_gas_price * (gas.spent() - gas.refunded() as u64) as u128,
-            ));
+    let beneficiary = context.block().beneficiary();
+    let basefee = context.block().basefee() as u128;
+    let effective_gas_price = context.tx().effective_gas_price(basefee);
+    let coinbase_gas_price = effective_gas_price.saturating_sub(basefee);
+    // Get the caller address and nonce from the transaction, to check if it is an anchor transaction.
+    let tx_caller: Address = context.tx().caller();
+    let tx_nonce = context.tx().nonce();
+    // Reward beneficiary.
+    context.journal_mut().balance_incr(
+        beneficiary,
+        U256::from(coinbase_gas_price * (gas.spent() - gas.refunded() as u64) as u128),
+    )?;
 
     // If the extra execution context is provided, which means we are building an L2 block,
     // we share the base fee income with the coinbase and treasury.
@@ -159,29 +151,22 @@ fn reward_beneficiary<CTX: ContextTr>(
         // If the transaction is not an anchor transaction, we share the base fee income with the coinbase and treasury.
         if ctx.anchor_caller_address() != tx_caller || ctx.anchor_caller_nonce() != tx_nonce {
             // Total base fee income.
-            let total_fee = U256::from(basefee * (spent - refunded as u64) as u128);
+            let total_fee = U256::from(basefee * (gas.spent() - gas.refunded() as u64) as u128);
 
             // Share the base fee income with the coinbase and treasury.
             let fee_coinbase =
                 total_fee.saturating_mul(U256::from(ctx.basefee_share_pctg())) / U256::from(100u64);
             let fee_treasury = total_fee.saturating_sub(fee_coinbase);
-            coinbase_account.data.info.balance = coinbase_account
-                .data
-                .info
-                .balance
-                .saturating_add(fee_coinbase);
+
+            context
+                .journal_mut()
+                .balance_incr(beneficiary, fee_coinbase)?;
 
             let chain_id = context.cfg().chain_id();
-            let treasury_account = context
-                .journal()
-                .load_account(get_treasury_address(chain_id))?;
+            context
+                .journal_mut()
+                .balance_incr(get_treasury_address(chain_id), fee_treasury)?;
 
-            treasury_account.data.mark_touch();
-            treasury_account.data.info.balance = treasury_account
-                .data
-                .info
-                .balance
-                .saturating_add(fee_treasury);
             debug!(
                 target: "taiko-evm",
                 "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
@@ -216,7 +201,7 @@ pub fn validate_against_state_and_deduct_caller<
     let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
     let block = context.block().number();
 
-    let (tx, journal) = context.tx_journal();
+    let (tx, journal) = context.tx_journal_mut();
 
     // Load caller's account.
     let caller_account = journal.load_account_code(tx.caller())?.data;
@@ -224,7 +209,6 @@ pub fn validate_against_state_and_deduct_caller<
     validate_account_nonce_and_code(
         &mut caller_account.info,
         tx.nonce(),
-        tx.kind().is_call(),
         is_eip3607_disabled,
         is_nonce_check_disabled,
     )?;
@@ -242,13 +226,20 @@ pub fn validate_against_state_and_deduct_caller<
         }
     }
 
+    // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
+    if tx.kind().is_call() {
+        // Nonce is already checked
+        caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+    }
+
     let max_balance_spending = tx.max_balance_spending()?;
+    let mut new_balance = caller_account.info.balance;
 
     // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
     // Transfer will be done inside `*_inner` functions.
     if is_balance_check_disabled {
         // Make sure the caller's balance is at least the value of the transaction.
-        caller_account.info.balance = caller_account.info.balance.max(tx.value());
+        new_balance = caller_account.info.balance.max(tx.value());
     } else if max_balance_spending > caller_account.info.balance {
         return Err(InvalidTransaction::LackOfFundForMaxFee {
             fee: Box::new(max_balance_spending),
@@ -263,14 +254,15 @@ pub fn validate_against_state_and_deduct_caller<
         // subtracting max balance spending with value that is going to be deducted later in the call.
         let gas_balance_spending = effective_balance_spending - tx.value();
 
-        caller_account.info.balance = caller_account
-            .info
-            .balance
-            .saturating_sub(gas_balance_spending);
+        new_balance = new_balance.saturating_sub(gas_balance_spending);
     }
 
+    let old_balance = caller_account.info.balance;
     // Touch account so we know it is changed.
     caller_account.mark_touch();
+    caller_account.info.balance = new_balance;
+
+    journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
     Ok(())
 }
 

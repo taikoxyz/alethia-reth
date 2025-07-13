@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::payload::attributes::TaikoPayloadAttributes;
 use crate::rpc::engine::types::TaikoExecutionData;
 use alloy_hardforks::EthereumHardforks;
@@ -19,6 +21,8 @@ use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
 use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
+use tokio_retry::Retry;
+use tokio_retry::strategy::ExponentialBackoff;
 
 use crate::db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
@@ -125,16 +129,25 @@ where
             .await?;
 
         if let Some(payload) = payload_attributes {
-            let built_payload = self
-                .payload_store
-                .best_payload(status.payload_id.expect("payload_id must not be empty"))
-                .await
-                .ok_or(EngineApiError::GetPayloadError(
-                    PayloadBuilderError::MissingPayload,
-                ))?
-                .map_err(|_| {
-                    EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload)
-                })?;
+            // Wait for the new payload to be built and stored, then we can stroe the
+            // coressponding L1 origin into the database.
+            let built_payload = Retry::spawn(
+                ExponentialBackoff::from_millis(50)
+                    .max_delay(Duration::from_secs(12))
+                    .take(3 as usize),
+                || async {
+                    match self
+                        .payload_store
+                        .best_payload(status.payload_id.expect("payload_id must not be empty"))
+                        .await
+                    {
+                        Some(Ok(value)) => Ok(value),
+                        _ => Err(()),
+                    }
+                },
+            )
+            .await
+            .map_err(|_| EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload))?;
 
             let stored_l1_origin = StoredL1Origin {
                 block_id: payload.l1_origin.block_id,

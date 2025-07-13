@@ -6,14 +6,13 @@ use alloy_hardforks::EthereumHardforks;
 use alloy_network::Ethereum;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
-use alloy_signer::Either;
 use jsonrpsee::tokio;
 use reth::{
     chainspec::EthChainSpec,
     network::NetworkInfo,
     revm::{
-        context::{Block, TxEnv},
-        primitives::{B256, TxKind, U256},
+        context::TxEnv,
+        primitives::{B256, U256},
     },
     rpc::api::eth::{
         FullEthApiTypes, RpcNodeCoreExt, RpcReceipt,
@@ -30,28 +29,27 @@ use reth::{
 };
 use reth_ethereum::TransactionSigned;
 use reth_ethereum_primitives::Receipt;
-use reth_evm::{ConfigureEvm, EvmEnv, EvmFactory, SpecFor, block::BlockExecutorFactory};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmFactory, SpecFor, TxEnvFor, block::BlockExecutorFactory};
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::NodePrimitives;
 use reth_primitives_traits::{BlockBody, SealedHeader, TransactionMeta};
 use reth_provider::{
     BlockNumReader, BlockReader, BlockReaderIdExt, ChainSpecProvider, NodePrimitivesProvider,
-    ProviderBlock, ProviderHeader, ProviderReceipt, ProviderTx, ReceiptProvider,
+    ProviderBlock, ProviderError, ProviderHeader, ProviderReceipt, ProviderTx, ReceiptProvider,
     StageCheckpointReader, StateProviderFactory, TransactionsProvider,
 };
 use reth_rpc::{
     EthApi,
-    eth::{DevSigner, EthApiTypes, EthTxBuilder, RpcNodeCore},
+    eth::{DevSigner, EthApiTypes, RpcNodeCore, helpers::types::EthRpcConverter},
 };
 use reth_rpc_eth_api::{
-    FromEthApiError, IntoEthApiError,
+    FromEthApiError, RpcConvert,
     helpers::{EthApiSpec, EthBlocks, EthSigner, EthState, EthTransactions, LoadTransaction},
     types::RpcTypes,
 };
 use reth_rpc_eth_types::{
     EthApiError, EthReceiptBuilder, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
-    RpcInvalidTransactionError, error::FromEvmError, revm_utils::CallFees,
-    utils::recover_raw_transaction,
+    error::FromEvmError, utils::recover_raw_transaction,
 };
 use revm_database_interface::Database;
 
@@ -86,10 +84,10 @@ where
     /// Blockchain primitive types, specific to network, e.g. block and transaction.
     type NetworkTypes = Ethereum;
     /// Conversion methods for transaction RPC type.
-    type TransactionCompat = EthTxBuilder;
+    type RpcConvert = EthRpcConverter;
 
     /// Returns reference to transaction response builder.
-    fn tx_resp_builder(&self) -> &Self::TransactionCompat {
+    fn tx_resp_builder(&self) -> &Self::RpcConvert {
         &self.0.tx_resp_builder
     }
 }
@@ -262,7 +260,11 @@ where
 
 impl<Provider, Pool, Network, EvmConfig> EthFees for TaikoEthApi<Provider, Pool, Network, EvmConfig>
 where
-    Self: LoadFee,
+    Self: LoadFee<
+        Provider: ChainSpecProvider<
+            ChainSpec: EthChainSpec<Header = ProviderHeader<Self::Provider>>,
+        >,
+    >,
     Provider: BlockReader,
 {
 }
@@ -282,7 +284,7 @@ where
 
     /// Returns a handle for reading fee history data from memory.
     #[inline]
-    fn fee_history_cache(&self) -> &FeeHistoryCache {
+    fn fee_history_cache(&self) -> &FeeHistoryCache<ProviderHeader<Provider>> {
         self.0.fee_history_cache()
     }
 }
@@ -339,7 +341,11 @@ where
                     SignedTx = ProviderTx<Self::Provider>,
                 >,
             >,
-            Error: FromEvmError<Self::Evm>,
+            RpcConvert: RpcConvert<TxEnv = TxEnvFor<Self::Evm>, Network = Self::NetworkTypes>,
+            NetworkTypes: RpcTypes<TransactionRequest: From<TransactionRequest>>,
+            Error: FromEvmError<Self::Evm>
+                       + From<<Self::RpcConvert as RpcConvert>::Error>
+                       + From<ProviderError>,
         > + SpawnBlocking,
     Provider: BlockReader,
 {
@@ -364,104 +370,21 @@ where
     fn create_txn_env(
         &self,
         evm_env: &EvmEnv<SpecFor<Self::Evm>>,
-        request: TransactionRequest,
+        mut request: TransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnv, Self::Error> {
-        // Ensure that if versioned hashes are set, they're not empty
-        if request
-            .blob_versioned_hashes
-            .as_ref()
-            .is_some_and(|hashes| hashes.is_empty())
-        {
-            return Err(RpcInvalidTransactionError::BlobTransactionMissingBlobHashes.into_eth_err());
+        if request.nonce.is_none() {
+            request.nonce.replace(
+                db.basic(request.from.unwrap_or_default())
+                    .map_err(Into::into)?
+                    .map(|acc| acc.nonce)
+                    .unwrap_or_default(),
+            );
         }
 
-        let tx_type = request.minimal_tx_type() as u8;
-
-        let TransactionRequest {
-            from,
-            to,
-            gas_price,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            gas,
-            value,
-            input,
-            nonce,
-            access_list,
-            chain_id,
-            blob_versioned_hashes,
-            max_fee_per_blob_gas,
-            authorization_list,
-            transaction_type: _,
-            sidecar: _,
-        } = request;
-
-        let CallFees {
-            max_priority_fee_per_gas,
-            gas_price,
-            max_fee_per_blob_gas,
-        } = CallFees::ensure_fees(
-            gas_price.map(U256::from),
-            max_fee_per_gas.map(U256::from),
-            max_priority_fee_per_gas.map(U256::from),
-            U256::from(evm_env.block_env.basefee),
-            blob_versioned_hashes.as_deref(),
-            max_fee_per_blob_gas.map(U256::from),
-            evm_env.block_env.blob_gasprice().map(U256::from),
-        )?;
-
-        let gas_limit = gas.unwrap_or(
-            // Use maximum allowed gas limit. The reason for this
-            // is that both Erigon and Geth use pre-configured gas cap even if
-            // it's possible to derive the gas limit from the block:
-            // <https://github.com/ledgerwatch/erigon/blob/eae2d9a79cb70dbe30b3a6b79c436872e4605458/cmd/rpcdaemon/commands/trace_adhoc.go#L956
-            // https://github.com/ledgerwatch/erigon/blob/eae2d9a79cb70dbe30b3a6b79c436872e4605458/eth/ethconfig/config.go#L94>
-            evm_env.block_env.gas_limit,
-        );
-
-        let chain_id = chain_id.unwrap_or(evm_env.cfg_env.chain_id);
-
-        let caller = from.unwrap_or_default();
-
-        let nonce = if let Some(nonce) = nonce {
-            nonce
-        } else {
-            db.basic(caller)
-                .map_err(Into::into)?
-                .map(|acc| acc.nonce)
-                .unwrap_or_default()
-        };
-
-        let env = TxEnv {
-            tx_type,
-            gas_limit,
-            nonce,
-            caller,
-            gas_price: gas_price.saturating_to(),
-            gas_priority_fee: max_priority_fee_per_gas.map(|v| v.saturating_to()),
-            kind: to.unwrap_or(TxKind::Create),
-            value: value.unwrap_or_default(),
-            data: input
-                .try_into_unique_input()
-                .map_err(Self::Error::from_eth_err)?
-                .unwrap_or_default(),
-            chain_id: Some(chain_id),
-            access_list: access_list.unwrap_or_default(),
-            // EIP-4844 fields
-            blob_hashes: blob_versioned_hashes.unwrap_or_default(),
-            max_fee_per_blob_gas: max_fee_per_blob_gas
-                .map(|v| v.saturating_to())
-                .unwrap_or_default(),
-            // EIP-7702 fields
-            authorization_list: authorization_list
-                .unwrap_or_default()
-                .into_iter()
-                .map(Either::Left)
-                .collect(),
-        };
-
-        Ok(env)
+        Ok(self
+            .tx_resp_builder()
+            .tx_env(request.into(), &evm_env.cfg_env, &evm_env.block_env)?)
     }
 }
 
@@ -557,6 +480,7 @@ where
     Self: SpawnBlocking<
             NetworkTypes: RpcTypes<Header = alloy_rpc_types_eth::Header>,
             Error: FromEvmError<Self::Evm>,
+            RpcConvert: RpcConvert<Network = Self::NetworkTypes>,
         > + RpcNodeCore<
             Provider: BlockReaderIdExt<
                 Transaction = reth_ethereum_primitives::TransactionSigned,

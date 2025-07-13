@@ -6,14 +6,13 @@ use reth::{
     CliRunner,
     beacon_consensus::EthBeaconConsensus,
     cli::{Cli, Commands},
-    network::EthNetworkPrimitives,
     prometheus_exporter::install_prometheus_recorder,
 };
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{launcher::FnLauncher, node::NoArgs};
 use reth_db::DatabaseEnv;
+use reth_evm_ethereum::EthEvmConfig;
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_node_ethereum::EthExecutorProvider;
 use reth_tracing::FileWorkerGuard;
 use tracing::info;
 
@@ -97,7 +96,7 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
 
         let components = |spec: Arc<C::ChainSpec>| {
             (
-                EthExecutorProvider::ethereum(Arc::new(spec.inner.clone())),
+                EthEvmConfig::ethereum(spec.clone()),
                 EthBeaconConsensus::new(spec),
             )
         };
@@ -114,7 +113,7 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
                 runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
             Commands::Import(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode, _, _>(components))
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode, _>(components))
             }
             Commands::ImportEra(command) => {
                 runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
@@ -126,12 +125,9 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
             Commands::Download(command) => {
                 runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
             }
-            Commands::Stage(command) => runner.run_command_until_exit(|ctx| {
-                command.execute::<TaikoNode, _, _, EthNetworkPrimitives>(ctx, components)
-            }),
-            Commands::P2P(command) => {
-                runner.run_until_ctrl_c(command.execute::<EthNetworkPrimitives>())
-            }
+            Commands::Stage(command) => runner
+                .run_command_until_exit(|ctx| command.execute::<TaikoNode, _>(ctx, components)),
+            Commands::P2P(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
             Commands::Config(command) => runner.run_until_ctrl_c(command.execute()),
             Commands::Debug(_) => {
                 info!(target: "reth::cli", "Debug command is not implemented yet.");

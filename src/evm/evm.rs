@@ -1,26 +1,35 @@
 use alloy_primitives::Address;
 use reth::revm::{
     context::{ContextTr, Evm as RevmEvm},
-    handler::{
-        EvmTr,
-        instructions::{EthInstructions, InstructionProvider},
-    },
-    interpreter::{Interpreter, InterpreterTypes, interpreter::EthInterpreter},
+    handler::{EvmTr, instructions::EthInstructions},
+    interpreter::interpreter::EthInterpreter,
 };
-use reth_evm::precompiles::PrecompilesMap;
+use reth_revm::{
+    context::{ContextError, FrameStack},
+    handler::{EthFrame, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider},
+    interpreter::InterpreterResult,
+};
+use revm_database_interface::Database;
 
 /// Custom EVM for Taiko, we extend the RevmEvm with
 /// [`TaikoEvmExtraContext`] to provide additional context
 /// for Anchor transaction pre-execution checks and base fee sharing.
-pub struct TaikoEvm<CTX, INSP> {
-    pub inner: RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PrecompilesMap>,
+pub struct TaikoEvm<CTX, INSP, P> {
+    pub inner:
+        RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, P, EthFrame<EthInterpreter>>,
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 
-impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
+impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
     /// Creates a new instance of [`TaikoEvm`].
     pub fn new(
-        inner: RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, PrecompilesMap>,
+        inner: RevmEvm<
+            CTX,
+            INSP,
+            EthInstructions<EthInterpreter, CTX>,
+            P,
+            EthFrame<EthInterpreter>,
+        >,
     ) -> Self {
         Self {
             inner,
@@ -44,16 +53,18 @@ impl<CTX: ContextTr, INSP> TaikoEvm<CTX, INSP> {
 
 /// A trait that integrates context, instruction set, and precompiles to create an EVM struct,
 /// here we use the same implementation as `RevmEvm`.
-impl<CTX: ContextTr, INSP> EvmTr for TaikoEvm<CTX, INSP>
+impl<CTX: ContextTr, INSP, P> EvmTr for TaikoEvm<CTX, INSP, P>
 where
     CTX: ContextTr,
+    P: PrecompileProvider<CTX, Output = InterpreterResult>,
 {
     /// The context type that implements ContextTr to provide access to execution state
     type Context = CTX;
     /// The instruction set type that implements InstructionProvider to define available operations
     type Instructions = EthInstructions<EthInterpreter, CTX>;
     /// The type containing the available precompiled contracts
-    type Precompiles = PrecompilesMap;
+    type Precompiles = P;
+    type Frame = EthFrame<EthInterpreter>;
 
     /// Returns a mutable reference to the execution context
     fn ctx(&mut self) -> &mut Self::Context {
@@ -71,16 +82,37 @@ where
         self.inner.ctx_instructions()
     }
 
-    /// Executes the interpreter loop for the given interpreter instance.
-    /// Returns either a completion status or the next interpreter action to take.
-    fn run_interpreter(
+    fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
+        self.inner.frame_stack()
+    }
+
+    fn frame_init(
         &mut self,
-        interpreter: &mut Interpreter<
-            <Self::Instructions as InstructionProvider>::InterpreterTypes,
-        >,
-    ) -> <<Self::Instructions as InstructionProvider>::InterpreterTypes as InterpreterTypes>::Output
-    {
-        self.inner.run_interpreter(interpreter)
+        frame_input: <Self::Frame as FrameTr>::FrameInit,
+    ) -> Result<
+        ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
+    > {
+        self.inner.frame_init(frame_input)
+    }
+
+    fn frame_run(
+        &mut self,
+    ) -> Result<
+        FrameInitOrResult<Self::Frame>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
+    > {
+        self.inner.frame_run()
+    }
+
+    fn frame_return_result(
+        &mut self,
+        frame_result: <Self::Frame as FrameTr>::FrameResult,
+    ) -> Result<
+        Option<<Self::Frame as FrameTr>::FrameResult>,
+        ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
+    > {
+        self.inner.frame_return_result(frame_result)
     }
 
     /// Returns mutable references to both the context and precompiles.

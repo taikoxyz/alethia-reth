@@ -13,7 +13,7 @@ use reth::revm::{
     },
     primitives::{Address, Bytes, TxKind, U256, hardfork::SpecId},
 };
-use reth_evm::precompiles::PrecompilesMap;
+use reth_revm::{handler::PrecompileProvider, interpreter::InterpreterResult};
 use tracing::debug;
 
 use crate::evm::{evm::TaikoEvm, handler::get_treasury_address};
@@ -21,14 +21,14 @@ use crate::evm::{evm::TaikoEvm, handler::get_treasury_address};
 pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
-pub struct TaikoEvmWrapper<DB: Database, INSP> {
-    inner: TaikoEvm<EthEvmContext<DB>, INSP>,
+pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
+    inner: TaikoEvm<EthEvmContext<DB>, INSP, P>,
     inspect: bool,
 }
 
-impl<DB: Database, INSP> TaikoEvmWrapper<DB, INSP> {
+impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
-    pub const fn new(evm: TaikoEvm<EthEvmContext<DB>, INSP>, inspect: bool) -> Self {
+    pub const fn new(evm: TaikoEvm<EthEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
         Self {
             inner: evm,
             inspect,
@@ -36,7 +36,7 @@ impl<DB: Database, INSP> TaikoEvmWrapper<DB, INSP> {
     }
 
     /// Consumes self and return the inner EVM instance.
-    pub fn into_inner(self) -> TaikoEvm<EthEvmContext<DB>, INSP> {
+    pub fn into_inner(self) -> TaikoEvm<EthEvmContext<DB>, INSP, P> {
         self.inner
     }
 
@@ -51,7 +51,7 @@ impl<DB: Database, INSP> TaikoEvmWrapper<DB, INSP> {
     }
 }
 
-impl<DB: Database, I> Deref for TaikoEvmWrapper<DB, I> {
+impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
     type Target = EthEvmContext<DB>;
 
     #[inline]
@@ -60,7 +60,7 @@ impl<DB: Database, I> Deref for TaikoEvmWrapper<DB, I> {
     }
 }
 
-impl<DB: Database, I> DerefMut for TaikoEvmWrapper<DB, I> {
+impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx_mut()
@@ -73,10 +73,11 @@ impl<DB: Database, I> DerefMut for TaikoEvmWrapper<DB, I> {
 /// purpose is to execute transactions.
 ///
 /// Executing a transaction will return the outcome of the transaction.
-impl<DB, I> Evm for TaikoEvmWrapper<DB, I>
+impl<DB, I, P> Evm for TaikoEvmWrapper<DB, I, P>
 where
     DB: Database,
     I: Inspector<EthEvmContext<DB>>,
+    P: PrecompileProvider<EthEvmContext<DB>, Output = InterpreterResult>,
 {
     /// Database type held by the EVM.
     type DB = DB;
@@ -93,7 +94,7 @@ where
     /// which features are enabled.
     type Spec = SpecId;
     /// Precompiles used by the EVM.
-    type Precompiles = PrecompilesMap;
+    type Precompiles = P;
     /// Evm inspector.
     type Inspector = I;
 
@@ -113,8 +114,7 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         if self.inspect {
-            self.inner.set_tx(tx);
-            self.inner.inspect_replay()
+            self.inner.inspect_tx(tx)
         } else {
             self.inner.transact(tx)
         }

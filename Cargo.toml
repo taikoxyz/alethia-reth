@@ -103,6 +103,7 @@ serde_with = { version = "3", default-features = false, features = [
   "macros",
   "base64",
 ] }
+auto_impl = "1"
 
 [features]
 default = ["serde"]

@@ -9654,6 +9654,7 @@ dependencies = [
  "alloy-tx-macros",
  "arbitrary",
  "async-trait",
+ "auto_impl",
  "cc",
  "clap",
  "derive_more",

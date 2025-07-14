@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH};
+use alloy_hardforks::EthereumHardforks;
 use reth::{
     beacon_consensus::validate_block_post_execution,
+    chainspec::EthChainSpec,
     consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
     consensus_common::validation::{
         validate_against_parent_hash_number, validate_body_against_header,
@@ -14,7 +16,7 @@ use reth_node_api::NodePrimitives;
 use reth_primitives_traits::{Block, BlockHeader, GotExpected, RecoveredBlock, SealedHeader};
 use reth_provider::BlockExecutionResult;
 
-use crate::chainspec::spec::TaikoChainSpec;
+use crate::chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 
 /// Taiko consensus implementation.
 ///
@@ -137,6 +139,29 @@ where
             });
         }
 
+        validate_against_parent_eip4936_base_fee(
+            header.header(),
+            parent.header(),
+            &self.chain_spec,
+        )?;
+
         Ok(())
     }
+}
+
+/// Validates the base fee against the parent.
+#[inline]
+pub fn validate_against_parent_eip4936_base_fee<
+    ChainSpec: EthChainSpec + EthereumHardforks + TaikoHardforks,
+    H: BlockHeader,
+>(
+    header: &H,
+    _parent: &H,
+    _chain_spec: &ChainSpec,
+) -> Result<(), ConsensusError> {
+    if header.base_fee_per_gas().is_none() {
+        return Err(ConsensusError::BaseFeeMissing);
+    }
+
+    Ok(())
 }

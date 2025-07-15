@@ -165,3 +165,145 @@ pub fn validate_against_parent_eip4936_base_fee<
 
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use alloy_consensus::{Header, constants::MAXIMUM_EXTRA_DATA_SIZE};
+    use alloy_primitives::{B64, B256, Bytes, U64, U256};
+    use reth_cli::chainspec::ChainSpecParser;
+
+    use crate::chainspec::parser::TaikoChainSpecParser;
+
+    use super::*;
+
+    #[test]
+    fn test_validate_against_parent_eip4936_base_fee() {
+        let parent_header = &Header::default();
+        let mut header = parent_header.clone();
+        header.parent_hash = parent_header.hash_slow();
+        header.number = parent_header.number + 1;
+        header.base_fee_per_gas = Some(U64::random().to::<u64>());
+
+        let chain_spec = Arc::new(TaikoChainSpec::default());
+
+        assert!(
+            validate_against_parent_eip4936_base_fee(&header, &parent_header, &chain_spec).is_err()
+        );
+
+        header.base_fee_per_gas = Some(U64::random().to::<u64>());
+        assert!(
+            validate_against_parent_eip4936_base_fee(&header, &parent_header, &chain_spec).is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_header() {
+        let consensus = TaikoBeaconConsensus::new(TaikoChainSpecParser::parse("mainnet").unwrap());
+
+        let mut header = Header::default();
+        header.difficulty = U256::random().saturating_add(U256::from(1));
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
+            Err(ConsensusError::TheMergeDifficultyIsNotZero)
+        );
+        header.difficulty = U256::ZERO;
+
+        header.nonce = B64::random();
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
+            Err(ConsensusError::TheMergeNonceIsNotZero)
+        );
+        header.nonce = B64::ZERO;
+
+        header.ommers_hash = B256::random();
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
+            Err(ConsensusError::TheMergeOmmerRootIsNotEmpty)
+        );
+        header.ommers_hash = EMPTY_OMMER_ROOT_HASH;
+
+        header.extra_data = Bytes::from(vec![0; MAXIMUM_EXTRA_DATA_SIZE + 1]);
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
+            Err(ConsensusError::ExtraDataExceedsMax {
+                len: MAXIMUM_EXTRA_DATA_SIZE + 1,
+            })
+        );
+        header.extra_data = Bytes::from(vec![0; MAXIMUM_EXTRA_DATA_SIZE]);
+
+        header.gas_used = header.gas_limit + 1;
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
+            Err(ConsensusError::HeaderGasUsedExceedsGasLimit {
+                gas_used: header.gas_used,
+                gas_limit: header.gas_limit,
+            })
+        );
+        header.gas_used = header.gas_limit;
+
+        header.number = 1;
+        header.base_fee_per_gas = None;
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
+            Err(ConsensusError::BaseFeeMissing)
+        );
+    }
+
+    #[test]
+    fn test_validate_header_against_parent() {
+        let consensus = TaikoBeaconConsensus::new(TaikoChainSpecParser::parse("mainnet").unwrap());
+
+        let mut parent = Header::default();
+        let mut header = parent.clone();
+        header.number = parent.number + 1;
+        header.parent_hash = B256::random();
+        assert_eq!(
+            consensus.validate_header_against_parent(
+                &SealedHeader::new(header.clone(), header.hash_slow()),
+                &SealedHeader::new(parent.clone(), parent.hash_slow())
+            ),
+            Err(ConsensusError::ParentHashMismatch(
+                GotExpected {
+                    got: header.parent_hash,
+                    expected: parent.hash_slow(),
+                }
+                .into()
+            ))
+        );
+
+        parent.timestamp = U64::random().to::<u64>();
+        header.parent_hash = parent.hash_slow();
+        header.timestamp = parent.timestamp;
+        header.base_fee_per_gas = Some(U64::random().to::<u64>());
+        assert!(
+            consensus
+                .validate_header_against_parent(
+                    &SealedHeader::new(header.clone(), header.hash_slow()),
+                    &SealedHeader::new(parent.clone(), parent.hash_slow()),
+                )
+                .is_ok()
+        );
+
+        header.timestamp = parent.timestamp - 1;
+        assert_eq!(
+            consensus.validate_header_against_parent(
+                &SealedHeader::new(header.clone(), header.hash_slow()),
+                &SealedHeader::new(parent.clone(), parent.hash_slow()),
+            ),
+            Err(ConsensusError::TimestampIsInPast {
+                parent_timestamp: parent.timestamp,
+                timestamp: header.timestamp,
+            })
+        );
+
+        header.timestamp = parent.timestamp + 1;
+        header.base_fee_per_gas = None;
+        assert_eq!(
+            consensus.validate_header_against_parent(
+                &SealedHeader::new(header.clone(), header.hash_slow()),
+                &SealedHeader::new(parent.clone(), parent.hash_slow()),
+            ),
+            Err(ConsensusError::BaseFeeMissing)
+        );
+    }
+}

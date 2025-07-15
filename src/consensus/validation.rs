@@ -182,17 +182,24 @@ mod test {
         let mut header = parent_header.clone();
         header.parent_hash = parent_header.hash_slow();
         header.number = parent_header.number + 1;
-        header.base_fee_per_gas = Some(U64::random().to::<u64>());
-
-        let chain_spec = Arc::new(TaikoChainSpec::default());
 
         assert!(
-            validate_against_parent_eip4936_base_fee(&header, &parent_header, &chain_spec).is_err()
+            validate_against_parent_eip4936_base_fee(
+                &header,
+                &parent_header,
+                &Arc::new(TaikoChainSpec::default())
+            )
+            .is_err()
         );
 
         header.base_fee_per_gas = Some(U64::random().to::<u64>());
         assert!(
-            validate_against_parent_eip4936_base_fee(&header, &parent_header, &chain_spec).is_ok()
+            validate_against_parent_eip4936_base_fee(
+                &header,
+                &parent_header,
+                &Arc::new(TaikoChainSpec::default())
+            )
+            .is_ok()
         );
     }
 

@@ -235,3 +235,38 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0] as u64
 }
+
+#[cfg(test)]
+mod test {
+    use alloy_primitives::{U64, U256};
+
+    use crate::evm::alloy::decode_anchor_system_call_data;
+
+    use super::*;
+
+    #[test]
+    fn test_encode_anchor_system_call_data() {
+        let basefee_share_pctg = U64::random().to::<u64>();
+        let caller_nonce = U64::random().to::<u64>();
+        let encoded_data = encode_anchor_system_call_data(basefee_share_pctg, caller_nonce);
+        assert_eq!(encoded_data.len(), 16);
+        assert_eq!(&encoded_data[..8], &basefee_share_pctg.to_be_bytes());
+        assert_eq!(&encoded_data[8..], &caller_nonce.to_be_bytes());
+
+        let decoded_data = decode_anchor_system_call_data(&encoded_data);
+        assert_eq!(decoded_data.unwrap().0, basefee_share_pctg);
+        assert_eq!(decoded_data.unwrap().1, caller_nonce);
+    }
+
+    #[test]
+    fn test_decode_post_ontake_extra_data() {
+        let basefee_share_pctg = U64::random().to::<u64>();
+
+        assert_eq!(
+            decode_post_ontake_extra_data(Bytes::copy_from_slice(
+                &U256::from_limbs([basefee_share_pctg, 0, 0, 0]).to_be_bytes::<32>(),
+            )),
+            basefee_share_pctg
+        );
+    }
+}

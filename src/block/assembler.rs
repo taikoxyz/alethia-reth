@@ -116,3 +116,16 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_get_chain_spec() {
+        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let assembler = TaikoBlockAssembler::new(chain_spec.clone());
+
+        assert_eq!(assembler.chain_spec(), chain_spec);
+    }
+}

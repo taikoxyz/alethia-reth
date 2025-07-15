@@ -268,7 +268,7 @@ where
 
 // Decode the anchor system call data from the given bytes, if
 // the bytes are not of the expected length or format, return None.
-fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
+pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
     if bytes.len() != 16 {
         return None;
     }

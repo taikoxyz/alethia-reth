@@ -160,3 +160,72 @@ impl TaikoEvmExtraExecutionCtx {
         self.anchor_caller_nonce
     }
 }
+
+#[cfg(test)]
+mod test {
+    use alloy_primitives::{U64, U256};
+    use reth_revm::{
+        Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, db::InMemoryDB,
+        state::AccountInfo,
+    };
+
+    use crate::evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
+
+    use super::*;
+
+    #[test]
+    fn test_transact_one_with_extra_execution_context() {
+        let golden_touch_address = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let nonce = U64::random().to::<u64>();
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            golden_touch_address,
+            AccountInfo {
+                nonce,
+                balance: U256::from(0),
+                ..Default::default()
+            },
+        );
+
+        let mut taiko_evm = TaikoEvm::new(Context::mainnet().with_db(db).build_mainnet());
+
+        let mut state = taiko_evm.transact_one(
+            TxEnv::builder()
+                .gas_limit(1_000_000)
+                .caller(golden_touch_address)
+                .nonce(nonce - 1)
+                .build()
+                .unwrap(),
+        );
+        assert!(state.is_err());
+
+        state = taiko_evm.transact_one(
+            TxEnv::builder()
+                .gas_limit(1_000_000)
+                .gas_price(1)
+                .caller(golden_touch_address)
+                .to(golden_touch_address)
+                .nonce(nonce)
+                .build()
+                .unwrap(),
+        );
+        assert!(state.is_err());
+
+        taiko_evm.extra_execution_ctx = Some(TaikoEvmExtraExecutionCtx::new(
+            50,
+            golden_touch_address,
+            nonce + 1,
+        ));
+        state = taiko_evm.transact_one(
+            TxEnv::builder()
+                .gas_limit(1_000_000)
+                .gas_price(1)
+                .caller(golden_touch_address)
+                .to(golden_touch_address)
+                .nonce(nonce + 1)
+                .build()
+                .unwrap(),
+        );
+        assert!(state.is_ok());
+    }
+}

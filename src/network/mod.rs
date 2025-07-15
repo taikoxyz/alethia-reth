@@ -35,7 +35,7 @@ where
     ) -> eyre::Result<Self::Network> {
         let network = ctx.network_builder().await?;
         let handle = ctx.start_network(network, pool);
-        info!(target: "reth::cli", enode=%handle.local_node_record(), "P2P networking initialized");
+        info!(target: "reth::taiko::cli", enode=%handle.local_node_record(), "P2P networking initialized");
         Ok(handle)
     }
 }

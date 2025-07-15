@@ -22,7 +22,7 @@ fn main() {
 
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, RessArgs>::parse_args().run(
         async move |builder, ress_args| {
-            info!(target: "reth::cli", "Launching Taiko node");
+            info!(target: "reth::taiko::cli", "Launching Taiko node");
             let NodeHandle {
                 node,
                 node_exit_future,

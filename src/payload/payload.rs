@@ -65,7 +65,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
         let transactions = decode_transactions(&attributes.block_metadata.tx_list)
             .unwrap_or_else(|e| {
                 debug!(
-                    "Failed to decode transactions: {e}, bytes: {:?}, skipping all transactions",
+                    target: "payload_builder", "Failed to decode transactions: {e}, bytes: {:?}, skipping all transactions",
                     &attributes.block_metadata.tx_list
                 );
                 Vec::new()

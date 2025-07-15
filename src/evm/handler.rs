@@ -144,7 +144,7 @@ fn reward_beneficiary<CTX: ContextTr>(
     // we share the base fee income with the coinbase and treasury.
     if let Some(ctx) = extra_execution_ctx {
         debug!(
-            target: "taiko-evm", "Rewarding beneficiary, sender account: {:?} nonce: {:?} at block: {:?}",
+            target: "taiko_evm", "Rewarding beneficiary, sender account: {:?} nonce: {:?} at block: {:?}",
             tx_caller, tx_nonce, block_number
         );
 
@@ -168,14 +168,14 @@ fn reward_beneficiary<CTX: ContextTr>(
                 .balance_incr(get_treasury_address(chain_id), fee_treasury)?;
 
             debug!(
-                target: "taiko-evm",
+                target: "taiko_evm",
                 "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
                 fee_coinbase, fee_treasury, ctx.basefee_share_pctg(), block_number
             );
         } else {
             // If the transaction is an anchor transaction, we do not share the base fee income.
             debug!(
-                target: "taiko-evm", "Anchor transaction detected, no rewrad, sender account: {:?} nonce: {:?} at block: {:?}",
+                target: "taiko_evm", "Anchor transaction detected, no rewrad, sender account: {:?} nonce: {:?} at block: {:?}",
                 tx_caller, tx_nonce, block_number
             );
         }
@@ -216,13 +216,13 @@ pub fn validate_against_state_and_deduct_caller<
     // If the extra execution context is provided, which means we are building an L2 block,
     // we skip the balance check for the anchor transaction.
     if let Some(ctx) = extra_execution_ctx {
-        debug!(target: "taiko-evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+        debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
         // If the transaction is an anchor transaction, we disable the balance check.
         if ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce() {
-            debug!(target: "taiko-evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+            debug!(target: "taiko_evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
             is_balance_check_disabled = true;
         } else {
-            debug!(target: "taiko-evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+            debug!(target: "taiko_evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
         }
     }
 

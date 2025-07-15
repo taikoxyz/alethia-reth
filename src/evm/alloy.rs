@@ -141,10 +141,7 @@ where
             let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data).ok_or(
                 EVMError::Custom("invalid encoded anchor system call data".to_string()),
             )?;
-            debug!(
-                "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}",
-                basefee_share_pctg, caller_nonce
-            );
+            debug!(target: "taiko_evm", "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}", basefee_share_pctg, caller_nonce);
             self.inner
                 .with_extra_execution_context(basefee_share_pctg, caller, caller_nonce);
 

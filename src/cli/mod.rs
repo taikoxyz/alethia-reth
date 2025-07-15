@@ -130,7 +130,7 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
             Commands::P2P(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
             Commands::Config(command) => runner.run_until_ctrl_c(command.execute()),
             Commands::Debug(_) => {
-                info!(target: "reth::cli", "Debug command is not implemented yet.");
+                info!(target: "reth::taiko::cli", "Debug command is not implemented yet.");
                 Ok(())
             }
             Commands::Recover(command) => {

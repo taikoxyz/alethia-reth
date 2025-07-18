@@ -267,6 +267,7 @@ pub fn validate_against_state_and_deduct_caller<
 }
 
 /// Generates the network treasury address based on the chain ID.
+#[inline]
 pub fn get_treasury_address(chain_id: u64) -> Address {
     let prefix = chain_id.to_string();
     let suffix = "10001";

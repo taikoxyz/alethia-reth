@@ -37,6 +37,7 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
         }
     }
 
+    #[inline]
     pub fn with_extra_execution_context(
         &mut self,
         basefee_share_pctg: u64,
@@ -146,16 +147,19 @@ impl TaikoEvmExtraExecutionCtx {
     }
 
     /// Returns the base fee share percentage.
+    #[inline]
     pub fn basefee_share_pctg(&self) -> u64 {
         self.basefee_share_pctg
     }
 
     /// Returns the anchor caller address.
+    #[inline]
     pub fn anchor_caller_address(&self) -> Address {
         self.anchor_caller_address
     }
 
     /// Returns the anchor caller nonce.
+    #[inline]
     pub fn anchor_caller_nonce(&self) -> u64 {
         self.anchor_caller_nonce
     }

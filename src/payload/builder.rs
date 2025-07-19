@@ -39,6 +39,8 @@ use crate::{
     },
 };
 
+const TAIKO_PACAYA_BLOCK_GAS_LIMIT: u64 = 241_000_000;
+
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaikoPayloadBuilder<Client, EvmConfig = TaikoEvmConfig> {
@@ -226,7 +228,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
                 timestamp: U256::from(timestamp),
-                gas_limit: 241_000_000,
+                gas_limit: TAIKO_PACAYA_BLOCK_GAS_LIMIT,
                 mix_hash: B256::random(),
                 tx_list: Bytes::new(),
                 extra_data: Bytes::new(),

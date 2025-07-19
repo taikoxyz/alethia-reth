@@ -145,8 +145,8 @@ impl ConfigureEvm for TaikoEvmConfig {
         TaikoBlockExecutionCtx {
             parent_hash: block.header().parent_hash,
             parent_beacon_block_root: block.header().parent_beacon_block_root,
-            ommers: &block.body().ommers,
-            withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+            ommers: &[],
+            withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: block.header().base_fee_per_gas.unwrap_or_default(),
             extra_data: block.header().extra_data.clone(),
         }

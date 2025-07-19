@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use alloy_consensus::{BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, proofs};
+use alloy_consensus::{
+    BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
+};
 use alloy_eips::merge::BEACON_NONCE;
-use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::logs_bloom;
+use alloy_rpc_types_eth::Withdrawals;
 use reth::primitives::Block;
 use reth_ethereum::{Receipt, TransactionSigned};
 use reth_evm::{
@@ -72,15 +74,8 @@ where
         let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
         let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| r.logs()));
 
-        let withdrawals = self
-            .block_assembler
-            .chain_spec
-            .is_shanghai_active_at_timestamp(timestamp.to())
-            .then(|| ctx.withdrawals.map(|w| w.into_owned()).unwrap_or_default());
-
-        let withdrawals_root = withdrawals
-            .as_deref()
-            .map(|w| proofs::calculate_withdrawals_root(w));
+        let withdrawals = Some(Withdrawals::default());
+        let withdrawals_root = Some(EMPTY_WITHDRAWALS);
 
         let header = Header {
             parent_hash: ctx.parent_hash,

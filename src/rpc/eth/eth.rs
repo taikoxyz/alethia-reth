@@ -46,7 +46,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             provider
                 .into_tx()
                 .get::<StoredL1OriginTable>(id.to())
-                .map_err(|_| TaikoApiError::GethNotFound)?
+                .map_err(|_| EthApiError::InternalEthError)?
                 .ok_or(TaikoApiError::GethNotFound)?
                 .into(),
         ))
@@ -62,7 +62,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
         let head_l1_origin = provider
             .into_tx()
             .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-            .map_err(|_| TaikoApiError::GethNotFound)?
+            .map_err(|_| EthApiError::InternalEthError)?
             .ok_or(TaikoApiError::GethNotFound)?;
 
         self.l1_origin_by_id(U256::from(head_l1_origin))

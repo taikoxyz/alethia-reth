@@ -239,6 +239,8 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
                 l1_block_hash: None,
                 l1_block_height: None,
                 build_payload_args_id: [0; 8],
+                is_forced_inclusion: false,
+                signature: [0; 65],
             },
         }
     }

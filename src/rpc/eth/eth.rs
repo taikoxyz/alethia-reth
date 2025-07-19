@@ -42,22 +42,14 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             .database_provider_ro()
             .map_err(|_| EthApiError::InternalEthError)?;
 
-        let l1_origin = provider
-            .into_tx()
-            .get::<StoredL1OriginTable>(id.to())
-            .map_err(|_| TaikoApiError::GethNotFound)?;
-
-        if let Some(l1_origin) = l1_origin {
-            Ok(Some(L1Origin {
-                block_id: l1_origin.block_id,
-                l2_block_hash: l1_origin.l2_block_hash,
-                l1_block_height: l1_origin.l1_block_height,
-                l1_block_hash: l1_origin.l1_block_hash,
-                build_payload_args_id: l1_origin.build_payload_args_id,
-            }))
-        } else {
-            Err(TaikoApiError::GethNotFound.into())
-        }
+        Ok(Some(
+            provider
+                .into_tx()
+                .get::<StoredL1OriginTable>(id.to())
+                .map_err(|_| TaikoApiError::GethNotFound)?
+                .ok_or(TaikoApiError::GethNotFound)?
+                .into(),
+        ))
     }
 
     /// Retrieves the head L1 origin from the database.
@@ -70,12 +62,9 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
         let head_l1_origin = provider
             .into_tx()
             .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-            .map_err(|_| TaikoApiError::GethNotFound)?;
+            .map_err(|_| TaikoApiError::GethNotFound)?
+            .ok_or(TaikoApiError::GethNotFound)?;
 
-        if let Some(l1_origin) = head_l1_origin {
-            self.l1_origin_by_id(U256::from(l1_origin))
-        } else {
-            Err(TaikoApiError::GethNotFound.into())
-        }
+        self.l1_origin_by_id(U256::from(head_l1_origin))
     }
 }

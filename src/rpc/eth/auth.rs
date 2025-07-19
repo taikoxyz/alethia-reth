@@ -4,7 +4,7 @@ use alloy_consensus::BlockHeader;
 use alloy_eips::Encodable2718;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
-use alloy_primitives::U256;
+use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
@@ -40,10 +40,9 @@ use crate::chainspec::spec::TaikoChainSpec;
 use crate::evm::config::TaikoNextBlockEnvAttributes;
 use crate::evm::factory::TaikoEvmFactory;
 
+use crate::rpc::eth::error::TaikoApiError;
 use crate::{
-    db::model::{
-        STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
-    },
+    db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
     payload::attributes::L1Origin,
 };
 
@@ -78,6 +77,8 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64>;
     #[method(name = "updateL1Origin")]
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>>;
+    #[method(name = "setL1OriginSignature")]
+    async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<L1Origin>;
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
         &self,
@@ -161,6 +162,31 @@ where
         Ok(id.to())
     }
 
+    /// Sets the L1 origin signature in the database.
+    async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<L1Origin> {
+        let tx = self
+            .provider
+            .database_provider_rw()
+            .map_err(|_| EthApiError::InternalEthError)?
+            .into_tx();
+
+        let mut l1_origin = tx
+            .get::<StoredL1OriginTable>(id.to())
+            .map_err(|_| EthApiError::InternalEthError)?
+            .ok_or(TaikoApiError::GethNotFound)?;
+
+        l1_origin.signature = <[u8; 65]>::try_from(signature.as_ref()).map_err(|_| {
+            EthApiError::InvalidParams("Signature must be a 65-byte array".to_string())
+        })?;
+
+        tx.put::<StoredL1OriginTable>(l1_origin.block_id.to(), l1_origin.clone())
+            .map_err(|_| EthApiError::InternalEthError)?;
+
+        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
+
+        Ok(l1_origin.into())
+    }
+
     /// Updates the L1 origin in the database.
     async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {
         let tx = self
@@ -169,17 +195,8 @@ where
             .map_err(|_| EthApiError::InternalEthError)?
             .into_tx();
 
-        tx.put::<StoredL1OriginTable>(
-            l1_origin.block_id.to(),
-            StoredL1Origin {
-                block_id: l1_origin.block_id,
-                l2_block_hash: l1_origin.l2_block_hash,
-                l1_block_height: l1_origin.l1_block_height,
-                l1_block_hash: l1_origin.l1_block_hash,
-                build_payload_args_id: l1_origin.build_payload_args_id,
-            },
-        )
-        .map_err(|_| EthApiError::InternalEthError)?;
+        tx.put::<StoredL1OriginTable>(l1_origin.block_id.to(), l1_origin.clone().into())
+            .map_err(|_| EthApiError::InternalEthError)?;
 
         tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 

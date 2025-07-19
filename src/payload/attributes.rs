@@ -1,12 +1,14 @@
-use alloy_primitives::Bytes;
+use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
 use reth::revm::primitives::{Address, B256, U256};
 use reth_node_api::PayloadAttributes;
-use serde_with::{base64::Base64, serde_as};
+use serde_with::{Bytes, base64::Base64, serde_as};
+
+use crate::db::model::StoredL1Origin;
 
 /// Taiko Payload Attributes
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoPayloadAttributes {
@@ -48,14 +50,15 @@ pub struct TaikoBlockMetadata {
     pub gas_limit: u64,
     pub timestamp: U256,
     pub mix_hash: B256,
-    pub tx_list: Bytes,
+    pub tx_list: AlloyBytes,
     #[serde_as(as = "Base64")]
-    pub extra_data: Bytes,
+    pub extra_data: AlloyBytes,
 }
 
 /// The L1 origin information for a Taiko block, which includes the information about the L1 block
 /// that including the given L2 block.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[serde_as]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct L1Origin {
@@ -66,11 +69,29 @@ pub struct L1Origin {
     pub l1_block_hash: Option<B256>,
     #[serde(rename = "buildPayloadArgsID")]
     pub build_payload_args_id: [u8; 8],
+    pub is_forced_inclusion: bool,
+    #[serde_as(as = "Bytes")]
+    pub signature: [u8; 65],
 }
 
 impl L1Origin {
     /// Checks if the L1 origin is a preconfirmation block.
     pub fn is_preconf_block(&self) -> bool {
         self.l1_block_height.is_none() || self.l1_block_height == Some(U256::ZERO)
+    }
+}
+
+impl From<StoredL1Origin> for L1Origin {
+    fn from(stored: StoredL1Origin) -> Self {
+        L1Origin {
+            block_id: stored.block_id,
+            l2_block_hash: stored.l2_block_hash,
+            l1_block_height: (stored.l1_block_height != U256::ZERO)
+                .then_some(stored.l1_block_height),
+            l1_block_hash: (stored.l1_block_hash != B256::ZERO).then_some(stored.l1_block_hash),
+            build_payload_args_id: stored.build_payload_args_id,
+            is_forced_inclusion: stored.is_forced_inclusion,
+            signature: stored.signature,
+        }
     }
 }

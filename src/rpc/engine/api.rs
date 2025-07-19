@@ -149,13 +149,8 @@ where
             .await
             .map_err(|_| EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload))?;
 
-            let stored_l1_origin = StoredL1Origin {
-                block_id: payload.l1_origin.block_id,
-                l2_block_hash: built_payload.block().hash_slow(),
-                l1_block_hash: payload.l1_origin.l1_block_hash,
-                l1_block_height: payload.l1_origin.l1_block_height,
-                build_payload_args_id: payload.l1_origin.build_payload_args_id,
-            };
+            let mut stored_l1_origin: StoredL1Origin = payload.l1_origin.clone().into();
+            stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
             let tx = self
                 .provider
@@ -164,7 +159,7 @@ where
                 .into_tx();
 
             tx.put::<StoredL1OriginTable>(
-                payload.l1_origin.block_id.to::<BlockNumber>(),
+                stored_l1_origin.block_id.to::<BlockNumber>(),
                 stored_l1_origin.clone(),
             )
             .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
@@ -172,7 +167,7 @@ where
             if !payload.l1_origin.is_preconf_block() {
                 tx.put::<StoredL1HeadOriginTable>(
                     STORED_L1_HEAD_ORIGIN_KEY,
-                    payload.l1_origin.block_id.to::<BlockNumber>(),
+                    stored_l1_origin.block_id.to::<BlockNumber>(),
                 )
                 .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
             }

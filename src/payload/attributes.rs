@@ -15,11 +15,11 @@ pub struct TaikoPayloadAttributes {
     /// The ETH payload attributes
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub payload_attributes: EthPayloadAttributes,
-    /// Base fee per gas for the block.
+    /// Base fee per gas for the L2 block.
     pub base_fee_per_gas: U256,
-    /// The metadata for the Taiko block.
+    /// The metadata for the L2 block.
     pub block_metadata: TaikoBlockMetadata,
-    /// The L1 origin information for the block.
+    /// The L1 origin information for the L2 block.
     pub l1_origin: RpcL1Origin,
 }
 
@@ -46,11 +46,17 @@ impl PayloadAttributes for TaikoPayloadAttributes {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoBlockMetadata {
+    /// The suggested fee recipient address for the L2 block.
     pub beneficiary: Address,
+    /// The gas limit for the L2 block.
     pub gas_limit: u64,
+    /// The timestamp for the L2 block.
     pub timestamp: U256,
+    /// The mix hash for the L2 block.
     pub mix_hash: B256,
+    /// The RLP-encoded transaction list for the L2 block.
     pub tx_list: AlloyBytes,
+    /// The extra data for the L2 block.
     #[serde_as(as = "Base64")]
     pub extra_data: AlloyBytes,
 }
@@ -62,14 +68,21 @@ pub struct TaikoBlockMetadata {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RpcL1Origin {
+    /// The number of the L2 block.
     #[serde(rename = "blockID")]
     pub block_id: U256,
+    /// The hash of the L2 block.
     pub l2_block_hash: B256,
+    /// The height of the L1 block that included the L2 block.
     pub l1_block_height: Option<U256>,
+    /// The hash of the L1 block that included the L2 block.
     pub l1_block_hash: Option<B256>,
+    /// The ID of the build payload arguments.
     #[serde(rename = "buildPayloadArgsID")]
     pub build_payload_args_id: [u8; 8],
+    /// Indicates if the L2 block was included as a forced inclusion.
     pub is_forced_inclusion: bool,
+    /// The signature of the L2 block payload.
     #[serde_as(as = "Bytes")]
     pub signature: [u8; 65],
 }

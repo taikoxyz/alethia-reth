@@ -87,3 +87,50 @@ impl reth_db_api::table::Decompress for StoredL1Origin {
         Ok(obj)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use alloy_primitives::B256;
+    use reth_db::table::{Compress, Decompress};
+
+    #[test]
+    fn test_stored_l1_origin_compact() {
+        let stored = StoredL1Origin {
+            block_id: U256::random(),
+            l2_block_hash: B256::random(),
+            l1_block_height: U256::random(),
+            l1_block_hash: B256::random(),
+            build_payload_args_id: [1u8; 8],
+            is_forced_inclusion: true,
+            signature: [1u8; 65],
+        };
+
+        let mut buf = Vec::new();
+        let len = stored.to_compact(&mut buf);
+        assert_eq!(len, buf.len());
+
+        let (decompressed, remaining) = StoredL1Origin::from_compact(&buf, len);
+        assert!(remaining.is_empty());
+        assert_eq!(stored, decompressed);
+    }
+
+    #[test]
+    fn test_stored_l1_origin_compress_decompress() {
+        let stored = StoredL1Origin {
+            block_id: U256::random(),
+            l2_block_hash: B256::random(),
+            l1_block_height: U256::random(),
+            l1_block_hash: B256::random(),
+            build_payload_args_id: [1u8; 8],
+            is_forced_inclusion: true,
+            signature: [1u8; 65],
+        };
+
+        let mut buf = Vec::new();
+        stored.compress_to_buf(&mut buf);
+
+        let decompressed = StoredL1Origin::decompress(&buf).unwrap();
+        assert_eq!(stored, decompressed);
+    }
+}

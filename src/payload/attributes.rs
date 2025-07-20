@@ -20,7 +20,7 @@ pub struct TaikoPayloadAttributes {
     /// The metadata for the Taiko block.
     pub block_metadata: TaikoBlockMetadata,
     /// The L1 origin information for the block.
-    pub l1_origin: L1Origin,
+    pub l1_origin: RpcL1Origin,
 }
 
 impl PayloadAttributes for TaikoPayloadAttributes {
@@ -61,7 +61,7 @@ pub struct TaikoBlockMetadata {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-pub struct L1Origin {
+pub struct RpcL1Origin {
     #[serde(rename = "blockID")]
     pub block_id: U256,
     pub l2_block_hash: B256,
@@ -74,16 +74,17 @@ pub struct L1Origin {
     pub signature: [u8; 65],
 }
 
-impl L1Origin {
-    /// Checks if the L1 origin is a preconfirmation block.
+impl RpcL1Origin {
+    /// Checks if the L1 origin's L2 block is a preconfirmation block.
     pub fn is_preconf_block(&self) -> bool {
         self.l1_block_height.is_none() || self.l1_block_height == Some(U256::ZERO)
     }
 }
 
-impl From<StoredL1Origin> for L1Origin {
+impl From<StoredL1Origin> for RpcL1Origin {
+    // Converts a `StoredL1Origin` into an `RpcL1Origin`.
     fn from(stored: StoredL1Origin) -> Self {
-        L1Origin {
+        RpcL1Origin {
             block_id: stored.block_id,
             l2_block_hash: stored.l2_block_hash,
             l1_block_height: (stored.l1_block_height != U256::ZERO)

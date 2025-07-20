@@ -11,11 +11,11 @@ use reth_db_api::{TableSet, TableType, TableViewer, table::TableInfo, tables};
 use serde::{Deserialize, Serialize};
 use serde_with::{Bytes, serde_as};
 
-use crate::payload::attributes::L1Origin;
+use crate::payload::attributes::RpcL1Origin;
 
 pub const STORED_L1_HEAD_ORIGIN_KEY: u64 = 0;
 
-/// Represents the L1 origin for a L2 block in Taiko network.
+/// Represents the L1 origin for a L2 block in Taiko network, which is saved in the database.
 #[serde_as]
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct StoredL1Origin {
@@ -29,16 +29,17 @@ pub struct StoredL1Origin {
     pub signature: [u8; 65],
 }
 
-impl From<L1Origin> for StoredL1Origin {
-    fn from(l1_origin: L1Origin) -> Self {
+impl From<RpcL1Origin> for StoredL1Origin {
+    // Converts an `RpcL1Origin` into a `StoredL1Origin`.
+    fn from(rpc_l1_origin: RpcL1Origin) -> Self {
         StoredL1Origin {
-            block_id: l1_origin.block_id,
-            l2_block_hash: l1_origin.l2_block_hash,
-            l1_block_height: l1_origin.l1_block_height.unwrap_or(U256::ZERO),
-            l1_block_hash: l1_origin.l1_block_hash.unwrap_or(B256::ZERO),
-            build_payload_args_id: l1_origin.build_payload_args_id,
-            is_forced_inclusion: l1_origin.is_forced_inclusion,
-            signature: l1_origin.signature,
+            block_id: rpc_l1_origin.block_id,
+            l2_block_hash: rpc_l1_origin.l2_block_hash,
+            l1_block_height: rpc_l1_origin.l1_block_height.unwrap_or(U256::ZERO),
+            l1_block_hash: rpc_l1_origin.l1_block_hash.unwrap_or(B256::ZERO),
+            build_payload_args_id: rpc_l1_origin.build_payload_args_id,
+            is_forced_inclusion: rpc_l1_origin.is_forced_inclusion,
+            signature: rpc_l1_origin.signature,
         }
     }
 }
@@ -56,6 +57,7 @@ tables! {
 }
 
 impl Compact for StoredL1Origin {
+    /// Takes a buffer which can be written to. *Ideally*, it returns the length written to.
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: BufMut + AsMut<[u8]>,
@@ -73,6 +75,12 @@ impl Compact for StoredL1Origin {
         start_len - buf.remaining_mut()
     }
 
+    /// Takes a buffer which can be read from. Returns the object and `buf` with its internal cursor
+    /// advanced (eg.`.advance(len)`).
+    ///
+    /// `len` can either be the `buf` remaining length, or the length of the compacted type.
+    ///
+    /// It will panic, if `len` is smaller than `buf.len()`.
     fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
         let mut cursor = std::io::Cursor::new(&buf[..len]);
 
@@ -118,12 +126,14 @@ impl Compact for StoredL1Origin {
 impl reth_db_api::table::Compress for StoredL1Origin {
     type Compressed = Vec<u8>;
 
+    /// Compresses data to a given buffer.
     fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         let _ = Compact::to_compact(self, buf);
     }
 }
 
 impl reth_db_api::table::Decompress for StoredL1Origin {
+    /// Decompresses owned data coming from the database.
     fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
         let (obj, _) = Compact::from_compact(value, value.len());
         Ok(obj)

@@ -83,10 +83,12 @@ where
         self.inner.ctx_instructions()
     }
 
+    /// Returns a mutable reference to the frame stack.
     fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
         self.inner.frame_stack()
     }
 
+    /// Initializes the frame for the given frame input. Frame is pushed to the frame stack.
     fn frame_init(
         &mut self,
         frame_input: <Self::Frame as FrameTr>::FrameInit,
@@ -97,6 +99,9 @@ where
         self.inner.frame_init(frame_input)
     }
 
+    /// Run the frame from the top of the stack. Returns the frame init or result.
+    ///
+    /// If frame has returned result it would mark it as finished.
     fn frame_run(
         &mut self,
     ) -> Result<
@@ -106,6 +111,8 @@ where
         self.inner.frame_run()
     }
 
+    /// Returns the result of the frame to the caller. Frame is popped from the frame stack.
+    /// Consumes the frame result or returns it if there is more frames to run.
     fn frame_return_result(
         &mut self,
         frame_result: <Self::Frame as FrameTr>::FrameResult,

@@ -34,7 +34,7 @@ use crate::{
         factory::TaikoEvmFactory,
     },
     payload::{
-        attributes::{L1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
+        attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
         payload::TaikoPayloadBuilderAttributes,
     },
 };
@@ -233,7 +233,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
                 tx_list: Bytes::new(),
                 extra_data: Bytes::new(),
             },
-            l1_origin: L1Origin {
+            l1_origin: RpcL1Origin {
                 block_id: U256::ZERO,
                 l2_block_hash: B256::ZERO,
                 l1_block_hash: None,

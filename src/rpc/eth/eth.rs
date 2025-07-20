@@ -6,7 +6,7 @@ use reth_rpc_eth_types::EthApiError;
 
 use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
-    payload::attributes::L1Origin,
+    payload::attributes::RpcL1Origin,
     rpc::eth::error::TaikoApiError,
 };
 
@@ -17,9 +17,9 @@ use crate::{
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taiko"))]
 pub trait TaikoExtApi {
     #[method(name = "l1OriginByID")]
-    fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<L1Origin>>;
+    fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>>;
     #[method(name = "headL1Origin")]
-    fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>>;
+    fn head_l1_origin(&self) -> RpcResult<Option<RpcL1Origin>>;
 }
 
 /// The Taiko RPC extension implementation.
@@ -36,7 +36,7 @@ impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
 
 impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
     /// Retrieves the L1 origin by its ID from the database.
-    fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<L1Origin>> {
+    fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>> {
         let provider = self
             .provider
             .database_provider_ro()
@@ -53,7 +53,7 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
     }
 
     /// Retrieves the head L1 origin from the database.
-    fn head_l1_origin(&self) -> RpcResult<Option<L1Origin>> {
+    fn head_l1_origin(&self) -> RpcResult<Option<RpcL1Origin>> {
         let provider = self
             .provider
             .database_provider_ro()

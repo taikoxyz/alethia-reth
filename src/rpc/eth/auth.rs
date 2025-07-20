@@ -43,7 +43,7 @@ use crate::evm::factory::TaikoEvmFactory;
 use crate::rpc::eth::error::TaikoApiError;
 use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
-    payload::attributes::L1Origin,
+    payload::attributes::RpcL1Origin,
 };
 
 const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 80;
@@ -76,9 +76,9 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     #[method(name = "setHeadL1Origin")]
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64>;
     #[method(name = "updateL1Origin")]
-    async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>>;
+    async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>>;
     #[method(name = "setL1OriginSignature")]
-    async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<L1Origin>;
+    async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<RpcL1Origin>;
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
         &self,
@@ -163,7 +163,7 @@ where
     }
 
     /// Sets the L1 origin signature in the database.
-    async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<L1Origin> {
+    async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<RpcL1Origin> {
         let tx = self
             .provider
             .database_provider_rw()
@@ -188,7 +188,7 @@ where
     }
 
     /// Updates the L1 origin in the database.
-    async fn update_l1_origin(&self, l1_origin: L1Origin) -> RpcResult<Option<L1Origin>> {
+    async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>> {
         let tx = self
             .provider
             .database_provider_rw()

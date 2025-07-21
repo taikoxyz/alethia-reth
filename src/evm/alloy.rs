@@ -142,6 +142,8 @@ where
                 EVMError::Custom("invalid encoded anchor system call data".to_string()),
             )?;
             debug!(target: "taiko_evm", "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}", basefee_share_pctg, caller_nonce);
+
+            // Set the Anchor transaction information for the later EVM execution.
             self.inner
                 .with_extra_execution_context(basefee_share_pctg, caller, caller_nonce);
 

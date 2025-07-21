@@ -109,3 +109,42 @@ impl From<StoredL1Origin> for RpcL1Origin {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_rpc_l1_origin_from() {
+        let stored_l1_origin = StoredL1Origin {
+            block_id: U256::random(),
+            l2_block_hash: B256::random(),
+            l1_block_height: U256::random(),
+            l1_block_hash: B256::from([1u8; 32]),
+            build_payload_args_id: [2u8; 8],
+            is_forced_inclusion: true,
+            signature: [3u8; 65],
+        };
+
+        let rpc_l1_origin: RpcL1Origin = stored_l1_origin.clone().into();
+        assert_eq!(stored_l1_origin.block_id, rpc_l1_origin.block_id);
+        assert_eq!(stored_l1_origin.l2_block_hash, rpc_l1_origin.l2_block_hash);
+        assert_eq!(
+            stored_l1_origin.l1_block_height,
+            U256::from(rpc_l1_origin.l1_block_height.unwrap())
+        );
+        assert_eq!(
+            stored_l1_origin.l1_block_hash,
+            B256::from(rpc_l1_origin.l1_block_hash.unwrap())
+        );
+        assert_eq!(
+            stored_l1_origin.build_payload_args_id,
+            rpc_l1_origin.build_payload_args_id
+        );
+        assert_eq!(
+            stored_l1_origin.is_forced_inclusion,
+            rpc_l1_origin.is_forced_inclusion
+        );
+        assert_eq!(stored_l1_origin.signature, rpc_l1_origin.signature);
+    }
+}

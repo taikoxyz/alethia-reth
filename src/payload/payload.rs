@@ -20,14 +20,22 @@ use crate::payload::attributes::TaikoPayloadAttributes;
 pub struct TaikoPayloadBuilderAttributes {
     /// Inner ethereum payload builder attributes
     pub payload_attributes: EthPayloadBuilderAttributes,
-    // Taiko realated attributes.
+    /// Taiko realated attributes.
+    // The hash of the RLP-encoded transactions in the L2 block.
     pub tx_list_hash: B256,
+    // The coinbase for the L2 block.
     pub beneficiary: Address,
+    // The gas limit for the L2 block.
     pub gas_limit: u64,
+    // The timestamp for the L2 block.
     pub timestamp: u64,
+    // The mix hash for the L2 block.
     pub mix_hash: B256,
+    // The basefee for the L2 block.
     pub base_fee_per_gas: u64,
+    // The transactions inside the L2 block.
     pub transactions: Vec<Recovered<TransactionSigned>>,
+    // The extra data for the L2 block.
     pub extra_data: Bytes,
 }
 
@@ -64,6 +72,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
 
         let transactions = decode_transactions(&attributes.block_metadata.tx_list)
             .unwrap_or_else(|e| {
+                // If we can't decode the given transactions bytes, we will mine an empty block instead.
                 debug!(
                     target: "payload_builder", "Failed to decode transactions: {e}, bytes: {:?}, skipping all transactions",
                     &attributes.block_metadata.tx_list
@@ -171,6 +180,7 @@ pub(crate) fn payload_id_taiko(
     PayloadId::new(out.as_slice()[..8].try_into().expect("sufficient length"))
 }
 
+// Decodes the given RLP-encoded bytes into transactions.
 fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
     Vec::<TransactionSigned>::decode(&mut &bytes[..])
 }

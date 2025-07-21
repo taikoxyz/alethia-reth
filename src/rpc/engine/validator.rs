@@ -151,7 +151,8 @@ where
         attributes: &TaikoPayloadAttributes,
         header: &Header,
     ) -> Result<(), InvalidPayloadAttributesError> {
-        // We allow the payload attributes to have a timestamp that is equal to the parent header's timestamp.
+        // We allow the payload attributes to have a timestamp that is equal to the parent header's timestamp
+        // in Taiko network.
         if attributes.payload_attributes.timestamp() < header.timestamp() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }

@@ -1,3 +1,4 @@
+use alloy_primitives::{Address, Bloom, Bytes, U256};
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV1};
 use alloy_rpc_types_eth::Withdrawal;
 use reth::revm::primitives::B256;
@@ -8,7 +9,7 @@ use reth_payload_primitives::ExecutionPayload as ExecutionPayloadTr;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TaikoExecutionData {
     #[cfg_attr(feature = "serde", serde(flatten))]
-    pub execution_payload: ExecutionPayloadV1,
+    pub execution_payload: TaikoExecutionPayloadV1,
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub taiko_sidecar: TaikoExecutionDataSidecar,
 }
@@ -16,7 +17,7 @@ pub struct TaikoExecutionData {
 impl TaikoExecutionData {
     /// Creates a new instance of `ExecutionPayload`.
     pub fn into_payload(self) -> ExecutionPayload {
-        ExecutionPayload::V1(self.execution_payload)
+        ExecutionPayload::V1(self.execution_payload.into())
     }
 }
 
@@ -71,5 +72,93 @@ impl ExecutionPayloadTr for TaikoExecutionData {
     /// Returns the gas used in the block.
     fn gas_used(&self) -> u64 {
         self.execution_payload.gas_used
+    }
+}
+
+/// This structure maps on the ExecutionPayload structure of the beacon chain spec.
+///
+/// See also: <https://github.com/ethereum/execution-apis/blob/6709c2a795b707202e93c4f2867fa0bf2640a84f/src/engine/paris.md#executionpayloadv1>
+/// NOTE: we change `transactions` to `Option<Vec<Bytes>>` to ensure backward compatibility with the taiko-client driver
+/// behavior.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct TaikoExecutionPayloadV1 {
+    /// The parent hash of the block.
+    pub parent_hash: B256,
+    /// The fee recipient of the block.
+    pub fee_recipient: Address,
+    /// The state root of the block.
+    pub state_root: B256,
+    /// The receipts root of the block.
+    pub receipts_root: B256,
+    /// The logs bloom of the block.
+    pub logs_bloom: Bloom,
+    /// The previous randao of the block.
+    pub prev_randao: B256,
+    /// The block number.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub block_number: u64,
+    /// The gas limit of the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub gas_limit: u64,
+    /// The gas used of the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub gas_used: u64,
+    /// The timestamp of the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub timestamp: u64,
+    /// The extra data of the block.
+    pub extra_data: Bytes,
+    /// The base fee per gas of the block.
+    pub base_fee_per_gas: U256,
+    /// The block hash of the block.
+    pub block_hash: B256,
+    /// The transactions of the block.
+    #[serde(default)]
+    pub transactions: Option<Vec<Bytes>>,
+}
+
+impl From<ExecutionPayloadV1> for TaikoExecutionPayloadV1 {
+    // Converts an `ExecutionPayloadV1` into a `TaikoExecutionPayloadV1`.
+    fn from(payload: ExecutionPayloadV1) -> Self {
+        Self {
+            parent_hash: payload.parent_hash,
+            fee_recipient: payload.fee_recipient,
+            state_root: payload.state_root,
+            receipts_root: payload.receipts_root,
+            logs_bloom: payload.logs_bloom,
+            prev_randao: payload.prev_randao,
+            block_number: payload.block_number,
+            gas_limit: payload.gas_limit,
+            gas_used: payload.gas_used,
+            timestamp: payload.timestamp,
+            extra_data: payload.extra_data,
+            base_fee_per_gas: payload.base_fee_per_gas,
+            block_hash: payload.block_hash,
+            transactions: Some(payload.transactions),
+        }
+    }
+}
+
+impl Into<ExecutionPayloadV1> for TaikoExecutionPayloadV1 {
+    // Converts a `TaikoExecutionPayloadV1` into an `ExecutionPayloadV1`.
+    fn into(self) -> ExecutionPayloadV1 {
+        ExecutionPayloadV1 {
+            parent_hash: self.parent_hash,
+            fee_recipient: self.fee_recipient,
+            state_root: self.state_root,
+            receipts_root: self.receipts_root,
+            logs_bloom: self.logs_bloom,
+            prev_randao: self.prev_randao,
+            block_number: self.block_number,
+            gas_limit: self.gas_limit,
+            gas_used: self.gas_used,
+            timestamp: self.timestamp,
+            extra_data: self.extra_data,
+            base_fee_per_gas: self.base_fee_per_gas,
+            block_hash: self.block_hash,
+            transactions: self.transactions.unwrap_or_default(),
+        }
     }
 }

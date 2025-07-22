@@ -1,5 +1,5 @@
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
-use alloy_rpc_types_engine::PayloadError;
+use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
 use reth::primitives::RecoveredBlock;
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::ConfigureEvm;
@@ -92,7 +92,7 @@ impl PayloadValidator for TaikoEngineValidator {
         let expected_hash = payload.block_hash;
 
         // First parse the block.
-        let mut block = payload.try_into_block()?;
+        let mut block = Into::<ExecutionPayloadV1>::into(payload).try_into_block()?;
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
         }

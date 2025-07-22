@@ -84,11 +84,6 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             ));
         }
 
-        // Check transaction root
-        if let Err(error) = block.ensure_transaction_root_valid() {
-            return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
-        }
-
         Ok(())
     }
 }

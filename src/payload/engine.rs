@@ -38,22 +38,7 @@ impl PayloadTypes for TaikoEngineTypes {
         let payload = ExecutionPayloadV1::from_block_unchecked(block.hash(), &block.into_block());
 
         TaikoExecutionData {
-            execution_payload: ExecutionPayloadV1 {
-                parent_hash: payload.parent_hash,
-                prev_randao: payload.prev_randao,
-                block_number: payload.block_number,
-                gas_limit: payload.gas_limit,
-                gas_used: payload.gas_used,
-                timestamp: payload.timestamp,
-                block_hash: payload.block_hash,
-                fee_recipient: payload.fee_recipient,
-                state_root: payload.state_root,
-                receipts_root: payload.receipts_root,
-                logs_bloom: payload.logs_bloom,
-                extra_data: payload.extra_data,
-                base_fee_per_gas: payload.base_fee_per_gas,
-                transactions: payload.transactions,
-            },
+            execution_payload: payload.into(),
             taiko_sidecar: TaikoExecutionDataSidecar {
                 tx_hash: tx_hash,
                 withdrawals_hash: withdrawals_hash,

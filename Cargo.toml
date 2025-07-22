@@ -111,7 +111,7 @@ jsonrpsee-server = "0.25.1"
 jsonrpsee-http-client = "0.25.1"
 jsonrpsee-types = "0.25.1"
 
-# mis
+# misc
 cc = "=1.2.15"
 eyre = "0.6"
 arbitrary = "1.3"

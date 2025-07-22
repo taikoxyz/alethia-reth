@@ -30,4 +30,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/tatsujin-labs/taiko-reth:latest
+          tags: ghcr.io/tatsujinlabs/taiko-reth:latest

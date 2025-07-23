@@ -108,11 +108,11 @@ where
             let account_info = self
                 .evm
                 .db_mut()
-                .database
-                .basic(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
+                .load_cache_account(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
                 .map_err(|e| {
                     BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
-                })?;
+                })?
+                .account_info();
 
             self.evm
                 .transact_system_call(

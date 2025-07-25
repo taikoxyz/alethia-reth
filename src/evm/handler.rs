@@ -218,6 +218,10 @@ pub fn validate_against_state_and_deduct_caller<
 
     let (tx, journal) = context.tx_journal_mut();
 
+    // If the extra execution context is provided, which means we are building an L2 block,
+    // we skip the balance check for the anchor transaction.
+    debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+
     // Load caller's account.
     let caller_account = journal.load_account_code(tx.caller())?.data;
 
@@ -232,10 +236,6 @@ pub fn validate_against_state_and_deduct_caller<
         ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce()
     });
 
-    // If the extra execution context is provided, which means we are building an L2 block,
-    // we skip the balance check for the anchor transaction.
-    debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-
     // If the transaction is an anchor transaction, we disable the balance check.
     if is_anchor_transaction {
         debug!(target: "taiko_evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
@@ -249,13 +249,15 @@ pub fn validate_against_state_and_deduct_caller<
         caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
     }
 
-    let max_balance_spending = tx.max_balance_spending()?;
+    let max_balance_spending = if is_anchor_transaction {
+        U256::ZERO
+    } else {
+        tx.max_balance_spending()?
+    };
 
     // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
     // Transfer will be done inside `*_inner` functions.
-    if (max_balance_spending > caller_account.info.balance && !is_balance_check_disabled)
-        && !is_anchor_transaction
-    {
+    if max_balance_spending > caller_account.info.balance && !is_balance_check_disabled {
         return Err(InvalidTransaction::LackOfFundForMaxFee {
             fee: Box::new(max_balance_spending),
             balance: Box::new(caller_account.info.balance),
@@ -268,14 +270,18 @@ pub fn validate_against_state_and_deduct_caller<
         .expect("effective balance is always smaller than max balance so it can't overflow");
 
     // subtracting max balance spending with value that is going to be deducted later in the call.
-    let gas_balance_spending = effective_balance_spending - tx.value();
+    let gas_balance_spending = if is_anchor_transaction {
+        U256::ZERO
+    } else {
+        effective_balance_spending - tx.value()
+    };
 
     let mut new_balance = caller_account
         .info
         .balance
         .saturating_sub(gas_balance_spending);
 
-    if is_balance_check_disabled && !is_anchor_transaction {
+    if is_balance_check_disabled {
         // Make sure the caller's balance is at least the value of the transaction.
         new_balance = new_balance.max(tx.value());
     }

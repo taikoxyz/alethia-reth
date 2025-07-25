@@ -44,7 +44,7 @@ use crate::{
     rpc::eth::error::TaikoApiError,
 };
 
-const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 80;
+const COMPRESSION_ESTIMATION_SAFETY_COEF: u64 = 80;
 
 /// A pre-built transaction list that contains the mempool content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,7 +233,7 @@ where
         }
 
         let safe_max_bytes_per_tx_list =
-            max_bytes_per_tx_list * COMPRESSION_ESTIMATION_SAFTY_COEF / 100;
+            max_bytes_per_tx_list * COMPRESSION_ESTIMATION_SAFETY_COEF / 100;
 
         // Fetch the parent block and its state, for building the prebuilt transaction lists later.
         let parent_block = self

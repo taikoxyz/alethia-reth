@@ -20,7 +20,7 @@ use crate::payload::attributes::TaikoPayloadAttributes;
 pub struct TaikoPayloadBuilderAttributes {
     /// Inner ethereum payload builder attributes
     pub payload_attributes: EthPayloadBuilderAttributes,
-    /// Taiko realated attributes.
+    /// Taiko related attributes.
     // The hash of the RLP-encoded transactions in the L2 block.
     pub tx_list_hash: B256,
     // The coinbase for the L2 block.

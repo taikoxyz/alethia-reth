@@ -16,7 +16,7 @@ pub mod builder;
 pub mod engine;
 pub mod payload;
 
-/// The builder to spwan [`TaikoPayloadBuilder`] payload building tasks.
+/// The builder to spawn [`TaikoPayloadBuilder`] payload building tasks.
 #[derive(Debug, Default, Clone)]
 pub struct TaikoPayloadBuilderBuilder;
 

@@ -117,8 +117,8 @@ where
             .await?;
 
         if let Some(payload) = payload_attributes {
-            // Wait for the new payload to be built and stored, then we can stroe the
-            // coressponding L1 origin into the database.
+            // Wait for the new payload to be built and stored, then we can store the
+            // corresponding L1 origin into the database.
             let built_payload = Retry::spawn(
                 ExponentialBackoff::from_millis(50)
                     .max_delay(Duration::from_secs(12))

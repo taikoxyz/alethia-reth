@@ -211,7 +211,7 @@ pub fn validate_against_state_and_deduct_caller<
 ) -> Result<(), ERROR> {
     let basefee = context.block().basefee() as u128;
     let blob_price = context.block().blob_gasprice().unwrap_or_default();
-    let mut is_balance_check_disabled = context.cfg().is_balance_check_disabled();
+    let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
     let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
     let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
     let block = context.block().number();
@@ -228,17 +228,19 @@ pub fn validate_against_state_and_deduct_caller<
         is_nonce_check_disabled,
     )?;
 
+    let is_anchor_transaction = extra_execution_ctx.as_ref().map_or(false, |ctx| {
+        ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce()
+    });
+
     // If the extra execution context is provided, which means we are building an L2 block,
     // we skip the balance check for the anchor transaction.
-    if let Some(ctx) = extra_execution_ctx {
-        debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-        // If the transaction is an anchor transaction, we disable the balance check.
-        if ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce() {
-            debug!(target: "taiko_evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-            is_balance_check_disabled = true;
-        } else {
-            debug!(target: "taiko_evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-        }
+    debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+
+    // If the transaction is an anchor transaction, we disable the balance check.
+    if is_anchor_transaction {
+        debug!(target: "taiko_evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+    } else {
+        debug!(target: "taiko_evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
     }
 
     // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
@@ -251,7 +253,9 @@ pub fn validate_against_state_and_deduct_caller<
 
     // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
     // Transfer will be done inside `*_inner` functions.
-    if max_balance_spending > caller_account.info.balance && !is_balance_check_disabled {
+    if (max_balance_spending > caller_account.info.balance && !is_balance_check_disabled)
+        && !is_anchor_transaction
+    {
         return Err(InvalidTransaction::LackOfFundForMaxFee {
             fee: Box::new(max_balance_spending),
             balance: Box::new(caller_account.info.balance),
@@ -271,7 +275,7 @@ pub fn validate_against_state_and_deduct_caller<
         .balance
         .saturating_sub(gas_balance_spending);
 
-    if is_balance_check_disabled {
+    if is_balance_check_disabled && !is_anchor_transaction {
         // Make sure the caller's balance is at least the value of the transaction.
         new_balance = new_balance.max(tx.value());
     }

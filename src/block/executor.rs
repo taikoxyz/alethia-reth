@@ -1,8 +1,7 @@
 use alloy_consensus::{Transaction, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
-    Database, FromRecoveredTx, FromTxWithEncoded,
-    eth::{receipt_builder::ReceiptBuilder, spec::EthExecutorSpec},
+    Database, FromRecoveredTx, FromTxWithEncoded, eth::receipt_builder::ReceiptBuilder,
 };
 use alloy_primitives::{Address, Bytes, Uint};
 use reth::{
@@ -25,6 +24,7 @@ use revm_database_interface::DatabaseCommit;
 
 use crate::{
     block::factory::TaikoBlockExecutionCtx,
+    chainspec::spec::TaikoExecutorSpec,
     evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address},
 };
 
@@ -78,7 +78,7 @@ where
             DB = &'db mut State<DB>,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
         >,
-    Spec: EthExecutorSpec,
+    Spec: TaikoExecutorSpec,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
     /// Input transaction type.
@@ -118,7 +118,11 @@ where
                     get_treasury_address(self.evm().chain_id()),
                     encode_anchor_system_call_data(
                         // Decode the base fee share percentage from the block's extra data.
-                        decode_post_ontake_extra_data(self.ctx.extra_data.clone()),
+                        if self.spec.is_ontake_active_at_block(self.evm.block().number.to()) {
+                            decode_post_ontake_extra_data(self.ctx.extra_data.clone())
+                        } else {
+                            0
+                        },
                         account_info.map_or(0, |account| account.nonce),
                     ),
                 )

@@ -289,8 +289,8 @@ pub fn reimburse_caller<CTX: ContextTr>(
     let effective_gas_price = context.tx().effective_gas_price(basefee);
 
     if let Some(ctx) = extra_execution_ctx {
-        if ctx.anchor_caller_address() == context.tx().caller() &&
-            ctx.anchor_caller_nonce() == context.tx().nonce()
+        if ctx.anchor_caller_address() == context.tx().caller()
+            && ctx.anchor_caller_nonce() == context.tx().nonce()
         {
             debug!(
                 target: "taiko_evm",

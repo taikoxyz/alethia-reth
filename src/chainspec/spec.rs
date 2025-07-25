@@ -12,6 +12,8 @@ use reth::chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, H
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 
+use crate::chainspec::hardfork::TaikoHardfork;
+
 /// An Taiko chain specification.
 ///
 /// A chain specification describes:
@@ -150,6 +152,42 @@ impl EthChainSpec for TaikoChainSpec {
     /// In Taiko network, this is always `0`.
     fn final_paris_total_difficulty(&self) -> Option<U256> {
         Some(U256::ZERO)
+    }
+}
+
+impl TaikoExecutorSpec for TaikoChainSpec {
+    /// Retrieves [`ForkCondition`] by an [`TaikoHardfork`]. If `fork` is not present, returns
+    /// [`ForkCondition::Never`].
+    fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition {
+        self.inner.hardforks.fork(fork)
+    }
+}
+
+/// Helper methods for Ethereum forks.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait TaikoExecutorSpec: EthExecutorSpec {
+    /// Retrieves [`ForkCondition`] by an [`TaikoHardfork`]. If `fork` is not present, returns
+    /// [`ForkCondition::Never`].
+    fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition;
+
+    /// Convenience method to check if an [`TaikoHardfork`] is active at a given block number.
+    fn is_taiko_fork_active_at_block(&self, fork: TaikoHardfork, block_number: u64) -> bool {
+        self.taiko_fork_activation(fork).active_at_block(block_number)
+    }
+
+    /// Checks if the `Ontake` hardfork is active at the given block number.
+    fn is_ontake_active_at_block(&self, block_number: u64) -> bool {
+        self.is_taiko_fork_active_at_block(TaikoHardfork::Ontake, block_number)
+    }
+
+    /// Checks if the `Pacaya` hardfork is active at the given block number.
+    fn is_pacaya_active_at_block(&self, block_number: u64) -> bool {
+        self.is_taiko_fork_active_at_block(TaikoHardfork::Pacaya, block_number)
+    }
+
+    /// Checks if the `Shasta` hardfork is active at the given block number.
+    fn is_shasta_active_at_block(&self, block_number: u64) -> bool {
+        self.is_taiko_fork_active_at_block(TaikoHardfork::Shasta, block_number)
     }
 }
 

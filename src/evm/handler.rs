@@ -287,16 +287,15 @@ pub fn reimburse_caller<CTX: ContextTr>(
     let basefee = context.block().basefee() as u128;
     let caller = context.tx().caller();
     let effective_gas_price = context.tx().effective_gas_price(basefee);
+    let (tx, _journal) = context.tx_journal_mut();
 
     if let Some(ctx) = extra_execution_ctx {
-        if ctx.anchor_caller_address() == context.tx().caller()
-            && ctx.anchor_caller_nonce() == context.tx().nonce()
-        {
+        if ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce() {
             debug!(
                 target: "taiko_evm",
                 "Anchor transaction detected, no reimbursement, sender account: {:?} nonce: {:?}",
                 caller,
-                context.tx().nonce()
+                tx.nonce()
             );
             return Ok(());
         }
@@ -306,7 +305,7 @@ pub fn reimburse_caller<CTX: ContextTr>(
         target: "taiko_evm",
         "Reimbursing caller, sender account: {:?} nonce: {:?}, gas remaining: {}, gas refunded: {}, additional refund: {}",
         caller,
-        context.tx().nonce(),
+        tx.nonce(),
         gas.remaining(),
         gas.refunded(),
         additional_refund

@@ -40,8 +40,8 @@ impl PayloadTypes for TaikoEngineTypes {
         TaikoExecutionData {
             execution_payload: payload.into(),
             taiko_sidecar: TaikoExecutionDataSidecar {
-                tx_hash: tx_hash,
-                withdrawals_hash: withdrawals_hash,
+                tx_hash,
+                withdrawals_hash,
                 taiko_block: Some(true),
             },
         }

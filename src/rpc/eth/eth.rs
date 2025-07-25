@@ -37,10 +37,8 @@ impl<Provider: DatabaseProviderFactory> TaikoExt<Provider> {
 impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt<Provider> {
     /// Retrieves the L1 origin by its ID from the database.
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>> {
-        let provider = self
-            .provider
-            .database_provider_ro()
-            .map_err(|_| EthApiError::InternalEthError)?;
+        let provider =
+            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
 
         Ok(Some(
             provider
@@ -54,10 +52,8 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
 
     /// Retrieves the head L1 origin from the database.
     fn head_l1_origin(&self) -> RpcResult<Option<RpcL1Origin>> {
-        let provider = self
-            .provider
-            .database_provider_ro()
-            .map_err(|_| EthApiError::InternalEthError)?;
+        let provider =
+            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
 
         self.l1_origin_by_id(U256::from(
             provider

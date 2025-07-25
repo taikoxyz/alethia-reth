@@ -4,7 +4,8 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth::revm::primitives::B256;
 use reth_payload_primitives::ExecutionPayload as ExecutionPayloadTr;
 
-/// Represents the execution data for the Taiko network, which includes the execution payload and a sidecar.
+/// Represents the execution data for the Taiko network, which includes the execution payload and a
+/// sidecar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TaikoExecutionData {
@@ -27,8 +28,8 @@ impl From<TaikoExecutionData> for ExecutionPayload {
     }
 }
 
-/// Represents the sidecar data for the Taiko execution payload, which includes the transaction hash,
-/// optional withdrawals hash, and a boolean indicating if the block is a Taiko block.
+/// Represents the sidecar data for the Taiko execution payload, which includes the transaction
+/// hash, optional withdrawals hash, and a boolean indicating if the block is a Taiko block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -78,8 +79,8 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 /// This structure maps on the ExecutionPayload structure of the beacon chain spec.
 ///
 /// See also: <https://github.com/ethereum/execution-apis/blob/6709c2a795b707202e93c4f2867fa0bf2640a84f/src/engine/paris.md#executionpayloadv1>
-/// NOTE: we change `transactions` to `Option<Vec<Bytes>>` to ensure backward compatibility with the taiko-client driver
-/// behavior.
+/// NOTE: we change `transactions` to `Option<Vec<Bytes>>` to ensure backward compatibility with the
+/// taiko-client driver behavior.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]

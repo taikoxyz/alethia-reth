@@ -56,8 +56,8 @@ fn make_taiko_hekla_chain_spec() -> TaikoChainSpec {
     )
 }
 
-// Creates a new [`ChainSpec`] for the Taiko network with the given genesis JSON and double-check the given
-// genesis hash.
+// Creates a new [`ChainSpec`] for the Taiko network with the given genesis JSON and double-check
+// the given genesis hash.
 fn make_taiko_chain_spec(
     genesis_json: &str,
     genesis_hash: B256,
@@ -87,11 +87,8 @@ mod test {
 
     #[test]
     fn test_mainnet_genesis_json_hash() {
-        let genesis_header_hash = make_taiko_hekla_chain_spec()
-            .inner
-            .genesis_header
-            .hash_slow()
-            .to_string();
+        let genesis_header_hash =
+            make_taiko_hekla_chain_spec().inner.genesis_header.hash_slow().to_string();
 
         assert_eq!(
             "0x1f5554042aa50dc0712936ae234d8803b80b84251f85d074756a2f391896e109",

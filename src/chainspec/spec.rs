@@ -26,9 +26,7 @@ pub struct TaikoChainSpec {
 
 impl Default for TaikoChainSpec {
     fn default() -> Self {
-        Self {
-            inner: ChainSpec::default(),
-        }
+        Self { inner: ChainSpec::default() }
     }
 }
 

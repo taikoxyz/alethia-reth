@@ -1,13 +1,14 @@
 //! Rust Taiko node (taiko-reth) binary executable.
 use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
-use reth_rpc::eth::EthApiTypes;
-use reth_rpc::eth::RpcNodeCore;
-use taiko_reth::cli::TaikoCli;
-use taiko_reth::rpc::eth::eth::{TaikoExt, TaikoExtApiServer};
+use reth_rpc::eth::{EthApiTypes, RpcNodeCore};
 use taiko_reth::{
     TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
-    rpc::eth::auth::{TaikoAuthExt, TaikoAuthExtApiServer},
+    cli::TaikoCli,
+    rpc::eth::{
+        auth::{TaikoAuthExt, TaikoAuthExtApiServer},
+        eth::{TaikoExt, TaikoExtApiServer},
+    },
 };
 use tracing::info;
 
@@ -23,10 +24,7 @@ fn main() {
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, RessArgs>::parse_args().run(
         async move |builder, ress_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
-            let NodeHandle {
-                node,
-                node_exit_future,
-            } = builder
+            let NodeHandle { node, node_exit_future } = builder
                 .node(TaikoNode::default())
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
@@ -42,8 +40,7 @@ fn main() {
                         ctx.registry.eth_api().tx_resp_builder().clone(),
                         ctx.node().evm_config().clone(),
                     );
-                    ctx.auth_module
-                        .merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
+                    ctx.auth_module.merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
 
                     Ok(())
                 })

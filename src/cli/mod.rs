@@ -43,9 +43,7 @@ where
 {
     /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
-        Self {
-            inner: Cli::<C, Ext>::parse(),
-        }
+        Self { inner: Cli::<C, Ext>::parse() }
     }
 
     /// Parsers only the default CLI arguments from the given iterator
@@ -82,11 +80,8 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
     {
         // Add network name if available to the logs dir
         if let Some(chain_spec) = self.inner.command.chain_spec() {
-            self.inner.logs.log_file_directory = self
-                .inner
-                .logs
-                .log_file_directory
-                .join(chain_spec.inner.chain.to_string());
+            self.inner.logs.log_file_directory =
+                self.inner.logs.log_file_directory.join(chain_spec.inner.chain.to_string());
         }
         let _guard = self.init_tracing()?;
         info!(target: "reth::taiko::cli", "Initialized tracing, debug log directory: {}", self.inner.logs.log_file_directory);
@@ -95,14 +90,11 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
         let _ = install_prometheus_recorder();
 
         let components = |spec: Arc<C::ChainSpec>| {
-            (
-                EthEvmConfig::ethereum(spec.clone()),
-                EthBeaconConsensus::new(spec),
-            )
+            (EthEvmConfig::ethereum(spec.clone()), EthBeaconConsensus::new(spec))
         };
         match self.inner.command {
-            // NOTE: We use the custom `TaikoNodeCommand` to handle the node commands, to initialize all Taiko related
-            // database tables.
+            // NOTE: We use the custom `TaikoNodeCommand` to handle the node commands, to initialize
+            // all Taiko related database tables.
             Commands::Node(command) => runner.run_command_until_exit(|ctx| {
                 TaikoNodeCommand(command).execute(ctx, FnLauncher::new::<C, Ext>(launcher))
             }),

@@ -29,22 +29,19 @@ pub trait TaikoHardforks: EthereumHardforks {
     /// Convenience method to check if [`TaikoHardfork::Ontake`] is active at a given block
     /// number.
     fn is_ontake_active_at_block(&self, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Ontake)
-            .active_at_block(block_number)
+        self.taiko_fork_activation(TaikoHardfork::Ontake).active_at_block(block_number)
     }
 
     /// Convenience method to check if [`TaikoHardfork::Pacaya`] is active at a given block
     /// number.
     fn is_pacaya_active_at_block(&self, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Pacaya)
-            .active_at_block(block_number)
+        self.taiko_fork_activation(TaikoHardfork::Pacaya).active_at_block(block_number)
     }
 
     /// Convenience method to check if [`TaikoHardfork::Shasta`] is active at a given block
     /// number.
     fn is_shasta_active_at_block(&self, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Shasta)
-            .active_at_block(block_number)
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_block(block_number)
     }
 }
 
@@ -64,10 +61,7 @@ impl TaikoHardforks for TaikoChainSpec {
 pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(538_304)),
-        (
-            TaikoHardfork::Pacaya.boxed(),
-            ForkCondition::Block(1_166_000),
-        ),
+        (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
     ]))
 });
 
@@ -83,10 +77,7 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
 pub static TAIKO_HEKLA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(840_512)),
-        (
-            TaikoHardfork::Pacaya.boxed(),
-            ForkCondition::Block(1_299_888),
-        ),
+        (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_299_888)),
     ]))
 });
 
@@ -98,34 +89,16 @@ fn extend_with_shared_hardforks(
         (EthereumHardfork::Frontier.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Homestead.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Tangerine.boxed(), ForkCondition::Block(0)),
-        (
-            EthereumHardfork::SpuriousDragon.boxed(),
-            ForkCondition::Block(0),
-        ),
+        (EthereumHardfork::SpuriousDragon.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Byzantium.boxed(), ForkCondition::Block(0)),
-        (
-            EthereumHardfork::Constantinople.boxed(),
-            ForkCondition::Block(0),
-        ),
-        (
-            EthereumHardfork::Petersburg.boxed(),
-            ForkCondition::Block(0),
-        ),
+        (EthereumHardfork::Constantinople.boxed(), ForkCondition::Block(0)),
+        (EthereumHardfork::Petersburg.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Istanbul.boxed(), ForkCondition::Block(0)),
-        (
-            EthereumHardfork::MuirGlacier.boxed(),
-            ForkCondition::Block(0),
-        ),
+        (EthereumHardfork::MuirGlacier.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Berlin.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::London.boxed(), ForkCondition::Block(0)),
-        (
-            EthereumHardfork::ArrowGlacier.boxed(),
-            ForkCondition::Block(0),
-        ),
-        (
-            EthereumHardfork::GrayGlacier.boxed(),
-            ForkCondition::Block(0),
-        ),
+        (EthereumHardfork::ArrowGlacier.boxed(), ForkCondition::Block(0)),
+        (EthereumHardfork::GrayGlacier.boxed(), ForkCondition::Block(0)),
         (
             EthereumHardfork::Paris.boxed(),
             ForkCondition::TTD {
@@ -134,10 +107,7 @@ fn extend_with_shared_hardforks(
                 total_difficulty: U256::ZERO,
             },
         ),
-        (
-            EthereumHardfork::Shanghai.boxed(),
-            ForkCondition::Timestamp(0),
-        ),
+        (EthereumHardfork::Shanghai.boxed(), ForkCondition::Timestamp(0)),
     ];
 
     shared_hardforks.par_extend(hardforks);

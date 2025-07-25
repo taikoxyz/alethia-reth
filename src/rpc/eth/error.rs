@@ -12,10 +12,9 @@ impl From<TaikoApiError> for jsonrpsee_types::error::ErrorObject<'static> {
     /// Converts the TaikoApiError into the jsonrpsee ErrorObject.
     fn from(error: TaikoApiError) -> Self {
         match error {
-            TaikoApiError::GethNotFound => rpc_error_with_code(
-                EthRpcErrorCode::ResourceNotFound.code(),
-                format!("not found"),
-            ),
+            TaikoApiError::GethNotFound => {
+                rpc_error_with_code(EthRpcErrorCode::ResourceNotFound.code(), format!("not found"))
+            }
         }
     }
 }

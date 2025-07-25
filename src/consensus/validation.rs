@@ -76,11 +76,7 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         // In Taiko network, ommer hash is always empty.
         if block.ommers_hash() != EMPTY_OMMER_ROOT_HASH {
             return Err(ConsensusError::BodyOmmersHashDiff(
-                GotExpected {
-                    got: block.ommers_hash(),
-                    expected: block.ommers_hash(),
-                }
-                .into(),
+                GotExpected { got: block.ommers_hash(), expected: block.ommers_hash() }.into(),
             ));
         }
 
@@ -227,9 +223,7 @@ mod test {
         header.extra_data = Bytes::from(vec![0; MAXIMUM_EXTRA_DATA_SIZE + 1]);
         assert_eq!(
             consensus.validate_header(&SealedHeader::new(header.clone(), header.hash_slow())),
-            Err(ConsensusError::ExtraDataExceedsMax {
-                len: MAXIMUM_EXTRA_DATA_SIZE + 1,
-            })
+            Err(ConsensusError::ExtraDataExceedsMax { len: MAXIMUM_EXTRA_DATA_SIZE + 1 })
         );
         header.extra_data = Bytes::from(vec![0; MAXIMUM_EXTRA_DATA_SIZE]);
 
@@ -265,11 +259,7 @@ mod test {
                 &SealedHeader::new(parent.clone(), parent.hash_slow())
             ),
             Err(ConsensusError::ParentHashMismatch(
-                GotExpected {
-                    got: header.parent_hash,
-                    expected: parent.hash_slow(),
-                }
-                .into()
+                GotExpected { got: header.parent_hash, expected: parent.hash_slow() }.into()
             ))
         );
 

@@ -137,23 +137,13 @@ where
         >,
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks>,
 {
-    let BuildArguments {
-        mut cached_reads,
-        config,
-        cancel,
-        best_payload: _,
-    } = args;
-    let PayloadConfig {
-        parent_header,
-        attributes,
-    } = config;
+    let BuildArguments { mut cached_reads, config, cancel, best_payload: _ } = args;
+    let PayloadConfig { parent_header, attributes } = config;
 
     let state_provider = client.state_by_block_hash(parent_header.hash())?;
     let state = StateProviderDatabase::new(&state_provider);
-    let mut db = State::builder()
-        .with_database(cached_reads.as_db_mut(state))
-        .with_bundle_update()
-        .build();
+    let mut db =
+        State::builder().with_database(cached_reads.as_db_mut(state)).with_bundle_update().build();
 
     debug!(target: "payload_builder", id=%attributes.payload_id(), parent_header = ?parent_header.hash(), parent_number = parent_header.number, attributes = ?attributes, "building payload for block");
 
@@ -200,9 +190,8 @@ where
         };
 
         // update add to total fees
-        let miner_fee = tx
-            .effective_tip_per_gas(base_fee)
-            .expect("fee is always valid; execution succeeded");
+        let miner_fee =
+            tx.effective_tip_per_gas(base_fee).expect("fee is always valid; execution succeeded");
         total_fees += U256::from(miner_fee) * U256::from(gas_used);
     }
 

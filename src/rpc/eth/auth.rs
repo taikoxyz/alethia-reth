@@ -1,8 +1,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::BlockHeader;
-use alloy_eips::Encodable2718;
-use alloy_eips::{BlockId, BlockNumberOrTag};
+use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
 use alloy_json_rpc::RpcObject;
 use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
@@ -27,23 +26,22 @@ use reth_evm::{
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
-use reth_revm::State;
-use reth_revm::database::StateProviderDatabase;
+use reth_revm::{State, database::StateProviderDatabase};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
 use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
 
-use crate::block::assembler::TaikoBlockAssembler;
-use crate::block::factory::TaikoBlockExecutorFactory;
-use crate::chainspec::spec::TaikoChainSpec;
-use crate::evm::config::TaikoNextBlockEnvAttributes;
-use crate::evm::factory::TaikoEvmFactory;
+use crate::{
+    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
+    chainspec::spec::TaikoChainSpec,
+    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
+};
 
-use crate::rpc::eth::error::TaikoApiError;
 use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
     payload::attributes::RpcL1Origin,
+    rpc::eth::error::TaikoApiError,
 };
 
 const COMPRESSION_ESTIMATION_SAFTY_COEF: u64 = 80;
@@ -59,11 +57,7 @@ pub struct PreBuiltTxList<T> {
 
 impl<T> Default for PreBuiltTxList<T> {
     fn default() -> Self {
-        Self {
-            tx_list: vec![],
-            estimated_gas_used: 0,
-            bytes_length: 0,
-        }
+        Self { tx_list: vec![], estimated_gas_used: 0, bytes_length: 0 }
     }
 }
 
@@ -115,12 +109,7 @@ pub struct TaikoAuthExt<Pool, Eth, Evm, Provider: DatabaseProviderFactory> {
 impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, Evm, Provider> {
     /// Creates a new instance of `TaikoAuthExt` with the given provider.
     pub fn new(provider: Provider, pool: Pool, tx_resp_builder: Eth, evm_config: Evm) -> Self {
-        Self {
-            provider,
-            pool,
-            tx_resp_builder,
-            evm_config,
-        }
+        Self { provider, pool, tx_resp_builder, evm_config }
     }
 }
 
@@ -251,18 +240,13 @@ where
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
             .map_err(|e| EthApiError::Internal(e.into()))?
-            .ok_or(EthApiError::HeaderNotFound(BlockId::Number(
-                BlockNumberOrTag::Latest,
-            )))?;
+            .ok_or(EthApiError::HeaderNotFound(BlockId::Number(BlockNumberOrTag::Latest)))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
 
-        let state_provider = self
-            .provider
-            .state_by_block_hash(parent.hash())
-            .map_err(|_| {
-                EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
-            })?;
+        let state_provider = self.provider.state_by_block_hash(parent.hash()).map_err(|_| {
+            EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
+        })?;
         let mut db = State::builder()
             .with_database(StateProviderDatabase::new(&state_provider))
             .with_bundle_update()
@@ -291,11 +275,10 @@ where
             })?;
 
         let mut best_txs =
-            self.pool
-                .best_transactions_with_attributes(BestTransactionsAttributes {
-                    basefee: base_fee,
-                    blob_fee: None,
-                });
+            self.pool.best_transactions_with_attributes(BestTransactionsAttributes {
+                basefee: base_fee,
+                blob_fee: None,
+            });
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?safe_max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
@@ -304,14 +287,15 @@ where
             // ensure if the local accounts are provided, the transaction is from a local account.
             if let Some(local_accounts) = locals.as_ref() {
                 if !local_accounts.is_empty() && !local_accounts.contains(&pool_tx.sender()) {
-                    // NOTE: we simply mark the transaction as underpriced if it is not from a local account.
+                    // NOTE: we simply mark the transaction as underpriced if it is not from a local
+                    // account.
                     best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
                     continue;
                 }
             }
             // ensure we only pick the transactions that meet the minimum tip.
-            if pool_tx.effective_tip_per_gas(base_fee).is_none()
-                || pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
+            if pool_tx.effective_tip_per_gas(base_fee).is_none() ||
+                pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
             {
                 // skip transactions that do not meet the minimum tip requirement
                 trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
@@ -319,8 +303,8 @@ where
                 continue;
             }
             // ensure we still have capacity for this transaction
-            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit()
-                > block_max_gas_limit
+            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit() >
+                block_max_gas_limit
             {
                 // we can't fit this transaction into the block, so we need to mark it as invalid
                 // which also removes all dependent transaction from the iterator before we can
@@ -343,11 +327,12 @@ where
             let tx = pool_tx.to_consensus();
             let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
-            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size
-                > safe_max_bytes_per_tx_list
+            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size >
+                safe_max_bytes_per_tx_list
             {
                 if prebuilt_lists.len() == max_transactions_lists as usize {
-                    // NOTE: we simply mark the transaction as underpriced if it is not fitting into the DA blob.
+                    // NOTE: we simply mark the transaction as underpriced if it is not fitting into
+                    // the DA blob.
                     best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
                     continue;
                 }

@@ -53,9 +53,7 @@ where
     /// [`Self::EngineApi`] will be converted into the method handlers of the authenticated RPC
     /// server (engine API).
     async fn build_engine_api(self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::EngineApi> {
-        let Self {
-            engine_validator_builder,
-        } = self;
+        let Self { engine_validator_builder } = self;
 
         let engine_validator = engine_validator_builder.build(ctx).await?;
         let client = ClientVersionV1 {

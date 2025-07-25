@@ -29,10 +29,7 @@ pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
 impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: TaikoEvm<EthEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
-        Self {
-            inner: evm,
-            inspect,
-        }
+        Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -113,11 +110,7 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect {
-            self.inner.inspect_tx(tx)
-        } else {
-            self.inner.transact(tx)
-        }
+        if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
     }
 
     /// Executes a system call.
@@ -125,8 +118,8 @@ where
     /// Note: this will only keep the target `contract` in the state. This is done because revm is
     /// loading [`BlockEnv::beneficiary`] into state by default, and we need to avoid it by also
     /// covering edge cases when beneficiary is set to the system contract address.
-    /// NOTE: we use this call as a workaround to mark the Anchor transaction and base fee share percentage in
-    /// the current block.
+    /// NOTE: we use this call as a workaround to mark the Anchor transaction and base fee share
+    /// percentage in the current block.
     fn transact_system_call(
         &mut self,
         caller: Address,
@@ -135,17 +128,15 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
-            && contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+            contract == get_treasury_address(self.chain_id())
         {
-            let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data).ok_or(
-                EVMError::Custom("invalid encoded anchor system call data".to_string()),
-            )?;
+            let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
+                .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
             debug!(target: "taiko_evm", "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}", basefee_share_pctg, caller_nonce);
 
             // Set the Anchor transaction information for the later EVM execution.
-            self.inner
-                .with_extra_execution_context(basefee_share_pctg, caller, caller_nonce);
+            self.inner.with_extra_execution_context(basefee_share_pctg, caller, caller_nonce);
 
             // Return a dummy execution result and state to avoid further processing.
             return Ok(ResultAndState {
@@ -227,12 +218,7 @@ where
     where
         Self: Sized,
     {
-        let Context {
-            block: block_env,
-            cfg: cfg_env,
-            journaled_state,
-            ..
-        } = self.inner.inner.ctx;
+        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.inner.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }

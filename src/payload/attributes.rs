@@ -137,14 +137,8 @@ mod test {
             stored_l1_origin.l1_block_hash,
             B256::from(rpc_l1_origin.l1_block_hash.unwrap())
         );
-        assert_eq!(
-            stored_l1_origin.build_payload_args_id,
-            rpc_l1_origin.build_payload_args_id
-        );
-        assert_eq!(
-            stored_l1_origin.is_forced_inclusion,
-            rpc_l1_origin.is_forced_inclusion
-        );
+        assert_eq!(stored_l1_origin.build_payload_args_id, rpc_l1_origin.build_payload_args_id);
+        assert_eq!(stored_l1_origin.is_forced_inclusion, rpc_l1_origin.is_forced_inclusion);
         assert_eq!(stored_l1_origin.signature, rpc_l1_origin.signature);
     }
 }

@@ -62,11 +62,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             timestamp: attributes.payload_attributes.timestamp,
             suggested_fee_recipient: attributes.payload_attributes.suggested_fee_recipient,
             prev_randao: attributes.payload_attributes.prev_randao,
-            withdrawals: attributes
-                .payload_attributes
-                .withdrawals
-                .unwrap_or_default()
-                .into(),
+            withdrawals: attributes.payload_attributes.withdrawals.unwrap_or_default().into(),
             parent_beacon_block_root: attributes.payload_attributes.parent_beacon_block_root,
         };
 
@@ -91,7 +87,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             .collect::<Vec<_>>();
 
         let res = Self {
-            payload_attributes: payload_attributes,
+            payload_attributes,
             tx_list_hash: keccak256(attributes.block_metadata.tx_list.clone()),
             beneficiary: attributes.block_metadata.beneficiary,
             gas_limit: attributes.block_metadata.gas_limit,
@@ -102,7 +98,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
                 .try_into()
                 .map_err(|_| alloy_rlp::Error::Custom("invalid attributes.base_fee_per_gas"))?,
             extra_data: attributes.block_metadata.extra_data,
-            transactions: transactions,
+            transactions,
         };
 
         Ok(res)
@@ -157,12 +153,7 @@ pub(crate) fn payload_id_taiko(
     hasher.update(parent.as_slice());
     hasher.update(&attributes.payload_attributes.timestamp.to_be_bytes()[..]);
     hasher.update(attributes.payload_attributes.prev_randao.as_slice());
-    hasher.update(
-        attributes
-            .payload_attributes
-            .suggested_fee_recipient
-            .as_slice(),
-    );
+    hasher.update(attributes.payload_attributes.suggested_fee_recipient.as_slice());
     if let Some(withdrawals) = &attributes.payload_attributes.withdrawals {
         let mut buf = Vec::new();
         withdrawals.encode(&mut buf);

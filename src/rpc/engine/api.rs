@@ -1,13 +1,11 @@
 use std::time::Duration;
 
-use crate::payload::attributes::TaikoPayloadAttributes;
-use crate::rpc::engine::types::TaikoExecutionData;
+use crate::{payload::attributes::TaikoPayloadAttributes, rpc::engine::types::TaikoExecutionData};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
 use async_trait::async_trait;
-use jsonrpsee::RpcModule;
-use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::{RpcModule, proc_macros::rpc};
 use jsonrpsee_core::RpcResult;
 use jsonrpsee_types::ErrorCode;
 use reth::{
@@ -17,23 +15,20 @@ use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{EngineTypes, EngineValidator, PayloadBuilderError, PayloadTypes};
-use reth_provider::{BlockReader, HeaderProvider, StateProviderFactory};
-use reth_provider::{DBProvider, DatabaseProviderFactory};
+use reth_provider::{
+    BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
+};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
-use tokio_retry::Retry;
-use tokio_retry::strategy::ExponentialBackoff;
+use tokio_retry::{Retry, strategy::ExponentialBackoff};
 
 use crate::db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
 };
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
-pub const TAIKO_ENGINE_CAPABILITIES: &[&str] = &[
-    "engine_forkchoiceUpdatedV2",
-    "engine_getPayloadV2",
-    "engine_newPayloadV2",
-];
+pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
+    &["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"];
 
 /// Extension trait that gives access to Taiko engine API RPC methods.
 ///
@@ -85,11 +80,7 @@ where
     where
         Provider: Clone,
     {
-        Self {
-            inner: engine_api,
-            provider,
-            payload_store,
-        }
+        Self { inner: engine_api, provider, payload_store }
     }
 }
 
@@ -111,10 +102,7 @@ where
 {
     /// Creates a new execution payload with the given execution data.
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
-        self.inner
-            .new_payload_v2(payload)
-            .await
-            .map_err(|e| EngineApiError::from(e).into())
+        self.inner.new_payload_v2(payload).await.map_err(|e| EngineApiError::from(e).into())
     }
 
     /// Updates the fork choice with the given state and payload attributes.
@@ -172,8 +160,7 @@ where
                 .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
             }
 
-            tx.commit()
-                .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
+            tx.commit().map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
         };
 
         Ok(status)
@@ -184,10 +171,7 @@ where
         &self,
         payload_id: PayloadId,
     ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
-        self.inner
-            .get_payload_v2(payload_id)
-            .await
-            .map_err(|e| EngineApiError::from(e).into())
+        self.inner.get_payload_v2(payload_id).await.map_err(|e| EngineApiError::from(e).into())
     }
 }
 

@@ -115,13 +115,13 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg = CfgEnv::new()
-            .with_chain_id(self.chain_spec().inner.chain().id())
-            .with_spec(revm_spec_by_timestamp_and_block_number(
+        let cfg = CfgEnv::new().with_chain_id(self.chain_spec().inner.chain().id()).with_spec(
+            revm_spec_by_timestamp_and_block_number(
                 &self.chain_spec().inner,
                 attributes.timestamp,
                 parent.number + 1,
-            ));
+            ),
+        );
 
         let block_env: BlockEnv = BlockEnv {
             number: U256::from(parent.number + 1),

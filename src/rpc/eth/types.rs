@@ -382,9 +382,7 @@ where
             );
         }
 
-        Ok(self
-            .tx_resp_builder()
-            .tx_env(request.into(), &evm_env.cfg_env, &evm_env.block_env)?)
+        Ok(self.tx_resp_builder().tx_env(request.into(), &evm_env.cfg_env, &evm_env.block_env)?)
     }
 }
 
@@ -442,10 +440,7 @@ where
             let block_hash = block.hash();
             let excess_blob_gas = block.excess_blob_gas();
             let timestamp = block.timestamp();
-            let blob_params = self
-                .provider()
-                .chain_spec()
-                .blob_params_at_timestamp(timestamp);
+            let blob_params = self.provider().chain_spec().blob_params_at_timestamp(timestamp);
 
             return block
                 .body()
@@ -528,9 +523,9 @@ where
             suggested_fee_recipient: parent.beneficiary(),
             prev_randao: B256::random(),
             gas_limit: parent.gas_limit(),
-            base_fee_per_gas: parent.base_fee_per_gas().ok_or(EthApiError::InvalidParams(
-                "invalid parent base_fee_per_gas".to_string(),
-            ))?,
+            base_fee_per_gas: parent
+                .base_fee_per_gas()
+                .ok_or(EthApiError::InvalidParams("invalid parent base_fee_per_gas".to_string()))?,
             extra_data: parent.extra_data().clone().into(),
         })
     }
@@ -562,10 +557,7 @@ where
         // submit the transaction to the pool with a `Local` origin
         let hash = self
             .pool()
-            .add_transaction(
-                reth::transaction_pool::TransactionOrigin::Local,
-                pool_transaction,
-            )
+            .add_transaction(reth::transaction_pool::TransactionOrigin::Local, pool_transaction)
             .await
             .map_err(Self::Error::from_eth_err)?;
 

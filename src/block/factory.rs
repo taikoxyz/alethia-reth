@@ -9,8 +9,8 @@ use alloy_evm::{
 };
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
-use reth::builder::components::ExecutorBuilder;
 use reth::{
+    builder::components::ExecutorBuilder,
     primitives::Log,
     revm::{Inspector, State},
 };
@@ -62,11 +62,7 @@ impl<R, Spec, EvmFactory> TaikoBlockExecutorFactory<R, Spec, EvmFactory> {
     /// Creates a new [`EthBlockExecutorFactory`] with the given spec, [`EvmFactory`], and
     /// [`ReceiptBuilder`].
     pub const fn new(receipt_builder: R, spec: Spec, evm_factory: EvmFactory) -> Self {
-        Self {
-            receipt_builder,
-            spec,
-            evm_factory,
-        }
+        Self { receipt_builder, spec, evm_factory }
     }
 
     /// Exposes the receipt builder.

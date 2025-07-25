@@ -5,17 +5,13 @@ use reth_db::{TableSet, Tables, table::TableInfo};
 pub struct TaikoTables;
 
 impl TableSet for TaikoTables {
-    /// Returns an iterator over the tables, combines the default Reth tables with the Taiko-specific tables.
+    /// Returns an iterator over the tables, combines the default Reth tables with the
+    /// Taiko-specific tables.
     fn tables() -> Box<dyn Iterator<Item = Box<dyn TableInfo>>> {
         Box::new(
-            Tables::ALL
-                .iter()
-                .map(|table| Box::new(*table) as Box<dyn TableInfo>)
-                .chain(
-                    TaikoDbTables::ALL
-                        .iter()
-                        .map(|table| Box::new(*table) as Box<dyn TableInfo>),
-                ),
+            Tables::ALL.iter().map(|table| Box::new(*table) as Box<dyn TableInfo>).chain(
+                TaikoDbTables::ALL.iter().map(|table| Box::new(*table) as Box<dyn TableInfo>),
+            ),
         )
     }
 }

@@ -26,9 +26,7 @@ pub struct TaikoBlockAssembler {
 impl TaikoBlockAssembler {
     /// Creates a new instance of the [`TaikoBlockAssembler`] with the given chain specification.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self {
-            block_assembler: EthBlockAssembler::new(chain_spec),
-        }
+        Self { block_assembler: EthBlockAssembler::new(chain_spec) }
     }
 
     /// Returns a reference to the chain specification.
@@ -58,12 +56,7 @@ where
             execution_ctx: ctx,
             parent: _,
             transactions,
-            output:
-                BlockExecutionResult {
-                    receipts,
-                    requests: _,
-                    gas_used,
-                },
+            output: BlockExecutionResult { receipts, requests: _, gas_used },
             state_root,
             ..
         } = input;
@@ -103,11 +96,7 @@ where
 
         Ok(Block {
             header,
-            body: BlockBody {
-                transactions,
-                ommers: Default::default(),
-                withdrawals,
-            },
+            body: BlockBody { transactions, ommers: Default::default(), withdrawals },
         })
     }
 }

@@ -31,10 +31,7 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
-        Self {
-            inner,
-            extra_execution_ctx: None,
-        }
+        Self { inner, extra_execution_ctx: None }
     }
 
     #[inline]
@@ -146,11 +143,7 @@ impl TaikoEvmExtraExecutionCtx {
         anchor_caller_address: Address,
         anchor_caller_nonce: u64,
     ) -> Self {
-        Self {
-            basefee_share_pctg,
-            anchor_caller_address,
-            anchor_caller_nonce,
-        }
+        Self { basefee_share_pctg, anchor_caller_address, anchor_caller_nonce }
     }
 
     /// Returns the base fee share percentage.
@@ -191,11 +184,7 @@ mod test {
         let mut db = InMemoryDB::default();
         db.insert_account_info(
             golden_touch_address,
-            AccountInfo {
-                nonce,
-                balance: U256::from(0),
-                ..Default::default()
-            },
+            AccountInfo { nonce, balance: U256::from(0), ..Default::default() },
         );
 
         let mut taiko_evm = TaikoEvm::new(Context::mainnet().with_db(db).build_mainnet());
@@ -222,11 +211,8 @@ mod test {
         );
         assert!(state.is_err());
 
-        taiko_evm.extra_execution_ctx = Some(TaikoEvmExtraExecutionCtx::new(
-            50,
-            golden_touch_address,
-            nonce + 1,
-        ));
+        taiko_evm.extra_execution_ctx =
+            Some(TaikoEvmExtraExecutionCtx::new(50, golden_touch_address, nonce + 1));
         state = taiko_evm.transact_one(
             TxEnv::builder()
                 .gas_limit(1_000_000)

@@ -225,7 +225,7 @@ where
 
     /// Creates the engine validator for an engine API based node.
     async fn engine_validator(&self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
-        TaikoEngineValidatorBuilder::default().build(ctx).await.map_err(eyre::Error::from)
+        TaikoEngineValidatorBuilder::default().build(ctx).await
     }
 }
 
@@ -263,8 +263,8 @@ where
             .node_types()
             .pool(EthereumPoolBuilder::default())
             .executor(TaikoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::new(TaikoPayloadBuilderBuilder::default()))
-            .network(TaikoNetworkBuilder::default())
+            .payload(BasicPayloadServiceBuilder::new(TaikoPayloadBuilderBuilder))
+            .network(TaikoNetworkBuilder)
             .consensus(TaikoConsensusBuilder::default())
     }
 

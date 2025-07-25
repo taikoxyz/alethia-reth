@@ -22,7 +22,7 @@ pub struct TaikoEthApiBuilder(EthereumEthApiBuilder);
 impl TaikoEthApiBuilder {
     /// Creates a new instance of `TaikoEthApiBuilder`.
     pub fn new() -> Self {
-        Self(EthereumEthApiBuilder::default())
+        Self(EthereumEthApiBuilder)
     }
 }
 

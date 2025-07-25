@@ -25,7 +25,7 @@ fn main() {
         async move |builder, ress_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
             let NodeHandle { node, node_exit_future } = builder
-                .node(TaikoNode::default())
+                .node(TaikoNode)
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
 

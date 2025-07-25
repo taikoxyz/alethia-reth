@@ -126,6 +126,6 @@ mod test {
             (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(2)),
         ];
         let forks = extend_with_shared_hardforks(extra_forks.clone());
-        assert_eq!(forks.len() > extra_forks.len(), true);
+        assert!(forks.len() > extra_forks.len());
     }
 }

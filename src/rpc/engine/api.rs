@@ -102,7 +102,7 @@ where
 {
     /// Creates a new execution payload with the given execution data.
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
-        self.inner.new_payload_v2(payload).await.map_err(|e| EngineApiError::from(e).into())
+        self.inner.new_payload_v2(payload).await.map_err(|e| e.into())
     }
 
     /// Updates the fork choice with the given state and payload attributes.
@@ -122,7 +122,7 @@ where
             let built_payload = Retry::spawn(
                 ExponentialBackoff::from_millis(50)
                     .max_delay(Duration::from_secs(12))
-                    .take(3 as usize),
+                    .take(3_usize),
                 || async {
                     match self
                         .payload_store
@@ -171,7 +171,7 @@ where
         &self,
         payload_id: PayloadId,
     ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
-        self.inner.get_payload_v2(payload_id).await.map_err(|e| EngineApiError::from(e).into())
+        self.inner.get_payload_v2(payload_id).await.map_err(|e| e.into())
     }
 }
 

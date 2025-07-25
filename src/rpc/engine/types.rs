@@ -142,24 +142,24 @@ impl From<ExecutionPayloadV1> for TaikoExecutionPayloadV1 {
     }
 }
 
-impl Into<ExecutionPayloadV1> for TaikoExecutionPayloadV1 {
+impl From<TaikoExecutionPayloadV1> for ExecutionPayloadV1 {
     // Converts a `TaikoExecutionPayloadV1` into an `ExecutionPayloadV1`.
-    fn into(self) -> ExecutionPayloadV1 {
+    fn from(val: TaikoExecutionPayloadV1) -> Self {
         ExecutionPayloadV1 {
-            parent_hash: self.parent_hash,
-            fee_recipient: self.fee_recipient,
-            state_root: self.state_root,
-            receipts_root: self.receipts_root,
-            logs_bloom: self.logs_bloom,
-            prev_randao: self.prev_randao,
-            block_number: self.block_number,
-            gas_limit: self.gas_limit,
-            gas_used: self.gas_used,
-            timestamp: self.timestamp,
-            extra_data: self.extra_data,
-            base_fee_per_gas: self.base_fee_per_gas,
-            block_hash: self.block_hash,
-            transactions: self.transactions.unwrap_or_default(),
+            parent_hash: val.parent_hash,
+            fee_recipient: val.fee_recipient,
+            state_root: val.state_root,
+            receipts_root: val.receipts_root,
+            logs_bloom: val.logs_bloom,
+            prev_randao: val.prev_randao,
+            block_number: val.block_number,
+            gas_limit: val.gas_limit,
+            gas_used: val.gas_used,
+            timestamp: val.timestamp,
+            extra_data: val.extra_data,
+            base_fee_per_gas: val.base_fee_per_gas,
+            block_hash: val.block_hash,
+            transactions: val.transactions.unwrap_or_default(),
         }
     }
 }

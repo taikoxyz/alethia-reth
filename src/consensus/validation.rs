@@ -177,7 +177,7 @@ mod test {
         assert!(
             validate_against_parent_eip4936_base_fee(
                 &header,
-                &parent_header,
+                parent_header,
                 &Arc::new(TaikoChainSpec::default())
             )
             .is_err()
@@ -187,7 +187,7 @@ mod test {
         assert!(
             validate_against_parent_eip4936_base_fee(
                 &header,
-                &parent_header,
+                parent_header,
                 &Arc::new(TaikoChainSpec::default())
             )
             .is_ok()

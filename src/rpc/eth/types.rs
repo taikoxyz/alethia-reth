@@ -526,7 +526,7 @@ where
             base_fee_per_gas: parent
                 .base_fee_per_gas()
                 .ok_or(EthApiError::InvalidParams("invalid parent base_fee_per_gas".to_string()))?,
-            extra_data: parent.extra_data().clone().into(),
+            extra_data: parent.extra_data().clone(),
         })
     }
 }

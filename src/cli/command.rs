@@ -27,9 +27,7 @@ impl<C: ChainSpecParser> TaikoNodeCommand<C> {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        NodeCommand::<C, NoArgs>::try_parse_from(itr)
-            .map(|inner| Self(Box::new(inner)))
-            .map_err(|e| e.into())
+        NodeCommand::<C, NoArgs>::try_parse_from(itr).map(|inner| Self(Box::new(inner)))
     }
 }
 

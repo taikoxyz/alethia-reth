@@ -61,6 +61,6 @@ mod test {
             TaikoChainSpecParser::parse("devnet").expect("Failed to parse devnet chain spec");
         assert_eq!(devnet.inner.chain, 167001);
 
-        assert_eq!(chain_value_parser("supported_network").is_err(), true);
+        assert!(chain_value_parser("supported_network").is_err());
     }
 }

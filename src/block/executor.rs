@@ -227,7 +227,7 @@ fn encode_anchor_system_call_data(basefee_share_pctg: u64, caller_nonce: u64) ->
 // Decode the extra data from the post Ontake block to extract the base fee share percentage.
 fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
-    value.as_limbs()[0] as u64
+    value.as_limbs()[0]
 }
 
 #[cfg(test)]

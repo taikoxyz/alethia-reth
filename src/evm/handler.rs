@@ -222,7 +222,7 @@ pub fn validate_against_state_and_deduct_caller<
         is_nonce_check_disabled,
     )?;
 
-    let is_anchor_transaction = extra_execution_ctx.as_ref().map_or(false, |ctx| {
+    let is_anchor_transaction = extra_execution_ctx.as_ref().is_some_and(|ctx| {
         ctx.anchor_caller_address() == tx.caller() && ctx.anchor_caller_nonce() == tx.nonce()
     });
 
@@ -333,7 +333,7 @@ pub fn get_treasury_address(chain_id: u64) -> Address {
     let padding_len = total_len - prefix.len() - suffix.len();
     let padding = "0".repeat(padding_len);
 
-    let hex_str = format!("0x{}{}{}", prefix, padding, suffix);
+    let hex_str = format!("0x{prefix}{padding}{suffix}");
 
     Address::from_str(&hex_str).unwrap()
 }

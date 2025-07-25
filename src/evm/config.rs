@@ -35,7 +35,7 @@ pub struct TaikoEvmConfig {
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::default())
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
@@ -165,7 +165,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
-            extra_data: ctx.extra_data.into(),
+            extra_data: ctx.extra_data,
         }
     }
 

@@ -170,10 +170,10 @@ mod test {
     use alloy_primitives::{U64, U256};
     use reth_revm::{
         Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, db::InMemoryDB,
-        state::AccountInfo,
+        interpreter::Host, state::AccountInfo,
     };
 
-    use crate::evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
+    use crate::evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
 
     use super::*;
 
@@ -218,7 +218,7 @@ mod test {
                 .gas_limit(1_000_000)
                 .gas_price(1)
                 .caller(golden_touch_address)
-                .to(golden_touch_address)
+                .to(get_treasury_address(taiko_evm.ctx_ref().chain_id().to()))
                 .nonce(nonce + 1)
                 .build()
                 .unwrap(),

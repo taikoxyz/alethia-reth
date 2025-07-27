@@ -34,7 +34,6 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/tatsujinlabs/taiko-reth:nightly
 
       # Push 'vX.Y.Z' and 'latest' tags on release publish
@@ -44,7 +43,6 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/tatsujinlabs/taiko-reth:${{ github.ref_name }}
             ghcr.io/tatsujinlabs/taiko-reth:latest

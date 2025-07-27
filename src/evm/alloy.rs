@@ -128,15 +128,15 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
-            contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
+            && contract == get_treasury_address(self.chain_id())
         {
-            let (basefee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
+            let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
-            debug!(target: "taiko_evm", "Anchor system call detected: basefee_share_pctg = {}, caller_nonce = {}", basefee_share_pctg, caller_nonce);
+            debug!(target: "taiko_evm", "Anchor system call detected: base_fee_share_pctg = {}, caller_nonce = {}", base_fee_share_pctg, caller_nonce);
 
             // Set the Anchor transaction information for the later EVM execution.
-            self.inner.with_extra_execution_context(basefee_share_pctg, caller, caller_nonce);
+            self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
 
             // Return a dummy execution result and state to avoid further processing.
             return Ok(ResultAndState {
@@ -258,7 +258,7 @@ pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
     if bytes.len() != 16 {
         return None;
     }
-    let basefee_share_pctg = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
+    let base_fee_share_pctg = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
     let caller_nonce = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
-    Some((basefee_share_pctg, caller_nonce))
+    Some((base_fee_share_pctg, caller_nonce))
 }

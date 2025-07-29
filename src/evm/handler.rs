@@ -158,16 +158,16 @@ fn reward_beneficiary<CTX: ContextTr>(
 
         // If the transaction is not an anchor transaction, we share the base fee income with the
         // coinbase and treasury.
-        if ctx.anchor_caller_address() != tx_caller
-            || ctx.anchor_caller_nonce() != tx_nonce
-            || context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
+        if ctx.anchor_caller_address() != tx_caller ||
+            ctx.anchor_caller_nonce() != tx_nonce ||
+            context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
         {
             // Total base fee income.
             let total_fee = U256::from(basefee * (gas.spent() - gas.refunded() as u64) as u128);
 
             // Share the base fee income with the coinbase and treasury.
-            let fee_coinbase = total_fee.saturating_mul(U256::from(ctx.base_fee_share_pctg()))
-                / U256::from(100u64);
+            let fee_coinbase = total_fee.saturating_mul(U256::from(ctx.base_fee_share_pctg())) /
+                U256::from(100u64);
             let fee_treasury = total_fee.saturating_sub(fee_coinbase);
 
             context.journal_mut().balance_incr(beneficiary, fee_coinbase)?;
@@ -228,9 +228,9 @@ pub fn validate_against_state_and_deduct_caller<
     )?;
 
     let is_anchor_transaction = extra_execution_ctx.as_ref().is_some_and(|ctx| {
-        ctx.anchor_caller_address() == tx.caller()
-            && ctx.anchor_caller_nonce() == tx.nonce()
-            && tx.kind().to() == Some(&get_treasury_address(chain_id))
+        ctx.anchor_caller_address() == tx.caller() &&
+            ctx.anchor_caller_nonce() == tx.nonce() &&
+            tx.kind().to() == Some(&get_treasury_address(chain_id))
     });
 
     // If the transaction is an anchor transaction, we disable the balance check.
@@ -299,9 +299,9 @@ pub fn reimburse_caller<CTX: ContextTr>(
     let (tx, _journal) = context.tx_journal_mut();
 
     if let Some(ctx) = extra_execution_ctx {
-        if ctx.anchor_caller_address() == tx.caller()
-            && ctx.anchor_caller_nonce() == tx.nonce()
-            && tx.kind().to() == Some(&get_treasury_address(chain_id))
+        if ctx.anchor_caller_address() == tx.caller() &&
+            ctx.anchor_caller_nonce() == tx.nonce() &&
+            tx.kind().to() == Some(&get_treasury_address(chain_id))
         {
             debug!(
                 target: "taiko_evm",

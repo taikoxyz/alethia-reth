@@ -105,6 +105,24 @@ where
         self.cfg.chain_id
     }
 
+    /// Provides immutable references to the database, inspector and precompiles.
+    fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
+        (
+            &self.inner.inner.ctx.journaled_state.database,
+            &self.inner.inner.inspector,
+            &self.inner.inner.precompiles,
+        )
+    }
+
+    /// Provides mutable references to the database, inspector and precompiles.
+    fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
+        (
+            &mut self.inner.inner.ctx.journaled_state.database,
+            &mut self.inner.inner.inspector,
+            &mut self.inner.inner.precompiles,
+        )
+    }
+
     /// Executes a transaction and returns the outcome.
     fn transact_raw(
         &mut self,
@@ -128,8 +146,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
-            && contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+            contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;

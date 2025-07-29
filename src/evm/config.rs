@@ -14,6 +14,7 @@ use reth::{
 use reth_ethereum::EthPrimitives;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
 use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
+use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 
 use crate::{
     block::{
@@ -191,4 +192,18 @@ pub struct TaikoNextBlockEnvAttributes {
     pub extra_data: Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
+}
+
+impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
+    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
+    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
+        Self {
+            timestamp: parent.timestamp.saturating_add(12),
+            suggested_fee_recipient: parent.beneficiary,
+            prev_randao: B256::random(),
+            gas_limit: parent.gas_limit,
+            extra_data: parent.extra_data.clone(),
+            base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
+        }
+    }
 }

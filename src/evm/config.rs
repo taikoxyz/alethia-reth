@@ -2,9 +2,11 @@ use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
 use alloy_evm::Database;
+use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
+    chainspec::EthChainSpec,
     primitives::{BlockTy, SealedBlock, SealedHeader},
     revm::{
         context::{BlockEnv, CfgEnv},
@@ -12,8 +14,9 @@ use reth::{
     },
 };
 use reth_ethereum::EthPrimitives;
+use reth_ethereum_forks::Hardforks;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
-use reth_evm_ethereum::{RethReceiptBuilder, revm_spec, revm_spec_by_timestamp_and_block_number};
+use reth_evm_ethereum::RethReceiptBuilder;
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 
 use crate::{
@@ -21,8 +24,8 @@ use crate::{
         assembler::TaikoBlockAssembler,
         factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
     },
-    chainspec::spec::TaikoChainSpec,
-    evm::factory::TaikoEvmFactory,
+    chainspec::{hardfork::TaikoHardfork, spec::TaikoChainSpec},
+    evm::{factory::TaikoEvmFactory, spec::TaikoSpecId},
 };
 
 /// A complete configuration of EVM for Taiko network.
@@ -117,7 +120,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
         let cfg = CfgEnv::new().with_chain_id(self.chain_spec().inner.chain().id()).with_spec(
-            revm_spec_by_timestamp_and_block_number(
+            taiko_spec_by_timestamp_and_block_number(
                 &self.chain_spec().inner,
                 attributes.timestamp,
                 parent.number + 1,
@@ -205,5 +208,43 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
             extra_data: parent.extra_data.clone(),
             base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
         }
+    }
+}
+
+/// Map the latest active hardfork at the given header to a [`TaikoSpecId`].
+pub fn revm_spec<C>(chain_spec: &C, header: &Header) -> TaikoSpecId
+where
+    C: EthereumHardforks + EthChainSpec + Hardforks,
+{
+    taiko_spec_by_timestamp_and_block_number(chain_spec, header.timestamp, header.number)
+}
+
+/// Map the latest active hardfork at the given timestamp or block number to a [`TaikoSpecId`].
+pub fn taiko_spec_by_timestamp_and_block_number<C>(
+    chain_spec: &C,
+    timestamp: u64,
+    block_number: u64,
+) -> TaikoSpecId
+where
+    C: EthereumHardforks + EthChainSpec + Hardforks,
+{
+    if chain_spec.fork(TaikoHardfork::Ontake).active_at_timestamp_or_number(timestamp, block_number)
+    {
+        TaikoSpecId::ONTAKE
+    } else if chain_spec
+        .fork(TaikoHardfork::Pacaya)
+        .active_at_timestamp_or_number(timestamp, block_number)
+    {
+        TaikoSpecId::PACAYA
+    } else if chain_spec
+        .fork(TaikoHardfork::Shasta)
+        .active_at_timestamp_or_number(timestamp, block_number)
+    {
+        TaikoSpecId::SHASTA
+    } else {
+        panic!(
+            "invalid hardfork chainspec: expected at least one hardfork, got {}",
+            chain_spec.display_hardforks()
+        )
     }
 }

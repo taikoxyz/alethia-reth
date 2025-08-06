@@ -3,7 +3,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use alloy_evm::{Database, Evm, EvmEnv, eth::EthEvmContext};
+use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::hex;
 use reth::revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
@@ -11,45 +11,45 @@ use reth::revm::{
         BlockEnv, TxEnv,
         result::{EVMError, ExecutionResult, HaltReason, Output, ResultAndState, SuccessReason},
     },
-    primitives::{Address, Bytes, TxKind, U256, hardfork::SpecId},
+    primitives::{Address, Bytes, TxKind, U256},
 };
-use reth_revm::{handler::PrecompileProvider, interpreter::InterpreterResult};
+use reth_revm::{context::CfgEnv, handler::PrecompileProvider, interpreter::InterpreterResult};
 use tracing::debug;
 
-use crate::evm::{evm::TaikoEvm, handler::get_treasury_address};
+use crate::evm::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};
 
 pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
-    inner: TaikoEvm<EthEvmContext<DB>, INSP, P>,
+    inner: TaikoEvm<TaikoEvmContext<DB>, INSP, P>,
     inspect: bool,
 }
 
 impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
-    pub const fn new(evm: TaikoEvm<EthEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
+    pub const fn new(evm: TaikoEvm<TaikoEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
         Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
-    pub fn into_inner(self) -> TaikoEvm<EthEvmContext<DB>, INSP, P> {
+    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, INSP, P> {
         self.inner
     }
 
     /// Provides a reference to the EVM context.
-    pub const fn ctx(&self) -> &EthEvmContext<DB> {
+    pub const fn ctx(&self) -> &TaikoEvmContext<DB> {
         &self.inner.inner.ctx
     }
 
     /// Provides a mutable reference to the EVM context.
-    pub fn ctx_mut(&mut self) -> &mut EthEvmContext<DB> {
+    pub fn ctx_mut(&mut self) -> &mut TaikoEvmContext<DB> {
         &mut self.inner.inner.ctx
     }
 }
 
 impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
-    type Target = EthEvmContext<DB>;
+    type Target = TaikoEvmContext<DB>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -64,6 +64,8 @@ impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
     }
 }
 
+pub type TaikoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
+
 /// An instance of an ethereum virtual machine.
 ///
 /// An EVM is commonly initialized with the corresponding block context and state and it's only
@@ -73,8 +75,8 @@ impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
 impl<DB, I, P> Evm for TaikoEvmWrapper<DB, I, P>
 where
     DB: Database,
-    I: Inspector<EthEvmContext<DB>>,
-    P: PrecompileProvider<EthEvmContext<DB>, Output = InterpreterResult>,
+    I: Inspector<TaikoEvmContext<DB>>,
+    P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
 {
     /// Database type held by the EVM.
     type DB = DB;
@@ -89,7 +91,7 @@ where
     type HaltReason = HaltReason;
     /// Identifier of the EVM specification. EVM is expected to use this identifier to determine
     /// which features are enabled.
-    type Spec = SpecId;
+    type Spec = TaikoSpecId;
     /// Precompiles used by the EVM.
     type Precompiles = P;
     /// Evm inspector.

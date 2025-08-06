@@ -1,4 +1,4 @@
-use alloy_evm::{Database, EvmEnv, EvmFactory, eth::EthEvmContext};
+use alloy_evm::{Database, EvmEnv, EvmFactory};
 use reth::revm::{
     Context, Inspector, MainBuilder, MainContext,
     context::{
@@ -7,12 +7,15 @@ use reth::revm::{
     },
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
-    primitives::hardfork::SpecId,
 };
 use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::precompile::{PrecompileSpecId, Precompiles};
 
-use crate::evm::{alloy::TaikoEvmWrapper, evm::TaikoEvm};
+use crate::evm::{
+    alloy::{TaikoEvmContext, TaikoEvmWrapper},
+    evm::TaikoEvm,
+    spec::TaikoSpecId,
+};
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
 #[derive(Default, Debug, Clone, Copy)]
@@ -20,7 +23,7 @@ pub struct TaikoEvmFactory;
 
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.
-    type Evm<DB: Database, I: Inspector<EthEvmContext<DB>, EthInterpreter>> =
+    type Evm<DB: Database, I: Inspector<TaikoEvmContext<DB>, EthInterpreter>> =
         TaikoEvmWrapper<DB, I, Self::Precompiles>;
     /// Transaction environment.
     type Tx = TxEnv;
@@ -29,9 +32,9 @@ impl EvmFactory for TaikoEvmFactory {
     /// Halt reason.
     type HaltReason = HaltReason;
     /// The EVM context for inspectors.
-    type Context<DB: Database> = EthEvmContext<DB>;
+    type Context<DB: Database> = TaikoEvmContext<DB>;
     /// The EVM specification identifier
-    type Spec = SpecId;
+    type Spec = TaikoSpecId;
     /// Precompiles used by the EVM.
     type Precompiles = PrecompilesMap;
 
@@ -48,7 +51,7 @@ impl EvmFactory for TaikoEvmFactory {
             .with_db(db)
             .build_mainnet_with_inspector(NoOpInspector {})
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id),
+                PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
@@ -68,7 +71,7 @@ impl EvmFactory for TaikoEvmFactory {
             .with_db(db)
             .build_mainnet_with_inspector(NoOpInspector {})
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id),
+                PrecompileSpecId::from_spec_id(spec_id.into()),
             )))
             .with_inspector(inspector);
 

@@ -44,8 +44,6 @@ use crate::{
     rpc::eth::error::TaikoApiError,
 };
 
-const COMPRESSION_ESTIMATION_SAFETY_COEF: u64 = 80;
-
 /// A pre-built transaction list that contains the mempool content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -232,9 +230,6 @@ where
             .into());
         }
 
-        let safe_max_bytes_per_tx_list =
-            max_bytes_per_tx_list * COMPRESSION_ESTIMATION_SAFETY_COEF / 100;
-
         // Fetch the parent block and its state, for building the prebuilt transaction lists later.
         let parent_block = self
             .provider
@@ -280,7 +275,7 @@ where
                 blob_fee: None,
             });
 
-        info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?safe_max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
+        info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
         // Start iterating over the best transactions in the pool.
         while let Some(pool_tx) = best_txs.next() {
@@ -294,8 +289,8 @@ where
                 }
             }
             // ensure we only pick the transactions that meet the minimum tip.
-            if pool_tx.effective_tip_per_gas(base_fee).is_none() ||
-                pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
+            if pool_tx.effective_tip_per_gas(base_fee).is_none()
+                || pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
             {
                 // skip transactions that do not meet the minimum tip requirement
                 trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
@@ -303,8 +298,8 @@ where
                 continue;
             }
             // ensure we still have capacity for this transaction
-            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit() >
-                block_max_gas_limit
+            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit()
+                > block_max_gas_limit
             {
                 // we can't fit this transaction into the block, so we need to mark it as invalid
                 // which also removes all dependent transaction from the iterator before we can
@@ -327,8 +322,8 @@ where
             let tx = pool_tx.to_consensus();
             let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
-            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size >
-                safe_max_bytes_per_tx_list
+            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size
+                > max_bytes_per_tx_list
             {
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     // NOTE: we simply mark the transaction as underpriced if it is not fitting into

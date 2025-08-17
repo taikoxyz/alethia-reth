@@ -9613,6 +9613,7 @@ dependencies = [
  "alloy-rpc-types-txpool",
  "alloy-serde",
  "alloy-signer",
+ "alloy-sol-types",
  "alloy-tx-macros",
  "arbitrary",
  "async-trait",

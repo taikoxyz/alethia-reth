@@ -24,12 +24,17 @@ use crate::{
     evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS,
 };
 
-/// anchor(bytes32,bytes32,uint64,uint32)
-pub const ANCHOR_V1_SELECTOR: &[u8] = &[0xda, 0x69, 0xd3, 0xdb];
-/// anchorV2(uint64,bytes32,uint32,(uint8,uint8,uint32,uint64,uint32))
-pub const ANCHOR_V2_SELECTOR: &[u8] = &[0xfd, 0x85, 0xeb, 0x2d];
-/// anchorV3(uint64,bytes32,uint32,(uint8,uint8,uint32,uint64,uint32),bytes32[])
-pub const ANCHOR_V3_SELECTOR: &[u8] = &[0x48, 0x08, 0x0a, 0x45];
+use alloy_sol_types::{SolCall, sol};
+
+sol! {
+    function anchor(bytes32, bytes32, uint64, uint32) external;
+    function anchorV2(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32)) external;
+    function anchorV3(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32), bytes32[]) external;
+}
+
+pub const ANCHOR_V1_SELECTOR: &[u8; 4] = &anchorCall::SELECTOR;
+pub const ANCHOR_V2_SELECTOR: &[u8; 4] = &anchorV2Call::SELECTOR;
+pub const ANCHOR_V3_SELECTOR: &[u8; 4] = &anchorV3Call::SELECTOR;
 
 /// The gas limit for the anchor transactions before Pacaya hardfork.
 pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;

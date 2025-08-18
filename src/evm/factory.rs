@@ -1,5 +1,6 @@
 use alloy_evm::{Database, EvmEnv, EvmFactory};
-use reth::revm::{
+use reth_evm::precompiles::PrecompilesMap;
+use reth_revm::{
     Context, Inspector, MainBuilder, MainContext,
     context::{
         TxEnv,
@@ -7,9 +8,8 @@ use reth::revm::{
     },
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
+    precompile::{PrecompileSpecId, Precompiles},
 };
-use reth_evm::precompiles::PrecompilesMap;
-use reth_revm::precompile::{PrecompileSpecId, Precompiles};
 
 use crate::evm::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},

@@ -5,14 +5,13 @@ use alloy_evm::Database;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    chainspec::EthChainSpec,
-    primitives::{BlockTy, SealedBlock, SealedHeader},
-    revm::{
-        context::{BlockEnv, CfgEnv},
-        primitives::{Address, B256, U256},
-    },
+use reth_chainspec::EthChainSpec;
+use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
+use reth_revm::{
+    context::{BlockEnv, CfgEnv},
+    primitives::{Address, B256, U256},
 };
+
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};

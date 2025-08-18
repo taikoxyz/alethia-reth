@@ -9,15 +9,12 @@ use alloy_evm::{
 };
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    builder::components::ExecutorBuilder,
-    primitives::Log,
-    revm::{Inspector, State},
-};
 use reth_ethereum::EthPrimitives;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{FullNodeTypes, NodeTypes};
-use reth_node_builder::BuilderContext;
+use reth_node_builder::{BuilderContext, components::ExecutorBuilder};
+use reth_primitives::Log;
+use reth_revm::{Inspector, State};
 
 use crate::{
     block::executor::TaikoBlockExecutor,

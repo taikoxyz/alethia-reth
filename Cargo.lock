@@ -1773,9 +1773,9 @@ dependencies = [
 
 [[package]]
 name = "bytemuck_derive"
-version = "1.9.3"
+version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ecc273b49b3205b83d648f0690daa588925572cc5063745bfe547fe7ec8e1a1"
+checksum = "4f154e572231cb6ba2bd1176980827e3d5dc04cc183a75dea38109fbdd672d29"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5840,9 +5840,9 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
 name = "regress"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78ef7fa9ed0256d64a688a3747d0fef7a88851c18a5e1d57f115f38ec2e09366"
+checksum = "145bb27393fe455dd64d6cbc8d059adfa392590a45eadf079c01b11857e7b010"
 dependencies = [
  "hashbrown 0.15.4",
  "memchr",
@@ -6717,18 +6717,9 @@ name = "reth-ethereum"
 version = "1.6.0"
 source = "git+https://github.com/paradigmxyz/reth?tag=v1.6.0#d8451e54e7267f9f1634118d6d279b2216f7e2bb"
 dependencies = [
- "alloy-rpc-types-engine",
- "alloy-rpc-types-eth",
  "reth-chainspec",
- "reth-consensus",
- "reth-consensus-common",
- "reth-ethereum-consensus",
  "reth-ethereum-primitives",
- "reth-evm",
- "reth-evm-ethereum",
  "reth-primitives-traits",
- "reth-revm",
- "reth-storage-api",
 ]
 
 [[package]]
@@ -6886,7 +6877,6 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
- "derive_more",
  "reth-chainspec",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",
@@ -9632,10 +9622,13 @@ dependencies = [
  "parking_lot",
  "reth",
  "reth-basic-payload-builder",
+ "reth-chainspec",
  "reth-cli",
  "reth-cli-commands",
  "reth-cli-util",
  "reth-codecs",
+ "reth-consensus",
+ "reth-consensus-common",
  "reth-db",
  "reth-db-api",
  "reth-engine-local",
@@ -9652,6 +9645,7 @@ dependencies = [
  "reth-node-ethereum",
  "reth-payload-primitives",
  "reth-payload-validator",
+ "reth-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",

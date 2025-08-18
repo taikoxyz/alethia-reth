@@ -1,22 +1,20 @@
 use std::str::FromStr;
 
-use reth::revm::{
+use reth_revm::{
     Database, Inspector,
     context::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{HaltReason, InvalidTransaction},
     },
     handler::{
-        EvmTr, EvmTrError, FrameResult, Handler, PrecompileProvider,
+        EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler, PrecompileProvider,
         instructions::InstructionProvider, pre_execution::validate_account_nonce_and_code,
     },
     inspector::{InspectorEvmTr, InspectorHandler},
-    interpreter::{Gas, InterpreterResult, interpreter::EthInterpreter},
+    interpreter::{
+        Gas, InterpreterResult, interpreter::EthInterpreter, interpreter_action::FrameInit,
+    },
     primitives::{Address, U256},
-};
-use reth_revm::{
-    handler::{EthFrame, FrameTr},
-    interpreter::interpreter_action::FrameInit,
     state::EvmState,
 };
 use tracing::debug;

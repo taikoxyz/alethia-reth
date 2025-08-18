@@ -1,8 +1,8 @@
 use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth::revm::primitives::{Address, B256, U256};
 use reth_node_api::PayloadAttributes;
+use reth_revm::primitives::{Address, B256, U256};
 use serde_with::{Bytes, base64::Base64, serde_as};
 
 use crate::db::model::StoredL1Origin;

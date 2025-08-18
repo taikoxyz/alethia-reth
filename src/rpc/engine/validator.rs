@@ -1,6 +1,5 @@
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
-use reth::primitives::RecoveredBlock;
 use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::ConfigureEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -10,6 +9,7 @@ use reth_node_api::{
     PayloadAttributes, PayloadOrAttributes, PayloadTypes, PayloadValidator,
 };
 use reth_node_builder::rpc::EngineValidatorBuilder;
+use reth_primitives::RecoveredBlock;
 use reth_primitives_traits::Block as SealedBlock;
 use std::{convert::Infallible, sync::Arc};
 

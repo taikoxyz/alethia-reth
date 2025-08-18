@@ -7,14 +7,7 @@ use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
-use reth::{
-    primitives::InvalidTransactionError,
-    revm::primitives::Address,
-    transaction_pool::{
-        BestTransactionsAttributes, PoolConsensusTx, PoolTransaction, TransactionPool,
-        error::InvalidPoolTransactionError,
-    },
-};
+
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
@@ -25,10 +18,15 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
+use reth_primitives::InvalidTransactionError;
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
-use reth_revm::{State, database::StateProviderDatabase};
+use reth_revm::{State, database::StateProviderDatabase, primitives::Address};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
+use reth_transaction_pool::{
+    BestTransactionsAttributes, PoolConsensusTx, PoolTransaction, TransactionPool,
+    error::InvalidPoolTransactionError,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
 
@@ -289,8 +287,8 @@ where
                 }
             }
             // ensure we only pick the transactions that meet the minimum tip.
-            if pool_tx.effective_tip_per_gas(base_fee).is_none()
-                || pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
+            if pool_tx.effective_tip_per_gas(base_fee).is_none() ||
+                pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
             {
                 // skip transactions that do not meet the minimum tip requirement
                 trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
@@ -298,8 +296,8 @@ where
                 continue;
             }
             // ensure we still have capacity for this transaction
-            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit()
-                > block_max_gas_limit
+            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit() >
+                block_max_gas_limit
             {
                 // we can't fit this transaction into the block, so we need to mark it as invalid
                 // which also removes all dependent transaction from the iterator before we can
@@ -322,8 +320,8 @@ where
             let tx = pool_tx.to_consensus();
             let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
-            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size
-                > max_bytes_per_tx_list
+            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size >
+                max_bytes_per_tx_list
             {
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     // NOTE: we simply mark the transaction as underpriced if it is not fitting into

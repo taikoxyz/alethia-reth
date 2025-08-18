@@ -6,6 +6,8 @@ use reth::revm::primitives::hardfork::{SpecId, UnknownHardfork};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[allow(non_camel_case_types)]
 pub enum TaikoSpecId {
+    /// Genesis chain spec for the Taiko network (pre-Ontake fork)
+    GENESIS,
     /// Ontake hard fork for the Taiko network
     ONTAKE,
     /// Pacaya hard fork for the Taiko network
@@ -19,7 +21,7 @@ impl TaikoSpecId {
     /// Converts the [`TaikoSpecId`] into a [`SpecId`].
     pub const fn into_eth_spec(self) -> SpecId {
         match self {
-            Self::ONTAKE | Self::PACAYA | Self::SHASTA => SpecId::SHANGHAI,
+            Self::GENESIS | Self::ONTAKE | Self::PACAYA | Self::SHASTA => SpecId::SHANGHAI,
         }
     }
 
@@ -39,6 +41,7 @@ impl FromStr for TaikoSpecId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            name::GENESIS => Ok(TaikoSpecId::GENESIS),
             name::ONTAKE => Ok(TaikoSpecId::ONTAKE),
             name::PACAYA => Ok(TaikoSpecId::PACAYA),
             name::SHASTA => Ok(TaikoSpecId::SHASTA),
@@ -50,6 +53,7 @@ impl FromStr for TaikoSpecId {
 impl From<TaikoSpecId> for &'static str {
     fn from(spec_id: TaikoSpecId) -> Self {
         match spec_id {
+            TaikoSpecId::GENESIS => name::GENESIS,
             TaikoSpecId::ONTAKE => name::ONTAKE,
             TaikoSpecId::PACAYA => name::PACAYA,
             TaikoSpecId::SHASTA => name::SHASTA,
@@ -59,6 +63,7 @@ impl From<TaikoSpecId> for &'static str {
 
 /// String identifiers for Taiko hardforks
 pub mod name {
+    pub const GENESIS: &str = "Genesis";
     pub const ONTAKE: &str = "Ontake";
     pub const PACAYA: &str = "Pacaya";
     pub const SHASTA: &str = "Shasta";
@@ -81,6 +86,7 @@ mod tests {
                 (SpecId::default(), false),
             ],
             vec![
+                (TaikoSpecId::GENESIS, true),
                 (TaikoSpecId::ONTAKE, true),
                 (TaikoSpecId::PACAYA, true),
                 (TaikoSpecId::SHASTA, false),
@@ -100,7 +106,7 @@ mod tests {
                 );
             }
 
-            // Test OP spec compatibility
+            // Test Taiko spec compatibility
             for (other_taiko_spec, expected) in taiko_tests {
                 assert_eq!(
                     taiko_spec.is_enabled_in(other_taiko_spec),

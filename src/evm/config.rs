@@ -93,7 +93,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
-            .with_spec(revm_spec(&self.chain_spec().inner, header));
+            .with_spec(taiko_revm_spec(&self.chain_spec().inner, header));
 
         let block_env = BlockEnv {
             number: U256::from(header.number()),
@@ -212,7 +212,7 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
 }
 
 /// Map the latest active hardfork at the given header to a [`TaikoSpecId`].
-pub fn revm_spec<C>(chain_spec: &C, header: &Header) -> TaikoSpecId
+pub fn taiko_revm_spec<C>(chain_spec: &C, header: &Header) -> TaikoSpecId
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
@@ -228,23 +228,20 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Ontake).active_at_timestamp_or_number(timestamp, block_number)
+    if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp_or_number(timestamp, block_number)
     {
-        TaikoSpecId::ONTAKE
+        TaikoSpecId::SHASTA
     } else if chain_spec
         .fork(TaikoHardfork::Pacaya)
         .active_at_timestamp_or_number(timestamp, block_number)
     {
         TaikoSpecId::PACAYA
     } else if chain_spec
-        .fork(TaikoHardfork::Shasta)
+        .fork(TaikoHardfork::Ontake)
         .active_at_timestamp_or_number(timestamp, block_number)
     {
-        TaikoSpecId::SHASTA
+        TaikoSpecId::ONTAKE
     } else {
-        panic!(
-            "invalid hardfork chainspec: expected at least one hardfork, got {}",
-            chain_spec.display_hardforks()
-        )
+        TaikoSpecId::GENESIS
     }
 }

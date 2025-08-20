@@ -1,8 +1,8 @@
 use alloy_primitives::Bytes;
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_eth::Withdrawals;
-use reth_node_api::PayloadBuilderAttributes;
 use reth_payload_builder::PayloadId;
+use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives::Recovered;
 use reth_revm::primitives::{Address, B256, keccak256};
 

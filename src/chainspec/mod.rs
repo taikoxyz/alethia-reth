@@ -11,6 +11,7 @@ use crate::chainspec::{
 };
 
 pub mod hardfork;
+#[cfg(feature = "node")]
 pub mod parser;
 pub mod spec;
 

@@ -19,9 +19,9 @@ use reth_tracing::FileWorkerGuard;
 use tracing::info;
 
 use crate::{
-    TaikoNode,
     chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
     cli::command::TaikoNodeCommand,
+    node::TaikoNode,
 };
 
 pub mod command;

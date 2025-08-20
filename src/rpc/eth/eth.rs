@@ -1,8 +1,8 @@
 use alloy_primitives::U256;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_db_api::transaction::DbTx;
-use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
+use reth_storage_api::{DBProvider, DatabaseProviderFactory};
 
 use crate::{
     db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},

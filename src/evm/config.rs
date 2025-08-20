@@ -16,6 +16,8 @@ use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
 use reth_evm_ethereum::RethReceiptBuilder;
+
+#[cfg(feature = "rpc")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 
 use crate::{
@@ -196,6 +198,7 @@ pub struct TaikoNextBlockEnvAttributes {
     pub base_fee_per_gas: u64,
 }
 
+#[cfg(feature = "rpc")]
 impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
     fn build_pending_env(parent: &SealedHeader<Header>) -> Self {

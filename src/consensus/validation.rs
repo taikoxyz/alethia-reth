@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
+use alloy_evm::block::BlockExecutionResult;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Address, U256};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
@@ -9,13 +10,11 @@ use reth_consensus_common::validation::{
     validate_header_extra_data, validate_header_gas,
 };
 use reth_ethereum::chainspec::EthChainSpec;
-use reth_node_api::NodePrimitives;
-use reth_node_ethereum::consensus::validate_block_post_execution;
+use reth_ethereum_consensus::validate_block_post_execution;
 use reth_primitives_traits::{
-    Block, BlockBody, BlockHeader, GotExpected, RecoveredBlock, SealedBlock, SealedHeader,
-    SignedTransaction,
+    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedBlock,
+    SealedHeader, SignedTransaction,
 };
-use reth_provider::BlockExecutionResult;
 
 use crate::{
     chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec},
@@ -256,9 +255,8 @@ where
 mod test {
     use alloy_consensus::{Header, constants::MAXIMUM_EXTRA_DATA_SIZE};
     use alloy_primitives::{B64, B256, Bytes, U64, U256};
-    use reth_cli::chainspec::ChainSpecParser;
 
-    use crate::chainspec::parser::TaikoChainSpecParser;
+    use crate::chainspec::TAIKO_MAINNET;
 
     use super::*;
 
@@ -291,7 +289,7 @@ mod test {
 
     #[test]
     fn test_validate_header() {
-        let consensus = TaikoBeaconConsensus::new(TaikoChainSpecParser::parse("mainnet").unwrap());
+        let consensus = TaikoBeaconConsensus::new(TAIKO_MAINNET.clone());
 
         let mut header = Header::default();
         header.difficulty = U256::random().saturating_add(U256::from(1));
@@ -342,7 +340,7 @@ mod test {
 
     #[test]
     fn test_validate_header_against_parent() {
-        let consensus = TaikoBeaconConsensus::new(TaikoChainSpecParser::parse("mainnet").unwrap());
+        let consensus = TaikoBeaconConsensus::new(TAIKO_MAINNET.clone());
 
         let mut parent = Header::default();
         let mut header = parent.clone();

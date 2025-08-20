@@ -2,7 +2,6 @@ use alloy_network::Ethereum;
 use alloy_primitives::Bytes;
 use jsonrpsee::tokio;
 use reth_evm::TxEnvFor;
-use reth_provider::{ProviderHeader, ProviderTx};
 use reth_revm::primitives::{B256, U256};
 use reth_rpc::{
     EthApi,
@@ -27,6 +26,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, error::FromEvmError,
     utils::recover_raw_transaction,
 };
+use reth_storage_api::{ProviderHeader, ProviderTx};
 use reth_tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},

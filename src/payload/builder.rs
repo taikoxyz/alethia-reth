@@ -1,10 +1,9 @@
 use alloy_consensus::Transaction;
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::Bytes;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
-use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_chainspec::ChainSpecProvider;
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
@@ -13,13 +12,9 @@ use reth_evm::{
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{PayloadAttributesBuilder, PayloadBuilderAttributes, PayloadBuilderError};
-use reth_provider::{ChainSpecProvider, StateProviderFactory};
-use reth_revm::{
-    State,
-    database::StateProviderDatabase,
-    primitives::{Address, B256, U256},
-};
+use reth_payload_primitives::{PayloadBuilderAttributes, PayloadBuilderError};
+use reth_revm::{State, database::StateProviderDatabase, primitives::U256};
+use reth_storage_api::StateProviderFactory;
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 
@@ -30,13 +25,10 @@ use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         factory::TaikoEvmFactory,
     },
-    payload::{
-        attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
-        payload::TaikoPayloadBuilderAttributes,
-    },
+    payload::payload::TaikoPayloadBuilderAttributes,
 };
 
-const TAIKO_PACAYA_BLOCK_GAS_LIMIT: u64 = 241_000_000;
+pub const TAIKO_PACAYA_BLOCK_GAS_LIMIT: u64 = 241_000_000;
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,35 +191,4 @@ where
     let payload = EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, None);
 
     Ok(BuildOutcome::Freeze(payload))
-}
-
-/// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder<TaikoChainSpec>`,
-/// to build `TaikoPayloadAttributes` from the local payload attributes builder.
-impl PayloadAttributesBuilder<TaikoPayloadAttributes>
-    for LocalPayloadAttributesBuilder<TaikoChainSpec>
-{
-    /// Return a new payload attribute from the builder.
-    fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
-        TaikoPayloadAttributes {
-            payload_attributes: self.build(timestamp),
-            base_fee_per_gas: U256::ZERO,
-            block_metadata: TaikoBlockMetadata {
-                beneficiary: Address::random(),
-                timestamp: U256::from(timestamp),
-                gas_limit: TAIKO_PACAYA_BLOCK_GAS_LIMIT,
-                mix_hash: B256::random(),
-                tx_list: Bytes::new(),
-                extra_data: Bytes::new(),
-            },
-            l1_origin: RpcL1Origin {
-                block_id: U256::ZERO,
-                l2_block_hash: B256::ZERO,
-                l1_block_hash: None,
-                l1_block_height: None,
-                build_payload_args_id: [0; 8],
-                is_forced_inclusion: false,
-                signature: [0; 65],
-            },
-        }
-    }
 }

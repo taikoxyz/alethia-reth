@@ -9,8 +9,8 @@ use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineCapabilities;
 
 use crate::{
-    payload::attributes::TaikoPayloadAttributes,
-    rpc::engine::{api::TaikoEngineApi, types::TaikoExecutionData},
+    payload::{attributes::TaikoPayloadAttributes, primitives::TaikoExecutionData},
+    rpc::engine::api::TaikoEngineApi,
 };
 
 /// Builder for basic [`EngineApi`] implementation.

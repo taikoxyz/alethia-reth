@@ -8,6 +8,7 @@ license = "MIT"
 [[bin]]
 name = "taiko-reth"
 path = "src/bin/main.rs"
+required-features = ["bin"]
 
 [lib]
 name = "taiko_reth"
@@ -42,53 +43,54 @@ incremental = false
 
 [dependencies]
 # reth
-reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.6.0", default-features = false }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
+reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.6.0", default-features = false, optional = true }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-payload-validator = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-rpc-engine-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-network-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-network = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-network = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = true, optional = true }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-rpc-engine-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.6.0", default-features = false, optional = true }
 
 # alloy
 alloy-eips = { version = "1.0.23", default-features = false }
@@ -118,14 +120,13 @@ op-alloy-flz = { version = "0.13.1", default-features = false }
 revm-database-interface = { version = "7.0.1", default-features = false }
 
 # rpc
-jsonrpsee = "0.25.1"
-jsonrpsee-core = "0.25.1"
-jsonrpsee-server = "0.25.1"
-jsonrpsee-http-client = "0.25.1"
-jsonrpsee-types = "0.25.1"
+jsonrpsee = { version = "0.25.1", default-features = false, optional = true }
+jsonrpsee-core = { version = "0.25.1", default-features = false, optional = true }
+jsonrpsee-server = { version = "0.25.1", default-features = false, optional = true }
+jsonrpsee-http-client = { version = "0.25.1", default-features = false, optional = true }
+jsonrpsee-types = { version = "0.25.1", default-features = false, optional = true }
 
 # misc
-cc = "=1.2.15"
 eyre = "0.6"
 arbitrary = "1.3"
 clap = "4"
@@ -146,7 +147,38 @@ serde_with = { version = "3", default-features = false, features = [
 auto_impl = "1"
 
 [features]
-default = ["serde"]
+default = ["serde", "bin"]
 serde = ["serde/derive"]
 client = []
 arbitrary = ["alloy-consensus/arbitrary"]
+node = [
+  "net",
+  "rpc",
+  "dep:reth-node-api",
+  "dep:reth-node-core",
+  "dep:reth-node-builder",
+  "dep:reth-node-metrics",
+  "dep:reth-node-ethereum",
+  "dep:reth-engine-local",
+  "dep:reth-ethereum-cli",
+  "dep:reth-cli",
+  "dep:reth-cli-commands",
+  "dep:reth-cli-runner",
+  "dep:reth-db",
+]
+net = ["dep:reth-network"]
+rpc = [
+  "dep:reth-rpc",
+  "dep:reth-rpc-api",
+  "dep:reth-rpc-eth-api",
+  "dep:reth-rpc-eth-types",
+  "dep:reth-rpc-engine-api",
+  "dep:reth-rpc-server-types",
+  "dep:jsonrpsee",
+  "dep:jsonrpsee-core",
+  "dep:jsonrpsee-server",
+  "dep:jsonrpsee-http-client",
+  "dep:jsonrpsee-types",
+]
+db = ["dep:reth-codecs", "dep:reth-db-api", "dep:reth-trie-db"]
+bin = ["node", "rpc", "net", "db", "dep:reth"]

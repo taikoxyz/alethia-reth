@@ -182,9 +182,9 @@ where
                 .block_number()
                 .ok_or(ConsensusError::Other("Shasta fork is not activated".to_string()))?;
 
-            // For blocks after Shasta+2, use EIP-4936 dynamic base fee calculation
+            // For blocks after Shasta+1, use EIP-4936 dynamic base fee calculation
             // The first 2 blocks after Shasta use the initial base fee.
-            if header.number() > shasta_fork_block + 2 {
+            if header.number() > shasta_fork_block + 1 {
                 // Get the grandparent block to calculate parent block time.
                 let parent_block_parent_hash = parent.header().parent_hash();
 

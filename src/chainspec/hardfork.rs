@@ -62,14 +62,7 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(538_304)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
-    ]))
-});
-
-/// Taiko Devnet list of hardforks.
-pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
-    ChainHardforks::new(extend_with_shared_hardforks(vec![
-        (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
-        (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -78,6 +71,16 @@ pub static TAIKO_HEKLA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(840_512)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_299_888)),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Never),
+    ]))
+});
+
+/// Taiko Devnet list of hardforks.
+pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
+    ChainHardforks::new(extend_with_shared_hardforks(vec![
+        (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
+        (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Block(0)),
     ]))
 });
 

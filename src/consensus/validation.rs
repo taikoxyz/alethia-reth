@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::{cmp::min, fmt::Debug};
+use std::{cmp::min, fmt::Debug, sync::Arc};
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
 use alloy_eips::eip1559::DEFAULT_ELASTICITY_MULTIPLIER;
@@ -22,9 +21,11 @@ use reth_primitives_traits::{
 };
 use reth_provider::{BlockExecutionResult, BlockReader};
 
-use crate::chainspec::hardfork::TaikoHardfork;
 use crate::{
-    chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec},
+    chainspec::{
+        hardfork::{TaikoHardfork, TaikoHardforks},
+        spec::TaikoChainSpec,
+    },
     evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS,
 };
 
@@ -189,9 +190,8 @@ where
                 let parent_block_parent_hash = parent.header().parent_hash();
 
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
-                let parent_block_time = parent.header().timestamp()
-                    - self
-                        .block_reader
+                let parent_block_time = parent.header().timestamp() -
+                    self.block_reader
                         .block_by_hash(parent_block_parent_hash)
                         .map_err(|_| ConsensusError::ParentUnknown {
                             hash: parent_block_parent_hash,
@@ -213,7 +213,8 @@ where
                 }));
             }
         } else {
-            // For blocks before Shasta, the timestamp must be greater than or equal to the parent's timestamp.
+            // For blocks before Shasta, the timestamp must be greater than or equal to the parent's
+            // timestamp.
             if header.timestamp() < parent.timestamp() {
                 return Err(ConsensusError::TimestampIsInPast {
                     parent_timestamp: parent.timestamp(),
@@ -347,12 +348,12 @@ pub fn calculate_next_block_eip4936_base_fee<H: BlockHeader>(
         // increased base fee.
         core::cmp::Ordering::Greater => {
             // Calculate the increase in base fee based on the formula defined by EIP-4936.
-            parent_base_fee
-                + (core::cmp::max(
+            parent_base_fee +
+                (core::cmp::max(
                     // Ensure a minimum increase of 1.
                     1,
-                    parent_base_fee as u128 * (parent.gas_used() - gas_target_adjusted) as u128
-                        / (gas_target as u128 * 8),
+                    parent_base_fee as u128 * (parent.gas_used() - gas_target_adjusted) as u128 /
+                        (gas_target as u128 * 8),
                 ) as u64)
         }
         // If the gas used in the current block is less than the gas target, calculate a new

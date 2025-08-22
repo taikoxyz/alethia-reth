@@ -18,6 +18,7 @@ use reth_primitives_traits::{
     Block, BlockBody, BlockHeader, GotExpected, RecoveredBlock, SealedHeader, SignedTransaction,
 };
 use reth_provider::BlockExecutionResult;
+use reth_transaction_pool::validate;
 
 use crate::{
     chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec},
@@ -200,13 +201,14 @@ where
     };
 
     // Ensure the input data starts with one of the anchor selectors.
-    if ![ANCHOR_V1_SELECTOR, ANCHOR_V2_SELECTOR, ANCHOR_V3_SELECTOR]
-        .iter()
-        .any(|&selector| anchor_transaction.input().starts_with(selector))
-    {
-        return Err(ConsensusError::Other(
-            "First transaction does not have a valid anchor selector".into(),
-        ));
+    if chain_spec.is_shasta_active_at_block(block.number()) {
+        validate_input_selector(anchor_transaction.input(), UPDATE_STATE_SELECTOR)?;
+    } else if chain_spec.is_pacaya_active_at_block(block.number()) {
+        validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;
+    } else if chain_spec.is_ontake_active_at_block(block.number()) {
+        validate_input_selector(anchor_transaction.input(), ANCHOR_V2_SELECTOR)?;
+    } else {
+        validate_input_selector(anchor_transaction.input(), ANCHOR_V1_SELECTOR)?;
     }
 
     // Ensure the value is zero.
@@ -256,12 +258,27 @@ where
     Ok(())
 }
 
+// Validates the transaction input data against the expected selector.
+fn validate_input_selector(
+    input: &[u8],
+    expected_selector: &[u8; 4],
+) -> Result<(), ConsensusError> {
+    if !input.starts_with(expected_selector) {
+        return Err(ConsensusError::Other(format!(
+            "Anchor transaction input data does not match the expected selector: {:?}",
+            expected_selector
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use alloy_consensus::{Header, constants::MAXIMUM_EXTRA_DATA_SIZE};
     use alloy_primitives::{B64, B256, Bytes, U64, U256};
     use reth_cli::chainspec::ChainSpecParser;
 
+    use super::validate_input_selector;
     use crate::chainspec::parser::TaikoChainSpecParser;
 
     use super::*;
@@ -291,6 +308,22 @@ mod test {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn test_validate_input_selector() {
+        // Valid selector
+        let input = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc];
+        let expected_selector = [0x12, 0x34, 0x56, 0x78];
+        assert!(validate_input_selector(&input, &expected_selector).is_ok());
+
+        // Invalid selector
+        let wrong_selector = [0x11, 0x22, 0x33, 0x44];
+        assert!(validate_input_selector(&input, &wrong_selector).is_err());
+
+        // Empty input
+        let empty_input = [];
+        assert!(validate_input_selector(&empty_input, &expected_selector).is_err());
     }
 
     #[test]

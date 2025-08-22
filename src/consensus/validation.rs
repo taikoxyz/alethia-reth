@@ -358,7 +358,7 @@ pub fn calculate_next_block_eip4936_base_fee<H: BlockHeader>(
         // If the gas used in the current block is less than the gas target, calculate a new
         // decreased base fee.
         core::cmp::Ordering::Less => {
-            // Calculate the decrease in base fee based on the formula defined by EIP-1559.
+            // Calculate the decrease in base fee based on the formula defined by EIP-4936.
             // Use saturating_sub to avoid underflow if gas_target_adjusted < parent.gas_used()
             let delta = gas_target_adjusted.saturating_sub(parent.gas_used());
             parent_base_fee.saturating_sub(

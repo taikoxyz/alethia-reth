@@ -322,8 +322,7 @@ fn validate_input_selector(
 ) -> Result<(), ConsensusError> {
     if !input.starts_with(expected_selector) {
         return Err(ConsensusError::Other(format!(
-            "Anchor transaction input data does not match the expected selector: {:?}",
-            expected_selector
+            "Anchor transaction input data does not match the expected selector: {expected_selector:?}"
         )));
     }
     Ok(())
@@ -335,7 +334,7 @@ pub fn calculate_next_block_eip4936_base_fee<H: BlockHeader>(
     parent_block_time: u64,
 ) -> u64 {
     // Calculate the target gas by dividing the gas limit by the elasticity multiplier.
-    let gas_target = parent.gas_limit() / DEFAULT_ELASTICITY_MULTIPLIER as u64;
+    let gas_target = parent.gas_limit() / DEFAULT_ELASTICITY_MULTIPLIER;
     let gas_target_adjusted =
         min(gas_target * parent_block_time / 12, parent.gas_limit() * 95 / 100);
     let parent_base_fee = parent.base_fee_per_gas().unwrap();

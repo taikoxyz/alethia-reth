@@ -25,41 +25,40 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     parent: &H,
     parent_block_time: u64,
 ) -> u64 {
-    // Calculate the target gas by dividing the gas limit by the elasticity multiplier.
-    let gas_target = parent.gas_limit() / ELASTICITY_MULTIPLIER;
-    let gas_target_adjusted = min(
-        gas_target * parent_block_time / BLOCK_TIME_TARGET,
-        parent.gas_limit() * MAX_GAS_TARGET_PERCENT / 100,
+    let parent_gas_limit = parent.gas_limit();
+    let parent_base_gas_target = parent_gas_limit / ELASTICITY_MULTIPLIER;
+    let parent_adjusted_gas_target = min(
+        parent_base_gas_target * parent_block_time / BLOCK_TIME_TARGET,
+        parent_gas_limit * MAX_GAS_TARGET_PERCENT / 100,
     );
-    let parent_base_fee = parent.base_fee_per_gas().unwrap();
+    let parent_base_fee_per_gas =
+        parent.base_fee_per_gas().expect("parent block must have base fee");
+    let parent_gas_used = parent.gas_used();
 
-    match parent.gas_used().cmp(&gas_target) {
-        // If the gas used in the current block is equal to the gas target, the base fee remains the
-        // same (no increase).
-        core::cmp::Ordering::Equal => parent_base_fee,
-        // If the gas used in the current block is greater than the gas target, calculate a new
-        // increased base fee.
+    // Compare with adjusted gas target (not the base target)
+    match parent_gas_used.cmp(&parent_adjusted_gas_target) {
+        // If gas used equals adjusted target, base fee remains the same
+        core::cmp::Ordering::Equal => parent_base_fee_per_gas,
+
+        // If gas used is greater than adjusted target, increase base fee
         core::cmp::Ordering::Greater => {
-            // Calculate the increase in base fee based on the formula defined by EIP-4396.
-            parent_base_fee
-                + (core::cmp::max(
-                    // Ensure a minimum increase of 1.
-                    1,
-                    parent_base_fee as u128 * (parent.gas_used() - gas_target_adjusted) as u128
-                        / (gas_target as u128 * BASE_FEE_MAX_CHANGE_DENOMINATOR),
-                ) as u64)
+            let gas_used_delta = parent_gas_used - parent_adjusted_gas_target;
+            let base_fee_per_gas_delta = core::cmp::max(
+                parent_base_fee_per_gas as u128 * gas_used_delta as u128
+                    / parent_base_gas_target as u128
+                    / BASE_FEE_MAX_CHANGE_DENOMINATOR,
+                1,
+            ) as u64;
+            parent_base_fee_per_gas + base_fee_per_gas_delta
         }
-        // If the gas used in the current block is less than the gas target, calculate a new
-        // decreased base fee.
+
+        // If gas used is less than adjusted target, decrease base fee
         core::cmp::Ordering::Less => {
-            // Calculate the decrease in base fee based on the formula defined by EIP-4396.
-            // Use saturating_sub to avoid underflow if gas_target_adjusted < parent.gas_used()
-            let delta = gas_target_adjusted.saturating_sub(parent.gas_used());
-            parent_base_fee.saturating_sub(
-                (parent_base_fee as u128 * delta as u128
-                    / (gas_target as u128 * BASE_FEE_MAX_CHANGE_DENOMINATOR))
-                    as u64,
-            )
+            let gas_used_delta = parent_adjusted_gas_target - parent_gas_used;
+            let base_fee_per_gas_delta = (parent_base_fee_per_gas as u128 * gas_used_delta as u128
+                / parent_base_gas_target as u128
+                / BASE_FEE_MAX_CHANGE_DENOMINATOR) as u64;
+            parent_base_fee_per_gas.saturating_sub(base_fee_per_gas_delta)
         }
     }
 }
@@ -76,38 +75,52 @@ mod tests {
         parent.gas_limit = 30_000_000;
         parent.base_fee_per_gas = Some(1_000_000_000);
 
-        // Test 1: Gas used equals target (gas_limit / ELASTICITY_MULTIPLIER)
-        parent.gas_used = 15_000_000; // Exactly at target
+        // Test 1: Gas used equals adjusted target with standard block time
+        // Adjusted target = 15_000_000 * 2 / 2 = 15_000_000
+        parent.gas_used = 15_000_000;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
-        assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
+        assert_eq!(
+            base_fee, 1_000_000_000,
+            "Base fee should remain the same when at adjusted target"
+        );
 
-        // Test 2: Gas used above target
+        // Test 2: Gas used above adjusted target
         parent.gas_used = 20_000_000;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
-        assert!(base_fee > 1_000_000_000, "Base fee should increase when above target");
+        assert!(base_fee > 1_000_000_000, "Base fee should increase when above adjusted target");
 
-        // Test 3: Gas used below target
+        // Test 3: Gas used below adjusted target
         parent.gas_used = 10_000_000;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
-        assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
+        assert!(base_fee < 1_000_000_000, "Base fee should decrease when below adjusted target");
 
         // Test 4: Edge case - zero gas used
         parent.gas_used = 0;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee < 1_000_000_000, "Base fee should decrease with zero gas used");
-        
-        // Test 5: Different block times
+
+        // Test 5: Different block times affecting adjusted target
         parent.gas_used = 15_000_000;
-        // Longer block time (4 seconds instead of 2)
-        let base_fee_long = calculate_next_block_eip4396_base_fee(&parent, 4);
-        assert_eq!(base_fee_long, 1_000_000_000, "Base fee should remain same at adjusted target");
-        
-        // Test with higher gas usage to see block time effect
-        parent.gas_used = 18_000_000; // Above target
-        let base_fee_2s = calculate_next_block_eip4396_base_fee(&parent, 2);
+
+        // With 1 second block time: adjusted_target = 15_000_000 * 1 / 2 = 7_500_000
+        // gas_used (15_000_000) > adjusted_target (7_500_000), so base fee increases
         let base_fee_1s = calculate_next_block_eip4396_base_fee(&parent, 1);
-        // With shorter block time, the adjustment is less, so base fee increases more
-        assert!(base_fee_2s > 1_000_000_000, "Base fee should increase when above target");
-        assert!(base_fee_1s > base_fee_2s, "Shorter block time should increase base fee more");
+        assert!(base_fee_1s > 1_000_000_000, "Base fee should increase with shorter block time");
+
+        // With 4 seconds block time: adjusted_target = min(15_000_000 * 4 / 2, 30_000_000 * 0.95) =
+        // min(30_000_000, 28_500_000) = 28_500_000 gas_used (15_000_000) < adjusted_target
+        // (28_500_000), so base fee decreases
+        let base_fee_4s = calculate_next_block_eip4396_base_fee(&parent, 4);
+        assert!(base_fee_4s < 1_000_000_000, "Base fee should decrease with longer block time");
+
+        // Test 6: Verify exact calculation
+        parent.gas_used = 16_000_000;
+        parent.base_fee_per_gas = Some(1_000_000_000);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 2);
+        // gas_used_delta = 16_000_000 - 15_000_000 = 1_000_000
+        // base_fee_delta = max(1_000_000_000 * 1_000_000 / 15_000_000 / 8, 1) = max(8333333, 1) =
+        // 8333333
+        let expected = 1_000_000_000 + 8_333_333;
+        assert_eq!(base_fee, expected, "Base fee calculation should match expected value");
     }
 }

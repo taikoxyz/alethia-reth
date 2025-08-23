@@ -25,7 +25,7 @@ use crate::{
         hardfork::{TaikoHardfork, TaikoHardforks},
         spec::TaikoChainSpec,
     },
-    consensus::eip4396::{calculate_next_block_eip4396_base_fee, SHASTA_INITIAL_BASE_FEE},
+    consensus::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee},
     evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS,
 };
 
@@ -326,7 +326,6 @@ fn validate_input_selector(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod test {
     use alloy_consensus::Header;
@@ -381,8 +380,8 @@ mod test {
 
     #[test]
     fn test_validate_header_against_parent() {
-        use crate::consensus::eip4396::{calculate_next_block_eip4396_base_fee, BLOCK_TIME_TARGET};
-        
+        use crate::consensus::eip4396::{BLOCK_TIME_TARGET, calculate_next_block_eip4396_base_fee};
+
         // Test calculate_next_block_eip4396_base_fee function
         let mut parent = Header::default();
         parent.gas_limit = 30_000_000;

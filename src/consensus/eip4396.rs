@@ -1,15 +1,16 @@
 use std::cmp::min;
 
-use alloy_eips::eip1559::DEFAULT_ELASTICITY_MULTIPLIER;
 use reth_primitives_traits::BlockHeader;
 
 /// The initial base fee for the Shasta fork, which is set to 0.025 Gwei.
 pub const SHASTA_INITIAL_BASE_FEE: u64 = 25_000_000;
 pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u128 = 8;
 pub const MAX_GAS_TARGET_PERCENT: u64 = 95;
+pub const ELASTICITY_MULTIPLIER: u64 = 2;
 pub const BLOCK_TIME_TARGET: u64 = 2;
 
 /// Calculate the base fee for the next block based on the EIP-4396 specification.
+/// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4396.md
 ///
 /// This implementation follows the EIP-4396 formula which adjusts the base fee
 /// based on parent block gas usage and block time.
@@ -25,7 +26,7 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     parent_block_time: u64,
 ) -> u64 {
     // Calculate the target gas by dividing the gas limit by the elasticity multiplier.
-    let gas_target = parent.gas_limit() / DEFAULT_ELASTICITY_MULTIPLIER;
+    let gas_target = parent.gas_limit() / ELASTICITY_MULTIPLIER;
     let gas_target_adjusted = min(
         gas_target * parent_block_time / BLOCK_TIME_TARGET,
         parent.gas_limit() * MAX_GAS_TARGET_PERCENT / 100,
@@ -75,24 +76,38 @@ mod tests {
         parent.gas_limit = 30_000_000;
         parent.base_fee_per_gas = Some(1_000_000_000);
 
-        // Test 1: Gas used equals target (gas_limit / 2)
-        parent.gas_used = 15_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        // Test 1: Gas used equals target (gas_limit / ELASTICITY_MULTIPLIER)
+        parent.gas_used = 15_000_000; // Exactly at target
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
 
         // Test 2: Gas used above target
         parent.gas_used = 20_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee > 1_000_000_000, "Base fee should increase when above target");
 
         // Test 3: Gas used below target
         parent.gas_used = 10_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
 
         // Test 4: Edge case - zero gas used
         parent.gas_used = 0;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee < 1_000_000_000, "Base fee should decrease with zero gas used");
+        
+        // Test 5: Different block times
+        parent.gas_used = 15_000_000;
+        // Longer block time (4 seconds instead of 2)
+        let base_fee_long = calculate_next_block_eip4396_base_fee(&parent, 4);
+        assert_eq!(base_fee_long, 1_000_000_000, "Base fee should remain same at adjusted target");
+        
+        // Test with higher gas usage to see block time effect
+        parent.gas_used = 18_000_000; // Above target
+        let base_fee_2s = calculate_next_block_eip4396_base_fee(&parent, 2);
+        let base_fee_1s = calculate_next_block_eip4396_base_fee(&parent, 1);
+        // With shorter block time, the adjustment is less, so base fee increases more
+        assert!(base_fee_2s > 1_000_000_000, "Base fee should increase when above target");
+        assert!(base_fee_1s > base_fee_2s, "Shorter block time should increase base fee more");
     }
 }

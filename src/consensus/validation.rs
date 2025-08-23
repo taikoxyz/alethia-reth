@@ -381,7 +381,7 @@ mod test {
 
     #[test]
     fn test_validate_header_against_parent() {
-        use crate::consensus::eip4396::calculate_next_block_eip4396_base_fee;
+        use crate::consensus::eip4396::{calculate_next_block_eip4396_base_fee, BLOCK_TIME_TARGET};
         
         // Test calculate_next_block_eip4396_base_fee function
         let mut parent = Header::default();
@@ -390,17 +390,17 @@ mod test {
 
         // Test 1: Gas used equals target (gas_limit / 2)
         parent.gas_used = 15_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
 
         // Test 2: Gas used above target
         parent.gas_used = 20_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee > 1_000_000_000, "Base fee should increase when above target");
 
         // Test 3: Gas used below target
         parent.gas_used = 10_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
     }
 }

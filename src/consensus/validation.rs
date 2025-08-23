@@ -178,8 +178,7 @@ where
             let shasta_fork_block = self
                 .chain_spec
                 .taiko_fork_activation(TaikoHardfork::Shasta)
-                .block_number()
-                .ok_or(ConsensusError::Other("Shasta fork is not activated".to_string()))?;
+                .ok_or(ConsensusError::Other("Failed to get Shasta fork activation block number".to_string()))?;
 
             // For blocks after Shasta+1, use EIP-4396 dynamic base fee calculation
             // The first 2 blocks after Shasta use the initial base fee.

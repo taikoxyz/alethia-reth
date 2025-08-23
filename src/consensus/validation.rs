@@ -1,7 +1,6 @@
-use std::{cmp::min, fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
-use alloy_eips::eip1559::DEFAULT_ELASTICITY_MULTIPLIER;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, sol};
@@ -26,6 +25,7 @@ use crate::{
         hardfork::{TaikoHardfork, TaikoHardforks},
         spec::TaikoChainSpec,
     },
+    consensus::eip4396::{calculate_next_block_eip4396_base_fee, SHASTA_INITIAL_BASE_FEE},
     evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS,
 };
 
@@ -46,8 +46,6 @@ pub const UPDATE_STATE_SHASTA_SELECTOR: &[u8; 4] = &updateStateCall::SELECTOR;
 pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
 /// The gas limit for the anchor transactions in Pacaya hardfork blocks.
 pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
-/// The initial base fee for the Shasta fork, which is set to 0.025 Gwei.
-pub const SHASTA_INITIAL_BASE_FEE: u64 = 25_000_000;
 
 /// Taiko consensus implementation.
 ///
@@ -183,7 +181,7 @@ where
                 .block_number()
                 .ok_or(ConsensusError::Other("Shasta fork is not activated".to_string()))?;
 
-            // For blocks after Shasta+1, use EIP-4936 dynamic base fee calculation
+            // For blocks after Shasta+1, use EIP-4396 dynamic base fee calculation
             // The first 2 blocks after Shasta use the initial base fee.
             if header.number() > shasta_fork_block + 1 {
                 // Get the grandparent block to calculate parent block time.
@@ -200,9 +198,9 @@ where
                         .header()
                         .timestamp();
 
-                // Calculate the expected base fee using EIP-4936 formula.
+                // Calculate the expected base fee using EIP-4396 formula.
                 expected_base_fee =
-                    calculate_next_block_eip4936_base_fee(parent.header(), parent_block_time);
+                    calculate_next_block_eip4396_base_fee(parent.header(), parent_block_time);
             }
 
             // Verify the block's base fee matches the expected value.
@@ -229,7 +227,7 @@ where
 
 /// Validates the base fee against the parent.
 #[inline]
-pub fn validate_against_parent_eip4936_base_fee<
+pub fn validate_against_parent_eip4396_base_fee<
     ChainSpec: EthChainSpec + EthereumHardforks + TaikoHardforks,
     H: BlockHeader,
 >(
@@ -328,45 +326,6 @@ fn validate_input_selector(
     Ok(())
 }
 
-/// Calculate the base fee for the next block based on the EIP-4936 specification.
-pub fn calculate_next_block_eip4936_base_fee<H: BlockHeader>(
-    parent: &H,
-    parent_block_time: u64,
-) -> u64 {
-    // Calculate the target gas by dividing the gas limit by the elasticity multiplier.
-    let gas_target = parent.gas_limit() / DEFAULT_ELASTICITY_MULTIPLIER;
-    let gas_target_adjusted =
-        min(gas_target * parent_block_time / 12, parent.gas_limit() * 95 / 100);
-    let parent_base_fee = parent.base_fee_per_gas().unwrap();
-
-    match parent.gas_used().cmp(&gas_target) {
-        // If the gas used in the current block is equal to the gas target, the base fee remains the
-        // same (no increase).
-        core::cmp::Ordering::Equal => parent_base_fee,
-        // If the gas used in the current block is greater than the gas target, calculate a new
-        // increased base fee.
-        core::cmp::Ordering::Greater => {
-            // Calculate the increase in base fee based on the formula defined by EIP-4936.
-            parent_base_fee +
-                (core::cmp::max(
-                    // Ensure a minimum increase of 1.
-                    1,
-                    parent_base_fee as u128 * (parent.gas_used() - gas_target_adjusted) as u128 /
-                        (gas_target as u128 * 8),
-                ) as u64)
-        }
-        // If the gas used in the current block is less than the gas target, calculate a new
-        // decreased base fee.
-        core::cmp::Ordering::Less => {
-            // Calculate the decrease in base fee based on the formula defined by EIP-4936.
-            // Use saturating_sub to avoid underflow if gas_target_adjusted < parent.gas_used()
-            let delta = gas_target_adjusted.saturating_sub(parent.gas_used());
-            parent_base_fee.saturating_sub(
-                (parent_base_fee as u128 * delta as u128 / (gas_target as u128 * 8)) as u64,
-            )
-        }
-    }
-}
 
 #[cfg(test)]
 mod test {
@@ -378,14 +337,14 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_validate_against_parent_eip4936_base_fee() {
+    fn test_validate_against_parent_eip4396_base_fee() {
         let parent_header = &Header::default();
         let mut header = parent_header.clone();
         header.parent_hash = parent_header.hash_slow();
         header.number = parent_header.number + 1;
 
         assert!(
-            validate_against_parent_eip4936_base_fee(
+            validate_against_parent_eip4396_base_fee(
                 &header,
                 parent_header,
                 &Arc::new(TaikoChainSpec::default())
@@ -395,7 +354,7 @@ mod test {
 
         header.base_fee_per_gas = Some(U64::random().to::<u64>());
         assert!(
-            validate_against_parent_eip4936_base_fee(
+            validate_against_parent_eip4396_base_fee(
                 &header,
                 parent_header,
                 &Arc::new(TaikoChainSpec::default())
@@ -422,24 +381,26 @@ mod test {
 
     #[test]
     fn test_validate_header_against_parent() {
-        // Test calculate_next_block_eip4936_base_fee function
+        use crate::consensus::eip4396::calculate_next_block_eip4396_base_fee;
+        
+        // Test calculate_next_block_eip4396_base_fee function
         let mut parent = Header::default();
         parent.gas_limit = 30_000_000;
         parent.base_fee_per_gas = Some(1_000_000_000);
 
         // Test 1: Gas used equals target (gas_limit / 2)
         parent.gas_used = 15_000_000;
-        let base_fee = calculate_next_block_eip4936_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
         assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
 
         // Test 2: Gas used above target
         parent.gas_used = 20_000_000;
-        let base_fee = calculate_next_block_eip4936_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
         assert!(base_fee > 1_000_000_000, "Base fee should increase when above target");
 
         // Test 3: Gas used below target
         parent.gas_used = 10_000_000;
-        let base_fee = calculate_next_block_eip4936_base_fee(&parent, 12);
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 12);
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
     }
 }

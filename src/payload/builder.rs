@@ -185,6 +185,15 @@ where
                 trace!(target: "payload_builder", %error, ?tx, "skipping invalid transaction");
                 continue;
             }
+            Err(BlockExecutionError::Validation(
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                    transaction_gas_limit,
+                    block_available_gas,
+                },
+            )) => {
+                trace!(target: "payload_builder", %transaction_gas_limit, %block_available_gas, ?tx, "skipping transaction with too high gas limit");
+                continue;
+            }
             // this is an error that we should treat as fatal for this attempt
             Err(err) => return Err(PayloadBuilderError::evm(err)),
         };

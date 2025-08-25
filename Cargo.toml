@@ -100,7 +100,7 @@ alloy-hardforks = "0.2.7"
 alloy-rlp = { version = "0.3.10", default-features = false, features = [
   "core-net",
 ] }
-alloy-sol-types = {version = "1.3.0", default-features = false}
+alloy-sol-types = { version = "1.3.0", default-features = false }
 op-alloy-flz = { version = "0.13.1", default-features = false }
 
 # revm
@@ -139,3 +139,4 @@ default = ["serde"]
 serde = ["serde/derive"]
 client = []
 arbitrary = ["alloy-consensus/arbitrary"]
+prover = []

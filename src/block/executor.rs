@@ -217,6 +217,33 @@ where
     fn evm(&self) -> &Self::Evm {
         &self.evm
     }
+
+    #[cfg(feature = "prover")]
+    fn execute_block(
+        mut self,
+        transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
+    ) -> Result<BlockExecutionResult<Self::Receipt>, BlockExecutionError>
+    where
+        Self: Sized,
+    {
+        self.apply_pre_execution_changes()?;
+
+        for (idx, tx) in transactions.into_iter().enumerate() {
+            // check transaction signature
+            if idx != 0 && *tx.signer() == Address::ZERO {
+                continue;
+            }
+            self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
+                | BlockExecutionError::Validation(
+                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+                ) if idx != 0 => Ok(()),
+                _ => Err(err),
+            })?;
+        }
+
+        self.apply_post_execution_changes()
+    }
 }
 
 // Encode the anchor system call data for the Anchor contract sender account information

@@ -179,19 +179,11 @@ where
 
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                error, ..
-            })) => {
-                trace!(target: "payload_builder", %error, ?tx, "skipping invalid transaction");
-                continue;
-            }
             Err(BlockExecutionError::Validation(
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                    transaction_gas_limit,
-                    block_available_gas,
-                },
+                BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) => {
-                trace!(target: "payload_builder", %transaction_gas_limit, %block_available_gas, ?tx, "skipping transaction with too high gas limit");
+                trace!(target: "payload_builder", ?tx, "skipping invalid transaction");
                 continue;
             }
             // this is an error that we should treat as fatal for this attempt

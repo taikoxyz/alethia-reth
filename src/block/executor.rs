@@ -218,6 +218,8 @@ where
         &self.evm
     }
 
+    /// Executes all transactions in a block, applying pre and post execution changes.
+    /// NOTE: For proving system, we skip the invalid transactions directly inside this function.
     #[cfg(feature = "prover")]
     fn execute_block(
         mut self,
@@ -229,15 +231,17 @@ where
         self.apply_pre_execution_changes()?;
 
         for (idx, tx) in transactions.into_iter().enumerate() {
-            // check transaction signature
-            if idx != 0 && *tx.signer() == Address::ZERO {
+            let is_anchor_transaction = idx == 0;
+            // Check transaction signature at first, if invalid, skip it directly.
+            if !is_anchor_transaction && *tx.signer() == Address::ZERO {
                 continue;
             }
+            // Execute transaction, if invalid, skip it directly.
             self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
                 BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
                 | BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
-                ) if idx != 0 => Ok(()),
+                ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
             })?;
         }

@@ -39,7 +39,7 @@ pub struct TaikoEvmConfig {
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::default())
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.

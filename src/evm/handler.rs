@@ -173,7 +173,10 @@ fn reward_beneficiary<CTX: ContextTr>(
             context.journal_mut().balance_incr(beneficiary, fee_coinbase)?;
 
             let chain_id = context.cfg().chain_id();
-            context.journal_mut().balance_incr(get_treasury_address(chain_id), fee_treasury)?;
+            let treasury_address =
+                ctx.treasury_address().unwrap_or_else(|| get_treasury_address(chain_id));
+
+            context.journal_mut().balance_incr(treasury_address, fee_treasury)?;
 
             debug!(
                 target: "taiko_evm",

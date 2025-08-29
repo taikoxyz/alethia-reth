@@ -24,12 +24,19 @@ pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c
 pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
     inner: TaikoEvm<TaikoEvmContext<DB>, INSP, P>,
     inspect: bool,
+    // Used for customizing the treasury address, chain-specific will be used if None
+    treasury_address: Option<Address>,
 }
 
 impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: TaikoEvm<TaikoEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect }
+        Self { inner: evm, inspect, treasury_address: None }
+    }
+
+    pub fn with_treasury_address(mut self, address: Option<Address>) -> Self {
+        self.treasury_address = address;
+        self
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -156,7 +163,12 @@ where
             debug!(target: "taiko_evm", "Anchor system call detected: base_fee_share_pctg = {}, caller_nonce = {}", base_fee_share_pctg, caller_nonce);
 
             // Set the Anchor transaction information for the later EVM execution.
-            self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
+            self.inner.with_extra_execution_context(
+                base_fee_share_pctg,
+                caller,
+                caller_nonce,
+                self.treasury_address,
+            );
 
             // Return a dummy execution result and state to avoid further processing.
             return Ok(ResultAndState {

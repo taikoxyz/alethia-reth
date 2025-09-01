@@ -15,6 +15,7 @@ use reth_node_builder::{
     rpc::{EngineValidatorAddOn, EngineValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle},
 };
 use reth_node_ethereum::node::EthereumPoolBuilder;
+use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
 use reth_rpc::eth::core::EthRpcConverterFor;
 use reth_storage_api::EthStorage;
 use reth_trie_db::MerklePatriciaTrie;
@@ -31,7 +32,6 @@ use crate::{
     },
     payload::{
         attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
-        builder::TAIKO_PACAYA_BLOCK_GAS_LIMIT,
         engine::TaikoEngineTypes,
     },
     rpc::{engine::validator::TaikoEngineValidator, eth::types::TaikoEthApi},
@@ -319,7 +319,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
                 timestamp: U256::from(timestamp),
-                gas_limit: TAIKO_PACAYA_BLOCK_GAS_LIMIT,
+                gas_limit: MAXIMUM_GAS_LIMIT_BLOCK,
                 mix_hash: B256::random(),
                 tx_list: Bytes::new(),
                 extra_data: Bytes::new(),

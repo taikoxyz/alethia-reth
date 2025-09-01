@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.2.0](https://github.com/TatsujinLabs/taiko-reth/compare/v0.1.0...v0.2.0) (2025-08-25)
+
+
+### Features
+
+* **chainspec:** introduce `TaikoSpecId` ([#48](https://github.com/TatsujinLabs/taiko-reth/issues/48)) ([fabe734](https://github.com/TatsujinLabs/taiko-reth/commit/fabe734c01182cda6e0c0ef5ad81a08b1cd2e17d))
+* **claude:** fix claude workflow and add taiko-reth-developer agent ([#46](https://github.com/TatsujinLabs/taiko-reth/issues/46)) ([b329d93](https://github.com/TatsujinLabs/taiko-reth/commit/b329d9359315ea6fae413416f31a16a4fcc5729a))
+* **consensus:** improve `anchor` selector constants ([#52](https://github.com/TatsujinLabs/taiko-reth/issues/52)) ([fdbe004](https://github.com/TatsujinLabs/taiko-reth/commit/fdbe004ae6381e0c27095543cd14c49238f87a81))
+* **consensus:** introduce `validate_anchor_transaction_in_block` for `TaikoBeaconConsensus` ([#47](https://github.com/TatsujinLabs/taiko-reth/issues/47)) ([c22afcb](https://github.com/TatsujinLabs/taiko-reth/commit/c22afcb12fbde4ffc69151aced0a2b8551c09b85))
+* **executor:** add `execute_block` method with transaction validation for `prover` ([#58](https://github.com/TatsujinLabs/taiko-reth/issues/58)) ([ba2835f](https://github.com/TatsujinLabs/taiko-reth/commit/ba2835fd0e6f0bac37ee1430e7804843bce0991e))
+* **rpc:** remove an unnecessary constant `COMPRESSION_ESTIMATION_SAFETY_COEF` ([#51](https://github.com/TatsujinLabs/taiko-reth/issues/51)) ([5e336ee](https://github.com/TatsujinLabs/taiko-reth/commit/5e336ee002817bbebb9edc428b137dd34e363514))
+
+
+### Bug Fixes
+
+* **evm:** fix a potential panic for `taiko_revm_spec` ([#54](https://github.com/TatsujinLabs/taiko-reth/issues/54)) ([5f4dba5](https://github.com/TatsujinLabs/taiko-reth/commit/5f4dba5fe67a555832f88fc03a2b4539df9fbfdc))
+
+
+### Chores
+
+* **block:** add some comments for `execute_block` ([#59](https://github.com/TatsujinLabs/taiko-reth/issues/59)) ([ad1028a](https://github.com/TatsujinLabs/taiko-reth/commit/ad1028aa5ab556878565345e8bdccbe0576b69d7))
+* **ci:** build `linux/arm64` images in CI ([#44](https://github.com/TatsujinLabs/taiko-reth/issues/44)) ([e632c49](https://github.com/TatsujinLabs/taiko-reth/commit/e632c49d787fdf4f2aeae4aa96d51003d7f90db0))
+* **ci:** improve `docker-build` workflow ([#42](https://github.com/TatsujinLabs/taiko-reth/issues/42)) ([87c523b](https://github.com/TatsujinLabs/taiko-reth/commit/87c523b13402005b635261cf2375f4789a6e4092))
+* **ci:** revert `docker-build` action updates ([#45](https://github.com/TatsujinLabs/taiko-reth/issues/45)) ([ab588e8](https://github.com/TatsujinLabs/taiko-reth/commit/ab588e80a7738511f10696db09949ae703122bd6))
+* **repo:** bump `reth` dependency to `v1.6.0` ([#16](https://github.com/TatsujinLabs/taiko-reth/issues/16)) ([6852971](https://github.com/TatsujinLabs/taiko-reth/commit/6852971cd530ec47ee0944b7c7d84cb6948cbb1f))
+
+
+### Documentation
+
+* **repo:** update `README.md` ([#50](https://github.com/TatsujinLabs/taiko-reth/issues/50)) ([a5119bd](https://github.com/TatsujinLabs/taiko-reth/commit/a5119bdd4dc24edcf64faa90b4af61aa2f33345b))
+
+
+### Tests
+
+* **block:** add more tests for `TaikoBlockExecutorFactory` ([#49](https://github.com/TatsujinLabs/taiko-reth/issues/49)) ([f7d66f0](https://github.com/TatsujinLabs/taiko-reth/commit/f7d66f0838bd20e18b77968bcf7310bec534f46b))
+
 ## [0.1.0](https://github.com/TatsujinLabs/taiko-reth/compare/v0.0.9...v0.1.0) (2025-07-27)
 
 

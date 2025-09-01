@@ -1,5 +1,6 @@
 use alloy_consensus::Transaction;
 use alloy_hardforks::EthereumHardforks;
+use alloy_primitives::U256;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -13,7 +14,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_payload_primitives::{PayloadBuilderAttributes, PayloadBuilderError};
-use reth_revm::{State, database::StateProviderDatabase, primitives::U256};
+use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
@@ -27,8 +28,6 @@ use crate::{
     },
     payload::payload::TaikoPayloadBuilderAttributes,
 };
-
-pub const TAIKO_PACAYA_BLOCK_GAS_LIMIT: u64 = 241_000_000;
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,10 +167,11 @@ where
 
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                error, ..
-            })) => {
-                trace!(target: "payload_builder", %error, ?tx, "skipping invalid transaction");
+            Err(BlockExecutionError::Validation(
+                BlockValidationError::InvalidTx { .. } |
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+            )) => {
+                trace!(target: "payload_builder", ?tx, "skipping invalid transaction");
                 continue;
             }
             // this is an error that we should treat as fatal for this attempt

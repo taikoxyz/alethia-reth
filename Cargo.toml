@@ -182,3 +182,4 @@ rpc = [
 ]
 db = ["dep:reth-codecs", "dep:reth-db-api", "dep:reth-trie-db"]
 bin = ["node", "rpc", "net", "db", "dep:reth"]
+prover = []

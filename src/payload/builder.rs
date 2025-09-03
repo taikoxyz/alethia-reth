@@ -23,6 +23,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::PayloadAttributesBuilder;
+use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 
@@ -38,8 +39,6 @@ use crate::{
         payload::TaikoPayloadBuilderAttributes,
     },
 };
-
-const TAIKO_PACAYA_BLOCK_GAS_LIMIT: u64 = 241_000_000;
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +217,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
                 timestamp: U256::from(timestamp),
-                gas_limit: TAIKO_PACAYA_BLOCK_GAS_LIMIT,
+                gas_limit: MAXIMUM_GAS_LIMIT_BLOCK,
                 mix_hash: B256::random(),
                 tx_list: Bytes::new(),
                 extra_data: Bytes::new(),

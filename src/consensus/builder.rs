@@ -25,10 +25,10 @@ where
     >,
 {
     /// The consensus implementation to build.
-    type Consensus = Arc<TaikoBeaconConsensus>;
+    type Consensus = Arc<TaikoBeaconConsensus<Node::Provider>>;
 
     /// Creates the TaikoBeaconConsensus implementation.
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(Arc::new(TaikoBeaconConsensus::new(ctx.chain_spec())))
+        Ok(Arc::new(TaikoBeaconConsensus::new(ctx.chain_spec(), ctx.provider().clone())))
     }
 }

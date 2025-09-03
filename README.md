@@ -1,6 +1,6 @@
 # taiko-reth
 
-[![CI](https://github.com/TatsujinLabs/taiko-reth/actions/workflows/ci.yml/badge.svg)](https://github.com/TatsujinLabs/taiko-reth/actions/workflows/ci.yml)
+[![CI](https://github.com/taikoxyz/alethia-reth/actions/workflows/ci.yml/badge.svg)](https://github.com/taikoxyz/alethia-reth/actions/workflows/ci.yml)
 
 A high-performance Rust execution client for the Taiko protocol, built on top of [Reth](https://github.com/paradigmxyz/reth) powerful [`NodeBuilder` API](https://reth.rs/introduction/why-reth#infinitely-customizable), designed to deliver the best possible developer and maintenance experience.
 
@@ -9,7 +9,7 @@ A high-performance Rust execution client for the Taiko protocol, built on top of
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/TatsujinLabs/taiko-reth.git
+git clone https://github.com/taikoxyz/alethia-reth.git
 cd taiko-reth
 ```
 

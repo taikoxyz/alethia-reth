@@ -34,7 +34,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/tatsujinlabs/taiko-reth:nightly
+          tags: ghcr.io/taikoxyz/alethia-reth:nightly
 
       # Push 'vX.Y.Z' and 'latest' tags on release publish
       - name: Build and push release image
@@ -44,5 +44,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/tatsujinlabs/taiko-reth:${{ github.ref_name }}
-            ghcr.io/tatsujinlabs/taiko-reth:latest
+            ghcr.io/taikoxyz/alethia-reth:${{ github.ref_name }}
+            ghcr.io/taikoxyz/alethia-reth:latest

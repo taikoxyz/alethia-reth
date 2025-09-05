@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/taikoxyz/alethia-reth/compare/v0.3.0...v0.4.0) (2025-09-05)
+
+
+### Features
+
+* **consensus:** introduce `Shasta` hardfork ([#3](https://github.com/taikoxyz/alethia-reth/issues/3)) ([01d1262](https://github.com/taikoxyz/alethia-reth/commit/01d12620a873ab386255cb7d5514e811ce0a451c))
+
+
+### Chores
+
+* **ci:** remove workflows before transition ([#5](https://github.com/taikoxyz/alethia-reth/issues/5)) ([b8dc379](https://github.com/taikoxyz/alethia-reth/commit/b8dc379fc4ebc73968df7fe71b9ef092e3c186fb))
+
 ## [0.3.0](https://github.com/taikoxyz/alethia-reth/compare/v0.2.0...v0.3.0) (2025-09-03)
 
 

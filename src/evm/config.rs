@@ -5,18 +5,19 @@ use alloy_evm::Database;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    chainspec::EthChainSpec,
-    primitives::{BlockTy, SealedBlock, SealedHeader},
-    revm::{
-        context::{BlockEnv, CfgEnv},
-        primitives::{Address, B256, U256},
-    },
+use reth_chainspec::EthChainSpec;
+use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
+use reth_revm::{
+    context::{BlockEnv, CfgEnv},
+    primitives::{Address, B256, U256},
 };
+
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor};
 use reth_evm_ethereum::RethReceiptBuilder;
+
+#[cfg(feature = "rpc")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 
 use crate::{
@@ -39,7 +40,7 @@ pub struct TaikoEvmConfig {
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::default())
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
@@ -197,6 +198,7 @@ pub struct TaikoNextBlockEnvAttributes {
     pub base_fee_per_gas: u64,
 }
 
+#[cfg(feature = "rpc")]
 impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
     fn build_pending_env(parent: &SealedHeader<Header>) -> Self {

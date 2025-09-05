@@ -7,16 +7,8 @@ use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
-use reth::{
-    primitives::InvalidTransactionError,
-    revm::primitives::Address,
-    transaction_pool::{
-        BestTransactionsAttributes, PoolConsensusTx, PoolTransaction, TransactionPool,
-        error::InvalidPoolTransactionError,
-    },
-};
-use reth_db::transaction::DbTx;
-use reth_db_api::transaction::DbTxMut;
+
+use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     ConfigureEvm,
@@ -24,11 +16,18 @@ use reth_evm::{
     execute::BlockBuilder,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{Block, NodePrimitives};
-use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
-use reth_revm::{State, database::StateProviderDatabase};
+use reth_primitives::InvalidTransactionError;
+use reth_primitives_traits::{Block, NodePrimitives};
+use reth_revm::{State, database::StateProviderDatabase, primitives::Address};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
+use reth_storage_api::{
+    BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory,
+};
+use reth_transaction_pool::{
+    BestTransactionsAttributes, PoolConsensusTx, PoolTransaction, TransactionPool,
+    error::InvalidPoolTransactionError,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
 

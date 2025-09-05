@@ -1,10 +1,9 @@
-use reth::{
-    network::{EthNetworkPrimitives, NetworkHandle, PeersInfo},
-    transaction_pool::{PoolTransaction, TransactionPool},
-};
 use reth_ethereum::{EthPrimitives, PooledTransactionVariant};
+use reth_network::{EthNetworkPrimitives, NetworkHandle};
+use reth_network_api::PeersInfo;
 use reth_node_api::{FullNodeTypes, NodeTypes, TxTy};
 use reth_node_builder::{BuilderContext, components::NetworkBuilder};
+use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use tracing::info;
 
 use crate::chainspec::spec::TaikoChainSpec;

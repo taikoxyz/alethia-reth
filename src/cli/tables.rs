@@ -1,5 +1,5 @@
 use crate::db::model::Tables as TaikoDbTables;
-use reth_db::{TableSet, Tables, table::TableInfo};
+use reth_db_api::{TableSet, Tables, table::TableInfo};
 
 /// A set of tables used by Taiko network.
 pub struct TaikoTables;

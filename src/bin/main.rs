@@ -1,10 +1,12 @@
 //! Rust Taiko node (taiko-reth) binary executable.
-use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
+use reth::ress::install_ress_subprotocol;
+use reth_node_builder::NodeHandle;
+use reth_node_core::args::RessArgs;
 use reth_rpc::eth::{EthApiTypes, RpcNodeCore};
 use taiko_reth::{
-    TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
     cli::TaikoCli,
+    node::TaikoNode,
     rpc::eth::{
         auth::{TaikoAuthExt, TaikoAuthExtApiServer},
         eth::{TaikoExt, TaikoExtApiServer},

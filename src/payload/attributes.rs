@@ -1,11 +1,9 @@
 use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth::revm::primitives::{Address, B256, U256};
-use reth_node_api::PayloadAttributes;
+use reth_payload_primitives::PayloadAttributes;
+use reth_revm::primitives::{Address, B256, U256};
 use serde_with::{Bytes, base64::Base64, serde_as};
-
-use crate::db::model::StoredL1Origin;
 
 /// Taiko Payload Attributes
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,9 +92,10 @@ impl RpcL1Origin {
     }
 }
 
-impl From<StoredL1Origin> for RpcL1Origin {
+#[cfg(feature = "db")]
+impl From<crate::db::model::StoredL1Origin> for RpcL1Origin {
     // Converts a `StoredL1Origin` into an `RpcL1Origin`.
-    fn from(stored: StoredL1Origin) -> Self {
+    fn from(stored: crate::db::model::StoredL1Origin) -> Self {
         RpcL1Origin {
             block_id: stored.block_id,
             l2_block_hash: stored.l2_block_hash,
@@ -111,12 +110,13 @@ impl From<StoredL1Origin> for RpcL1Origin {
 }
 
 #[cfg(test)]
+#[cfg(feature = "db")]
 mod test {
     use super::*;
 
     #[test]
     fn test_rpc_l1_origin_from() {
-        let stored_l1_origin = StoredL1Origin {
+        let stored_l1_origin = crate::db::model::StoredL1Origin {
             block_id: U256::random(),
             l2_block_hash: B256::random(),
             l1_block_height: U256::random(),

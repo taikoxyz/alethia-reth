@@ -92,7 +92,7 @@ impl reth_db_api::table::Decompress for StoredL1Origin {
 mod test {
     use super::*;
     use alloy_primitives::B256;
-    use reth_db::table::{Compress, Decompress};
+    use reth_db_api::table::{Compress, Decompress};
 
     #[test]
     fn test_stored_l1_origin_compact() {

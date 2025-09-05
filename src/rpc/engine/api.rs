@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{payload::attributes::TaikoPayloadAttributes, rpc::engine::types::TaikoExecutionData};
+use crate::payload::{attributes::TaikoPayloadAttributes, primitives::TaikoExecutionData};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
@@ -8,18 +8,18 @@ use async_trait::async_trait;
 use jsonrpsee::{RpcModule, proc_macros::rpc};
 use jsonrpsee_core::RpcResult;
 use jsonrpsee_types::ErrorCode;
-use reth::{
-    payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, transaction_pool::TransactionPool,
-};
-use reth_db::transaction::DbTx;
-use reth_db_api::transaction::DbTxMut;
+use reth_db_api::transaction::{DbTx, DbTxMut};
+use reth_engine_primitives::{EngineTypes, EngineValidator};
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{EngineTypes, EngineValidator, PayloadBuilderError, PayloadTypes};
-use reth_provider::{
+use reth_payload_builder::PayloadStore;
+use reth_payload_primitives::{PayloadBuilderError, PayloadTypes};
+use reth_rpc::EngineApi;
+use reth_rpc_api::IntoEngineApiRpcModule;
+use reth_rpc_engine_api::EngineApiError;
+use reth_storage_api::{
     BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
 };
-use reth_rpc::EngineApi;
-use reth_rpc_engine_api::EngineApiError;
+use reth_transaction_pool::TransactionPool;
 use tokio_retry::{Retry, strategy::ExponentialBackoff};
 
 use crate::db::model::{

@@ -1,16 +1,10 @@
 use alloy_consensus::{Transaction, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
-    Database, FromRecoveredTx, FromTxWithEncoded, eth::receipt_builder::ReceiptBuilder,
+    Database, FromRecoveredTx, FromTxWithEncoded, block::BlockExecutionResult,
+    eth::receipt_builder::ReceiptBuilder,
 };
 use alloy_primitives::{Address, Bytes, Uint};
-use reth::{
-    primitives::Log,
-    revm::{
-        State,
-        context::result::{ExecutionResult, ResultAndState},
-    },
-};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
@@ -19,7 +13,11 @@ use reth_evm::{
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
-use reth_provider::BlockExecutionResult;
+use reth_primitives::Log;
+use reth_revm::{
+    State,
+    context::result::{ExecutionResult, ResultAndState},
+};
 use revm_database_interface::DatabaseCommit;
 
 use crate::{
@@ -238,8 +236,8 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
+                BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),

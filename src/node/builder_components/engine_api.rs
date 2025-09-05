@@ -1,18 +1,16 @@
 use alloy_hardforks::EthereumHardforks;
 use alloy_rpc_types_engine::ClientVersionV1;
-use reth::{
-    payload::PayloadStore,
-    version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
-};
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{AddOnsContext, EngineTypes, FullNodeComponents, NodeTypes, PayloadTypes};
 use reth_node_builder::rpc::{EngineApiBuilder, EngineValidatorBuilder};
+use reth_node_core::version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA};
+use reth_payload_builder::PayloadStore;
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineCapabilities;
 
 use crate::{
-    payload::attributes::TaikoPayloadAttributes,
-    rpc::engine::{api::TaikoEngineApi, types::TaikoExecutionData},
+    payload::{attributes::TaikoPayloadAttributes, primitives::TaikoExecutionData},
+    rpc::engine::api::TaikoEngineApi,
 };
 
 /// Builder for basic [`EngineApi`] implementation.

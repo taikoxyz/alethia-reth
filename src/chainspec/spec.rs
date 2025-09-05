@@ -8,7 +8,7 @@ use alloy_hardforks::{
     EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Head,
 };
 use alloy_primitives::{Address, B256, U256};
-use reth::chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks};
+use reth_chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks};
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 

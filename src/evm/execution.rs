@@ -1,17 +1,15 @@
-use reth::revm::{
+use reth_revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm, InspectCommitEvm, InspectEvm, Inspector,
     context::{
         ContextSetters, ContextTr, JournalTr,
-        result::{ExecutionResult, HaltReason},
+        result::{
+            EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction,
+            ResultAndState,
+        },
     },
-    handler::{EthFrame, Handler},
+    handler::{EthFrame, Handler, PrecompileProvider},
     inspector::{InspectorHandler, JournalExt},
-    interpreter::interpreter::EthInterpreter,
-};
-use reth_revm::{
-    context::result::{EVMError, ExecResultAndState, InvalidTransaction, ResultAndState},
-    handler::PrecompileProvider,
-    interpreter::InterpreterResult,
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
     state::EvmState,
 };
 use revm_database_interface::Database;

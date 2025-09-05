@@ -1,60 +1,19 @@
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
-use reth::primitives::RecoveredBlock;
-use reth_ethereum::{Block, EthPrimitives};
-use reth_evm::ConfigureEvm;
-use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{
-    AddOnsContext, EngineApiMessageVersion, EngineObjectValidationError, EngineValidator,
-    FullNodeComponents, InvalidPayloadAttributesError, NewPayloadError, NodeTypes,
-    PayloadAttributes, PayloadOrAttributes, PayloadTypes, PayloadValidator,
+use reth_engine_primitives::{EngineValidator, PayloadValidator};
+use reth_ethereum::Block;
+use reth_payload_primitives::{
+    EngineApiMessageVersion, EngineObjectValidationError, InvalidPayloadAttributesError,
+    NewPayloadError, PayloadAttributes, PayloadOrAttributes, PayloadTypes,
 };
-use reth_node_builder::rpc::EngineValidatorBuilder;
+use reth_primitives::RecoveredBlock;
 use reth_primitives_traits::Block as SealedBlock;
-use std::{convert::Infallible, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
-    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
-    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
-    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
-    rpc::engine::types::TaikoExecutionData,
+    payload::{attributes::TaikoPayloadAttributes, primitives::TaikoExecutionData},
 };
-
-/// Builder for [`TaikoEngineValidator`].
-#[derive(Debug, Default, Clone)]
-#[non_exhaustive]
-pub struct TaikoEngineValidatorBuilder;
-
-impl<N> EngineValidatorBuilder<N> for TaikoEngineValidatorBuilder
-where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-{
-    /// The consensus implementation to build.
-    type Validator = TaikoEngineValidator;
-
-    /// Creates the engine validator.
-    async fn build(self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
-        Ok(TaikoEngineValidator::new(ctx.config.chain.clone()))
-    }
-}
 
 /// Validator for the Taiko engine API.
 #[derive(Debug, Clone)]

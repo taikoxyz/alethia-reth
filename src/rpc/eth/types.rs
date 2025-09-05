@@ -1,26 +1,18 @@
 use alloy_network::Ethereum;
 use alloy_primitives::Bytes;
 use jsonrpsee::tokio;
-use reth::{
-    revm::primitives::{B256, U256},
-    rpc::api::eth::{
-        RpcNodeCoreExt,
-        helpers::{
-            AddDevSigners, Call, EthCall, EthFees, LoadBlock, LoadFee, LoadPendingBlock,
-            LoadReceipt, LoadState, SpawnBlocking, Trace, estimate::EstimateCall,
-        },
-    },
-    tasks::{
-        TaskSpawner,
-        pool::{BlockingTaskGuard, BlockingTaskPool},
-    },
-    transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool},
-};
 use reth_evm::TxEnvFor;
-use reth_provider::{ProviderHeader, ProviderTx};
+use reth_revm::primitives::{B256, U256};
 use reth_rpc::{
     EthApi,
     eth::{DevSigner, EthApiTypes, RpcNodeCore},
+};
+use reth_rpc_api::eth::{
+    RpcNodeCoreExt,
+    helpers::{
+        AddDevSigners, Call, EthCall, EthFees, LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt,
+        LoadState, SpawnBlocking, Trace, estimate::EstimateCall,
+    },
 };
 use reth_rpc_eth_api::{
     RpcConvert, SignableTxRequest,
@@ -34,6 +26,12 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, error::FromEvmError,
     utils::recover_raw_transaction,
 };
+use reth_storage_api::{ProviderHeader, ProviderTx};
+use reth_tasks::{
+    TaskSpawner,
+    pool::{BlockingTaskGuard, BlockingTaskPool},
+};
+use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
 
 /// `Eth` API implementation for Taiko network.
 pub struct TaikoEthApi<N: RpcNodeCore, Rpc: RpcConvert>(pub EthApi<N, Rpc>);

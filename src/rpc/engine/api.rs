@@ -13,8 +13,9 @@ use reth::{
 };
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
+use reth_engine_primitives::EngineApiValidator;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{EngineTypes, EngineValidator, PayloadBuilderError, PayloadTypes};
+use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
 use reth_provider::{
     BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
 };
@@ -68,7 +69,6 @@ where
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     PayloadT: PayloadTypes,
     Pool: TransactionPool + 'static,
-    Validator: EngineValidator<PayloadT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     /// Creates a new instance of `TaikoEngineApi` with the given parameters.
@@ -97,7 +97,7 @@ where
             BuiltPayload = EthBuiltPayload,
         >,
     Pool: TransactionPool + 'static,
-    Validator: EngineValidator<EngineT>,
+    Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     /// Creates a new execution payload with the given execution data.

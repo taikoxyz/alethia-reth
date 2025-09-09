@@ -16,7 +16,7 @@ use reth::{
     },
     transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool},
 };
-use reth_evm::TxEnvFor;
+use reth_evm::{SpecFor, TxEnvFor};
 use reth_provider::{ProviderHeader, ProviderTx};
 use reth_rpc::{
     EthApi,
@@ -25,15 +25,17 @@ use reth_rpc::{
 use reth_rpc_eth_api::{
     RpcConvert, SignableTxRequest,
     helpers::{
-        EthApiSpec, EthBlocks, EthSigner, EthState, EthTransactions, LoadTransaction,
-        pending_block::PendingEnvBuilder, spec::SignersForApi,
+        EthApiSpec, EthBlocks, EthState, EthTransactions, LoadTransaction,
+        pending_block::PendingEnvBuilder,
+        spec::{SignersForApi, SignersForRpc},
     },
     types::RpcTypes,
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, error::FromEvmError,
-    utils::recover_raw_transaction,
+    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
+    builder::config::PendingBlockKind, error::FromEvmError, utils::recover_raw_transaction,
 };
+use reth_transaction_pool::AddedTransactionOutcome;
 
 /// `Eth` API implementation for Taiko network.
 pub struct TaikoEthApi<N: RpcNodeCore, Rpc: RpcConvert>(pub EthApi<N, Rpc>);
@@ -171,7 +173,12 @@ impl<N, Rpc> Trace for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives>,
+    Rpc: RpcConvert<
+            Primitives = N::Primitives,
+            Network = Ethereum,
+            Error = EthApiError,
+            Spec = SpecFor<N::Evm>,
+        >,
 {
 }
 
@@ -219,6 +226,7 @@ where
             Error = EthApiError,
             TxEnv = TxEnvFor<N::Evm>,
             Network = Ethereum,
+            Spec = SpecFor<N::Evm>,
         >,
 {
 }
@@ -227,7 +235,13 @@ impl<N, Rpc> EstimateCall for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, TxEnv = TxEnvFor<N::Evm>>,
+    Rpc: RpcConvert<
+            Primitives = N::Primitives,
+            Error = EthApiError,
+            TxEnv = TxEnvFor<N::Evm>,
+            Network = Ethereum,
+            Spec = SpecFor<N::Evm>,
+        >,
 {
 }
 
@@ -235,7 +249,13 @@ impl<N, Rpc> Call for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, TxEnv = TxEnvFor<N::Evm>>,
+    Rpc: RpcConvert<
+            Primitives = N::Primitives,
+            Error = EthApiError,
+            TxEnv = TxEnvFor<N::Evm>,
+            Network = Ethereum,
+            Spec = SpecFor<N::Evm>,
+        >,
 {
     /// Returns default gas limit to use for `eth_call` and tracing RPC methods.
     ///
@@ -255,7 +275,13 @@ where
 impl<N, Rpc> EthState for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
-    Rpc: RpcConvert<Primitives = N::Primitives>,
+    EthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<
+            Primitives = N::Primitives,
+            Error = EthApiError,
+            Network = Ethereum,
+            Spec = SpecFor<N::Evm>,
+        >,
 {
     /// Returns the maximum number of blocks into the past for generating state proofs.
     fn max_proof_window(&self) -> u64 {
@@ -266,7 +292,13 @@ where
 impl<N, Rpc> LoadState for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
-    Rpc: RpcConvert<Primitives = N::Primitives>,
+    EthApiError: FromEvmError<N::Evm>,
+    Rpc: RpcConvert<
+            Primitives = N::Primitives,
+            Error = EthApiError,
+            Network = Ethereum,
+            Spec = SpecFor<N::Evm>,
+        >,
 {
 }
 
@@ -274,7 +306,7 @@ impl<N, Rpc> EthBlocks for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
 {
 }
 
@@ -288,6 +320,12 @@ where
     #[inline]
     fn pending_block(&self) -> &tokio::sync::Mutex<Option<PendingBlock<Self::Primitives>>> {
         self.0.pending_block()
+    }
+
+    /// Returns the pending block kind to build.
+    #[inline]
+    fn pending_block_kind(&self) -> PendingBlockKind {
+        self.0.pending_block_kind()
     }
 
     #[inline]
@@ -304,7 +342,7 @@ where
 {
     /// Returns a handle for signing data.
     #[inline]
-    fn signers(&self) -> &parking_lot::RwLock<Vec<Box<dyn EthSigner<ProviderTx<Self::Provider>>>>> {
+    fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         EthApiSpec::signers(&self.0)
     }
 
@@ -320,7 +358,8 @@ where
         let pool_transaction = <Self::Pool as TransactionPool>::Transaction::from_pooled(recovered);
 
         // submit the transaction to the pool with a `Local` origin
-        let hash = self.pool().add_transaction(TransactionOrigin::Local, pool_transaction).await?;
+        let AddedTransactionOutcome { hash, .. } =
+            self.pool().add_transaction(TransactionOrigin::Local, pool_transaction).await?;
 
         Ok(hash)
     }
@@ -330,14 +369,14 @@ impl<N, Rpc> LoadTransaction for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
 {
 }
 
 impl<N, Rpc> EthApiSpec for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
-    Rpc: RpcConvert<Primitives = N::Primitives>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
 {
     /// The transaction type signers are using.
     type Transaction = ProviderTx<N::Provider>;

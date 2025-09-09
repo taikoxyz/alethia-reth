@@ -26,7 +26,12 @@
       "Bash(cargo clean:*)",
       "Bash(cargo run:*)",
       "Bash(cargo test:*)",
-      "Bash(./target/release/taiko-reth:*)"
+      "Bash(./target/release/taiko-reth:*)",
+      "Bash(rustc:*)",
+      "WebSearch",
+      "Bash(cargo doc:*)",
+      "Bash(RUSTFLAGS=\"--cfg docsrs\" cargo check --lib)",
+      "Bash(cargo expand:*)"
     ],
     "deny": []
   }

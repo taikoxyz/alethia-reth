@@ -188,9 +188,8 @@ where
                 let parent_block_parent_hash = parent.header().parent_hash();
 
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
-                let parent_block_time = parent.header().timestamp()
-                    - self
-                        .block_reader
+                let parent_block_time = parent.header().timestamp() -
+                    self.block_reader
                         .block_by_hash(parent_block_parent_hash)
                         .map_err(|_| ConsensusError::ParentUnknown {
                             hash: parent_block_parent_hash,

@@ -1,51 +1,35 @@
-use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH, Header};
-use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
-use reth::primitives::RecoveredBlock;
-use reth_ethereum::{Block, EthPrimitives};
-use reth_evm::ConfigureEvm;
-use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{
-    AddOnsContext, EngineApiMessageVersion, EngineObjectValidationError, EngineValidator,
-    FullNodeComponents, InvalidPayloadAttributesError, NewPayloadError, NodeTypes,
-    PayloadAttributes, PayloadOrAttributes, PayloadTypes, PayloadValidator,
-};
-use reth_node_builder::rpc::EngineValidatorBuilder;
-use reth_primitives_traits::Block as SealedBlock;
-use std::{convert::Infallible, sync::Arc};
-
 use crate::{
-    block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
-    chainspec::spec::TaikoChainSpec,
-    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
-    payload::{attributes::TaikoPayloadAttributes, engine::TaikoEngineTypes},
-    rpc::engine::types::TaikoExecutionData,
+    TaikoNode, chainspec::spec::TaikoChainSpec, evm::config::TaikoEvmConfig,
+    payload::attributes::TaikoPayloadAttributes, rpc::engine::types::TaikoExecutionData,
 };
+use alloy_consensus::EMPTY_ROOT_HASH;
+use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
+use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
+use reth_engine_primitives::EngineApiValidator;
+use reth_engine_tree::tree::{TreeConfig, payload_validator::BasicEngineValidator};
+use reth_ethereum::Block;
+use reth_evm::ConfigureEngineEvm;
+use reth_node_api::{
+    AddOnsContext, FullNodeComponents, NewPayloadError, PayloadTypes, PayloadValidator,
+};
+use reth_node_builder::{
+    invalid_block_hook::InvalidBlockHookExt,
+    rpc::{EngineValidatorBuilder, PayloadValidatorBuilder},
+};
+use reth_payload_primitives::{
+    EngineApiMessageVersion, EngineObjectValidationError, PayloadOrAttributes,
+};
+use reth_primitives_traits::Block as SealedBlock;
+use std::sync::Arc;
 
 /// Builder for [`TaikoEngineValidator`].
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TaikoEngineValidatorBuilder;
 
-impl<N> EngineValidatorBuilder<N> for TaikoEngineValidatorBuilder
+impl<N> PayloadValidatorBuilder<N> for TaikoEngineValidatorBuilder
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
 {
     /// The consensus implementation to build.
     type Validator = TaikoEngineValidator;
@@ -53,6 +37,34 @@ where
     /// Creates the engine validator.
     async fn build(self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
         Ok(TaikoEngineValidator::new(ctx.config.chain.clone()))
+    }
+}
+
+impl<N> EngineValidatorBuilder<N> for TaikoEngineValidatorBuilder
+where
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    N::Evm: ConfigureEngineEvm<TaikoExecutionData>,
+{
+    /// The tree validator type that will be used by the consensus engine.
+    type EngineValidator = BasicEngineValidator<N::Provider, N::Evm, TaikoEngineValidator>;
+
+    /// Builds the tree validator for the consensus engine.
+    async fn build_tree_validator(
+        self,
+        ctx: &AddOnsContext<'_, N>,
+        tree_config: TreeConfig,
+    ) -> eyre::Result<Self::EngineValidator> {
+        let validator = <Self as PayloadValidatorBuilder<N>>::build(self, ctx).await?;
+        let data_dir = ctx.config.datadir.clone().resolve_datadir(ctx.config.chain.chain());
+        let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
+        Ok(BasicEngineValidator::new(
+            ctx.node.provider().clone(),
+            Arc::new(ctx.node.consensus().clone()),
+            ctx.node.evm_config().clone(),
+            validator,
+            tree_config,
+            invalid_block_hook,
+        ))
     }
 }
 
@@ -69,11 +81,12 @@ impl TaikoEngineValidator {
     }
 }
 
-impl PayloadValidator for TaikoEngineValidator {
+impl<Types> PayloadValidator<Types> for TaikoEngineValidator
+where
+    Types: PayloadTypes<ExecutionData = TaikoExecutionData>,
+{
     /// The block type used by the engine.
     type Block = Block;
-    /// The execution payload type used by the engine.
-    type ExecutionData = TaikoExecutionData;
 
     /// Ensures that the given payload does not violate any consensus rules that concern the block's
     /// layout.
@@ -82,7 +95,7 @@ impl PayloadValidator for TaikoEngineValidator {
     /// fields.
     fn ensure_well_formed_payload(
         &self,
-        payload: Self::ExecutionData,
+        payload: Types::ExecutionData,
     ) -> Result<RecoveredBlock<Self::Block>, NewPayloadError> {
         let TaikoExecutionData { execution_payload: payload, taiko_sidecar } = payload;
 
@@ -115,44 +128,26 @@ impl PayloadValidator for TaikoEngineValidator {
     }
 }
 
-impl<Types> EngineValidator<Types> for TaikoEngineValidator
+// EngineApiValidator implementation for TaikoEngineValidator
+impl<Types> EngineApiValidator<Types> for TaikoEngineValidator
 where
     Types: PayloadTypes<PayloadAttributes = TaikoPayloadAttributes, ExecutionData = TaikoExecutionData>,
 {
-    /// Validates the presence or exclusion of fork-specific fields based on the payload attributes
-    /// and the message version.
     fn validate_version_specific_fields(
         &self,
-        _: EngineApiMessageVersion,
-        _: PayloadOrAttributes<'_, Self::ExecutionData, TaikoPayloadAttributes>,
+        _version: EngineApiMessageVersion,
+        _payload_or_attrs: PayloadOrAttributes<'_, Types::ExecutionData, Types::PayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
-        // No need to validate validate_withdrawals_presence and
-        // validate_parent_beacon_block_root_presence
+        // For Taiko, we don't have version-specific validation
         Ok(())
     }
 
-    /// Ensures that the payload attributes are valid for the given [`EngineApiMessageVersion`].
     fn ensure_well_formed_attributes(
         &self,
-        _: EngineApiMessageVersion,
-        _: &TaikoPayloadAttributes,
+        _version: EngineApiMessageVersion,
+        _attributes: &Types::PayloadAttributes,
     ) -> Result<(), EngineObjectValidationError> {
-        // No need to validate validate_withdrawals_presence and
-        // validate_parent_beacon_block_root_presence
-        Ok(())
-    }
-
-    /// Validates the payload attributes with respect to the header.
-    fn validate_payload_attributes_against_header(
-        &self,
-        attributes: &TaikoPayloadAttributes,
-        header: &Header,
-    ) -> Result<(), InvalidPayloadAttributesError> {
-        // We allow the payload attributes to have a timestamp that is equal to the parent header's
-        // timestamp in Taiko network.
-        if attributes.payload_attributes.timestamp() < header.timestamp() {
-            return Err(InvalidPayloadAttributesError::InvalidTimestamp);
-        }
+        // Attributes are well-formed if they pass the basic validation
         Ok(())
     }
 }

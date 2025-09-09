@@ -19,7 +19,7 @@ use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
-    ConfigureEvm,
+    ConfigureEngineEvm,
     block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
@@ -36,6 +36,7 @@ use crate::{
     block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
     evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
+    rpc::engine::types::TaikoExecutionData,
 };
 
 use crate::{
@@ -121,7 +122,8 @@ where
         + BlockReaderIdExt<Header = alloy_consensus::Header>
         + StateProviderFactory
         + 'static,
-    Evm: ConfigureEvm<
+    Evm: ConfigureEngineEvm<
+            TaikoExecutionData,
             Primitives = EthPrimitives,
             Error = Infallible,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,

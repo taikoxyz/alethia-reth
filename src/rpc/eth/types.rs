@@ -1,4 +1,3 @@
-use alloy_network::Ethereum;
 use alloy_primitives::Bytes;
 use jsonrpsee::tokio;
 use reth::{
@@ -54,7 +53,7 @@ where
     /// Extension of [`FromEthApiError`], with network specific errors.
     type Error = EthApiError;
     /// Blockchain primitive types, specific to network, e.g. block and transaction.
-    type NetworkTypes = Ethereum;
+    type NetworkTypes = Rpc::Network;
     /// Conversion methods for transaction RPC type.
     type RpcConvert = Rpc;
 
@@ -165,7 +164,7 @@ impl<N, Rpc> LoadReceipt for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
 }
 
@@ -173,12 +172,7 @@ impl<N, Rpc> Trace for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<
-            Primitives = N::Primitives,
-            Network = Ethereum,
-            Error = EthApiError,
-            Spec = SpecFor<N::Evm>,
-        >,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Spec = SpecFor<N::Evm>>,
 {
 }
 
@@ -186,7 +180,7 @@ impl<N, Rpc> EthFees for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
 }
 
@@ -194,7 +188,7 @@ impl<N, Rpc> LoadFee for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
     /// Returns a handle for reading gas price.
     #[inline]
@@ -213,7 +207,7 @@ impl<N, Rpc> LoadBlock for TaikoEthApi<N, Rpc>
 where
     Self: LoadPendingBlock,
     N: RpcNodeCore,
-    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
 }
 
@@ -225,7 +219,6 @@ where
             Primitives = N::Primitives,
             Error = EthApiError,
             TxEnv = TxEnvFor<N::Evm>,
-            Network = Ethereum,
             Spec = SpecFor<N::Evm>,
         >,
 {
@@ -239,7 +232,6 @@ where
             Primitives = N::Primitives,
             Error = EthApiError,
             TxEnv = TxEnvFor<N::Evm>,
-            Network = Ethereum,
             Spec = SpecFor<N::Evm>,
         >,
 {
@@ -253,7 +245,6 @@ where
             Primitives = N::Primitives,
             Error = EthApiError,
             TxEnv = TxEnvFor<N::Evm>,
-            Network = Ethereum,
             Spec = SpecFor<N::Evm>,
         >,
 {
@@ -276,12 +267,7 @@ impl<N, Rpc> EthState for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<
-            Primitives = N::Primitives,
-            Error = EthApiError,
-            Network = Ethereum,
-            Spec = SpecFor<N::Evm>,
-        >,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Spec = SpecFor<N::Evm>>,
 {
     /// Returns the maximum number of blocks into the past for generating state proofs.
     fn max_proof_window(&self) -> u64 {
@@ -293,12 +279,7 @@ impl<N, Rpc> LoadState for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<
-            Primitives = N::Primitives,
-            Error = EthApiError,
-            Network = Ethereum,
-            Spec = SpecFor<N::Evm>,
-        >,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError, Spec = SpecFor<N::Evm>>,
 {
 }
 
@@ -306,7 +287,7 @@ impl<N, Rpc> EthBlocks for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
 }
 
@@ -314,7 +295,7 @@ impl<N, Rpc> LoadPendingBlock for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum>,
+    Rpc: RpcConvert<Primitives = N::Primitives>,
 {
     /// Returns a handle to the pending block.
     #[inline]
@@ -338,7 +319,7 @@ impl<N, Rpc> EthTransactions for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
     /// Returns a handle for signing data.
     #[inline]
@@ -369,14 +350,14 @@ impl<N, Rpc> LoadTransaction for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
     EthApiError: FromEvmError<N::Evm>,
-    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
 }
 
 impl<N, Rpc> EthApiSpec for TaikoEthApi<N, Rpc>
 where
     N: RpcNodeCore,
-    Rpc: RpcConvert<Primitives = N::Primitives, Network = Ethereum, Error = EthApiError>,
+    Rpc: RpcConvert<Primitives = N::Primitives, Error = EthApiError>,
 {
     /// The transaction type signers are using.
     type Transaction = ProviderTx<N::Provider>;

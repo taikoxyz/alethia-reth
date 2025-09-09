@@ -34,7 +34,6 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, error::FromEvmError, utils::recover_raw_transaction,
 };
-use reth_transaction_pool::AddedTransactionOutcome;
 
 /// `Eth` API implementation for Taiko network.
 pub struct TaikoEthApi<N: RpcNodeCore, Rpc: RpcConvert>(pub EthApi<N, Rpc>);
@@ -339,10 +338,10 @@ where
         let pool_transaction = <Self::Pool as TransactionPool>::Transaction::from_pooled(recovered);
 
         // submit the transaction to the pool with a `Local` origin
-        let AddedTransactionOutcome { hash, .. } =
+        let outcome =
             self.pool().add_transaction(TransactionOrigin::Local, pool_transaction).await?;
 
-        Ok(hash)
+        Ok(outcome.hash)
     }
 }
 

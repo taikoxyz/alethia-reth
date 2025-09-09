@@ -124,7 +124,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         &self,
         _payload: &TaikoExecutionData,
     ) -> impl ExecutableTxIterator<Self> {
-        Option::<Result<Recovered<TxTy<Self::Primitives>>, AnyError>>::None.into_iter()
+        std::iter::empty::<Result<Recovered<TxTy<Self::Primitives>>, AnyError>>()
     }
 }
 

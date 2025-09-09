@@ -256,7 +256,7 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
     let mut buf = [0u8; 16];
     buf[..8].copy_from_slice(&base_fee_share_pctg.to_be_bytes());
     buf[8..].copy_from_slice(&caller_nonce.to_be_bytes());
-    Bytes::from(buf.to_vec())
+    Bytes::copy_from_slice(&buf)
 }
 
 // Decode the extra data from the post Ontake block to extract the base fee share percentage,

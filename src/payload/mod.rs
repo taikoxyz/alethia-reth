@@ -14,6 +14,7 @@ use crate::{
 pub mod attributes;
 pub mod builder;
 pub mod engine;
+#[allow(clippy::module_inception)]
 pub mod payload;
 
 /// The builder to spawn [`TaikoPayloadBuilder`] payload building tasks.

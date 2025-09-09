@@ -71,9 +71,11 @@ mod tests {
 
     #[test]
     fn test_calculate_next_block_eip4396_base_fee() {
-        let mut parent = Header::default();
-        parent.gas_limit = 30_000_000;
-        parent.base_fee_per_gas = Some(1_000_000_000);
+        let mut parent = Header {
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1_000_000_000),
+            ..Default::default()
+        };
 
         // Test 1: Gas used equals adjusted target with standard block time
         // Adjusted target = 15_000_000 * 2 / 2 = 15_000_000

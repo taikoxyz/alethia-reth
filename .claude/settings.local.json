@@ -31,7 +31,8 @@
       "WebSearch",
       "Bash(cargo doc:*)",
       "Bash(RUSTFLAGS=\"--cfg docsrs\" cargo check --lib)",
-      "Bash(cargo expand:*)"
+      "Bash(cargo expand:*)",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": []
   }

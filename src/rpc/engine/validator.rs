@@ -2,7 +2,7 @@ use crate::{
     TaikoNode, chainspec::spec::TaikoChainSpec, evm::config::TaikoEvmConfig,
     payload::attributes::TaikoPayloadAttributes, rpc::engine::types::TaikoExecutionData,
 };
-use alloy_consensus::EMPTY_ROOT_HASH;
+use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
 use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
 use reth_engine_primitives::EngineApiValidator;
@@ -17,9 +17,10 @@ use reth_node_builder::{
     rpc::{EngineValidatorBuilder, PayloadValidatorBuilder},
 };
 use reth_payload_primitives::{
-    EngineApiMessageVersion, EngineObjectValidationError, PayloadOrAttributes,
+    EngineApiMessageVersion, EngineObjectValidationError, InvalidPayloadAttributesError,
+    PayloadAttributes, PayloadOrAttributes,
 };
-use reth_primitives_traits::Block as SealedBlock;
+use reth_primitives_traits::Block as BlockTrait;
 use std::sync::Arc;
 
 /// Builder for [`TaikoEngineValidator`].
@@ -125,6 +126,28 @@ where
         }
 
         sealed_block.try_recover().map_err(|e| NewPayloadError::Other(e.into()))
+    }
+
+    /// Validates the payload attributes with respect to the header.
+    ///
+    /// By default, this enforces that the payload attributes timestamp is greater than the
+    /// timestamp according to:
+    ///   > 7. Client software MUST ensure that payloadAttributes.timestamp is greater than
+    ///   > timestamp
+    ///   > of a block referenced by forkchoiceState.headBlockHash.
+    ///
+    /// See also: <https://github.com/ethereum/execution-apis/blob/main/src/engine/common.md#specification-1>
+    fn validate_payload_attributes_against_header(
+        &self,
+        attr: &Types::PayloadAttributes,
+        header: &<Self::Block as BlockTrait>::Header,
+    ) -> Result<(), InvalidPayloadAttributesError> {
+        // We allow the payload attributes to have a timestamp that is equal to the parent header's
+        // timestamp in Taiko network.
+        if attr.timestamp() < header.timestamp() {
+            return Err(InvalidPayloadAttributesError::InvalidTimestamp);
+        }
+        Ok(())
     }
 }
 

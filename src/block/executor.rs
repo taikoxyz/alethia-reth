@@ -161,7 +161,7 @@ where
         // Execute transaction.
         let ResultAndState { result, state } = self
             .evm
-            .transact(tx)
+            .transact(&tx)
             .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
 
         if !f(&result).should_commit() {
@@ -238,8 +238,8 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
+                BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
@@ -256,7 +256,7 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
     let mut buf = [0u8; 16];
     buf[..8].copy_from_slice(&base_fee_share_pctg.to_be_bytes());
     buf[8..].copy_from_slice(&caller_nonce.to_be_bytes());
-    Bytes::from(buf.to_vec())
+    Bytes::copy_from_slice(&buf)
 }
 
 // Decode the extra data from the post Ontake block to extract the base fee share percentage,

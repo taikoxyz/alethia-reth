@@ -188,9 +188,8 @@ where
                 let parent_block_parent_hash = parent.header().parent_hash();
 
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
-                let parent_block_time = parent.header().timestamp()
-                    - self
-                        .block_reader
+                let parent_block_time = parent.header().timestamp() -
+                    self.block_reader
                         .block_by_hash(parent_block_parent_hash)
                         .map_err(|_| ConsensusError::ParentUnknown {
                             hash: parent_block_parent_hash,
@@ -384,9 +383,11 @@ mod test {
         use crate::consensus::eip4396::{BLOCK_TIME_TARGET, calculate_next_block_eip4396_base_fee};
 
         // Test calculate_next_block_eip4396_base_fee function
-        let mut parent = Header::default();
-        parent.gas_limit = 30_000_000;
-        parent.base_fee_per_gas = Some(1_000_000_000);
+        let mut parent = Header {
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1_000_000_000),
+            ..Default::default()
+        };
 
         // Test 1: Gas used equals target (gas_limit / 2)
         parent.gas_used = 15_000_000;

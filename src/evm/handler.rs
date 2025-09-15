@@ -298,19 +298,18 @@ pub fn reimburse_caller<CTX: ContextTr>(
     let chain_id = context.cfg().chain_id();
     let (tx, _journal) = context.tx_journal_mut();
 
-    if let Some(ctx) = extra_execution_ctx {
-        if ctx.anchor_caller_address() == tx.caller() &&
-            ctx.anchor_caller_nonce() == tx.nonce() &&
-            tx.kind().to() == Some(&get_treasury_address(chain_id))
-        {
-            debug!(
-                target: "taiko_evm",
-                "Anchor transaction detected, no reimbursement, sender account: {:?} nonce: {:?}",
-                caller,
-                tx.nonce()
-            );
-            return Ok(());
-        }
+    if let Some(ctx) = extra_execution_ctx &&
+        ctx.anchor_caller_address() == tx.caller() &&
+        ctx.anchor_caller_nonce() == tx.nonce() &&
+        tx.kind().to() == Some(&get_treasury_address(chain_id))
+    {
+        debug!(
+            target: "taiko_evm",
+            "Anchor transaction detected, no reimbursement, sender account: {:?} nonce: {:?}",
+            caller,
+            tx.nonce()
+        );
+        return Ok(());
     }
 
     debug!(

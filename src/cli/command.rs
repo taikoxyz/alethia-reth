@@ -52,7 +52,7 @@ where
     where
         L: Launcher<C, Ext>,
     {
-        tracing::info!(target: "reth::taiko::cli", version = ?version::SHORT_VERSION, "Starting taiko-reth");
+        tracing::info!(target: "reth::taiko::cli", version = ?version::version_metadata().short_version, "Starting taiko-reth");
 
         let NodeCommand {
             datadir,

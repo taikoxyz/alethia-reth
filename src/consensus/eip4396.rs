@@ -44,9 +44,9 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
         core::cmp::Ordering::Greater => {
             let gas_used_delta = parent_gas_used - parent_adjusted_gas_target;
             let base_fee_per_gas_delta = core::cmp::max(
-                parent_base_fee_per_gas as u128 * gas_used_delta as u128
-                    / parent_base_gas_target as u128
-                    / BASE_FEE_MAX_CHANGE_DENOMINATOR,
+                parent_base_fee_per_gas as u128 * gas_used_delta as u128 /
+                    parent_base_gas_target as u128 /
+                    BASE_FEE_MAX_CHANGE_DENOMINATOR,
                 1,
             ) as u64;
             parent_base_fee_per_gas + base_fee_per_gas_delta
@@ -55,9 +55,9 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
         // If gas used is less than adjusted target, decrease base fee
         core::cmp::Ordering::Less => {
             let gas_used_delta = parent_adjusted_gas_target - parent_gas_used;
-            let base_fee_per_gas_delta = (parent_base_fee_per_gas as u128 * gas_used_delta as u128
-                / parent_base_gas_target as u128
-                / BASE_FEE_MAX_CHANGE_DENOMINATOR) as u64;
+            let base_fee_per_gas_delta = (parent_base_fee_per_gas as u128 * gas_used_delta as u128 /
+                parent_base_gas_target as u128 /
+                BASE_FEE_MAX_CHANGE_DENOMINATOR) as u64;
             parent_base_fee_per_gas.saturating_sub(base_fee_per_gas_delta)
         }
     }
@@ -71,9 +71,11 @@ mod tests {
 
     #[test]
     fn test_calculate_next_block_eip4396_base_fee() {
-        let mut parent = Header::default();
-        parent.gas_limit = 30_000_000;
-        parent.base_fee_per_gas = Some(1_000_000_000);
+        let mut parent = Header {
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1_000_000_000),
+            ..Default::default()
+        };
 
         // Test 1: Gas used equals adjusted target with standard block time
         // Adjusted target = 15_000_000 * 2 / 2 = 15_000_000

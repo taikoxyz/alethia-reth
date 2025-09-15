@@ -1,26 +1,3 @@
-use std::{convert::Infallible, sync::Arc};
-
-use reth::{
-    api::{FullNodeComponents, FullNodeTypes, NodeTypes},
-    builder::{
-        DebugNode, Node,
-        components::{BasicPayloadServiceBuilder, ComponentsBuilder},
-    },
-    providers::EthStorage,
-};
-use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum::EthPrimitives;
-use reth_evm::ConfigureEvm;
-use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{AddOnsContext, NodeAddOns, PayloadAttributesBuilder, PayloadTypes};
-use reth_node_builder::{
-    NodeAdapter, NodeComponentsBuilder,
-    rpc::{EngineValidatorAddOn, EngineValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle},
-};
-use reth_node_ethereum::node::EthereumPoolBuilder;
-use reth_rpc::eth::core::EthRpcConverterFor;
-use reth_trie_db::MerklePatriciaTrie;
-
 pub mod block;
 pub mod chainspec;
 pub mod cli;
@@ -32,23 +9,39 @@ pub mod payload;
 pub mod rpc;
 
 use crate::{
-    block::{
-        assembler::TaikoBlockAssembler,
-        factory::{TaikoBlockExecutorFactory, TaikoExecutorBuilder},
-    },
+    block::factory::TaikoExecutorBuilder,
     chainspec::spec::TaikoChainSpec,
     consensus::builder::TaikoConsensusBuilder,
-    evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
+    evm::config::TaikoEvmConfig,
     network::TaikoNetworkBuilder,
     payload::{TaikoPayloadBuilderBuilder, engine::TaikoEngineTypes},
     rpc::{
-        engine::{
-            builder::TaikoEngineApiBuilder,
-            validator::{TaikoEngineValidator, TaikoEngineValidatorBuilder},
-        },
+        engine::{builder::TaikoEngineApiBuilder, validator::TaikoEngineValidatorBuilder},
         eth::{builder::TaikoEthApiBuilder, types::TaikoEthApi},
     },
 };
+use reth::{
+    api::{FullNodeComponents, FullNodeTypes, NodeTypes},
+    builder::{
+        DebugNode, Node,
+        components::{BasicPayloadServiceBuilder, ComponentsBuilder},
+    },
+    providers::EthStorage,
+};
+use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_engine_primitives::{EngineApiValidator, PayloadValidator};
+use reth_ethereum::EthPrimitives;
+use reth_node_api::{BlockTy, NodeAddOns, PayloadAttributesBuilder, PayloadTypes};
+use reth_node_builder::{
+    NodeAdapter,
+    rpc::{
+        BasicEngineValidatorBuilder, EngineValidatorAddOn, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
+    },
+};
+use reth_node_ethereum::node::EthereumPoolBuilder;
+use reth_rpc::eth::core::EthRpcConverterFor;
+use std::sync::Arc;
 
 /// The main node type for a Taiko network node, implementing the `NodeTypes` trait.
 #[derive(Debug, Clone, Default)]
@@ -59,8 +52,6 @@ impl NodeTypes for TaikoNode {
     type Primitives = EthPrimitives;
     /// The type used for configuration of the EVM.
     type ChainSpec = TaikoChainSpec;
-    /// The type used to perform state commitment operations.
-    type StateCommitment = MerklePatriciaTrie;
     /// The type responsible for writing chain primitives to storage.
     type Storage = EthStorage;
     /// The node's engine types, defining the interaction with the consensus engine.
@@ -68,60 +59,22 @@ impl NodeTypes for TaikoNode {
 }
 
 /// Taiko custom addons which configuring RPC types.
-pub struct TaikoAddOns<
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-    EV,
->(pub RpcAddOns<N, TaikoEthApiBuilder, EV, TaikoEngineApiBuilder<EV>>);
+pub struct TaikoAddOns<N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>, PVB>(
+    RpcAddOns<N, TaikoEthApiBuilder, PVB, TaikoEngineApiBuilder<PVB>>,
+);
 
-impl<N, EV> Default for TaikoAddOns<N, EV>
+impl<N, PVB> Default for TaikoAddOns<N, PVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-    EV: Default,
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    PVB: Default,
 {
     /// Creates a new instance of `TaikoAddOns` with default configurations.
     fn default() -> Self {
         let add_ons = RpcAddOns::new(
             TaikoEthApiBuilder::default(),
-            EV::default(),
+            PVB::default(),
             TaikoEngineApiBuilder::default(),
+            Default::default(),
             Default::default(),
         );
 
@@ -129,29 +82,12 @@ where
     }
 }
 
-impl<N, EV> NodeAddOns<N> for TaikoAddOns<N, EV>
+impl<N, PVB> NodeAddOns<N> for TaikoAddOns<N, PVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-    EV: EngineValidatorBuilder<N>,
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    PVB: PayloadValidatorBuilder<N> + Clone,
+    PVB::Validator: PayloadValidator<<N::Types as NodeTypes>::Payload, Block = BlockTy<N::Types>>
+        + EngineApiValidator<<N::Types as NodeTypes>::Payload>,
 {
     /// Handle to add-ons.
     type Handle = RpcHandle<N, TaikoEthApi<N, EthRpcConverterFor<N>>>;
@@ -165,83 +101,41 @@ where
     }
 }
 
-impl<N, EV> RethRpcAddOns<N> for TaikoAddOns<N, EV>
+impl<N, PVB> RethRpcAddOns<N> for TaikoAddOns<N, PVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-    EV: EngineValidatorBuilder<N>,
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    PVB: PayloadValidatorBuilder<N> + Clone,
+    PVB::Validator: PayloadValidator<<N::Types as NodeTypes>::Payload, Block = BlockTy<N::Types>>
+        + EngineApiValidator<<N::Types as NodeTypes>::Payload>,
 {
     /// eth API implementation.
     type EthApi = TaikoEthApi<N, EthRpcConverterFor<N>>;
 
     /// Returns a mutable reference to RPC hooks.
-    fn hooks_mut(&mut self) -> &mut reth_node_builder::rpc::RpcHooks<N, Self::EthApi> {
+    fn hooks_mut(&mut self) -> &mut RpcHooks<N, Self::EthApi> {
         self.0.hooks_mut()
     }
 }
 
-impl<N, EV> EngineValidatorAddOn<N> for TaikoAddOns<N, EV>
+impl<N, PVB> EngineValidatorAddOn<N> for TaikoAddOns<N, PVB>
 where
-    N: FullNodeComponents<
-            Types: NodeTypes<
-                Primitives = EthPrimitives,
-                ChainSpec = TaikoChainSpec,
-                StateCommitment = MerklePatriciaTrie,
-                Storage = EthStorage,
-                Payload = TaikoEngineTypes,
-            >,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-    EV: EngineValidatorBuilder<N>,
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    PVB: PayloadValidatorBuilder<N> + Send,
+    PVB::Validator: PayloadValidator<<N::Types as NodeTypes>::Payload, Block = BlockTy<N::Types>>
+        + EngineApiValidator<<N::Types as NodeTypes>::Payload>,
 {
-    /// The Validator type to use for the engine API.
-    type Validator = TaikoEngineValidator;
+    /// The ValidatorBuilder type to use for the engine API.
+    type ValidatorBuilder = BasicEngineValidatorBuilder<PVB>;
 
-    /// Creates the engine validator for an engine API based node.
-    async fn engine_validator(&self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::Validator> {
-        TaikoEngineValidatorBuilder::default().build(ctx).await
+    /// Returns the engine validator builder.
+    fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
+        EngineValidatorAddOn::<N>::engine_validator_builder(&self.0)
     }
 }
 
 impl<N> Node<N> for TaikoNode
 where
-    N: FullNodeTypes<
-        Types: NodeTypes<
-            Primitives = EthPrimitives,
-            ChainSpec = TaikoChainSpec,
-            StateCommitment = MerklePatriciaTrie,
-            Storage = EthStorage,
-            Payload = TaikoEngineTypes,
-        >,
-    >,
+    N: FullNodeTypes<Types = Self>,
 {
     /// The type that builds the node's components.
     type ComponentsBuilder = ComponentsBuilder<
@@ -254,10 +148,7 @@ where
     >;
 
     /// Exposes the customizable node add-on types.
-    type AddOns = TaikoAddOns<
-        NodeAdapter<N, <Self::ComponentsBuilder as NodeComponentsBuilder<N>>::Components>,
-        TaikoEngineValidatorBuilder,
-    >;
+    type AddOns = TaikoAddOns<NodeAdapter<N>, TaikoEngineValidatorBuilder>;
 
     /// Returns a [`NodeComponentsBuilder`] for the node.
     fn components_builder(&self) -> Self::ComponentsBuilder {
@@ -276,23 +167,7 @@ where
     }
 }
 
-impl<
-    N: FullNodeComponents<
-            Types = Self,
-            Evm: ConfigureEvm<
-                Primitives = EthPrimitives,
-                Error = Infallible,
-                NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-                BlockExecutorFactory = TaikoBlockExecutorFactory<
-                    RethReceiptBuilder,
-                    Arc<TaikoChainSpec>,
-                    TaikoEvmFactory,
-                >,
-                BlockAssembler = TaikoBlockAssembler,
-            >,
-        >,
-> DebugNode<N> for TaikoNode
-{
+impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
     /// RPC block type. Used by [`DebugConsensusClient`] to fetch blocks and submit them to the
     /// engine.
     type RpcBlock = alloy_rpc_types_eth::Block;

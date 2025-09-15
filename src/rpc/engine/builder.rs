@@ -1,19 +1,13 @@
-use alloy_hardforks::EthereumHardforks;
 use alloy_rpc_types_engine::ClientVersionV1;
-use reth::{
-    payload::PayloadStore,
-    version::{CARGO_PKG_VERSION, CLIENT_CODE, NAME_CLIENT, VERGEN_GIT_SHA},
-};
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{AddOnsContext, EngineTypes, FullNodeComponents, NodeTypes, PayloadTypes};
-use reth_node_builder::rpc::{EngineApiBuilder, EngineValidatorBuilder};
+use reth::payload::PayloadStore;
+use reth_engine_primitives::EngineApiValidator;
+use reth_node_api::{AddOnsContext, FullNodeComponents, NodeTypes};
+use reth_node_builder::rpc::{EngineApiBuilder, PayloadValidatorBuilder};
+use reth_node_core::version::{CLIENT_CODE, version_metadata};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineCapabilities;
 
-use crate::{
-    payload::attributes::TaikoPayloadAttributes,
-    rpc::engine::{api::TaikoEngineApi, types::TaikoExecutionData},
-};
+use crate::{TaikoNode, rpc::engine::api::TaikoEngineApi};
 
 /// Builder for basic [`EngineApi`] implementation.
 ///
@@ -21,30 +15,22 @@ use crate::{
 /// [`TaikoEngineTypes`] and uses the general purpose [`EngineApi`] implementation as the builder's
 /// output.
 #[derive(Debug, Default)]
-pub struct TaikoEngineApiBuilder<EV> {
-    engine_validator_builder: EV,
+pub struct TaikoEngineApiBuilder<PVB> {
+    payload_validator_builder: PVB,
 }
 
-impl<N, EV> EngineApiBuilder<N> for TaikoEngineApiBuilder<EV>
+impl<N, PVB> EngineApiBuilder<N> for TaikoEngineApiBuilder<PVB>
 where
-    N: FullNodeComponents<
-        Types: NodeTypes<
-            ChainSpec: EthereumHardforks,
-            Payload: PayloadTypes<
-                ExecutionData = TaikoExecutionData,
-                PayloadAttributes = TaikoPayloadAttributes,
-                BuiltPayload = EthBuiltPayload,
-            > + EngineTypes,
-        >,
-    >,
-    EV: EngineValidatorBuilder<N>,
+    N: FullNodeComponents<Types = TaikoNode>,
+    PVB: PayloadValidatorBuilder<N>,
+    PVB::Validator: EngineApiValidator<<N::Types as NodeTypes>::Payload>,
 {
     /// The engine API RPC module.
     type EngineApi = TaikoEngineApi<
         N::Provider,
         <N::Types as NodeTypes>::Payload,
         N::Pool,
-        EV::Validator,
+        PVB::Validator,
         <N::Types as NodeTypes>::ChainSpec,
     >;
 
@@ -53,14 +39,14 @@ where
     /// [`Self::EngineApi`] will be converted into the method handlers of the authenticated RPC
     /// server (engine API).
     async fn build_engine_api(self, ctx: &AddOnsContext<'_, N>) -> eyre::Result<Self::EngineApi> {
-        let Self { engine_validator_builder } = self;
+        let Self { payload_validator_builder } = self;
 
-        let engine_validator = engine_validator_builder.build(ctx).await?;
+        let engine_validator = payload_validator_builder.build(ctx).await?;
         let client = ClientVersionV1 {
             code: CLIENT_CODE,
-            name: NAME_CLIENT.to_string(),
-            version: CARGO_PKG_VERSION.to_string(),
-            commit: VERGEN_GIT_SHA.to_string(),
+            name: version_metadata().name_client.to_string(),
+            version: version_metadata().cargo_pkg_version.to_string(),
+            commit: version_metadata().vergen_git_sha.to_string(),
         };
         let inner_engine_api = EngineApi::new(
             ctx.node.provider().clone(),

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::BlockHeader;
@@ -19,7 +20,7 @@ use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
-    ConfigureEvm,
+    ConfigureEngineEvm,
     block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
@@ -36,6 +37,7 @@ use crate::{
     block::{assembler::TaikoBlockAssembler, factory::TaikoBlockExecutorFactory},
     chainspec::spec::TaikoChainSpec,
     evm::{config::TaikoNextBlockEnvAttributes, factory::TaikoEvmFactory},
+    rpc::engine::types::TaikoExecutionData,
 };
 
 use crate::{
@@ -121,7 +123,8 @@ where
         + BlockReaderIdExt<Header = alloy_consensus::Header>
         + StateProviderFactory
         + 'static,
-    Evm: ConfigureEvm<
+    Evm: ConfigureEngineEvm<
+            TaikoExecutionData,
             Primitives = EthPrimitives,
             Error = Infallible,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
@@ -280,13 +283,14 @@ where
         // Start iterating over the best transactions in the pool.
         while let Some(pool_tx) = best_txs.next() {
             // ensure if the local accounts are provided, the transaction is from a local account.
-            if let Some(local_accounts) = locals.as_ref() {
-                if !local_accounts.is_empty() && !local_accounts.contains(&pool_tx.sender()) {
-                    // NOTE: we simply mark the transaction as underpriced if it is not from a local
-                    // account.
-                    best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
-                    continue;
-                }
+            if let Some(local_accounts) = locals.as_ref() &&
+                !local_accounts.is_empty() &&
+                !local_accounts.contains(&pool_tx.sender())
+            {
+                // NOTE: we simply mark the transaction as underpriced if it is not from a local
+                // account.
+                best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
+                continue;
             }
             // ensure we only pick the transactions that meet the minimum tip.
             if pool_tx.effective_tip_per_gas(base_fee).is_none() ||

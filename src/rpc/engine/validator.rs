@@ -129,14 +129,6 @@ where
     }
 
     /// Validates the payload attributes with respect to the header.
-    ///
-    /// By default, this enforces that the payload attributes timestamp is greater than the
-    /// timestamp according to:
-    ///   > 7. Client software MUST ensure that payloadAttributes.timestamp is greater than
-    ///   > timestamp
-    ///   > of a block referenced by forkchoiceState.headBlockHash.
-    ///
-    /// See also: <https://github.com/ethereum/execution-apis/blob/main/src/engine/common.md#specification-1>
     fn validate_payload_attributes_against_header(
         &self,
         attr: &Types::PayloadAttributes,

@@ -1,6 +1,7 @@
 use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
+use alloy_eips::Decodable2718;
 use alloy_evm::Database;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
@@ -21,7 +22,9 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::ExecutionPayload;
-use reth_primitives_traits::{Recovered, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
+use reth_primitives_traits::{
+    Recovered, SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA,
+};
 use reth_provider::errors::any::AnyError;
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 
@@ -122,9 +125,14 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
 
     fn tx_iterator_for_payload(
         &self,
-        _payload: &TaikoExecutionData,
+        payload: &TaikoExecutionData,
     ) -> impl ExecutableTxIterator<Self> {
-        std::iter::empty::<Result<Recovered<TxTy<Self::Primitives>>, AnyError>>()
+        payload.execution_payload.transactions.clone().unwrap_or_default().into_iter().map(|tx| {
+            let tx =
+                TxTy::<Self::Primitives>::decode_2718_exact(tx.as_ref()).map_err(AnyError::new)?;
+            let signer = tx.try_recover().map_err(AnyError::new)?;
+            Ok::<_, AnyError>(tx.with_signer(signer))
+        })
     }
 }
 

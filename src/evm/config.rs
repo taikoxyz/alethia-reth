@@ -22,9 +22,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::ExecutionPayload;
-use reth_primitives_traits::{
-    Recovered, SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA,
-};
+use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
 use reth_provider::errors::any::AnyError;
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 

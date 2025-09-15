@@ -148,6 +148,8 @@ impl<Types> EngineApiValidator<Types> for TaikoEngineValidator
 where
     Types: PayloadTypes<PayloadAttributes = TaikoPayloadAttributes, ExecutionData = TaikoExecutionData>,
 {
+    /// Validates the presence or exclusion of fork-specific fields based on the payload attributes
+    /// and the message version.
     fn validate_version_specific_fields(
         &self,
         _version: EngineApiMessageVersion,
@@ -157,6 +159,7 @@ where
         Ok(())
     }
 
+    /// Ensures that the payload attributes are valid for the given [`EngineApiMessageVersion`].
     fn ensure_well_formed_attributes(
         &self,
         _version: EngineApiMessageVersion,

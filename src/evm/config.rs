@@ -73,6 +73,7 @@ impl TaikoEvmConfig {
 }
 
 impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
+    /// Returns an [`EvmEnvFor`] for the given payload.
     fn evm_env_for_payload(&self, payload: &TaikoExecutionData) -> EvmEnvFor<Self> {
         let timestamp = payload.timestamp();
         let block_number = payload.block_number();
@@ -107,6 +108,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         EvmEnv { cfg_env, block_env }
     }
 
+    /// Returns an [`ExecutionCtxFor`] for the given payload.
     fn context_for_payload<'a>(
         &self,
         payload: &'a TaikoExecutionData,
@@ -121,6 +123,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         }
     }
 
+    /// Returns an [`ExecutableTxIterator`] for the given payload.
     fn tx_iterator_for_payload(
         &self,
         payload: &TaikoExecutionData,

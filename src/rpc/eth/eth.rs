@@ -78,6 +78,6 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
             .map_err(|_| EthApiError::InternalEthError)?
             .ok_or(TaikoApiError::GethNotFound)?;
 
-        Ok(self.l1_origin_by_id(U256::from(block_number))?)
+        self.l1_origin_by_id(U256::from(block_number))
     }
 }

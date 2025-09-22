@@ -244,8 +244,8 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
+                BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
@@ -276,7 +276,7 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 // designated prover flag.
 fn decode_post_shasta_extra_data(extradata: Bytes) -> (u64, bool) {
     let bytes = extradata.as_ref();
-    let base_fee_share_pctg = bytes.get(0).copied().unwrap_or_default() as u64;
+    let base_fee_share_pctg = bytes.first().copied().unwrap_or_default() as u64;
     let is_low_bond_proposal = bytes.get(1).map(|b| b & 0x01 != 0).unwrap_or(false);
     (base_fee_share_pctg, is_low_bond_proposal)
 }

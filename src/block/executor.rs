@@ -112,17 +112,23 @@ where
                 })?
                 .account_info();
 
+            // Decode the base fee share percentage from the block's extra data.
+            let base_fee_share_pgtg =
+                if self.spec.is_shasta_active_at_block(self.evm.block().number.to()) {
+                    let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
+                    pctg
+                } else if self.spec.is_ontake_active_at_block(self.evm.block().number.to()) {
+                    decode_post_ontake_extra_data(self.ctx.extra_data.clone())
+                } else {
+                    0
+                };
+
             self.evm
                 .transact_system_call(
                     Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
                     get_treasury_address(self.evm().chain_id()),
                     encode_anchor_system_call_data(
-                        // Decode the base fee share percentage from the block's extra data.
-                        if self.spec.is_ontake_active_at_block(self.evm.block().number.to()) {
-                            decode_post_ontake_extra_data(self.ctx.extra_data.clone())
-                        } else {
-                            0
-                        },
+                        base_fee_share_pgtg,
                         account_info.map_or(0, |account| account.nonce),
                     ),
                 )
@@ -238,8 +244,8 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
-                BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
+                | BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
@@ -264,6 +270,15 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
 fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0]
+}
+
+// Decode the extra data from the Shasta block to extract the base fee sharing percentage and
+// designated prover flag.
+fn decode_post_shasta_extra_data(extradata: Bytes) -> (u64, bool) {
+    let bytes = extradata.as_ref();
+    let base_fee_share_pctg = bytes.get(0).copied().unwrap_or_default() as u64;
+    let is_low_bond_proposal = bytes.get(1).map(|b| b & 0x01 != 0).unwrap_or(false);
+    (base_fee_share_pctg, is_low_bond_proposal)
 }
 
 #[cfg(test)]

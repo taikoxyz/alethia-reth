@@ -47,9 +47,9 @@ where
         Self { provider }
     }
 
-    /// Finds the last Shasta block number that contains an Anchor transaction with the given batch ID.
-    /// It scans blocks backwards from the latest block until it finds a matching transaction
-    /// or reaches the genesis block.
+    /// Finds the last Shasta block number that contains an Anchor transaction with the given batch
+    /// ID. It scans blocks backwards from the latest block until it finds a matching
+    /// transaction or reaches the genesis block.
     fn find_last_block_number_by_batch_id(
         &self,
         batch_id: U256,

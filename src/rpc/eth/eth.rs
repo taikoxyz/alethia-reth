@@ -5,7 +5,9 @@ use reth_provider::{DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
 
 use crate::{
-    db::model::{STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable},
+    db::model::{
+        BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
+    },
     payload::attributes::RpcL1Origin,
     rpc::eth::error::TaikoApiError,
 };
@@ -20,6 +22,8 @@ pub trait TaikoExtApi {
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>>;
     #[method(name = "headL1Origin")]
     fn head_l1_origin(&self) -> RpcResult<Option<RpcL1Origin>>;
+    #[method(name = "lastL1OriginByBatchID")]
+    fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>>;
 }
 
 /// The Taiko RPC extension implementation.
@@ -62,5 +66,18 @@ impl<Provider: DatabaseProviderFactory + 'static> TaikoExtApiServer for TaikoExt
                 .map_err(|_| EthApiError::InternalEthError)?
                 .ok_or(TaikoApiError::GethNotFound)?,
         ))
+    }
+
+    /// Retrieves the last L1 origin by its batch ID from the database.
+    fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>> {
+        let provider =
+            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
+        let block_number = provider
+            .into_tx()
+            .get::<BatchToLastBlock>(batch_id.to())
+            .map_err(|_| EthApiError::InternalEthError)?
+            .ok_or(TaikoApiError::GethNotFound)?;
+
+        self.l1_origin_by_id(U256::from(block_number))
     }
 }

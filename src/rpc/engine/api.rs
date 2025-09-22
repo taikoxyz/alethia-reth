@@ -117,6 +117,10 @@ where
             .await?;
 
         if let Some(payload) = payload_attributes {
+            let payload_id = status
+                .payload_id
+                .ok_or_else(|| EngineApiError::Other(ErrorCode::InternalError.into()))?;
+
             // Wait for the new payload to be built and stored, then we can store the
             // corresponding L1 origin into the database.
             let built_payload = Retry::spawn(
@@ -124,11 +128,7 @@ where
                     .max_delay(Duration::from_secs(12))
                     .take(3_usize),
                 || async {
-                    match self
-                        .payload_store
-                        .best_payload(status.payload_id.expect("payload_id must not be empty"))
-                        .await
-                    {
+                    match self.payload_store.best_payload(payload_id).await {
                         Some(Ok(value)) => Ok(value),
                         _ => Err(()),
                     }

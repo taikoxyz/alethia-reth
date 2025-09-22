@@ -33,7 +33,18 @@ sol! {
     function anchor(bytes32, bytes32, uint64, uint32) external;
     function anchorV2(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32)) external;
     function anchorV3(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32), bytes32[]) external;
-    function updateState(uint48, address, bytes, bytes32, (uint48, uint8, address, address)[], uint16, uint48, bytes32, bytes32) external;
+    function updateState(
+        uint48,
+        address,
+        bytes,
+        bytes32,
+        (uint48, uint8, address, address)[],
+        uint16,
+        uint48,
+        bytes32,
+        bytes32,
+        uint48
+    ) external;
 }
 
 /// Anchor / system transaction call selectors.
@@ -181,9 +192,8 @@ where
                 .block_number()
                 .ok_or(ConsensusError::Other("Shasta fork is not activated".to_string()))?;
 
-            // For blocks after Shasta+1, use EIP-4396 dynamic base fee calculation
             // The first 2 blocks after Shasta use the initial base fee.
-            if header.number() > shasta_fork_block + 1 {
+            if parent.number() > shasta_fork_block + 2 {
                 // Get the grandparent block to calculate parent block time.
                 let parent_block_parent_hash = parent.header().parent_hash();
 

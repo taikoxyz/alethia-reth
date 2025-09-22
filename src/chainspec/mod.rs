@@ -42,7 +42,7 @@ fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/devnet.json"),
-        b256!("0xddd9d042b4256c630ebd9106f868dd8fc870721ef2e2722ee426890624db648d"),
+        b256!("0x7efaaf3fe556f2ba3f1e6e107b5e0bfad66bcbcc22c4074cf487c5ef3ca57a1e"),
         TAIKO_DEVNET_HARDFORKS.clone(),
     )
 }

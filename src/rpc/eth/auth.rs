@@ -69,7 +69,7 @@ impl<T> Default for PreBuiltTxList<T> {
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taikoAuth"))]
 pub trait TaikoAuthExtApi<T: RpcObject> {
     #[method(name = "setHeadL1Origin")]
-    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64>;
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;
     #[method(name = "updateL1Origin")]
     async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>>;
     #[method(name = "setL1OriginSignature")]
@@ -140,7 +140,7 @@ where
         > + 'static,
 {
     /// Sets the L1 head origin in the database.
-    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64> {
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
         let tx = self
             .provider
             .database_provider_rw()
@@ -152,7 +152,7 @@ where
 
         tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 
-        Ok(id.to())
+        Ok(id)
     }
 
     /// Sets the L1 origin signature in the database.

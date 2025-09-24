@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
     branches: ["main"]
 
@@ -36,8 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - name: Run fmt
-        run: cargo fmt --all --check
+      - uses: actions-rust-lang/rustfmt@v1
 
   clippy:
     name: clippy

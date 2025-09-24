@@ -69,7 +69,7 @@ impl<T> Default for PreBuiltTxList<T> {
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taikoAuth"))]
 pub trait TaikoAuthExtApi<T: RpcObject> {
     #[method(name = "setHeadL1Origin")]
-    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64>;
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;
     #[method(name = "updateL1Origin")]
     async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>>;
     #[method(name = "setL1OriginSignature")]
@@ -140,7 +140,7 @@ where
         > + 'static,
 {
     /// Sets the L1 head origin in the database.
-    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<u64> {
+    async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
         let tx = self
             .provider
             .database_provider_rw()
@@ -152,7 +152,7 @@ where
 
         tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 
-        Ok(id.to())
+        Ok(id)
     }
 
     /// Sets the L1 origin signature in the database.
@@ -299,9 +299,9 @@ where
         // Start iterating over the best transactions in the pool.
         while let Some(pool_tx) = best_txs.next() {
             // ensure if the local accounts are provided, the transaction is from a local account.
-            if let Some(local_accounts) = locals.as_ref() &&
-                !local_accounts.is_empty() &&
-                !local_accounts.contains(&pool_tx.sender())
+            if let Some(local_accounts) = locals.as_ref()
+                && !local_accounts.is_empty()
+                && !local_accounts.contains(&pool_tx.sender())
             {
                 // NOTE: we simply mark the transaction as underpriced if it is not from a local
                 // account.
@@ -309,8 +309,8 @@ where
                 continue;
             }
             // ensure we only pick the transactions that meet the minimum tip.
-            if pool_tx.effective_tip_per_gas(base_fee).is_none() ||
-                pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
+            if pool_tx.effective_tip_per_gas(base_fee).is_none()
+                || pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
             {
                 // skip transactions that do not meet the minimum tip requirement
                 trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
@@ -318,8 +318,8 @@ where
                 continue;
             }
             // ensure we still have capacity for this transaction
-            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit() >
-                block_max_gas_limit
+            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit()
+                > block_max_gas_limit
             {
                 // we can't fit this transaction into the block, so we need to mark it as invalid
                 // which also removes all dependent transaction from the iterator before we can
@@ -342,8 +342,8 @@ where
             let tx = pool_tx.to_consensus();
             let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
-            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size >
-                max_bytes_per_tx_list
+            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size
+                > max_bytes_per_tx_list
             {
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     // NOTE: we simply mark the transaction as underpriced if it is not fitting into

@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.4.0](https://github.com/taikoxyz/alethia-reth/compare/v0.3.0...v0.4.0) (2025-09-24)
+
+
+### Features
+
+* **chainspec:** update devnet genesis JSON ([#14](https://github.com/taikoxyz/alethia-reth/issues/14)) ([2e9b37c](https://github.com/taikoxyz/alethia-reth/commit/2e9b37c9aa5bc3de19eba675a5e62ed416770f71))
+* **chainspec:** update devnet Shasta fork height to `10` ([#20](https://github.com/taikoxyz/alethia-reth/issues/20)) ([79a5fa1](https://github.com/taikoxyz/alethia-reth/commit/79a5fa1aac1ed165d343f738bc9cd61c5a4a40ec))
+* **consensus:** introduce `Shasta` hardfork ([#3](https://github.com/taikoxyz/alethia-reth/issues/3)) ([01d1262](https://github.com/taikoxyz/alethia-reth/commit/01d12620a873ab386255cb7d5514e811ce0a451c))
+* **dep:** bump `reth` to `v1.7.0` and simplify type signature ([#7](https://github.com/taikoxyz/alethia-reth/issues/7)) ([deb36fe](https://github.com/taikoxyz/alethia-reth/commit/deb36fe56998a5f0b2371c7760e9ead1e371f90a))
+* **rpc:** changes based on `taiko-geth` [#451](https://github.com/taikoxyz/alethia-reth/issues/451) ([#21](https://github.com/taikoxyz/alethia-reth/issues/21)) ([106ac23](https://github.com/taikoxyz/alethia-reth/commit/106ac234121ff5790e2856b469393d675f18f134))
+* **rpc:** introduce `find_last_block_number_by_batch_id` ([#12](https://github.com/taikoxyz/alethia-reth/issues/12)) ([d822c4b](https://github.com/taikoxyz/alethia-reth/commit/d822c4b03e6251456665a359791999c7fcee6d25))
+* **rpc:** introduce `taiko_setBatchToLastBlock` and `taiko_lastL1OriginByBatchID` RPC methods for Shasta protocol ([#11](https://github.com/taikoxyz/alethia-reth/issues/11)) ([4338b00](https://github.com/taikoxyz/alethia-reth/commit/4338b00fdd54f746d1337849eb49b39c10ef2489))
+
+
+### Bug Fixes
+
+* **chainspec:** fix devnet genesis JSON ([#10](https://github.com/taikoxyz/alethia-reth/issues/10)) ([0216d7e](https://github.com/taikoxyz/alethia-reth/commit/0216d7e0ede67b1a57a141cf18b8cce863a97a9b))
+* **repo:** Update docker workflow ([263e4ca](https://github.com/taikoxyz/alethia-reth/commit/263e4ca8ed3567e8906841bb2ba9296a3ce2a219))
+* use job-index for artifact names to avoid forward slash ([3b187f6](https://github.com/taikoxyz/alethia-reth/commit/3b187f6701660cfd7bb18381ccd5575d6dfbdf0b))
+* use platform pair sanitization like taiko-mono ([8d46911](https://github.com/taikoxyz/alethia-reth/commit/8d46911d0d3d56d801c597b192efe0848dfef671))
+
+
+### Chores
+
+* **chainspec:** update devnet genesis JSON ([#19](https://github.com/taikoxyz/alethia-reth/issues/19)) ([17b080b](https://github.com/taikoxyz/alethia-reth/commit/17b080bca7411ab1a853c2e5d4eb3a7bf3c3c2b2))
+* **chainspec:** update devnet genesis JSON ([#9](https://github.com/taikoxyz/alethia-reth/issues/9)) ([41b965f](https://github.com/taikoxyz/alethia-reth/commit/41b965f120bcabadde6acd1eba538593e36b3c5e))
+* **ci:** remove workflows before transition ([#5](https://github.com/taikoxyz/alethia-reth/issues/5)) ([b8dc379](https://github.com/taikoxyz/alethia-reth/commit/b8dc379fc4ebc73968df7fe71b9ef092e3c186fb))
+* **ci:** update `docker-build` workflow ([#22](https://github.com/taikoxyz/alethia-reth/issues/22)) ([d24d693](https://github.com/taikoxyz/alethia-reth/commit/d24d693b7a58312d6ab28fd9daaac45fdb8bff2f))
+* **repo:** add multi-arch build separately on architecture-specific runners ([61292b8](https://github.com/taikoxyz/alethia-reth/commit/61292b8205de7297317722b98ab2d471e240acf1))
+* **repo:** migrate Docker builds to Google Artifact Registry ([#13](https://github.com/taikoxyz/alethia-reth/issues/13)) ([fa79b9e](https://github.com/taikoxyz/alethia-reth/commit/fa79b9e15d2aa763dfb075dfbbc4c23ec0040f5b))
+* **repo:** migrate workflows ([#18](https://github.com/taikoxyz/alethia-reth/issues/18)) ([6c7ccba](https://github.com/taikoxyz/alethia-reth/commit/6c7ccba6205ae5d3689b253bacd0a37e2eb1f6c2))
+* **repo:** release please token update ([#17](https://github.com/taikoxyz/alethia-reth/issues/17)) ([e7f12ce](https://github.com/taikoxyz/alethia-reth/commit/e7f12ce3c36a59ca02ee5660d085e380c980e4d3))
+* **repo:** update builds to run separately on architecture-specific runners ([3b10dfa](https://github.com/taikoxyz/alethia-reth/commit/3b10dfaa5e068fc7393e3a4ab257d047d0321d9a))
+
 ## [0.3.0](https://github.com/taikoxyz/alethia-reth/compare/v0.2.0...v0.3.0) (2025-09-03)
 
 

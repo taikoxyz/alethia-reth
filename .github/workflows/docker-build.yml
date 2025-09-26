@@ -53,6 +53,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
+        timeout-minutes: 30
         uses: docker/build-push-action@v5
         with:
           context: .

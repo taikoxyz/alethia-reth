@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.1](https://github.com/taikoxyz/alethia-reth/compare/v0.4.0...v0.4.1) (2025-09-27)
+
+
+### Chores
+
+* **chainspec:** update Shasta devnet genesis JSON ([#26](https://github.com/taikoxyz/alethia-reth/issues/26)) ([14da7bd](https://github.com/taikoxyz/alethia-reth/commit/14da7bd2406bbba65e77ae2536273cf0b8b25ee7))
+
+
+### Workflow
+
+* **repo:** add timeout to docker build ([68ae907](https://github.com/taikoxyz/alethia-reth/commit/68ae907fe83bdc405d94d1a51e5ebdef44f60ae6))
+* **repo:** add timeout to docker build ([114976d](https://github.com/taikoxyz/alethia-reth/commit/114976d66d32bc13b8eb5775b28174244e119bf1))
+* **repo:** more improvements ([fa42db7](https://github.com/taikoxyz/alethia-reth/commit/fa42db7e3f4a449c3849abf5d5b9c7653fa22bf7))
+
 ## [0.4.0](https://github.com/taikoxyz/alethia-reth/compare/v0.3.0...v0.4.0) (2025-09-24)
 
 

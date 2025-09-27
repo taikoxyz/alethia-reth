@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, s-g-1]
+    branches: [main]
   release:
     types: [published]
 

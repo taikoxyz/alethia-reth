@@ -40,9 +40,7 @@ jobs:
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: "30000" # any safe value < 32000 to avoid reaching token limit
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-
-          # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
-          # model: "claude-opus-4-20250514"
+          model: "claude-sonnet-4-5-20250929"
 
           # Optional: Customize the trigger phrase (default: @claude)
           # trigger_phrase: "/claude"

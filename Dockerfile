@@ -19,4 +19,4 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=build /app/target/release/taiko-reth ./
+COPY --from=build /app/target/release/alethia-reth ./

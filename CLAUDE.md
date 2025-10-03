@@ -1,10 +1,10 @@
-# Claude Context for Taiko-Reth
+# Claude Context for Alethia-Reth
 
-This document provides context and guidelines for Claude when working on the taiko-reth project.
+This document provides context and guidelines for Claude when working on the alethia-reth project.
 
 ## Project Overview
 
-Taiko-reth is a high-performance Rust execution client for the Taiko protocol, built on top of Reth's powerful NodeBuilder API. It's designed to deliver the best possible developer and maintenance experience for running Taiko nodes.
+Alethia-reth is a high-performance Rust execution client for the Taiko protocol, built on top of Reth's powerful NodeBuilder API. It's designed to deliver the best possible developer and maintenance experience for running Taiko nodes.
 
 ## Key Technologies
 
@@ -16,7 +16,7 @@ Taiko-reth is a high-performance Rust execution client for the Taiko protocol, b
 ## Project Structure
 
 ```
-taiko-reth/
+alethia-reth/
 ├── src/
 │   ├── bin/           # Binary entry point
 │   ├── block/         # Block processing logic
@@ -49,7 +49,7 @@ taiko-reth/
 ### Building
 - Debug build: `cargo build`
 - Release build: `cargo build --release`
-- The main binary is located at `target/release/taiko-reth`
+- The main binary is located at `target/release/alethia-reth`
 
 ### Common Commands
 - `cargo check` - Check if the project compiles

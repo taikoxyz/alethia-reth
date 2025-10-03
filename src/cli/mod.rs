@@ -28,7 +28,7 @@ use crate::{
 pub mod command;
 pub mod tables;
 
-/// The main taiko-reth cli interface.
+/// The main alethia-reth cli interface.
 ///
 /// This is the entrypoint to the executable.
 #[derive(Debug)]

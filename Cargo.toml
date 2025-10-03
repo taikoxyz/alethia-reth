@@ -1,16 +1,16 @@
 [package]
-name = "taiko-reth"
+name = "alethia-reth"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 
 [[bin]]
-name = "taiko-reth"
+name = "alethia-reth"
 path = "src/bin/main.rs"
 
 [lib]
-name = "taiko_reth"
+name = "alethia_reth"
 path = "src/lib.rs"
 
 # Speed up compilation time for dev builds by reducing emitted debug info.

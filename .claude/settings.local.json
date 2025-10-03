@@ -26,7 +26,7 @@
       "Bash(cargo clean:*)",
       "Bash(cargo run:*)",
       "Bash(cargo test:*)",
-      "Bash(./target/release/taiko-reth:*)",
+      "Bash(./target/release/alethia-reth:*)",
       "Bash(rustc:*)",
       "WebSearch",
       "Bash(cargo doc:*)",

@@ -1,7 +1,5 @@
-//! Rust Taiko node (taiko-reth) binary executable.
-use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
-use reth_rpc::eth::{EthApiTypes, RpcNodeCore};
-use taiko_reth::{
+//! Rust Taiko node (alethia-reth) binary executable.
+use alethia_reth::{
     TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
     cli::TaikoCli,
@@ -10,6 +8,8 @@ use taiko_reth::{
         eth::{TaikoExt, TaikoExtApiServer},
     },
 };
+use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
+use reth_rpc::eth::{EthApiTypes, RpcNodeCore};
 use tracing::info;
 
 #[global_allocator]

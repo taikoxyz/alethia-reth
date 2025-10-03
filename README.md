@@ -1,4 +1,4 @@
-# taiko-reth
+# alethia-reth
 
 [![CI](https://github.com/taikoxyz/alethia-reth/actions/workflows/ci.yml/badge.svg)](https://github.com/taikoxyz/alethia-reth/actions/workflows/ci.yml)
 
@@ -10,7 +10,7 @@ A high-performance Rust execution client for the Taiko protocol, built on top of
 
 ```bash
 git clone https://github.com/taikoxyz/alethia-reth.git
-cd taiko-reth
+cd alethia-reth
 ```
 
 ### 2. Build
@@ -21,7 +21,7 @@ Build by `Cargo`:
 cargo build --release
 ```
 
-The main binary will be located at `target/release/taiko-reth`.
+The main binary will be located at `target/release/alethia-reth`.
 
 ### 3. Run Checks and Tests
 
@@ -36,13 +36,13 @@ cargo test   # Runs cargo test
 To run the compiled node:
 
 ```bash
-./target/release/taiko-reth [OPTIONS]
+./target/release/alethia-reth [OPTIONS]
 ```
 
 To see available command-line options and subcommands, run:
 
 ```bash
-./target/release/taiko-reth --help
+./target/release/alethia-reth --help
 ```
 
 _(Note: Replace `[OPTIONS]` with the necessary configuration flags for your setup. Refer to the `--help` output for details.)_
@@ -52,13 +52,13 @@ _(Note: Replace `[OPTIONS]` with the necessary configuration flags for your setu
 ### 1. Build the Docker Image
 
 ```bash
-docker build -t taiko-reth .
+docker build -t alethia-reth .
 ```
 
 ### 2. Run the Docker Container
 
 ```bash
-docker run -it --rm taiko-reth [OPTIONS]
+docker run -it --rm alethia-reth [OPTIONS]
 ```
 
 _(Note: You might need to map ports (`-p`), mount volumes (`-v`) for data persistence, or pass environment variables (`-e`) depending on your node's configuration needs.)_

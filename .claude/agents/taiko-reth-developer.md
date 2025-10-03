@@ -1,5 +1,5 @@
 ---
-name: taiko-reth-developer
+name: alethia-reth-developer
 description: Use this agent when you need expert guidance on Rust development for Ethereum projects, particularly when working with reth (Rust Ethereum client) or implementing based rollups. This includes architecture decisions, performance optimization, consensus mechanisms, EVM implementation details, and rollup-specific challenges. Examples:\n\n<example>\nContext: User is implementing a custom precompile in reth\nuser: "I need to add a new precompile to reth that handles BLS signature verification"\nassistant: "I'll use the rust-ethereum-expert agent to help you implement this precompile correctly"\n<commentary>\nSince this involves modifying reth internals and requires deep knowledge of both Rust and Ethereum, the rust-ethereum-expert agent is the right choice.\n</commentary>\n</example>\n\n<example>\nContext: User is debugging a performance issue in their based rollup implementation\nuser: "My based rollup's sequencer is experiencing high latency when processing transactions"\nassistant: "Let me engage the rust-ethereum-expert agent to analyze and optimize your sequencer performance"\n<commentary>\nThis requires expertise in both Rust performance optimization and rollup architecture, making the rust-ethereum-expert agent ideal.\n</commentary>\n</example>
 ---
 

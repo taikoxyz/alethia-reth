@@ -4,7 +4,7 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 
 use crate::chainspec::{TAIKO_DEVNET, TAIKO_HEKLA, TAIKO_MAINNET, spec::TaikoChainSpec};
 
-/// Chains supported by taiko-reth. First value should be used as the default.
+/// Chains supported by alethia-reth. First value should be used as the default.
 pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "hekla", "devnet"];
 
 /// Clap value parser for [`ChainSpec`]s.

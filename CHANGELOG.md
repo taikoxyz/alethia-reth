@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/taikoxyz/alethia-reth/compare/v0.4.0...v0.5.0) (2025-10-03)
+
+
+### Features
+
+* **repo:** always use `alethia-reth` as package name ([94ac428](https://github.com/taikoxyz/alethia-reth/commit/94ac4281752e68b8f135c23a083b7c4d05ffa6ca))
+
+
+### Chores
+
+* **chainspec:** update Shasta devnet genesis JSON ([#26](https://github.com/taikoxyz/alethia-reth/issues/26)) ([14da7bd](https://github.com/taikoxyz/alethia-reth/commit/14da7bd2406bbba65e77ae2536273cf0b8b25ee7))
+* **repo:** always use `alethia-reth` as package name ([#28](https://github.com/taikoxyz/alethia-reth/issues/28)) ([94ac428](https://github.com/taikoxyz/alethia-reth/commit/94ac4281752e68b8f135c23a083b7c4d05ffa6ca))
+
+
+### Workflow
+
+* **repo:** add claude workflows ([#27](https://github.com/taikoxyz/alethia-reth/issues/27)) ([01cdc56](https://github.com/taikoxyz/alethia-reth/commit/01cdc563552290785073fdbdd1e4f10c416d0941))
+* **repo:** add timeout to docker build ([68ae907](https://github.com/taikoxyz/alethia-reth/commit/68ae907fe83bdc405d94d1a51e5ebdef44f60ae6))
+* **repo:** add timeout to docker build ([114976d](https://github.com/taikoxyz/alethia-reth/commit/114976d66d32bc13b8eb5775b28174244e119bf1))
+* **repo:** more improvements ([fa42db7](https://github.com/taikoxyz/alethia-reth/commit/fa42db7e3f4a449c3849abf5d5b9c7653fa22bf7))
+
 ## [0.4.0](https://github.com/taikoxyz/alethia-reth/compare/v0.3.0...v0.4.0) (2025-09-24)
 
 

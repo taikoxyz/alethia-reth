@@ -1,4 +1,5 @@
 use alloy_primitives::Bytes;
+use std::time::Duration;
 use jsonrpsee::tokio;
 use reth::{
     revm::primitives::{B256, U256},
@@ -324,6 +325,11 @@ where
     #[inline]
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         EthApiSpec::signers(&self.0)
+    }
+
+    #[inline]
+    fn send_raw_transaction_sync_timeout(&self) -> Duration {
+        self.0.send_raw_transaction_sync_timeout()
     }
 
     /// Decodes and recovers the transaction and submits it to the pool.

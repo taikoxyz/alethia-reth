@@ -5,7 +5,6 @@ use clap::Parser;
 use eyre::Ok;
 use reth::{
     CliRunner,
-    beacon_consensus::EthBeaconConsensus,
     cli::{Cli, Commands},
     prometheus_exporter::install_prometheus_recorder,
 };
@@ -13,7 +12,6 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{common::CliNodeTypes, launcher::FnLauncher, node::NoArgs};
 use reth_db::DatabaseEnv;
 use reth_ethereum_forks::Hardforks;
-use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypes};
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
 use reth_tracing::FileWorkerGuard;
@@ -23,6 +21,8 @@ use crate::{
     TaikoNode,
     chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
     cli::command::TaikoNodeCommand,
+    consensus::validation::TaikoBeaconConsensus,
+    evm::config::TaikoEvmConfig,
 };
 
 pub mod command;
@@ -113,7 +113,10 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
         let _ = install_prometheus_recorder();
 
         let components = |spec: Arc<C::ChainSpec>| {
-            (EthEvmConfig::ethereum(spec.clone()), EthBeaconConsensus::new(spec))
+            (
+                TaikoEvmConfig::new(spec.clone()),
+                Arc::new(TaikoBeaconConsensus::without_block_reader(spec)),
+            )
         };
         match self.inner.command {
             // NOTE: We use the custom `TaikoNodeCommand` to handle the node commands, to initialize
@@ -147,9 +150,6 @@ impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debu
                 .run_command_until_exit(|ctx| command.execute::<TaikoNode, _>(ctx, components)),
             Commands::P2P(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
             Commands::Config(command) => runner.run_until_ctrl_c(command.execute()),
-            Commands::Recover(command) => {
-                runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
-            }
             Commands::Prune(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
             Commands::ReExecute(command) => {
                 runner.run_until_ctrl_c(command.execute::<TaikoNode>(components))

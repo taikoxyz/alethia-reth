@@ -164,24 +164,39 @@ where
             .into());
         }
 
-        // Execute transaction.
-        let ResultAndState { result, state } = self
-            .evm
-            .transact(&tx)
-            .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
+        // Execute transaction without committing the state changes.
+        let output = self.execute_transaction_without_commit(&tx)?;
 
-        if !f(&result).should_commit() {
+        if !f(&output.result).should_commit() {
             return Ok(None);
         }
+
+        let gas_used = self.commit_transaction(output, tx)?;
+
+        Ok(Some(gas_used))
+    }
+
+    fn execute_transaction_without_commit(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+        self.evm
+            .transact(&tx)
+            .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))
+    }
+
+    fn commit_transaction(
+        &mut self,
+        output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<u64, BlockExecutionError> {
+        let ResultAndState { result, state } = output;
 
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
         let gas_used = result.gas_used();
-
-        // append gas used
         self.gas_used += gas_used;
 
-        // Push transaction changeset and calculate header bloom filter for receipt.
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
             tx: tx.tx(),
             evm: &self.evm,
@@ -190,10 +205,9 @@ where
             cumulative_gas_used: self.gas_used,
         }));
 
-        // Commit the state changes.
         self.evm.db_mut().commit(state);
 
-        Ok(Some(gas_used))
+        Ok(gas_used)
     }
 
     /// Applies any necessary changes after executing the block's transactions, completes execution

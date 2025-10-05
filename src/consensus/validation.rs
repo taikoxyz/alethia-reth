@@ -64,13 +64,21 @@ pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
 #[derive(Debug, Clone)]
 pub struct TaikoBeaconConsensus<R: BlockReader> {
     chain_spec: Arc<TaikoChainSpec>,
-    block_reader: R,
+    block_reader: Option<R>,
 }
 
 impl<R: BlockReader> TaikoBeaconConsensus<R> {
     /// Create a new instance of [`TaikoBeaconConsensus`]
     pub fn new(chain_spec: Arc<TaikoChainSpec>, block_reader: R) -> Self {
-        Self { chain_spec, block_reader }
+        Self { chain_spec, block_reader: Some(block_reader) }
+    }
+
+    /// Create a new instance of [`TaikoBeaconConsensus`] without a block reader.
+    ///
+    /// This is useful for contexts (e.g. certain CLI flows) where a database provider is not
+    /// readily available. Any validations requiring a block reader will be skipped in this mode.
+    pub fn without_block_reader(chain_spec: Arc<TaikoChainSpec>) -> Self {
+        Self { chain_spec, block_reader: None }
     }
 }
 
@@ -194,12 +202,19 @@ where
 
             // The first 2 blocks after Shasta use the initial base fee.
             if parent.number() > shasta_fork_block + 2 {
+                let Some(block_reader) = self.block_reader.as_ref() else {
+                    // Without access to the block reader we cannot derive the grandparent
+                    // timestamp required for the EIP-4396 base fee computation. Skip the check in
+                    // this mode to preserve compatibility with environments that operate without a
+                    // backing provider (e.g. certain CLI utilities).
+                    return Ok(());
+                };
                 // Get the grandparent block to calculate parent block time.
                 let parent_block_parent_hash = parent.header().parent_hash();
 
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
                 let parent_block_time = parent.header().timestamp() -
-                    self.block_reader
+                    block_reader
                         .block_by_hash(parent_block_parent_hash)
                         .map_err(|_| ConsensusError::ParentUnknown {
                             hash: parent_block_parent_hash,

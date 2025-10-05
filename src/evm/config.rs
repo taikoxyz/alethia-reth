@@ -163,7 +163,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     }
 
     /// Creates a new [`EvmEnv`] for the given header.
-    fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
+    fn evm_env(&self, header: &Header) -> Result<EvmEnvFor<Self>, Self::Error> {
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec(taiko_revm_spec(&self.chain_spec().inner, header));
@@ -179,7 +179,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             blob_excess_gas_and_price: None,
         };
 
-        EvmEnv { cfg_env, block_env }
+        Ok(EvmEnv { cfg_env, block_env })
     }
 
     /// Returns the configured [`EvmEnv`] for `parent + 1` block.
@@ -218,15 +218,15 @@ impl ConfigureEvm for TaikoEvmConfig {
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
-    ) -> reth_evm::ExecutionCtxFor<'a, Self> {
-        TaikoBlockExecutionCtx {
+    ) -> Result<reth_evm::ExecutionCtxFor<'a, Self>, Self::Error> {
+        Ok(TaikoBlockExecutionCtx {
             parent_hash: block.header().parent_hash,
             parent_beacon_block_root: block.header().parent_beacon_block_root,
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: block.header().base_fee_per_gas.unwrap_or_default(),
             extra_data: block.header().extra_data.clone(),
-        }
+        })
     }
 
     /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for `parent + 1`
@@ -235,15 +235,15 @@ impl ConfigureEvm for TaikoEvmConfig {
         &self,
         parent: &SealedHeader,
         ctx: Self::NextBlockEnvCtx,
-    ) -> reth_evm::ExecutionCtxFor<'_, Self> {
-        TaikoBlockExecutionCtx {
+    ) -> Result<reth_evm::ExecutionCtxFor<'_, Self>, Self::Error> {
+        Ok(TaikoBlockExecutionCtx {
             parent_hash: parent.hash(),
             parent_beacon_block_root: None,
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
-        }
+        })
     }
 
     /// Returns a new EVM with the given database configured with the given environment settings,

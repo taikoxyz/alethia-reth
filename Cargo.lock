@@ -100,7 +100,6 @@ dependencies = [
  "arbitrary",
  "async-trait",
  "auto_impl",
- "cc",
  "clap",
  "derive_more",
  "eyre",

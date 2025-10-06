@@ -200,9 +200,8 @@ where
             // Calculate the expected base fee using EIP-4396 formula.
             if parent.number() + 1 >= shasta_fork_block + SHASTA_INITIAL_BASE_FEE_BLOCKS {
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
-                let parent_block_time = parent.header().timestamp()
-                    - self
-                        .block_reader
+                let parent_block_time = parent.header().timestamp() -
+                    self.block_reader
                         .block_by_hash(parent.header().parent_hash())
                         .map_err(|_| ConsensusError::ParentUnknown {
                             hash: parent.header().parent_hash(),

@@ -60,7 +60,7 @@ pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
 
 /// The number of blocks after the Shasta hardfork where the initial base fee is used.
 /// This is set to 3 since if the first Shasta block is genesis block, its timestamp may
-/// will be very different from the second block, causing large base fee change.
+/// be very different from the second block, causing large base fee change.
 pub const SHASTA_INITIAL_BASE_FEE_BLOCKS: u64 = 3;
 
 /// Taiko consensus implementation.
@@ -200,8 +200,9 @@ where
             // Calculate the expected base fee using EIP-4396 formula.
             if parent.number() + 1 >= shasta_fork_block + SHASTA_INITIAL_BASE_FEE_BLOCKS {
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
-                let parent_block_time = parent.header().timestamp() -
-                    self.block_reader
+                let parent_block_time = parent.header().timestamp()
+                    - self
+                        .block_reader
                         .block_by_hash(parent.header().parent_hash())
                         .map_err(|_| ConsensusError::ParentUnknown {
                             hash: parent.header().parent_hash(),

@@ -59,7 +59,7 @@ pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
 pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
 
 /// The number of blocks after the Shasta hardfork where the initial base fee is used.
-/// This is set to 3 since if the first Shasta block is genesis blcok, its timestamp may
+/// This is set to 3 since if the first Shasta block is genesis block, its timestamp may
 /// will be very different from the second block, causing large base fee change.
 pub const SHASTA_INITIAL_BASE_FEE_BLOCKS: u64 = 3;
 

@@ -58,6 +58,11 @@ pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
 /// The gas limit for the anchor transactions in Pacaya hardfork blocks.
 pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
 
+/// The number of blocks after the Shasta hardfork where the initial base fee is used.
+/// This is set to 3 since if the first Shasta block is genesis blcok, its timestamp may
+/// will be very different from the second block, causing large base fee change.
+pub const SHASTA_INITIAL_BASE_FEE_BLOCKS: u64 = 3;
+
 /// Taiko consensus implementation.
 ///
 /// Provides basic checks as outlined in the execution specs.
@@ -192,19 +197,18 @@ where
                 .block_number()
                 .ok_or(ConsensusError::Other("Shasta fork is not activated".to_string()))?;
 
-            // The first 2 blocks after Shasta use the initial base fee.
-            if parent.number() > shasta_fork_block + 2 {
-                // Get the grandparent block to calculate parent block time.
-                let parent_block_parent_hash = parent.header().parent_hash();
-
+            // Calculate the expected base fee using EIP-4396 formula.
+            if parent.number() + 1 >= shasta_fork_block + SHASTA_INITIAL_BASE_FEE_BLOCKS {
                 // Calculate parent block time = parent.timestamp - grandparent.timestamp
                 let parent_block_time = parent.header().timestamp() -
                     self.block_reader
-                        .block_by_hash(parent_block_parent_hash)
+                        .block_by_hash(parent.header().parent_hash())
                         .map_err(|_| ConsensusError::ParentUnknown {
-                            hash: parent_block_parent_hash,
+                            hash: parent.header().parent_hash(),
                         })?
-                        .ok_or(ConsensusError::ParentUnknown { hash: parent_block_parent_hash })?
+                        .ok_or(ConsensusError::ParentUnknown {
+                            hash: parent.header().parent_hash(),
+                        })?
                         .header()
                         .timestamp();
 

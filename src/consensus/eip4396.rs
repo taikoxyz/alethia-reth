@@ -4,6 +4,8 @@ use reth_primitives_traits::BlockHeader;
 
 /// The initial base fee for the Shasta fork, which is set to 0.025 Gwei.
 pub const SHASTA_INITIAL_BASE_FEE: u64 = 25_000_000;
+
+/// EIP-4396 calculation constants.
 pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u128 = 8;
 pub const MAX_GAS_TARGET_PERCENT: u64 = 95;
 pub const ELASTICITY_MULTIPLIER: u64 = 2;

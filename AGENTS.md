@@ -1,19 +1,29 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The Rust crate is defined in `Cargo.toml`, with runtime logic under `src/`. Feature modules are grouped by responsibility: `cli/` handles startup configuration, `network/` peers and gossip, `consensus/` and `payload/` manage block production, and `rpc/` exposes external APIs. Executables live in `src/bin/`, while audits and spec fixtures sit under `src/audits/` and `chainspec/`. Build outputs land in `target/`. Place new code beside the module that owns it and route shared primitives through `src/lib.rs`.
+- Runtime code lives in `src/`, grouped by responsibility: `cli/` bootstraps configuration, `network/` drives peer discovery and gossip, `consensus/` and `payload/` handle block production, and `rpc/` exposes external APIs.
+- Executables reside under `src/bin/`; audits and specs live in `src/audits/` and `chainspec/` respectively. Build artifacts land in `target/`.
+- Place new functionality beside the owning module and re-export shared primitives through `src/lib.rs` to keep boundaries clear. Keep secrets out of the repo and prefer CLI flags or Docker env vars.
 
 ## Build, Test, and Development Commands
-Run `cargo build --release` for optimized binaries in `target/release/`. During iteration, prefer `cargo check` for faster feedback. `just clippy` enforces warnings-as-errors via `cargo clippy --all-features`. Use `just fmt` to install the pinned toolchain and apply `rustfmt` plus `cargo sort`. Tests run through `just test`, which proxies to `cargo nextest -v run --workspace --all-features`. Docker workflows use `docker build -t alethia-reth .` then `docker run -it --rm alethia-reth [OPTIONS]`.
+- `cargo check` – fast validation of the workspace without producing binaries.
+- `cargo build --release` – produce optimized binaries in `target/release/` for deployment or benchmarking.
+- `just fmt` – install the pinned toolchain, run `rustfmt`, and apply `cargo sort` to keep formatting consistent.
+- `just clippy` – enforce lint cleanliness with warnings-as-errors across all features.
+- `just test` – execute `cargo nextest -v run --workspace --all-features`; use `cargo test -p <crate> <name>` for focused cases.
+- `docker build -t alethia-reth .` followed by `docker run -it --rm alethia-reth [OPTIONS]` to exercise container flows.
 
 ## Coding Style & Naming Conventions
-Follow Rust defaults: four-space indentation, `snake_case` for modules and functions, `CamelCase` for types and traits, and `SCREAMING_SNAKE_CASE` for constants. `rustfmt.toml` governs formatting; never hand-edit around it. Keep public APIs documented and prefer small, composable modules. Before pushing, run `just fmt` and `just clippy` so formatting, sorting, and linting remain clean. Spell-check commits with `typos` if touching documentation.
+- Follow Rust defaults: four-space indentation, `snake_case` for items, `CamelCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants.
+- Let `rustfmt` decide layout; avoid manual alignment tweaks. Document public APIs and keep modules small and composable.
+- Default to ASCII; only introduce Unicode when already present and justified. Run `typos` when touching docs.
 
 ## Testing Guidelines
-Unit tests should live in `#[cfg(test)] mod tests` blocks near the code under test. Scenario or integration checks belong in dedicated submodules within `src/` (follow the owning component). Every feature PR must cover happy path and failure cases; assert on consensus-critical invariants. Run `just test` before opening a PR, and add targeted `cargo test -p <crate> <name>` snippets to the PR body when special setup is required.
+- Unit tests belong in `#[cfg(test)]` modules next to the code; larger scenarios live in dedicated submodules under `src/`.
+- Cover happy-path and failure cases, asserting on consensus-critical invariants. Prefer deterministic fixtures from `chainspec/` when possible.
+- Before opening a PR, ensure `just test` passes locally and note any bespoke commands in the PR body.
 
 ## Commit & Pull Request Guidelines
-Commits follow a conventional pattern (`type(scope): summary`), as in `chore(repo): introduce justfile`. Keep messages imperative and under 72 characters. Squash fixups before review. Pull requests need a concise description, linked issue or context, and notes on testing (`just test`, etc.). Include configuration diffs, logs, or screenshots whenever behavior changes externally. Request review once CI is green and lint/test commands pass locally.
-
-## Tooling & Environment
-Formatting and unused-dependency checks rely on `rustup toolchain install nightly-2025-09-27`; ensure it is available before running `just fmt` or `just udeps`. Prefer the `just` recipes for reproducibility, but mirror the underlying `cargo` command in documentation so CI stays aligned. Keep `.env` secrets out of the repo and rely on CLI flags or Docker environment variables during local experiments.
+- Use conventional commits (`type(scope): summary`) with imperative phrasing under 72 characters.
+- Squash fixups before review. Reference related issues, summarize behavior changes, and attach logs or screenshots for external-facing updates.
+- PRs should document the commands you ran (`just fmt`, `just clippy`, `just test`) so reviewers can mirror the checklist.

@@ -28,7 +28,7 @@ The main binary will be located at `target/release/alethia-reth`.
 To ensure everything is set up correctly, run the checks and tests:
 
 ```bash
-cargo test   # Runs cargo test
+just test
 ```
 
 ## Running the Node

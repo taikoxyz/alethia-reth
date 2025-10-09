@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",

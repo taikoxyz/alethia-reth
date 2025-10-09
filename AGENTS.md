@@ -1,29 +1,34 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Runtime code lives in `src/`, grouped by responsibility: `cli/` bootstraps configuration, `network/` drives peer discovery and gossip, `consensus/` and `payload/` handle block production, and `rpc/` exposes external APIs.
-- Executables reside under `src/bin/`; audits and specs live in `src/audits/` and `chainspec/` respectively. Build artifacts land in `target/`.
-- Place new functionality beside the owning module and re-export shared primitives through `src/lib.rs` to keep boundaries clear. Keep secrets out of the repo and prefer CLI flags or Docker env vars.
+- Workspace root uses Cargo with `bin/` for the executable, `crates/` for libraries (`node`, `block`, `chainspec`, `cli`, `consensus`, `db`, `evm`, `network`, `payload`, `primitives`, `rpc`).
+- Tests live beside implementation modules; integration flows run through `cargo nextest`.
+- Docker assets and CI scripts share the root; build artifacts land in `target/`.
 
 ## Build, Test, and Development Commands
-- `cargo check` – fast validation of the workspace without producing binaries.
-- `cargo build --release` – produce optimized binaries in `target/release/` for deployment or benchmarking.
-- `just fmt` – install the pinned toolchain, run `rustfmt`, and apply `cargo sort` to keep formatting consistent.
-- `just clippy` – enforce lint cleanliness with warnings-as-errors across all features.
-- `just test` – execute `cargo nextest -v run --workspace --all-features`; use `cargo test -p <crate> <name>` for focused cases.
-- `docker build -t alethia-reth .` followed by `docker run -it --rm alethia-reth [OPTIONS]` to exercise container flows.
+- `cargo check` – fast type-check of the entire workspace.
+- `cargo build --release` – optimized binary at `target/release/alethia-reth`.
+- `just fmt` – install toolchain, run `rustfmt`, and apply `cargo sort`.
+- `just clippy` – lint with warnings treated as errors.
+- `just test` – executes `cargo nextest -v run --workspace --all-features`.
+- `cargo run -p alethia-reth-bin --release -- [args]` – launch the node locally.
 
 ## Coding Style & Naming Conventions
-- Follow Rust defaults: four-space indentation, `snake_case` for items, `CamelCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants.
-- Let `rustfmt` decide layout; avoid manual alignment tweaks. Document public APIs and keep modules small and composable.
-- Default to ASCII; only introduce Unicode when already present and justified. Run `typos` when touching docs.
+- Rust defaults: 4-space indentation, `snake_case` items, `CamelCase` types/traits, `SCREAMING_SNAKE_CASE` constants.
+- Prefer module-per-file; public APIs go through `crates/node/src/lib.rs`.
+- Run `just fmt` before committing; clippy must be clean (`just clippy`).
 
 ## Testing Guidelines
-- Unit tests belong in `#[cfg(test)]` modules next to the code; larger scenarios live in dedicated submodules under `src/`.
-- Cover happy-path and failure cases, asserting on consensus-critical invariants. Prefer deterministic fixtures from `chainspec/` when possible.
-- Before opening a PR, ensure `just test` passes locally and note any bespoke commands in the PR body.
+- Unit tests reside in `#[cfg(test)]` modules next to code; broader flows can use `tests/` or crate-level fixtures.
+- Use deterministic data; leverage `chainspec` fixtures in `crates/chainspec/src/genesis/` when possible.
+- Execute `just test` prior to PRs; new features should include targeted test coverage.
 
 ## Commit & Pull Request Guidelines
-- Use conventional commits (`type(scope): summary`) with imperative phrasing under 72 characters.
-- Squash fixups before review. Reference related issues, summarize behavior changes, and attach logs or screenshots for external-facing updates.
-- PRs should document the commands you ran (`just fmt`, `just clippy`, `just test`) so reviewers can mirror the checklist.
+- Follow Conventional Commits (`type(scope): summary`), imperative mood, ≤72 characters.
+- PRs should summarize behavior changes, reference relevant issues, and note commands run (`just fmt`, `just clippy`, `just test`).
+- Include logs or screenshots when altering externally visible behavior; ensure CI passes before requesting review.
+
+## Security & Configuration Tips
+- Keep secrets out of the repo; prefer environment variables or CLI flags.
+- Review Dockerfile changes carefully—release images expect the `alethia-reth` binary in `/target/release`.
+- When adjusting network or RPC crates, verify authentication hooks and engine APIs remain compatible with upstream `reth`.

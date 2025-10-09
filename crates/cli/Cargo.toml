@@ -1,0 +1,29 @@
+[package]
+name = "alethia-reth-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+alethia-reth = { path = "../node" }
+alloy-consensus = { workspace = true }
+alloy-hardforks = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+eyre = { workspace = true }
+reth = { workspace = true }
+reth-cli = { workspace = true }
+reth-cli-commands = { workspace = true }
+reth-db = { workspace = true }
+reth-ethereum-forks = { workspace = true }
+reth-evm-ethereum = { workspace = true }
+reth-node-api = { workspace = true }
+reth-node-builder = { workspace = true }
+reth-tracing = { workspace = true }
+tracing = { workspace = true }

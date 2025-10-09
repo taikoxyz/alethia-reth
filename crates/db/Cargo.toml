@@ -1,0 +1,23 @@
+[package]
+name = "alethia-reth-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+reth = { workspace = true }
+reth-codecs = { workspace = true }
+reth-db = { workspace = true }
+reth-db-api = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }

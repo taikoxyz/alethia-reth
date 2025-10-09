@@ -1,26 +1,27 @@
-[package]
-name = "alethia-reth"
+[workspace]
+members = [
+    "bin/alethia-reth",
+    "crates/block",
+    "crates/chainspec",
+    "crates/cli",
+    "crates/consensus",
+    "crates/db",
+    "crates/evm",
+    "crates/network",
+    "crates/node",
+    "crates/payload",
+    "crates/primitives",
+    "crates/rpc",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 
-[lib]
-name = "alethia_reth"
-path = "src/lib.rs"
-
-[[bin]]
-name = "alethia-reth"
-path = "src/bin/main.rs"
-
-[features]
-default = ["serde"]
-serde = ["serde/derive"]
-client = []
-arbitrary = ["alloy-consensus/arbitrary"]
-prover = []
-
-[dependencies]
+[workspace.dependencies]
 # reth
 reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.7.0" }
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.7.0" }
@@ -63,7 +64,7 @@ reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.7.0" }
 # alloy
 alloy-chains = { version = "0.2.5", default-features = false }
 alloy-consensus = { version = "1.0.30", default-features = false, features = [
-  "arbitrary",
+    "arbitrary",
 ] }
 alloy-eips = { version = "1.0.30", default-features = false }
 alloy-evm = { version = "0.20.1", default-features = false }
@@ -73,7 +74,7 @@ alloy-json-rpc = { version = "1.0.30", default-features = false }
 alloy-network = { version = "1.0.30", default-features = false }
 alloy-primitives = { version = "1.0.30", default-features = false }
 alloy-rlp = { version = "0.3.10", default-features = false, features = [
-  "core-net",
+    "core-net",
 ] }
 alloy-rpc-client = { version = "1.0.30", default-features = false }
 alloy-rpc-types-engine = { version = "1.0.30", default-features = false }
@@ -107,30 +108,24 @@ parity-scale-codec = "3.2.1"
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_with = { version = "3", default-features = false, features = [
-  "macros",
-  "base64",
+    "macros",
+    "base64",
 ] }
 sha2 = { version = "0.10", default-features = false }
 thiserror = { version = "2.0.0", default-features = false }
 tokio-retry = "0.3"
 tracing = { version = "0.1.0", default-features = false }
 
-# Speed up compilation time for dev builds by reducing emitted debug info.
-# NOTE: Debuggers may provide less useful information with this setting.
-# Uncomment this section if you're using a debugger.
 [profile.dev]
-# https://davidlattimore.github.io/posts/2024/02/04/speeding-up-the-rust-edit-build-run-cycle.html
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
-# Speed up tests.
 [profile.dev.package]
 proptest.opt-level = 3
 rand_chacha.opt-level = 3
 rand_xorshift.opt-level = 3
 unarray.opt-level = 3
 
-# Like release, but with full debug symbols. Useful for e.g. `perf`.
 [profile.debug-fast]
 inherits = "release"
 debug = true

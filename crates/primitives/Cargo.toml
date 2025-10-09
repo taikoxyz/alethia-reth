@@ -1,0 +1,37 @@
+[package]
+name = "alethia-reth-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+serde = [
+    "dep:serde",
+    "alloy-primitives/serde",
+    "alloy-rpc-types-engine/serde",
+    "alloy-rpc-types-eth/serde",
+]
+
+[dependencies]
+alethia-reth-chainspec = { path = "../chainspec" }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-rpc-types-engine = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+alloy-serde = { workspace = true }
+reth = { workspace = true }
+reth-engine-local = { workspace = true }
+reth-ethereum = { workspace = true }
+reth-ethereum-engine-primitives = { workspace = true }
+reth-node-api = { workspace = true }
+reth-payload-primitives = { workspace = true }
+reth-primitives-traits = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_with = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }

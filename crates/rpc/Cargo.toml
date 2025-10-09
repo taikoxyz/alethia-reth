@@ -1,0 +1,61 @@
+[package]
+name = "alethia-reth-rpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+client = []
+serde = []
+
+[dependencies]
+alethia-reth-block = { path = "../block" }
+alethia-reth-chainspec = { path = "../chainspec" }
+alethia-reth-consensus = { path = "../consensus" }
+alethia-reth-db = { path = "../db" }
+alethia-reth-evm = { path = "../evm" }
+alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-hardforks = { workspace = true }
+alloy-json-rpc = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rpc-types-engine = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+async-trait = { workspace = true }
+eyre = { workspace = true }
+jsonrpsee = { workspace = true }
+jsonrpsee-core = { workspace = true }
+jsonrpsee-types = { workspace = true }
+op-alloy-flz = { workspace = true }
+reth = { workspace = true }
+reth-db = { workspace = true }
+reth-db-api = { workspace = true }
+reth-engine-primitives = { workspace = true }
+reth-engine-tree = { workspace = true }
+reth-ethereum = { workspace = true }
+reth-ethereum-engine-primitives = { workspace = true }
+reth-evm = { workspace = true }
+reth-evm-ethereum = { workspace = true }
+reth-node-api = { workspace = true }
+reth-node-builder = { workspace = true }
+reth-node-core = { workspace = true }
+reth-node-ethereum = { workspace = true }
+reth-payload-primitives = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-provider = { workspace = true }
+reth-revm = { workspace = true }
+reth-rpc = { workspace = true }
+reth-rpc-engine-api = { workspace = true }
+reth-rpc-eth-api = { workspace = true }
+reth-rpc-eth-types = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio-retry = { workspace = true }
+tracing = { workspace = true }

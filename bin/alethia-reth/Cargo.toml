@@ -1,0 +1,18 @@
+[package]
+name = "alethia-reth-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "alethia-reth"
+path = "src/main.rs"
+
+[dependencies]
+alethia-reth = { path = "../../crates/node" }
+alethia-reth-cli = { path = "../../crates/cli" }
+reth = { workspace = true }
+reth-cli-util = { workspace = true }
+reth-rpc = { workspace = true }
+tracing = { workspace = true }

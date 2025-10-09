@@ -1,87 +1,52 @@
 # Claude Context for Alethia-Reth
 
-This document provides context and guidelines for Claude when working on the alethia-reth project.
+This document keeps Claude aligned with the current multi-crate layout of the Alethia-Reth repository.
 
 ## Project Overview
 
-Alethia-reth is a high-performance Rust execution client for the Taiko protocol, built on top of Reth's powerful NodeBuilder API. It's designed to deliver the best possible developer and maintenance experience for running Taiko nodes.
+Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Paradigm's Reth. The workspace is split into focused crates (e.g., `crates/block`, `crates/evm`, `crates/rpc`) with the top-level orchestrator in `crates/node`. The packaged binary lives in `bin/alethia-reth`.
 
 ## Key Technologies
 
-- **Language**: Rust (requires version 1.87+)
-- **Framework**: Built on [Reth](https://github.com/paradigmxyz/reth) v1.6.0
-- **Protocol**: Taiko (Ethereum-based rollup)
-- **Build System**: Cargo
+- Language: Rust (stable 1.88+ recommended)
+- Framework: Reth 1.7.0 APIs (`reth_node_builder`, `reth_rpc`, etc.)
+- Target protocol: Taiko rollup networks
+- Build & dependency manager: Cargo + `just`
 
 ## Project Structure
 
 ```
-alethia-reth/
-├── src/
-│   ├── bin/           # Binary entry point
-│   ├── block/         # Block processing logic
-│   ├── chainspec/     # Chain specifications
-│   ├── cli/           # Command-line interface
-│   ├── consensus/     # Consensus logic
-│   ├── db/            # Database models and compression
-│   ├── evm/           # EVM configuration and execution
-│   ├── network/       # P2P networking
-│   ├── payload/       # Payload building and attributes
-│   └── rpc/           # RPC API implementations
-├── .claude/
-│   └── commands/      # Custom Claude commands
-└── target/            # Build artifacts
+/                      Workspace root, Dockerfile, justfile, docs
+├── bin/alethia-reth   Binary crate producing `alethia-reth`
+└── crates/
+    ├── node           Public API surface (`TaikoNode`, add-ons)
+    ├── block          Block execution/assembly
+    ├── chainspec      Chain specs + genesis data
+    ├── cli            CLI wrapper (`TaikoCli`)
+    ├── consensus      Beacon consensus extensions
+    ├── db             Taiko-specific tables & codecs
+    ├── evm            EVM config, handlers, execution helpers
+    ├── network        P2P network builder
+    ├── payload        Payload builder service
+    ├── primitives     Shared types (engine, payload attributes)
+    └── rpc            Taiko RPC (eth / engine / auth)
 ```
 
 ## Development Guidelines
 
-### Code Style
-- Follow Rust idioms and best practices
-- Use the project's existing patterns and conventions
-- No unnecessary comments unless explicitly requested
-- Maintain consistent formatting with `rustfmt`
+- **Formatting**: `just fmt` (installs toolchain, runs `rustfmt` + `cargo sort`).
+- **Clippy**: `just clippy` (warnings treated as errors). Fix lints before committing.
+- **Testing**: `just test` (runs `cargo nextest -v run --workspace --all-features`). Add targeted tests for new logic.
+- **Build**: `cargo build --release` places binary at `target/release/alethia-reth`.
 
-### Testing
-- Run tests with `cargo test`
-- Ensure all tests pass before marking work as complete
-- Add tests for new functionality when appropriate
+## Agent Tips
 
-### Building
-- Debug build: `cargo build`
-- Release build: `cargo build --release`
-- The main binary is located at `target/release/alethia-reth`
+1. Update workspace paths when moving crates—Cargo manifests reference `../{crate}`.
+2. When adding modules, re-export through the owning crate’s `lib.rs` if you expect consumers to use them.
+3. Keep genesis fixtures in `crates/chainspec/src/genesis/`; avoid rewriting unless network specs change.
+4. New RPC or engine features often span multiple crates (primitives → payload → rpc). Ensure imports follow the new module boundaries.
+5. Treat secrets/config cautiously—use env vars or CLI flags rather than hardcoding.
 
-### Common Commands
-- `cargo check` - Check if the project compiles
-- `cargo test` - Run all tests
-- `cargo fmt` - Format code
-- `cargo clippy` - Run linter
+## Custom Claude Commands
 
-## Important Considerations
-
-1. **Performance**: This is a high-performance client, so efficiency matters
-2. **Security**: Never expose or log secrets/keys
-3. **Compatibility**: Ensure changes maintain compatibility with Reth APIs
-4. **Error Handling**: Use proper Rust error handling patterns
-
-## Custom Commands
-
-The project includes custom Claude commands in `.claude/commands/`:
-- `improve-pr-desc.md` - Improve GitHub PR descriptions
-
-## Dependencies
-
-Key dependencies from Cargo.toml:
-- Reth crates (v1.6.0)
-- Alloy libraries for Ethereum types
-- Tokio for async runtime
-- Clap for CLI parsing
-
-## Network Support
-
-The project supports multiple Taiko networks:
-- Mainnet
-- Hekla (testnet)
-- Devnet
-
-Genesis configurations are stored in `src/chainspec/genesis/`.
+Custom helpers live in `.claude/commands/` (e.g., `improve-pr-desc.md`). Invoke them via `claude run` if the CLI harness supports it.

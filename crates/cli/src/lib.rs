@@ -19,7 +19,7 @@ use reth_node_builder::{NodeBuilder, WithLaunchContext};
 use reth_tracing::FileWorkerGuard;
 use tracing::info;
 
-use alethia_reth::{
+use alethia_reth_node::{
     TaikoNode,
     chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
 };

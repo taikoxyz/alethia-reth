@@ -1,4 +1,4 @@
-use alethia_reth::db::model::Tables as TaikoDbTables;
+use alethia_reth_node::db::model::Tables as TaikoDbTables;
 use reth_db::{TableSet, Tables, table::TableInfo};
 
 /// A set of tables used by Taiko network.

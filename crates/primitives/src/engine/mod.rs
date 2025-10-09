@@ -7,7 +7,7 @@ use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{BuiltPayload, EngineTypes, NodePrimitives, PayloadTypes};
 
 use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
-use crate::payload::{attributes::TaikoPayloadAttributes, payload::TaikoPayloadBuilderAttributes};
+use crate::payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes};
 
 pub mod types;
 

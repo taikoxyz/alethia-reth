@@ -26,7 +26,7 @@ use alethia_reth_block::{
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_primitives::payload::payload::TaikoPayloadBuilderAttributes;
+use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]

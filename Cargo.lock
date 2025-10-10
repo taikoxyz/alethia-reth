@@ -75,38 +75,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "alethia-reth"
-version = "0.1.0"
-dependencies = [
- "alethia-reth-block",
- "alethia-reth-chainspec",
- "alethia-reth-consensus",
- "alethia-reth-db",
- "alethia-reth-evm",
- "alethia-reth-network",
- "alethia-reth-payload",
- "alethia-reth-primitives",
- "alethia-reth-rpc",
- "alloy-rpc-types-eth",
- "eyre",
- "reth",
- "reth-engine-local",
- "reth-engine-primitives",
- "reth-ethereum",
- "reth-ethereum-primitives",
- "reth-node-api",
- "reth-node-builder",
- "reth-node-ethereum",
- "reth-rpc",
- "serde",
-]
-
-[[package]]
 name = "alethia-reth-bin"
 version = "0.1.0"
 dependencies = [
- "alethia-reth",
  "alethia-reth-cli",
+ "alethia-reth-node",
  "reth",
  "reth-cli-util",
  "reth-rpc",
@@ -166,7 +139,7 @@ dependencies = [
 name = "alethia-reth-cli"
 version = "0.1.0"
 dependencies = [
- "alethia-reth",
+ "alethia-reth-node",
  "alloy-consensus",
  "alloy-hardforks",
  "clap",
@@ -249,6 +222,33 @@ dependencies = [
  "reth-node-api",
  "reth-node-builder",
  "tracing",
+]
+
+[[package]]
+name = "alethia-reth-node"
+version = "0.1.0"
+dependencies = [
+ "alethia-reth-block",
+ "alethia-reth-chainspec",
+ "alethia-reth-consensus",
+ "alethia-reth-db",
+ "alethia-reth-evm",
+ "alethia-reth-network",
+ "alethia-reth-payload",
+ "alethia-reth-primitives",
+ "alethia-reth-rpc",
+ "alloy-rpc-types-eth",
+ "eyre",
+ "reth",
+ "reth-engine-local",
+ "reth-engine-primitives",
+ "reth-ethereum",
+ "reth-ethereum-primitives",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-node-ethereum",
+ "reth-rpc",
+ "serde",
 ]
 
 [[package]]

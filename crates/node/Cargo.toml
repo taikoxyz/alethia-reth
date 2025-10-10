@@ -1,5 +1,5 @@
 [package]
-name = "alethia-reth"
+name = "alethia-reth-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -27,9 +27,7 @@ alethia-reth-db = { path = "../db" }
 alethia-reth-evm = { path = "../evm" }
 alethia-reth-network = { path = "../network" }
 alethia-reth-payload = { path = "../payload" }
-alethia-reth-primitives = { path = "../primitives", features = [
-  "serde",
-] }
+alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alethia-reth-rpc = { path = "../rpc" }
 alloy-rpc-types-eth = { workspace = true }
 eyre = { workspace = true }

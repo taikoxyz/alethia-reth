@@ -10,8 +10,8 @@ name = "alethia-reth"
 path = "src/main.rs"
 
 [dependencies]
-alethia-reth = { path = "../../crates/node" }
 alethia-reth-cli = { path = "../../crates/cli" }
+alethia-reth-node = { path = "../../crates/node" }
 reth = { workspace = true }
 reth-cli-util = { workspace = true }
 reth-rpc = { workspace = true }

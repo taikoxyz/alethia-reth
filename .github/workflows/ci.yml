@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - ".github/**"
+    branches-ignore:
+      - release-please--branches--**
 
 env:
   CARGO_TERM_COLOR: always

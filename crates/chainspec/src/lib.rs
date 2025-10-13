@@ -42,7 +42,7 @@ fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/devnet.json"),
-        b256!("0xedb20e1f923f346991b12c96d786e97feb2bb510161fab8b45b598bef8a77876"),
+        b256!("0x0e5fbc3aebd60d418e5a9a9093727192526e916f307492dfcd7873047253fe70"),
         TAIKO_DEVNET_HARDFORKS.clone(),
     )
 }
@@ -92,6 +92,17 @@ mod test {
 
         assert_eq!(
             "0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a",
+            genesis_header_hash
+        );
+    }
+
+    #[test]
+    fn test_devnet_genesis_json_hash() {
+        let genesis_header_hash =
+            make_taiko_devnet_chain_spec().inner.genesis_header.hash_slow().to_string();
+
+        assert_eq!(
+            "0x0e5fbc3aebd60d418e5a9a9093727192526e916f307492dfcd7873047253fe70",
             genesis_header_hash
         );
     }

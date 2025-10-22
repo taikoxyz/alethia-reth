@@ -132,6 +132,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_evm::factory::TaikoEvmFactory;
     use reth_evm_ethereum::RethReceiptBuilder;
     use std::sync::Arc;
 
@@ -139,7 +140,7 @@ mod tests {
     fn test_taiko_block_executor_factory_creation() {
         let receipt_builder = RethReceiptBuilder::default();
         let spec = Arc::new(TaikoChainSpec::default());
-        let evm_factory = TaikoEvmFactory;
+        let evm_factory = TaikoEvmFactory::default();
 
         TaikoBlockExecutorFactory::new(receipt_builder, spec.clone(), evm_factory);
     }

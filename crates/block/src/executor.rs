@@ -3,23 +3,19 @@ use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded, eth::receipt_builder::ReceiptBuilder,
 };
-use alloy_primitives::{Address, Bytes, Uint};
-use reth::{
-    primitives::Log,
-    revm::{
-        State,
-        context::result::{ExecutionResult, ResultAndState},
-    },
-};
+use alloy_primitives::{Address, Bytes, Log, Uint};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
-        BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
-        InternalBlockExecutionError, StateChangeSource, SystemCaller,
+        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
+        CommitChanges, ExecutableTx, InternalBlockExecutionError, StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
-use reth_provider::BlockExecutionResult;
+use reth_revm::{
+    State,
+    context::result::{ExecutionResult, ResultAndState},
+};
 use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;

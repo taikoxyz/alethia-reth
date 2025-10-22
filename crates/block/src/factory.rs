@@ -1,4 +1,4 @@
-use std::{borrow::Cow, future, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
@@ -7,22 +7,15 @@ use alloy_evm::{
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::receipt_builder::ReceiptBuilder,
 };
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, Log};
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    builder::components::ExecutorBuilder,
-    primitives::Log,
-    revm::{Inspector, State},
-};
-use reth_ethereum::EthPrimitives;
-use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{FullNodeTypes, NodeTypes};
-use reth_node_builder::BuilderContext;
 
-use crate::{config::TaikoEvmConfig, executor::TaikoBlockExecutor};
+use reth_evm_ethereum::RethReceiptBuilder;
+use reth_revm::{Inspector, State};
+
+use crate::executor::TaikoBlockExecutor;
 use alethia_reth_chainspec::spec::{TaikoChainSpec, TaikoExecutorSpec};
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_primitives::engine::TaikoEngineTypes;
 
 /// Context for Taiko block execution.
 #[derive(Debug, Clone)]

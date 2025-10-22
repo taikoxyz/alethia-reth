@@ -6,14 +6,7 @@ use alloy_evm::Database;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    chainspec::EthChainSpec,
-    primitives::{BlockTy, SealedBlock, SealedHeader},
-    revm::{
-        context::{BlockEnv, CfgEnv},
-        primitives::{Address, B256, U256},
-    },
-};
+use reth_chainspec::EthChainSpec;
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
 use reth_evm::{
@@ -21,10 +14,14 @@ use reth_evm::{
     ExecutionCtxFor,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::ExecutionPayload;
+use reth_payload_primitives::ExecutionPayload;
+use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
 use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
-use reth_provider::errors::any::AnyError;
-use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
+use reth_revm::{
+    context::{BlockEnv, CfgEnv},
+    primitives::{Address, B256, U256},
+};
+use reth_storage_errors::any::AnyError;
 
 use crate::{
     assembler::TaikoBlockAssembler,

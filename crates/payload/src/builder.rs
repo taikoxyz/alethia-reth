@@ -1,10 +1,5 @@
 use alloy_consensus::Transaction;
 use alloy_hardforks::EthereumHardforks;
-use reth::{
-    api::{PayloadBuilderAttributes, PayloadBuilderError},
-    providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{State, database::StateProviderDatabase, primitives::U256},
-};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -16,6 +11,9 @@ use reth_evm::{
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
+use reth_payload_primitives::{PayloadBuilderAttributes, PayloadBuilderError};
+use reth_provider::{ChainSpecProvider, StateProviderFactory};
+use reth_revm::{State, database::StateProviderDatabase, primitives::U256};
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 

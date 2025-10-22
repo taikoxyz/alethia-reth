@@ -20,7 +20,9 @@ alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
 eyre = { workspace = true }
-reth = { workspace = true }
+reth-revm = { workspace = true }
+reth-provider = { workspace = true }
+reth-payload-primitives = { workspace = true }
 reth-basic-payload-builder = { workspace = true }
 reth-engine-local = { workspace = true }
 reth-ethereum = { workspace = true }

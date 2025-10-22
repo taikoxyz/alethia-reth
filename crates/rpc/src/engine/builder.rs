@@ -1,9 +1,9 @@
 use alloy_rpc_types_engine::ClientVersionV1;
-use reth::payload::PayloadStore;
 use reth_engine_primitives::EngineApiValidator;
 use reth_node_api::{AddOnsContext, FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EngineApiBuilder, PayloadValidatorBuilder};
 use reth_node_core::version::{CLIENT_CODE, version_metadata};
+use reth_payload_builder::PayloadStore;
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineCapabilities;
 

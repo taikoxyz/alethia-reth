@@ -268,7 +268,10 @@ pub struct TaikoNextBlockEnvAttributes {
     pub base_fee_per_gas: u64,
 }
 
-impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
+#[cfg(feature = "rpc")]
+impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<Header>
+    for TaikoNextBlockEnvAttributes
+{
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
     fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
         Self {

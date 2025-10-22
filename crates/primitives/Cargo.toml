@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
+local-payload-builder = ["dep:reth-engine-local"]
 serde = [
     "dep:serde",
     "alloy-primitives/serde",

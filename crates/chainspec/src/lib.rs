@@ -1,12 +1,12 @@
 use std::sync::{Arc, LazyLock};
 
 use alloy_primitives::B256;
-use reth::{
-    chainspec::{ChainSpec, make_genesis_header},
-    primitives::SealedHeader,
-    revm::primitives::{U256, b256},
-};
+use reth_chainspec::{ChainSpec, make_genesis_header};
 use reth_ethereum_forks::ChainHardforks;
+use reth_primitives_traits::SealedHeader;
+use reth_revm::primitives::{U256, b256};
+
+pub use reth_chainspec;
 
 use crate::{
     hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_MAINNET_HARDFORKS, TAIKO_TOLBA_HARDFORKS},
@@ -14,7 +14,6 @@ use crate::{
 };
 
 pub mod hardfork;
-pub mod parser;
 pub mod spec;
 
 /// The Taiko Mainnet spec

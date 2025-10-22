@@ -1,11 +1,8 @@
-use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth::revm::primitives::{Address, B256, U256};
-use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
-use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
+use reth_payload_primitives::PayloadAttributes;
+use reth_revm::primitives::{Address, B256, U256};
 use serde_with::{Bytes, base64::Base64, serde_as};
 
 /// Taiko Payload Attributes

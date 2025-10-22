@@ -2,9 +2,11 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
     ExecutionPayloadEnvelopeV5, ExecutionPayloadV1,
 };
-use reth::primitives::SealedBlock;
+use reth_engine_primitives::EngineTypes;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{BuiltPayload, EngineTypes, NodePrimitives, PayloadTypes};
+use reth_payload_primitives::{BuiltPayload, PayloadTypes};
+use reth_primitives::SealedBlock;
+use reth_primitives_traits::NodePrimitives;
 
 use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
 use crate::payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes};

@@ -1,15 +1,13 @@
 use alloy_primitives::Bytes;
 use alloy_rlp::{Decodable, Encodable};
+use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    api::PayloadBuilderAttributes,
-    payload::PayloadId,
-    primitives::Recovered,
-    revm::primitives::{Address, B256, keccak256},
-};
 use reth_ethereum::TransactionSigned;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
+use reth_payload_primitives::PayloadBuilderAttributes;
+use reth_primitives::Recovered;
 use reth_primitives_traits::SignerRecoverable;
+use reth_revm::primitives::{Address, B256, keccak256};
 use std::fmt::Debug;
 use tracing::debug;
 
@@ -177,7 +175,7 @@ fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp
 
 #[cfg(test)]
 mod test {
-    use reth::revm::primitives::hex;
+    use reth_revm::primitives::hex;
 
     use super::*;
 

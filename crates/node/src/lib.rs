@@ -3,16 +3,14 @@ pub use alethia_reth_chainspec as chainspec;
 pub use alethia_reth_consensus as consensus;
 pub use alethia_reth_db as db;
 pub use alethia_reth_evm as evm;
-pub use alethia_reth_network as network;
 pub use alethia_reth_payload as payload;
 pub use alethia_reth_primitives as primitives;
 pub use alethia_reth_rpc as rpc;
 
-use block::{config::TaikoEvmConfig, factory::TaikoExecutorBuilder};
+pub mod builder;
+
+use block::config::TaikoEvmConfig;
 use chainspec::spec::TaikoChainSpec;
-use consensus::builder::TaikoConsensusBuilder;
-use network::TaikoNetworkBuilder;
-use payload::TaikoPayloadBuilderBuilder;
 use primitives::engine::TaikoEngineTypes;
 use reth::{
     api::{FullNodeComponents, FullNodeTypes, NodeTypes},
@@ -37,9 +35,14 @@ use reth_node_ethereum::node::EthereumPoolBuilder;
 use reth_rpc::eth::core::EthRpcConverterFor;
 use rpc::{
     engine::{builder::TaikoEngineApiBuilder, validator::TaikoEngineValidatorBuilder},
-    eth::{builder::TaikoEthApiBuilder, types::TaikoEthApi},
+    eth::types::TaikoEthApi,
 };
 use std::sync::Arc;
+
+use crate::builder::{
+    TaikoConsensusBuilder, TaikoEthApiBuilder, TaikoExecutorBuilder, TaikoNetworkBuilder,
+    TaikoPayloadBuilderBuilder,
+};
 
 /// The main node type for a Taiko network node, implementing the `NodeTypes` trait.
 #[derive(Debug, Clone, Default)]

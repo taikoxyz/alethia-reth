@@ -1,8 +1,7 @@
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
-
-use crate::eth::types::TaikoEthApi;
+use alethia_reth_rpc::eth::types::TaikoEthApi;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};

@@ -1,13 +1,11 @@
 use alloy_primitives::Address;
-use reth::revm::{
-    context::{ContextTr, Evm as RevmEvm},
-    handler::{EvmTr, instructions::EthInstructions},
-    interpreter::interpreter::EthInterpreter,
-};
 use reth_revm::{
-    context::{ContextError, FrameStack},
-    handler::{EthFrame, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider},
-    interpreter::InterpreterResult,
+    context::{ContextError, ContextTr, Evm as RevmEvm, FrameStack},
+    handler::{
+        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider,
+        instructions::EthInstructions,
+    },
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 use revm_database_interface::Database;
 

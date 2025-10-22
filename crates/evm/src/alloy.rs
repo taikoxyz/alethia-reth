@@ -1,19 +1,17 @@
-use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use alloy_evm::{Database, Evm, EvmEnv};
-use alloy_primitives::hex;
-use reth::revm::{
+use alloy_primitives::{hex, map::HashMap};
+use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
-        BlockEnv, TxEnv,
+        BlockEnv, CfgEnv, TxEnv,
         result::{EVMError, ExecutionResult, HaltReason, Output, ResultAndState, SuccessReason},
     },
+    handler::PrecompileProvider,
+    interpreter::InterpreterResult,
     primitives::{Address, Bytes, TxKind, U256},
 };
-use reth_revm::{context::CfgEnv, handler::PrecompileProvider, interpreter::InterpreterResult};
 use tracing::debug;
 
 use crate::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};

@@ -9,7 +9,7 @@ use reth::{
 use reth_ethereum_forks::ChainHardforks;
 
 use crate::{
-    hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_MAINNET_HARDFORKS, TAIKO_TOLBA_HARDFORKS},
+    hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_HOODI_HARDFORKS, TAIKO_MAINNET_HARDFORKS},
     spec::TaikoChainSpec,
 };
 
@@ -25,9 +25,9 @@ pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
 pub static TAIKO_DEVNET: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_devnet_chain_spec().into());
 
-/// The Taiko Tolba spec
-pub static TAIKO_TOLBA: LazyLock<Arc<TaikoChainSpec>> =
-    LazyLock::new(|| make_taiko_tolba_chain_spec().into());
+/// The Taiko Hoodi spec
+pub static TAIKO_HOODI: LazyLock<Arc<TaikoChainSpec>> =
+    LazyLock::new(|| make_taiko_hoodi_chain_spec().into());
 
 // Creates a new [`ChainSpec`] for the Taiko Mainnet network.
 fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
@@ -47,12 +47,12 @@ fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     )
 }
 
-// Creates a new [`ChainSpec`] for the Taiko Tolba network.
-fn make_taiko_tolba_chain_spec() -> TaikoChainSpec {
+// Creates a new [`ChainSpec`] for the Taiko Hoodi network.
+fn make_taiko_hoodi_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
-        include_str!("genesis/tolba.json"),
-        b256!("0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a"),
-        TAIKO_TOLBA_HARDFORKS.clone(),
+        include_str!("genesis/taiko-hoodi.json"),
+        b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228"),
+        TAIKO_HOODI_HARDFORKS.clone(),
     )
 }
 
@@ -86,12 +86,12 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_tolba_genesis_json_hash() {
+    fn test_taiko_hoodi_genesis_json_hash() {
         let genesis_header_hash =
-            make_taiko_tolba_chain_spec().inner.genesis_header.hash_slow().to_string();
+            make_taiko_hoodi_chain_spec().inner.genesis_header.hash_slow().to_string();
 
         assert_eq!(
-            "0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a",
+            "0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228",
             genesis_header_hash
         );
     }

@@ -51,7 +51,7 @@ fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
 fn make_taiko_hoodi_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/taiko-hoodi.json"),
-        b256!("0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a"),
+        b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228"),
         TAIKO_HOODI_HARDFORKS.clone(),
     )
 }

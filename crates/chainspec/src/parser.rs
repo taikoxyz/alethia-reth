@@ -60,7 +60,7 @@ mod test {
 
         let hoodi = TaikoChainSpecParser::parse("taiko-hoodi")
             .expect("Failed to parse taiko-hoodi chain spec");
-        assert_eq!(hoodi.inner.chain, 167012);
+        assert_eq!(hoodi.inner.chain, 167013);
 
         let mainnet =
             TaikoChainSpecParser::parse("mainnet").expect("Failed to parse mainnet chain spec");

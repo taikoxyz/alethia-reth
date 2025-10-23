@@ -91,7 +91,7 @@ mod test {
             make_taiko_hoodi_chain_spec().inner.genesis_header.hash_slow().to_string();
 
         assert_eq!(
-            "0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a",
+            "0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228",
             genesis_header_hash
         );
     }

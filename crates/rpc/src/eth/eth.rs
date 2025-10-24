@@ -8,7 +8,7 @@ use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
 
 use crate::eth::error::TaikoApiError;
-use alethia_reth_consensus::validation::UPDATE_STATE_SHASTA_SELECTOR;
+use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
@@ -65,7 +65,7 @@ where
             let input = first_tx.input();
             let input = input.as_ref();
 
-            if !input.starts_with(UPDATE_STATE_SHASTA_SELECTOR) {
+            if !input.starts_with(ANCHOR_V4_SELECTOR) {
                 break;
             }
 

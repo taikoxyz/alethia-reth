@@ -31,17 +31,9 @@ sol! {
     function anchor(bytes32, bytes32, uint64, uint32) external;
     function anchorV2(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32)) external;
     function anchorV3(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32), bytes32[]) external;
-    function updateState(
-        uint48,
-        address,
-        bytes,
-        bytes32,
-        (uint48, uint8, address, address)[],
-        uint16,
-        uint48,
-        bytes32,
-        bytes32,
-        uint48
+    function anchorV4(
+        (uint48, address, bytes, bytes32, (uint48, uint8, address, address)[]),
+        (uint16, uint48, bytes32, bytes32)
     ) external;
 }
 
@@ -49,7 +41,7 @@ sol! {
 pub const ANCHOR_V1_SELECTOR: &[u8; 4] = &anchorCall::SELECTOR;
 pub const ANCHOR_V2_SELECTOR: &[u8; 4] = &anchorV2Call::SELECTOR;
 pub const ANCHOR_V3_SELECTOR: &[u8; 4] = &anchorV3Call::SELECTOR;
-pub const UPDATE_STATE_SHASTA_SELECTOR: &[u8; 4] = &updateStateCall::SELECTOR;
+pub const ANCHOR_V4_SELECTOR: &[u8; 4] = &anchorV4Call::SELECTOR;
 
 /// The gas limit for the anchor transactions before Pacaya hardfork.
 pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
@@ -269,7 +261,7 @@ where
 
     // Ensure the input data starts with one of the anchor selectors.
     if chain_spec.is_shasta_active_at_block(block.number()) {
-        validate_input_selector(anchor_transaction.input(), UPDATE_STATE_SHASTA_SELECTOR)?;
+        validate_input_selector(anchor_transaction.input(), ANCHOR_V4_SELECTOR)?;
     } else if chain_spec.is_pacaya_active_at_block(block.number()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;
     } else if chain_spec.is_ontake_active_at_block(block.number()) {

@@ -42,7 +42,7 @@ fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/devnet.json"),
-        b256!("0xedb20e1f923f346991b12c96d786e97feb2bb510161fab8b45b598bef8a77876"),
+        b256!("0xe08a1549ccd3aeb6cb5e3e1d671af129ac05bc4b5fb6f3d5b6c4cc226aa18a2b"),
         TAIKO_DEVNET_HARDFORKS.clone(),
     )
 }
@@ -86,13 +86,29 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_taiko_hoodi_genesis_json_hash() {
-        let genesis_header_hash =
-            make_taiko_hoodi_chain_spec().inner.genesis_header.hash_slow().to_string();
+    fn test_taiko_genesis_json_hashes() {
+        let cases = [
+            (
+                "devnet",
+                make_taiko_devnet_chain_spec as fn() -> TaikoChainSpec,
+                "0xe08a1549ccd3aeb6cb5e3e1d671af129ac05bc4b5fb6f3d5b6c4cc226aa18a2b",
+            ),
+            (
+                "taiko-hoodi",
+                make_taiko_hoodi_chain_spec as fn() -> TaikoChainSpec,
+                "0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228",
+            ),
+            (
+                "mainnet",
+                make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
+                "0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9",
+            ),
+        ];
 
-        assert_eq!(
-            "0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228",
-            genesis_header_hash
-        );
+        for (name, make_spec, expected_hash) in cases {
+            let spec = make_spec();
+            let computed_hash = spec.inner.genesis_header.hash_slow().to_string();
+            assert_eq!(expected_hash, computed_hash, "genesis hash mismatch for {name}");
+        }
     }
 }

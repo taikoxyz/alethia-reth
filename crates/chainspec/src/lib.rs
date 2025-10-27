@@ -17,6 +17,18 @@ pub mod hardfork;
 pub mod parser;
 pub mod spec;
 
+/// Genesis hash for the Taiko Devnet network.
+pub const TAIKO_DEVNET_GENESIS_HASH: B256 =
+    b256!("0x80b1e24302410b2a00bc53d75ce8daa89946269083294e94a2cc5cee721e543e");
+
+/// Genesis hash for the Taiko Hoodi network.
+pub const TAIKO_HOODI_GENESIS_HASH: B256 =
+    b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228");
+
+/// Genesis hash for the Taiko Mainnet network.
+pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
+    b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9");
+
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_mainnet_chain_spec().into());
@@ -29,20 +41,11 @@ pub static TAIKO_DEVNET: LazyLock<Arc<TaikoChainSpec>> =
 pub static TAIKO_HOODI: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_hoodi_chain_spec().into());
 
-// Creates a new [`ChainSpec`] for the Taiko Mainnet network.
-fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
-    make_taiko_chain_spec(
-        include_str!("genesis/mainnet.json"),
-        b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9"),
-        TAIKO_MAINNET_HARDFORKS.clone(),
-    )
-}
-
 // Creates a new [`ChainSpec`] for the Taiko Devnet network.
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/devnet.json"),
-        b256!("0xe08a1549ccd3aeb6cb5e3e1d671af129ac05bc4b5fb6f3d5b6c4cc226aa18a2b"),
+        TAIKO_DEVNET_GENESIS_HASH,
         TAIKO_DEVNET_HARDFORKS.clone(),
     )
 }
@@ -51,8 +54,17 @@ fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
 fn make_taiko_hoodi_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/taiko-hoodi.json"),
-        b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228"),
+        TAIKO_HOODI_GENESIS_HASH,
         TAIKO_HOODI_HARDFORKS.clone(),
+    )
+}
+
+// Creates a new [`ChainSpec`] for the Taiko Mainnet network.
+fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
+    make_taiko_chain_spec(
+        include_str!("genesis/mainnet.json"),
+        TAIKO_MAINNET_GENESIS_HASH,
+        TAIKO_MAINNET_HARDFORKS.clone(),
     )
 }
 
@@ -91,23 +103,23 @@ mod test {
             (
                 "devnet",
                 make_taiko_devnet_chain_spec as fn() -> TaikoChainSpec,
-                "0xe08a1549ccd3aeb6cb5e3e1d671af129ac05bc4b5fb6f3d5b6c4cc226aa18a2b",
+                TAIKO_DEVNET_GENESIS_HASH,
             ),
             (
                 "taiko-hoodi",
                 make_taiko_hoodi_chain_spec as fn() -> TaikoChainSpec,
-                "0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228",
+                TAIKO_HOODI_GENESIS_HASH,
             ),
             (
                 "mainnet",
                 make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
-                "0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9",
+                TAIKO_MAINNET_GENESIS_HASH,
             ),
         ];
 
         for (name, make_spec, expected_hash) in cases {
             let spec = make_spec();
-            let computed_hash = spec.inner.genesis_header.hash_slow().to_string();
+            let computed_hash = spec.inner.genesis_header.hash_slow();
             assert_eq!(expected_hash, computed_hash, "genesis hash mismatch for {name}");
         }
     }

@@ -75,13 +75,7 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
 
 /// Clamp the base fee to be within the defined minimum and maximum limits for the Shasta blocks.
 fn clamp_shasta_base_fee(base_fee: u64) -> u64 {
-    if base_fee < MIN_BASE_FEE {
-        MIN_BASE_FEE
-    } else if base_fee > MAX_BASE_FEE {
-        MAX_BASE_FEE
-    } else {
-        base_fee
-    }
+    base_fee.clamp(MIN_BASE_FEE, MAX_BASE_FEE)
 }
 
 #[cfg(test)]

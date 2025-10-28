@@ -384,7 +384,9 @@ mod test {
 
     #[test]
     fn test_validate_header_against_parent() {
-        use crate::eip4396::{BLOCK_TIME_TARGET, calculate_next_block_eip4396_base_fee};
+        use crate::eip4396::{
+            BLOCK_TIME_TARGET, MAX_BASE_FEE, calculate_next_block_eip4396_base_fee,
+        };
 
         // Test calculate_next_block_eip4396_base_fee function
         let mut parent = Header {
@@ -401,7 +403,10 @@ mod test {
         // Test 2: Gas used above target
         parent.gas_used = 20_000_000;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
-        assert!(base_fee > 1_000_000_000, "Base fee should increase when above target");
+        assert_eq!(
+            base_fee, MAX_BASE_FEE,
+            "Base fee should stay clamped at MAX_BASE_FEE when the parent is already at the cap"
+        );
 
         // Test 3: Gas used below target
         parent.gas_used = 10_000_000;

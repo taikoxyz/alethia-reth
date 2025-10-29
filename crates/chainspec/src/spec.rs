@@ -180,9 +180,9 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
         self.is_taiko_fork_active_at_block(TaikoHardfork::Pacaya, block_number)
     }
 
-    /// Checks if the `Shasta` hardfork is active at the given block number.
-    fn is_shasta_active_at_block(&self, block_number: u64) -> bool {
-        self.is_taiko_fork_active_at_block(TaikoHardfork::Shasta, block_number)
+    /// Checks if the `Shasta` hardfork is active at the given timestamp.
+    fn is_shasta_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
 }
 

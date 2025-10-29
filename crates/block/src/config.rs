@@ -3,7 +3,7 @@ use std::{borrow::Cow, convert::Infallible, sync::Arc};
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::Decodable2718;
 use alloy_evm::Database;
-use alloy_hardforks::EthereumHardforks;
+use alloy_hardforks::{EthereumHardfork, EthereumHardforks};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{
@@ -299,7 +299,8 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp_or_number(timestamp, block_number)
+    if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) &&
+        chain_spec.fork(EthereumHardfork::London).active_at_block(block_number)
     {
         TaikoSpecId::SHASTA
     } else if chain_spec

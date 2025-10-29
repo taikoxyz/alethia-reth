@@ -21,10 +21,7 @@ use reth_primitives_traits::{
 use reth_provider::{BlockExecutionResult, BlockReader};
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
-use alethia_reth_chainspec::{
-    hardfork::{TaikoHardfork, TaikoHardforks},
-    spec::TaikoChainSpec,
-};
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 sol! {
@@ -162,11 +159,7 @@ where
         let header_base_fee =
             { header.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)? };
 
-        if self
-            .chain_spec
-            .taiko_fork_activation(TaikoHardfork::Shasta)
-            .active_at_timestamp(header.timestamp())
-        {
+        if self.chain_spec.is_shasta_active(header.timestamp(), header.number()) {
             // Shasta hardfork introduces stricter timestamp validation:
             // timestamps must strictly increase (no equal timestamps allowed)
             if header.timestamp() <= parent.timestamp() {
@@ -260,7 +253,7 @@ where
     };
 
     // Ensure the input data starts with one of the anchor selectors.
-    if chain_spec.is_shasta_active_at_timestamp(block.header().timestamp()) {
+    if chain_spec.is_shasta_active(block.header().timestamp(), block.number()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V4_SELECTOR)?;
     } else if chain_spec.is_pacaya_active_at_block(block.number()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;

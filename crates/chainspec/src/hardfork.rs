@@ -38,9 +38,11 @@ pub trait TaikoHardforks: EthereumHardforks {
         self.taiko_fork_activation(TaikoHardfork::Pacaya).active_at_block(block_number)
     }
 
-    /// Convenience method to check if [`TaikoHardfork::Shasta`] is active at a given timestamp.
-    fn is_shasta_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
+    /// Convenience method to check if [`TaikoHardfork::Shasta`] is active at the given timestamp
+    /// and block number.
+    fn is_shasta_active(&self, timestamp: u64, block_number: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp) &&
+            self.ethereum_fork_activation(EthereumHardfork::London).active_at_block(block_number)
     }
 }
 

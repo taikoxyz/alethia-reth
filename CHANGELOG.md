@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/taikoxyz/alethia-reth/compare/v0.5.0...v0.6.0) (2025-10-30)
+
+
+### Features
+
+* **chainspec:** check Shasta activation based on timestamp ([#49](https://github.com/taikoxyz/alethia-reth/issues/49)) ([361bbdf](https://github.com/taikoxyz/alethia-reth/commit/361bbdfe9028477ccd1bf95ac9d16c46a7cc6337))
+* **consensus:** introduce protocol `MIN_BASE_FEE` and `MAX_BASE_FEE` for Shasta blocks ([#46](https://github.com/taikoxyz/alethia-reth/issues/46)) ([9556014](https://github.com/taikoxyz/alethia-reth/commit/95560140030697d31a6a7e067b90977ba5417779))
+
 ## [0.5.0](https://github.com/taikoxyz/alethia-reth/compare/v0.4.0...v0.5.0) (2025-10-27)
 
 

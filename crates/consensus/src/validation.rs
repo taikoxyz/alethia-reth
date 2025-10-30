@@ -21,10 +21,7 @@ use reth_primitives_traits::{
 use reth_provider::{BlockExecutionResult, BlockReader};
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
-use alethia_reth_chainspec::{
-    hardfork::{TaikoHardfork, TaikoHardforks},
-    spec::TaikoChainSpec,
-};
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 sol! {
@@ -47,11 +44,6 @@ pub const ANCHOR_V4_SELECTOR: &[u8; 4] = &anchorV4Call::SELECTOR;
 pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
 /// The gas limit for the anchor transactions in Pacaya hardfork blocks.
 pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
-
-/// The number of blocks after the Shasta hardfork where the initial base fee is used.
-/// This is set to 3 since if the first Shasta block is genesis block, its timestamp may
-/// be very different from the second block, causing large base fee change.
-pub const SHASTA_INITIAL_BASE_FEE_BLOCKS: u64 = 3;
 
 /// Taiko consensus implementation.
 ///
@@ -167,7 +159,7 @@ where
         let header_base_fee =
             { header.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)? };
 
-        if self.chain_spec.is_shasta_active_at_block(header.number()) {
+        if self.chain_spec.is_shasta_active(header.timestamp(), header.number()) {
             // Shasta hardfork introduces stricter timestamp validation:
             // timestamps must strictly increase (no equal timestamps allowed)
             if header.timestamp() <= parent.timestamp() {
@@ -177,35 +169,16 @@ where
                 });
             }
 
-            // Calculate the expected base fee for this block.
-            let mut expected_base_fee = SHASTA_INITIAL_BASE_FEE;
-
-            // Get the Shasta fork activation block number.
-            let shasta_fork_block = self
-                .chain_spec
-                .taiko_fork_activation(TaikoHardfork::Shasta)
-                .block_number()
-                .ok_or(ConsensusError::Other("Shasta fork is not activated".to_string()))?;
-
-            // Calculate the expected base fee using EIP-4396 formula.
-            if parent.number() + 1 >= shasta_fork_block + SHASTA_INITIAL_BASE_FEE_BLOCKS {
-                // Calculate parent block time = parent.timestamp - grandparent.timestamp
-                let parent_block_time = parent.header().timestamp() -
-                    self.block_reader
-                        .block_by_hash(parent.header().parent_hash())
-                        .map_err(|_| ConsensusError::ParentUnknown {
-                            hash: parent.header().parent_hash(),
-                        })?
-                        .ok_or(ConsensusError::ParentUnknown {
-                            hash: parent.header().parent_hash(),
-                        })?
-                        .header()
-                        .timestamp();
-
-                // Calculate the expected base fee using EIP-4396 formula.
-                expected_base_fee =
-                    calculate_next_block_eip4396_base_fee(parent.header(), parent_block_time);
-            }
+            let expected_base_fee = if parent.number() == 0 {
+                // First post-genesis block lacks a grandparent timestamp, so keep the default base
+                // fee.
+                SHASTA_INITIAL_BASE_FEE
+            } else {
+                calculate_next_block_eip4396_base_fee(
+                    parent.header(),
+                    parent_block_time(&self.block_reader, parent)?,
+                )
+            };
 
             // Verify the block's base fee matches the expected value.
             if header_base_fee != expected_base_fee {
@@ -246,6 +219,26 @@ pub fn validate_against_parent_eip4396_base_fee<
     Ok(())
 }
 
+/// Calculates the time difference between the parent and grandparent blocks.
+fn parent_block_time<R, H>(
+    block_reader: &R,
+    parent: &SealedHeader<H>,
+) -> Result<u64, ConsensusError>
+where
+    R: BlockReader,
+    H: BlockHeader,
+{
+    let grandparent_hash = parent.header().parent_hash();
+    let grandparent_timestamp = block_reader
+        .block_by_hash(grandparent_hash)
+        .map_err(|_| ConsensusError::ParentUnknown { hash: grandparent_hash })?
+        .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?
+        .header()
+        .timestamp();
+
+    Ok(parent.header().timestamp() - grandparent_timestamp)
+}
+
 /// Validates the anchor transaction in the block.
 pub fn validate_anchor_transaction_in_block<B>(
     block: &RecoveredBlock<B>,
@@ -260,7 +253,7 @@ where
     };
 
     // Ensure the input data starts with one of the anchor selectors.
-    if chain_spec.is_shasta_active_at_block(block.number()) {
+    if chain_spec.is_shasta_active(block.header().timestamp(), block.number()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V4_SELECTOR)?;
     } else if chain_spec.is_pacaya_active_at_block(block.number()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;

@@ -24,7 +24,7 @@ use alethia_reth_node::{
     chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
 };
 
-use crate::command::TaikoNodeCommand;
+use crate::command::{DevnetShastaArgs, TaikoNodeCommand};
 
 pub mod command;
 pub mod tables;
@@ -60,8 +60,10 @@ where
     }
 }
 
-impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debug>
-    TaikoCli<C, Ext>
+impl<
+    C: ChainSpecParser<ChainSpec = TaikoChainSpec>,
+    Ext: clap::Args + fmt::Debug + DevnetShastaArgs,
+> TaikoCli<C, Ext>
 {
     /// Execute the configured cli command.
     ///

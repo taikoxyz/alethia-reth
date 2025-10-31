@@ -1,5 +1,5 @@
 //! Rust Taiko node (alethia-reth) binary executable.
-use alethia_reth_cli::TaikoCli;
+use alethia_reth_cli::{TaikoCli, command::TaikoCliExt};
 use alethia_reth_node::{
     TaikoNode,
     chainspec::parser::TaikoChainSpecParser,
@@ -8,7 +8,7 @@ use alethia_reth_node::{
         eth::{TaikoExt, TaikoExtApiServer},
     },
 };
-use reth::{args::RessArgs, builder::NodeHandle, ress::install_ress_subprotocol};
+use reth::{builder::NodeHandle, ress::install_ress_subprotocol};
 use reth_rpc::eth::{EthApiTypes, RpcNodeCore};
 use tracing::info;
 
@@ -21,8 +21,9 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    if let Err(err) = TaikoCli::<TaikoChainSpecParser, RessArgs>::parse_args().run(
-        async move |builder, ress_args| {
+    if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExt>::parse_args().run(
+        async move |builder, ext| {
+            let TaikoCliExt { ress: ress_args, .. } = ext;
             info!(target: "reth::taiko::cli", "Launching Taiko node");
             let NodeHandle { node, node_exit_future } = builder
                 .node(TaikoNode)

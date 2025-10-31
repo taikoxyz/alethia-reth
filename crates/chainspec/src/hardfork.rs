@@ -6,6 +6,9 @@ use reth_trie_common::iter::ParallelExtend;
 
 use crate::spec::TaikoChainSpec;
 
+/// Default activation timestamp used for the Shasta hardfork on Taiko devnet.
+pub const DEFAULT_DEVNET_SHASTA_TIMESTAMP: u64 = 0;
+
 hardfork!(
   /// The name of a Taiko hardfork.
   ///
@@ -77,13 +80,17 @@ pub static TAIKO_HOODI_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
 });
 
 /// Taiko Devnet list of hardforks.
-pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
+pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> =
+    LazyLock::new(|| taiko_devnet_hardforks(DEFAULT_DEVNET_SHASTA_TIMESTAMP));
+
+/// Build the Taiko devnet hardfork schedule with a custom Shasta activation timestamp.
+pub fn taiko_devnet_hardforks(shasta_timestamp: u64) -> ChainHardforks {
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
-        (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(10)),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(shasta_timestamp)),
     ]))
-});
+}
 
 // Extend the given hardforks with shared common Ethereum hardforks.
 fn extend_with_shared_hardforks(
@@ -131,6 +138,17 @@ mod test {
         ];
         let forks = extend_with_shared_hardforks(extra_forks.clone());
         assert!(forks.len() > extra_forks.len());
+    }
+
+    #[test]
+    fn test_devnet_hardforks_custom_timestamp() {
+        let custom_ts = 42;
+        let hardforks = taiko_devnet_hardforks(custom_ts);
+        let shasta = hardforks.fork(TaikoHardfork::Shasta);
+        assert!(
+            matches!(shasta, ForkCondition::Timestamp(ts) if ts == custom_ts),
+            "expected shasta fork to use custom timestamp"
+        );
     }
 
     #[test]

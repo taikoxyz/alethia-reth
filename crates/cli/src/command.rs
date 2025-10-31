@@ -46,9 +46,11 @@ pub struct TaikoCliExt {
     pub ress: RessArgs,
 
     /// Override the Shasta hardfork activation timestamp when running against the Taiko devnet.
+    // Flag is optional: omit it to keep the zero default, pass `--devnet-shasta-timestamp` (with or
+    // without an explicit `<TIMESTAMP>` value) to override.
     #[clap(
         long,
-        value_name = "SECONDS",
+        value_name = "TIMESTAMP",
         num_args = 0..=1,
         default_missing_value = "0",
         help = "Set a custom Shasta hardfork activation timestamp when using the devnet chainspec. Defaults to 0.",
@@ -58,10 +60,13 @@ pub struct TaikoCliExt {
 }
 
 impl DevnetShastaArgs for TaikoCliExt {
+    // Returns the Shasta activation timestamp for the Taiko devnet.
     fn devnet_shasta_timestamp(&self) -> u64 {
+        // Fallback to the devnet default when the flag is omitted.
         self.devnet_shasta_timestamp.unwrap_or(DEFAULT_DEVNET_SHASTA_TIMESTAMP)
     }
 
+    // Returns true if the devnet Shasta timestamp was explicitly overridden on the CLI.
     fn devnet_shasta_timestamp_overridden(&self) -> bool {
         self.devnet_shasta_timestamp.is_some()
     }
@@ -132,6 +137,7 @@ where
         } = *self.0;
 
         let shasta_timestamp = ext.devnet_shasta_timestamp();
+        // Only rebuild the devnet chainspec when the CLI flag actually overrides the timestamp.
         let chain = if ext.devnet_shasta_timestamp_overridden() {
             ensure!(
                 chain.genesis_hash() == TAIKO_DEVNET_GENESIS_HASH,

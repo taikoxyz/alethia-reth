@@ -12,7 +12,7 @@ use reth::chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, H
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 
-use crate::hardfork::TaikoHardfork;
+use crate::{TAIKO_DEVNET_GENESIS_HASH, hardfork::TaikoHardfork};
 
 /// An Taiko chain specification.
 ///
@@ -158,6 +158,32 @@ impl TaikoExecutorSpec for TaikoChainSpec {
     }
 }
 
+/// Helper trait for applying Taiko devnet specific overrides.
+pub trait TaikoDevnetConfigExt {
+    /// Returns a cloned [`TaikoChainSpec`] with the Shasta hardfork activation timestamp updated
+    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks.
+    fn clone_with_devnet_shasta_timestamp(&self, timestamp: u64) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+impl TaikoDevnetConfigExt for TaikoChainSpec {
+    /// Returns a cloned [`TaikoChainSpec`] with the Shasta hardfork activation timestamp updated
+    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks.
+    fn clone_with_devnet_shasta_timestamp(&self, timestamp: u64) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        if self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH {
+            return None;
+        }
+
+        let mut cloned = self.clone();
+        cloned.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(timestamp));
+        Some(cloned)
+    }
+}
+
 /// Helper methods for Ethereum forks.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait TaikoExecutorSpec: EthExecutorSpec {
@@ -182,14 +208,15 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
 
     /// Checks if the `Shasta` hardfork is active at the given timestamp and block number.
     fn is_shasta_active(&self, timestamp: u64, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp) &&
-            self.ethereum_fork_activation(EthereumHardfork::London).active_at_block(block_number)
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
+            && self.ethereum_fork_activation(EthereumHardfork::London).active_at_block(block_number)
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{TAIKO_DEVNET, TAIKO_MAINNET};
 
     #[test]
     fn test_chain_spec_is_optimism() {
@@ -205,5 +232,24 @@ mod test {
         assert_eq!(spec.deposit_contract(), None);
         assert_eq!(spec.blob_params_at_timestamp(0), None);
         assert_eq!(spec.final_paris_total_difficulty(), Some(U256::ZERO));
+    }
+
+    #[test]
+    fn test_clone_with_devnet_shasta_timestamp() {
+        let devnet_spec = (*TAIKO_DEVNET).clone();
+        let overridden = devnet_spec
+            .as_ref()
+            .clone_with_devnet_shasta_timestamp(42)
+            .expect("devnet override should succeed");
+        assert_eq!(
+            overridden.taiko_fork_activation(TaikoHardfork::Shasta),
+            ForkCondition::Timestamp(42)
+        );
+
+        let mainnet_spec = (*TAIKO_MAINNET).clone();
+        assert!(
+            mainnet_spec.as_ref().clone_with_devnet_shasta_timestamp(1).is_none(),
+            "non-devnet overrides should be ignored"
+        );
     }
 }

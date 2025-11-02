@@ -208,8 +208,8 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
 
     /// Checks if the `Shasta` hardfork is active at the given timestamp and block number.
     fn is_shasta_active(&self, timestamp: u64, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
-            && self.ethereum_fork_activation(EthereumHardfork::London).active_at_block(block_number)
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp) &&
+            self.ethereum_fork_activation(EthereumHardfork::London).active_at_block(block_number)
     }
 }
 

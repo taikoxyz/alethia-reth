@@ -206,10 +206,12 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
         self.is_taiko_fork_active_at_block(TaikoHardfork::Pacaya, block_number)
     }
 
-    /// Checks if the `Shasta` hardfork is active at the given timestamp and block number.
-    fn is_shasta_active(&self, timestamp: u64, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp) &&
-            self.ethereum_fork_activation(EthereumHardfork::London).active_at_block(block_number)
+    /// Checks if the `Shasta` hardfork is active at the given timestamp.
+    ///
+    /// Taiko chains always run with London enabled from genesis, so the activation reduces to the
+    /// timestamp-only condition.
+    fn is_shasta_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
 }
 

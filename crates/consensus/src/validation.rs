@@ -159,7 +159,7 @@ where
         let header_base_fee =
             { header.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)? };
 
-        if self.chain_spec.is_shasta_active(header.timestamp(), header.number()) {
+        if self.chain_spec.is_shasta_active(header.timestamp()) {
             // Shasta hardfork introduces stricter timestamp validation:
             // timestamps must strictly increase (no equal timestamps allowed)
             if header.timestamp() <= parent.timestamp() {
@@ -253,7 +253,7 @@ where
     };
 
     // Ensure the input data starts with one of the anchor selectors.
-    if chain_spec.is_shasta_active(block.header().timestamp(), block.number()) {
+    if chain_spec.is_shasta_active(block.header().timestamp()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V4_SELECTOR)?;
     } else if chain_spec.is_pacaya_active_at_block(block.number()) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;

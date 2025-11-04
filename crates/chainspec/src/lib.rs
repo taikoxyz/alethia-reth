@@ -9,12 +9,24 @@ use reth_revm::primitives::{U256, b256};
 pub use reth_chainspec;
 
 use crate::{
-    hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_MAINNET_HARDFORKS, TAIKO_TOLBA_HARDFORKS},
+    hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_HOODI_HARDFORKS, TAIKO_MAINNET_HARDFORKS},
     spec::TaikoChainSpec,
 };
 
 pub mod hardfork;
 pub mod spec;
+
+/// Genesis hash for the Taiko Devnet network.
+pub const TAIKO_DEVNET_GENESIS_HASH: B256 =
+    b256!("0x560214ec5cf2d01f8dbbeb8062c5f187cd8a356fa6e0faa577767566e2f570ad");
+
+/// Genesis hash for the Taiko Hoodi network.
+pub const TAIKO_HOODI_GENESIS_HASH: B256 =
+    b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228");
+
+/// Genesis hash for the Taiko Mainnet network.
+pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
+    b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9");
 
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
@@ -24,34 +36,34 @@ pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
 pub static TAIKO_DEVNET: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_devnet_chain_spec().into());
 
-/// The Taiko Tolba spec
-pub static TAIKO_TOLBA: LazyLock<Arc<TaikoChainSpec>> =
-    LazyLock::new(|| make_taiko_tolba_chain_spec().into());
-
-// Creates a new [`ChainSpec`] for the Taiko Mainnet network.
-fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
-    make_taiko_chain_spec(
-        include_str!("genesis/mainnet.json"),
-        b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9"),
-        TAIKO_MAINNET_HARDFORKS.clone(),
-    )
-}
+/// The Taiko Hoodi spec
+pub static TAIKO_HOODI: LazyLock<Arc<TaikoChainSpec>> =
+    LazyLock::new(|| make_taiko_hoodi_chain_spec().into());
 
 // Creates a new [`ChainSpec`] for the Taiko Devnet network.
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
         include_str!("genesis/devnet.json"),
-        b256!("0xedb20e1f923f346991b12c96d786e97feb2bb510161fab8b45b598bef8a77876"),
+        TAIKO_DEVNET_GENESIS_HASH,
         TAIKO_DEVNET_HARDFORKS.clone(),
     )
 }
 
-// Creates a new [`ChainSpec`] for the Taiko Tolba network.
-fn make_taiko_tolba_chain_spec() -> TaikoChainSpec {
+// Creates a new [`ChainSpec`] for the Taiko Hoodi network.
+fn make_taiko_hoodi_chain_spec() -> TaikoChainSpec {
     make_taiko_chain_spec(
-        include_str!("genesis/tolba.json"),
-        b256!("0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a"),
-        TAIKO_TOLBA_HARDFORKS.clone(),
+        include_str!("genesis/taiko-hoodi.json"),
+        TAIKO_HOODI_GENESIS_HASH,
+        TAIKO_HOODI_HARDFORKS.clone(),
+    )
+}
+
+// Creates a new [`ChainSpec`] for the Taiko Mainnet network.
+fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
+    make_taiko_chain_spec(
+        include_str!("genesis/mainnet.json"),
+        TAIKO_MAINNET_GENESIS_HASH,
+        TAIKO_MAINNET_HARDFORKS.clone(),
     )
 }
 
@@ -85,13 +97,29 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_tolba_genesis_json_hash() {
-        let genesis_header_hash =
-            make_taiko_tolba_chain_spec().inner.genesis_header.hash_slow().to_string();
+    fn test_taiko_genesis_json_hashes() {
+        let cases = [
+            (
+                "devnet",
+                make_taiko_devnet_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_DEVNET_GENESIS_HASH,
+            ),
+            (
+                "taiko-hoodi",
+                make_taiko_hoodi_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_HOODI_GENESIS_HASH,
+            ),
+            (
+                "mainnet",
+                make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_MAINNET_GENESIS_HASH,
+            ),
+        ];
 
-        assert_eq!(
-            "0x9fc37d0b7b80fb9a43a876ab11fa87d822cbe64df558c1158bba731c57dea75a",
-            genesis_header_hash
-        );
+        for (name, make_spec, expected_hash) in cases {
+            let spec = make_spec();
+            let computed_hash = spec.inner.genesis_header.hash_slow();
+            assert_eq!(expected_hash, computed_hash, "genesis hash mismatch for {name}");
+        }
     }
 }

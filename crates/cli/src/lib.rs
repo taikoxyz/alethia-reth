@@ -19,11 +19,32 @@ use tracing::info;
 
 use alethia_reth_node::{TaikoNode, chainspec::spec::TaikoChainSpec};
 
-use crate::{chainspec::TaikoChainSpecParser, command::TaikoNodeCommand};
+use crate::{
+    chainspec::TaikoChainSpecParser,
+    command::{TaikoNodeCommand, TaikoNodeExtArgs},
+};
+use reth_node_core::args::RessArgs;
 
 pub mod chainspec;
 pub mod command;
 pub mod tables;
+
+/// Additional Taiko CLI arguments layered on top of `RessArgs`.
+#[derive(Debug, clap::Args)]
+pub struct TaikoCliExtArgs {
+    /// Controls Taiko resource synchronization.
+    #[command(flatten)]
+    pub ress: RessArgs,
+
+    /// Override the devnet Shasta hardfork activation timestamp (`0` keeps the embedded value).
+    #[arg(
+        long = "devnet-shasta-timestamp",
+        value_name = "TIMESTAMP",
+        default_value_t = 0u64,
+        help_heading = "Taiko"
+    )]
+    pub devnet_shasta_timestamp: u64,
+}
 
 /// The main alethia-reth cli interface.
 ///
@@ -56,8 +77,10 @@ where
     }
 }
 
-impl<C: ChainSpecParser<ChainSpec = TaikoChainSpec>, Ext: clap::Args + fmt::Debug>
-    TaikoCli<C, Ext>
+impl<
+    C: ChainSpecParser<ChainSpec = TaikoChainSpec>,
+    Ext: clap::Args + fmt::Debug + TaikoNodeExtArgs,
+> TaikoCli<C, Ext>
 {
     /// Execute the configured cli command.
     ///

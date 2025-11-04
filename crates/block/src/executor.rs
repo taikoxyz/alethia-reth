@@ -107,15 +107,15 @@ where
                 .account_info();
 
             // Decode the base fee share percentage from the block's extra data.
-            let base_fee_share_pgtg =
-                if self.spec.is_shasta_active_at_block(self.evm.block().number.to()) {
-                    let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
-                    pctg
-                } else if self.spec.is_ontake_active_at_block(self.evm.block().number.to()) {
-                    decode_post_ontake_extra_data(self.ctx.extra_data.clone())
-                } else {
-                    0
-                };
+            let base_fee_share_pgtg = if self.spec.is_shasta_active(self.evm.block().timestamp.to())
+            {
+                let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
+                pctg
+            } else if self.spec.is_ontake_active_at_block(self.evm.block().number.to()) {
+                decode_post_ontake_extra_data(self.ctx.extra_data.clone())
+            } else {
+                0
+            };
 
             self.evm
                 .transact_system_call(

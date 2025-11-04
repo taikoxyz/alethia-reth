@@ -3,11 +3,11 @@ use std::sync::Arc;
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 
 use alethia_reth_node::chainspec::{
-    TAIKO_DEVNET, TAIKO_MAINNET, TAIKO_TOLBA, spec::TaikoChainSpec,
+    TAIKO_DEVNET, TAIKO_HOODI, TAIKO_MAINNET, spec::TaikoChainSpec,
 };
 
 /// Chains supported by alethia-reth. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "tolba", "devnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "taiko-hoodi", "devnet"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -16,7 +16,8 @@ pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "tolba", "devnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TaikoChainSpec>, eyre::Error> {
     Ok(match s {
         "mainnet" => TAIKO_MAINNET.clone(),
-        "tolba" => TAIKO_TOLBA.clone(),
+        // Accept dashed and space-separated names;
+        "taiko-hoodi" | "taiko hoodi" => TAIKO_HOODI.clone(),
         "devnet" => TAIKO_DEVNET.clone(),
         _ => Arc::new(parse_genesis(s)?.into()),
     })
@@ -59,8 +60,9 @@ mod test {
             TaikoChainSpecParser::parse("devnet").expect("Failed to parse devnet chain spec");
         assert_eq!(devnet.inner.chain, 167001);
 
-        let tolba = TaikoChainSpecParser::parse("tolba").expect("Failed to parse tolba chain spec");
-        assert_eq!(tolba.inner.chain, 167012);
+        let hoodi = TaikoChainSpecParser::parse("taiko-hoodi")
+            .expect("Failed to parse taiko-hoodi chain spec");
+        assert_eq!(hoodi.inner.chain, 167013);
 
         let mainnet =
             TaikoChainSpecParser::parse("mainnet").expect("Failed to parse mainnet chain spec");

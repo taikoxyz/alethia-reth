@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.5.0](https://github.com/taikoxyz/alethia-reth/compare/v0.4.0...v0.5.0) (2025-10-27)
+
+
+### Features
+
+* **consensus:** changes based on protocol [#20413](https://github.com/taikoxyz/alethia-reth/issues/20413) ([#44](https://github.com/taikoxyz/alethia-reth/issues/44)) ([28d7473](https://github.com/taikoxyz/alethia-reth/commit/28d7473d7380f5972dab6b8644416cbd97584c19))
+* **consensus:** improve `EIP-4396` calculation ([#32](https://github.com/taikoxyz/alethia-reth/issues/32)) ([569500d](https://github.com/taikoxyz/alethia-reth/commit/569500dd7e6a17445122507dd65c22d157c6ee4f))
+* **repo:** always use `alethia-reth` as package name ([94ac428](https://github.com/taikoxyz/alethia-reth/commit/94ac4281752e68b8f135c23a083b7c4d05ffa6ca))
+
+
+### Bug Fixes
+
+* **repo:** fix workflows and release-please ([#39](https://github.com/taikoxyz/alethia-reth/issues/39)) ([4836da9](https://github.com/taikoxyz/alethia-reth/commit/4836da99d721a66b93772bba39e2b8ab65871222))
+
+
+### Chores
+
+* **chainspec:** remove `Hekla` and introduce `Tolba` network ([#35](https://github.com/taikoxyz/alethia-reth/issues/35)) ([2937d0a](https://github.com/taikoxyz/alethia-reth/commit/2937d0a0f68ab95848d26db928e8e107ec51d997))
+* **chainspec:** rename `tolba` network to `taiko-hoodi` ([#43](https://github.com/taikoxyz/alethia-reth/issues/43)) ([3df171e](https://github.com/taikoxyz/alethia-reth/commit/3df171ea89777e45fb2ff7bcc24a31c3ee1ee26d))
+* **chainspec:** update devnet genesis JSON ([#45](https://github.com/taikoxyz/alethia-reth/issues/45)) ([fecf7f1](https://github.com/taikoxyz/alethia-reth/commit/fecf7f1c069d85e5fd1906252488d756bf4397a8))
+* **chainspec:** update Shasta devnet genesis JSON ([#26](https://github.com/taikoxyz/alethia-reth/issues/26)) ([14da7bd](https://github.com/taikoxyz/alethia-reth/commit/14da7bd2406bbba65e77ae2536273cf0b8b25ee7))
+* **repo:** always use `alethia-reth` as package name ([#28](https://github.com/taikoxyz/alethia-reth/issues/28)) ([94ac428](https://github.com/taikoxyz/alethia-reth/commit/94ac4281752e68b8f135c23a083b7c4d05ffa6ca))
+* **repo:** introduce `AGENTS.md` ([#34](https://github.com/taikoxyz/alethia-reth/issues/34)) ([7dbd4fc](https://github.com/taikoxyz/alethia-reth/commit/7dbd4fc03e2fef913e98cafa37f77a5eca552ef2))
+* **repo:** introduce `justfile` ([#33](https://github.com/taikoxyz/alethia-reth/issues/33)) ([6c8fd92](https://github.com/taikoxyz/alethia-reth/commit/6c8fd92a1d5871bec915e3e0b3de82aeaa8e5244))
+* **repo:** update `Cargo.lock` ([#41](https://github.com/taikoxyz/alethia-reth/issues/41)) ([8cf2220](https://github.com/taikoxyz/alethia-reth/commit/8cf2220c22510f60aa88f580d8703100c3d0eba9))
+* **repo:** update project type in `release-please-config.json` ([#29](https://github.com/taikoxyz/alethia-reth/issues/29)) ([699930f](https://github.com/taikoxyz/alethia-reth/commit/699930f0ae2f7e5f9fa73ae94ea9d025326c9f62))
+
+
+### Documentation
+
+* **repo:** update `README` for using `just test` ([#36](https://github.com/taikoxyz/alethia-reth/issues/36)) ([fe211c2](https://github.com/taikoxyz/alethia-reth/commit/fe211c2bd6a7ba7fac9fce7500946488ec89091b))
+
+
+### Code Refactoring
+
+* **repo:** refine workspace layout by modularizing crates ([#37](https://github.com/taikoxyz/alethia-reth/issues/37)) ([a9f7cfe](https://github.com/taikoxyz/alethia-reth/commit/a9f7cfee9fc6d950eee54628786c808bcf313cf6))
+* **repo:** rename the `alethia-reth` crate to `alethia-reth-node` ([#38](https://github.com/taikoxyz/alethia-reth/issues/38)) ([8fce9a5](https://github.com/taikoxyz/alethia-reth/commit/8fce9a5d3b8f0b8b422de9d8c5889fbb067a759d))
+
+
+### Workflow
+
+* **repo:** add claude workflows ([#27](https://github.com/taikoxyz/alethia-reth/issues/27)) ([01cdc56](https://github.com/taikoxyz/alethia-reth/commit/01cdc563552290785073fdbdd1e4f10c416d0941))
+* **repo:** add timeout to docker build ([68ae907](https://github.com/taikoxyz/alethia-reth/commit/68ae907fe83bdc405d94d1a51e5ebdef44f60ae6))
+* **repo:** add timeout to docker build ([114976d](https://github.com/taikoxyz/alethia-reth/commit/114976d66d32bc13b8eb5775b28174244e119bf1))
+* **repo:** more improvements ([fa42db7](https://github.com/taikoxyz/alethia-reth/commit/fa42db7e3f4a449c3849abf5d5b9c7653fa22bf7))
+
 ## [0.4.0](https://github.com/taikoxyz/alethia-reth/compare/v0.3.0...v0.4.0) (2025-09-24)
 
 

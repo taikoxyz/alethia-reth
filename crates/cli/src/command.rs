@@ -10,7 +10,29 @@ use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::version;
 
-use crate::tables::TaikoTables;
+use alethia_reth_node::chainspec::spec::TaikoDevnetConfigExt;
+
+use crate::{TaikoCliExtArgs, tables::TaikoTables};
+
+/// Trait implemented by CLI extensions that can tweak Taiko-specific runtime options.
+pub trait TaikoNodeExtArgs {
+    /// Returns the configured devnet Shasta activation timestamp override.
+    fn devnet_shasta_timestamp(&self) -> u64;
+}
+
+impl TaikoNodeExtArgs for NoArgs {
+    // Default to 0 if not specified.
+    fn devnet_shasta_timestamp(&self) -> u64 {
+        0
+    }
+}
+
+impl TaikoNodeExtArgs for TaikoCliExtArgs {
+    // Return the configured devnet Shasta activation timestamp.
+    fn devnet_shasta_timestamp(&self) -> u64 {
+        self.devnet_shasta_timestamp
+    }
+}
 
 #[derive(Debug)]
 pub struct TaikoNodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs>(
@@ -43,8 +65,8 @@ impl<C: ChainSpecParser, Ext: clap::Args + fmt::Debug> TaikoNodeCommand<C, Ext> 
 impl<C, Ext> TaikoNodeCommand<C, Ext>
 where
     C: ChainSpecParser,
-    C::ChainSpec: EthChainSpec + EthereumHardforks,
-    Ext: clap::Args + fmt::Debug,
+    C::ChainSpec: EthChainSpec + EthereumHardforks + TaikoDevnetConfigExt,
+    Ext: clap::Args + fmt::Debug + TaikoNodeExtArgs,
 {
     /// Launches the node
     ///
@@ -94,6 +116,15 @@ where
             engine,
             era,
         };
+
+        // Apply Taiko-specific devnet Shasta timestamp override if specified.
+        if let Some(overridden_chain) = node_config
+            .chain
+            .as_ref()
+            .clone_with_devnet_shasta_timestamp(ext.devnet_shasta_timestamp())
+        {
+            node_config.chain = Arc::new(overridden_chain);
+        }
 
         let data_dir = node_config.datadir();
         let db_path = data_dir.db();

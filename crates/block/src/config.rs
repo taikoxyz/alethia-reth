@@ -299,8 +299,8 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp_or_number(timestamp, block_number)
-    {
+    if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) {
+        // London is on from genesis for Taiko, so Shasta reduces to the timestamp activation.
         TaikoSpecId::SHASTA
     } else if chain_spec
         .fork(TaikoHardfork::Pacaya)

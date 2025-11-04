@@ -1,2 +1,4 @@
 /target
 .bmad-core/
+.code/
+error.log

@@ -38,10 +38,12 @@ pub trait TaikoHardforks: EthereumHardforks {
         self.taiko_fork_activation(TaikoHardfork::Pacaya).active_at_block(block_number)
     }
 
-    /// Convenience method to check if [`TaikoHardfork::Shasta`] is active at a given block
-    /// number.
-    fn is_shasta_active_at_block(&self, block_number: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_block(block_number)
+    /// Convenience method to check if [`TaikoHardfork::Shasta`] is active at the given timestamp.
+    ///
+    /// Taiko chains always activate London at genesis, so Shasta is effectively gate-kept by the
+    /// timestamp condition alone.
+    fn is_shasta_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
 }
 
@@ -66,8 +68,8 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
     ]))
 });
 
-/// Taiko Tolba list of hardforks.
-pub static TAIKO_TOLBA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
+/// Taiko Hoodi list of hardforks.
+pub static TAIKO_HOODI_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
@@ -80,7 +82,7 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
-        (TaikoHardfork::Shasta.boxed(), ForkCondition::Block(10)),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
     ]))
 });
 
@@ -130,5 +132,12 @@ mod test {
         ];
         let forks = extend_with_shared_hardforks(extra_forks.clone());
         assert!(forks.len() > extra_forks.len());
+    }
+
+    #[test]
+    fn test_devnet_shasta_uses_timestamp_activation() {
+        let shasta = TAIKO_DEVNET_HARDFORKS.fork(TaikoHardfork::Shasta);
+        assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
+        assert_eq!(shasta, ForkCondition::Timestamp(0));
     }
 }

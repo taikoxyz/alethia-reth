@@ -95,6 +95,26 @@ where
 
         Ok(None)
     }
+
+    /// Retrieves the last block number for a batch, preferring the DB cache before falling back to
+    /// a scan.
+    fn resolve_last_block_number_by_batch_id(&self, batch_id: U256) -> RpcResult<U256> {
+        let provider =
+            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
+        if let Some(block_number) = provider
+            .into_tx()
+            .get::<BatchToLastBlock>(batch_id.to())
+            .map_err(|_| EthApiError::InternalEthError)?
+        {
+            return Ok(U256::from(block_number));
+        }
+
+        let block_number = self
+            .find_last_block_number_by_batch_id(batch_id)?
+            .ok_or(TaikoApiError::GethNotFound)?;
+
+        Ok(U256::from(block_number))
+    }
 }
 
 impl<Provider> TaikoExtApiServer for TaikoExt<Provider>
@@ -132,41 +152,11 @@ where
 
     /// Retrieves the last L1 origin by its batch ID from the database.
     fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>> {
-        let provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
-        let block_number = provider
-            .into_tx()
-            .get::<BatchToLastBlock>(batch_id.to())
-            .map_err(|_| EthApiError::InternalEthError)?;
-
-        if let Some(block_number) = block_number {
-            return self.l1_origin_by_id(U256::from(block_number));
-        }
-
-        let block_number = self
-            .find_last_block_number_by_batch_id(batch_id)?
-            .ok_or(TaikoApiError::GethNotFound)?;
-
-        self.l1_origin_by_id(U256::from(block_number))
+        self.l1_origin_by_id(self.resolve_last_block_number_by_batch_id(batch_id)?)
     }
 
     /// Retrieves the last block ID for the given batch ID.
     fn last_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>> {
-        let provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
-        let block_number = provider
-            .into_tx()
-            .get::<BatchToLastBlock>(batch_id.to())
-            .map_err(|_| EthApiError::InternalEthError)?;
-
-        if let Some(block_number) = block_number {
-            return Ok(Some(U256::from(block_number)));
-        }
-
-        let block_number = self
-            .find_last_block_number_by_batch_id(batch_id)?
-            .ok_or(TaikoApiError::GethNotFound)?;
-
-        Ok(Some(U256::from(block_number)))
+        Ok(Some(self.resolve_last_block_number_by_batch_id(batch_id)?))
     }
 }

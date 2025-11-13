@@ -162,8 +162,6 @@ where
 fn extract_anchor_v4_proposal_id(input: &[u8]) -> Option<U256> {
     const SELECTOR_LEN: usize = 4;
     const WORD_SIZE: usize = 32;
-    const PROPOSAL_ID_WORD_OFFSET: usize = 1; // `submissionWindowEnd` precedes `proposalId`
-    const PROPOSAL_ID_BYTE_OFFSET: usize = WORD_SIZE * PROPOSAL_ID_WORD_OFFSET;
 
     if input.len() < SELECTOR_LEN + WORD_SIZE {
         return None;
@@ -178,8 +176,7 @@ fn extract_anchor_v4_proposal_id(input: &[u8]) -> Option<U256> {
     offset_bytes.copy_from_slice(&calldata[..WORD_SIZE]);
     let offset = usize::try_from(U256::from_be_bytes(offset_bytes)).ok()?;
 
-    let tuple_start = SELECTOR_LEN.checked_add(offset)?;
-    let proposal_id_start = tuple_start.checked_add(PROPOSAL_ID_BYTE_OFFSET)?;
+    let proposal_id_start = SELECTOR_LEN.checked_add(offset)?;
     let proposal_id_end = proposal_id_start.checked_add(WORD_SIZE)?;
     if proposal_id_end > input.len() {
         return None;
@@ -198,25 +195,18 @@ mod tests {
     fn parses_anchor_v4_proposal_id_real_payload() {
         let calldata = hex_decode(concat!(
             "0x",
-            "3c7aa91100000000000000000000000000000000000000000000000000000000",
-            "000000a000000000000000000000000000000000000000000000000000000000",
-            "00000005aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "bbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "cccccccc00000000000000000000000000000000000000000000000000000000",
-            "0000000000000000000000000000000000000000000000000000000000000000",
+            "100f758800000000000000000000000000000000000000000000000000000000",
+            "0000008000000000000000000000000000000000000000000000000000000000",
+            "0000011ef81e2241d56850e5be7436e70965d4204c30f27aa4d36d68b7099742",
+            "c3eb103ed18dfb69d83bdc222a8695ae95befa6aae341145de83e5678be4f8df",
+            "74ddbf7000000000000000000000000000000000000000000000000000000000",
             "0000000a0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12",
             "fa4293bc00000000000000000000000000000000000000000000000000000000",
-            "000000c011111111111111111111111111111111111111111111111111111111",
-            "1111111100000000000000000000000000000000000000000000000000000000",
-            "0000010000000000000000000000000000000000000000000000000000000000",
-            "00000004deadbeef000000000000000000000000000000000000000000000000",
+            "000000a000000000000000000000000000000000000000000000000000000000",
             "0000000000000000000000000000000000000000000000000000000000000000",
-            "0000000100000000000000000000000000000000000000000000000000000000",
-            "0000000500000000000000000000000000000000000000000000000000000000",
-            "0000000100000000000000000000000000000000000000000000000000000000",
-            "0000000100000000000000000000000000000000000000000000000000000000",
-            "00000002"
+            "000000c000000000000000000000000000000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "00000000"
         ));
         assert_eq!(extract_anchor_v4_proposal_id(&calldata), Some(U256::from(10u64)));
     }

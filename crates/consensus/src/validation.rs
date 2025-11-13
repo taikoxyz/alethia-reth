@@ -29,8 +29,8 @@ sol! {
     function anchorV2(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32)) external;
     function anchorV3(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32), bytes32[]) external;
     function anchorV4(
-        (uint48, uint48, address, bytes, bytes32, (uint48, uint8, address, address)[]),
-        (uint48, bytes32, bytes32, bytes32)
+        (uint48, address, bytes, bytes32, (uint48, uint8, address, address)[]),
+        (uint48, bytes32, bytes32)
     ) external;
 }
 

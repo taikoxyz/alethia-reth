@@ -20,7 +20,7 @@ use reth_primitives_traits::{
 };
 use reth_provider::{BlockExecutionResult, BlockReader};
 
-use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
+use crate::eip4396::calculate_next_block_eip4396_base_fee;
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
@@ -169,16 +169,11 @@ where
                 });
             }
 
-            let expected_base_fee = if parent.number() == 0 {
-                // First post-genesis block lacks a grandparent timestamp, so keep the default base
-                // fee.
-                SHASTA_INITIAL_BASE_FEE
-            } else {
-                calculate_next_block_eip4396_base_fee(
-                    parent.header(),
-                    parent_block_time(&self.block_reader, parent)?,
-                )
-            };
+            // Calculate the expected base fee using EIP-4396 rules.
+            let expected_base_fee = calculate_next_block_eip4396_base_fee(
+                parent.header(),
+                parent_block_time(&self.block_reader, parent)?,
+            );
 
             // Verify the block's base fee matches the expected value.
             if header_base_fee != expected_base_fee {
@@ -385,6 +380,7 @@ mod test {
         let mut parent = Header {
             gas_limit: 30_000_000,
             base_fee_per_gas: Some(1_000_000_000),
+            number: 1,
             ..Default::default()
         };
 

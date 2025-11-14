@@ -32,6 +32,11 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     parent: &H,
     parent_block_time: u64,
 ) -> u64 {
+    // First post-genesis block lacks a grandparent timestamp, so keep the default base
+    // fee.
+    if parent.number() == 0 {
+        return SHASTA_INITIAL_BASE_FEE;
+    }
     let parent_gas_limit = parent.gas_limit();
     let parent_base_gas_target = parent_gas_limit / ELASTICITY_MULTIPLIER;
     let parent_adjusted_gas_target = min(
@@ -89,6 +94,7 @@ mod tests {
         let mut parent = Header {
             gas_limit: 30_000_000,
             base_fee_per_gas: Some(900_000_000),
+            number: 1,
             ..Default::default()
         };
 
@@ -146,6 +152,7 @@ mod tests {
         let mut parent = Header {
             gas_limit: 30_000_000,
             base_fee_per_gas: Some(MAX_BASE_FEE),
+            number: 1,
             ..Default::default()
         };
 
@@ -157,5 +164,20 @@ mod tests {
         parent.gas_used = 14_000_000;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert_eq!(base_fee, MIN_BASE_FEE, "Base fee should not go below MIN_BASE_FEE");
+    }
+
+    #[test]
+    fn test_calculate_next_block_eip4396_base_fee_first_block() {
+        let parent = Header {
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(900_000_000),
+            ..Default::default()
+        };
+
+        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        assert_eq!(
+            base_fee, SHASTA_INITIAL_BASE_FEE,
+            "First post-genesis block should use the default Shasta base fee"
+        );
     }
 }

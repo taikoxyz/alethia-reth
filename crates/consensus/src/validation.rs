@@ -20,7 +20,7 @@ use reth_primitives_traits::{
 };
 use reth_provider::{BlockExecutionResult, BlockReader};
 
-use crate::eip4396::{calculate_next_block_eip4396_base_fee, SHASTA_INITIAL_BASE_FEE};
+use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 

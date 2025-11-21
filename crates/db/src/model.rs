@@ -1,11 +1,8 @@
 use core::fmt;
 
 use alloy_primitives::BlockNumber;
-use reth::revm::primitives::{
-    B256, U256,
-    alloy_primitives::{self},
-};
 use reth_db_api::{TableSet, TableType, TableViewer, table::TableInfo, tables};
+use reth_revm::primitives::{B256, U256};
 use serde::{Deserialize, Serialize};
 use serde_with::{Bytes, serde_as};
 

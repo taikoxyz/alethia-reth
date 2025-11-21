@@ -1,11 +1,8 @@
-use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth::revm::primitives::{Address, B256, U256};
-use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
-use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
+use reth_payload_primitives::PayloadAttributes;
+use reth_revm::primitives::{Address, B256, U256};
 use serde_with::{Bytes, base64::Base64, serde_as};
 
 /// Taiko Payload Attributes
@@ -95,10 +92,13 @@ impl RpcL1Origin {
     }
 }
 
+#[cfg(feature = "local-payload-builder")]
 /// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder<TaikoChainSpec>`,
 /// to build `TaikoPayloadAttributes` from the local payload attributes builder.
-impl PayloadAttributesBuilder<TaikoPayloadAttributes>
-    for LocalPayloadAttributesBuilder<TaikoChainSpec>
+impl reth_payload_primitives::PayloadAttributesBuilder<TaikoPayloadAttributes>
+    for reth_engine_local::LocalPayloadAttributesBuilder<
+        alethia_reth_chainspec::spec::TaikoChainSpec,
+    >
 {
     /// Return a new payload attribute from the builder.
     fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
@@ -108,7 +108,7 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
                 timestamp: U256::from(timestamp),
-                gas_limit: MAXIMUM_GAS_LIMIT_BLOCK,
+                gas_limit: reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK,
                 mix_hash: B256::random(),
                 tx_list: AlloyBytes::new(),
                 extra_data: AlloyBytes::new(),

@@ -14,16 +14,19 @@ default = []
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
 eyre = { workspace = true }
-reth = { workspace = true }
-reth-ethereum = { workspace = true }
-reth-node-api = { workspace = true }
-reth-node-builder = { workspace = true }
+reth-consensus = { workspace = true }
+reth-consensus-common = { workspace = true }
+reth-chainspec = { workspace = true }
+reth-ethereum-consensus = { workspace = true }
+reth-evm = { workspace = true }
 reth-primitives-traits = { workspace = true }
-reth-provider = { workspace = true }
+reth-storage-api = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["rand", "std"] }

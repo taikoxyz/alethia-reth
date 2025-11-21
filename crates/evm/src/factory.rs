@@ -1,5 +1,7 @@
 use alloy_evm::{Database, EvmEnv, EvmFactory};
-use reth::revm::{
+use alloy_primitives::Address;
+use reth_evm::precompiles::PrecompilesMap;
+use reth_revm::{
     Context, Inspector, MainBuilder, MainContext,
     context::{
         TxEnv,
@@ -7,9 +9,8 @@ use reth::revm::{
     },
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
+    precompile::{PrecompileSpecId, Precompiles},
 };
-use reth_evm::precompiles::PrecompilesMap;
-use reth_revm::precompile::{PrecompileSpecId, Precompiles};
 
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
@@ -19,7 +20,17 @@ use crate::{
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
 #[derive(Default, Debug, Clone, Copy)]
-pub struct TaikoEvmFactory;
+pub struct TaikoEvmFactory {
+    // Used for customizing the treasury address, chain-specific will be used if None
+    treasury_address: Option<Address>,
+}
+
+impl TaikoEvmFactory {
+    /// Creates a new instance of the Taiko EVM factory.
+    pub fn new(treasury_address: Option<Address>) -> Self {
+        Self { treasury_address }
+    }
+}
 
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.
@@ -54,7 +65,7 @@ impl EvmFactory for TaikoEvmFactory {
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), false).with_treasury_address(self.treasury_address)
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -75,6 +86,6 @@ impl EvmFactory for TaikoEvmFactory {
             )))
             .with_inspector(inspector);
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), true).with_treasury_address(self.treasury_address)
     }
 }

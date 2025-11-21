@@ -1,22 +1,20 @@
 use std::str::FromStr;
 
-use reth::revm::{
+use reth_revm::{
     Database, Inspector,
     context::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{HaltReason, InvalidTransaction},
     },
     handler::{
-        EvmTr, EvmTrError, FrameResult, Handler, PrecompileProvider,
+        EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler, PrecompileProvider,
         instructions::InstructionProvider, pre_execution::validate_account_nonce_and_code,
     },
     inspector::{InspectorEvmTr, InspectorHandler},
-    interpreter::{Gas, InterpreterResult, interpreter::EthInterpreter},
+    interpreter::{
+        Gas, InterpreterResult, interpreter::EthInterpreter, interpreter_action::FrameInit,
+    },
     primitives::{Address, U256},
-};
-use reth_revm::{
-    handler::{EthFrame, FrameTr},
-    interpreter::interpreter_action::FrameInit,
     state::EvmState,
 };
 use tracing::debug;
@@ -173,7 +171,10 @@ fn reward_beneficiary<CTX: ContextTr>(
             context.journal_mut().balance_incr(beneficiary, fee_coinbase)?;
 
             let chain_id = context.cfg().chain_id();
-            context.journal_mut().balance_incr(get_treasury_address(chain_id), fee_treasury)?;
+            let treasury_address =
+                ctx.treasury_address().unwrap_or_else(|| get_treasury_address(chain_id));
+
+            context.journal_mut().balance_incr(treasury_address, fee_treasury)?;
 
             debug!(
                 target: "taiko_evm",

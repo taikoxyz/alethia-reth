@@ -6,7 +6,7 @@ use alethia_reth_primitives::{
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
-use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
+use reth_chainspec::EthChainSpec;
 use reth_engine_primitives::EngineApiValidator;
 use reth_engine_tree::tree::{TreeConfig, payload_validator::BasicEngineValidator};
 use reth_ethereum::{Block, EthPrimitives};
@@ -22,6 +22,7 @@ use reth_payload_primitives::{
     EngineApiMessageVersion, EngineObjectValidationError, InvalidPayloadAttributesError,
     PayloadAttributes, PayloadOrAttributes,
 };
+use reth_primitives::RecoveredBlock;
 use reth_primitives_traits::Block as BlockTrait;
 use std::sync::Arc;
 

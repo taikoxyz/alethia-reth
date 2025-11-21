@@ -4,21 +4,19 @@ use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Tr
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, sol};
-use reth::{
-    beacon_consensus::validate_block_post_execution,
-    chainspec::EthChainSpec,
-    consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
-    consensus_common::validation::{
-        validate_against_parent_hash_number, validate_body_against_header,
-        validate_header_base_fee, validate_header_extra_data, validate_header_gas,
-    },
-    primitives::SealedBlock,
+use reth_chainspec::EthChainSpec;
+use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
+use reth_consensus_common::validation::{
+    validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
+    validate_header_extra_data, validate_header_gas,
 };
-use reth_node_api::NodePrimitives;
+use reth_ethereum_consensus::validate_block_post_execution;
+use reth_evm::block::BlockExecutionResult;
 use reth_primitives_traits::{
-    Block, BlockBody, BlockHeader, GotExpected, RecoveredBlock, SealedHeader, SignedTransaction,
+    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedBlock,
+    SealedHeader, SignedTransaction,
 };
-use reth_provider::{BlockExecutionResult, BlockReader};
+use reth_storage_api::BlockReader;
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};

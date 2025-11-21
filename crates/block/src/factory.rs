@@ -1,4 +1,4 @@
-use std::{borrow::Cow, future, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
@@ -7,22 +7,15 @@ use alloy_evm::{
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::receipt_builder::ReceiptBuilder,
 };
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, Log};
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    builder::components::ExecutorBuilder,
-    primitives::Log,
-    revm::{Inspector, State},
-};
-use reth_ethereum::EthPrimitives;
-use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::{FullNodeTypes, NodeTypes};
-use reth_node_builder::BuilderContext;
 
-use crate::{config::TaikoEvmConfig, executor::TaikoBlockExecutor};
+use reth_evm_ethereum::RethReceiptBuilder;
+use reth_revm::{Inspector, State};
+
+use crate::executor::TaikoBlockExecutor;
 use alethia_reth_chainspec::spec::{TaikoChainSpec, TaikoExecutorSpec};
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_primitives::engine::TaikoEngineTypes;
 
 /// Context for Taiko block execution.
 #[derive(Debug, Clone)]
@@ -129,35 +122,10 @@ where
     }
 }
 
-/// A builder for the Taiko block executor.
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct TaikoExecutorBuilder;
-
-impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
-where
-    Types: NodeTypes<
-            Primitives = EthPrimitives,
-            ChainSpec = TaikoChainSpec,
-            Payload = TaikoEngineTypes,
-        >,
-    Node: FullNodeTypes<Types = Types>,
-{
-    /// The EVM config to use.
-    type EVM = TaikoEvmConfig;
-
-    /// Creates the EVM config.
-    fn build_evm(
-        self,
-        ctx: &BuilderContext<Node>,
-    ) -> impl Future<Output = eyre::Result<Self::EVM>> + Send {
-        future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_evm::factory::TaikoEvmFactory;
     use reth_evm_ethereum::RethReceiptBuilder;
     use std::sync::Arc;
 
@@ -165,7 +133,7 @@ mod tests {
     fn test_taiko_block_executor_factory_creation() {
         let receipt_builder = RethReceiptBuilder::default();
         let spec = Arc::new(TaikoChainSpec::default());
-        let evm_factory = TaikoEvmFactory;
+        let evm_factory = TaikoEvmFactory::default();
 
         TaikoBlockExecutorFactory::new(receipt_builder, spec.clone(), evm_factory);
     }

@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
+local-payload-builder = ["dep:reth-engine-local"]
 serde = [
     "dep:serde",
     "alloy-primitives/serde",
@@ -24,13 +25,14 @@ alloy-rlp = { workspace = true }
 alloy-rpc-types-engine = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 alloy-serde = { workspace = true }
-reth = { workspace = true }
-reth-engine-local = { workspace = true }
+reth-revm = { workspace = true }
+reth-engine-local = { workspace = true, optional = true }
 reth-ethereum = { workspace = true }
 reth-ethereum-engine-primitives = { workspace = true }
-reth-node-api = { workspace = true }
 reth-payload-primitives = { workspace = true }
+reth-engine-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }
+reth-primitives = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true }
 sha2 = { workspace = true }

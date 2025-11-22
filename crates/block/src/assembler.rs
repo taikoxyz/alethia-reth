@@ -6,7 +6,7 @@ use alloy_consensus::{
 use alloy_eips::merge::BEACON_NONCE;
 use alloy_primitives::logs_bloom;
 use alloy_rpc_types_eth::Withdrawals;
-use reth::primitives::Block;
+use reth::{primitives::Block, revm::context::Block as _};
 use reth_ethereum::{Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutorFactory},
@@ -57,12 +57,13 @@ where
             execution_ctx: ctx,
             parent: _,
             transactions,
-            output: BlockExecutionResult { receipts, requests: _, gas_used },
+            output: BlockExecutionResult { receipts, requests: _, gas_used, blob_gas_used: _ },
             state_root,
             ..
         } = input;
 
-        let timestamp = evm_env.block_env.timestamp;
+        let block_env = &evm_env.block_env;
+        let timestamp = block_env.timestamp();
 
         let transactions_root = proofs::calculate_transaction_root(&transactions);
         let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
@@ -74,19 +75,19 @@ where
         let header = Header {
             parent_hash: ctx.parent_hash,
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
-            beneficiary: evm_env.block_env.beneficiary,
+            beneficiary: block_env.beneficiary(),
             state_root,
             transactions_root,
             receipts_root,
             withdrawals_root,
             logs_bloom,
             timestamp: timestamp.to(),
-            mix_hash: evm_env.block_env.prevrandao.unwrap_or_default(),
+            mix_hash: block_env.prevrandao().unwrap_or_default(),
             nonce: BEACON_NONCE.into(),
-            base_fee_per_gas: Some(evm_env.block_env.basefee),
-            number: evm_env.block_env.number.to(),
-            gas_limit: evm_env.block_env.gas_limit,
-            difficulty: evm_env.block_env.difficulty,
+            base_fee_per_gas: Some(block_env.basefee()),
+            number: block_env.number().to(),
+            gas_limit: block_env.gas_limit(),
+            difficulty: block_env.difficulty(),
             gas_used: *gas_used,
             extra_data: ctx.extra_data,
             parent_beacon_block_root: ctx.parent_beacon_block_root,

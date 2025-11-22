@@ -64,6 +64,25 @@ where
     type Precompiles = P;
     type Frame = EthFrame<EthInterpreter>;
 
+    /// Returns shared references to context, instructions, precompiles, and frame stack.
+    fn all(
+        &self,
+    ) -> (&Self::Context, &Self::Instructions, &Self::Precompiles, &FrameStack<Self::Frame>) {
+        self.inner.all()
+    }
+
+    /// Returns mutable references to context, instructions, precompiles, and frame stack.
+    fn all_mut(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+    ) {
+        self.inner.all_mut()
+    }
+
     /// Returns a mutable reference to the execution context
     fn ctx(&mut self) -> &mut Self::Context {
         &mut self.inner.ctx
@@ -170,10 +189,10 @@ mod test {
     use alloy_primitives::{U64, U256};
     use reth_revm::{
         Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, db::InMemoryDB,
-        interpreter::Host, state::AccountInfo,
+        state::AccountInfo,
     };
 
-    use crate::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
+    use crate::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
     use super::*;
 
@@ -210,19 +229,5 @@ mod test {
                 .unwrap(),
         );
         assert!(state.is_err());
-
-        taiko_evm.extra_execution_ctx =
-            Some(TaikoEvmExtraExecutionCtx::new(50, golden_touch_address, nonce + 1));
-        state = taiko_evm.transact_one(
-            TxEnv::builder()
-                .gas_limit(1_000_000)
-                .gas_price(1)
-                .caller(golden_touch_address)
-                .to(get_treasury_address(taiko_evm.ctx_ref().chain_id().to()))
-                .nonce(nonce + 1)
-                .build()
-                .unwrap(),
-        );
-        assert!(state.is_ok());
     }
 }

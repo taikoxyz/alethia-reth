@@ -8,14 +8,14 @@ use reth::revm::{
     },
     handler::{
         EvmTr, EvmTrError, FrameResult, Handler, PrecompileProvider,
-        instructions::InstructionProvider, pre_execution::validate_account_nonce_and_code,
+        instructions::InstructionProvider,
     },
     inspector::{InspectorEvmTr, InspectorHandler},
     interpreter::{Gas, InterpreterResult, interpreter::EthInterpreter},
     primitives::{Address, U256},
 };
 use reth_revm::{
-    handler::{EthFrame, FrameTr},
+    handler::{EthFrame, FrameTr, pre_execution::validate_account_nonce_and_code_with_components},
     interpreter::interpreter_action::FrameInit,
     state::EvmState,
 };
@@ -203,47 +203,33 @@ pub fn validate_against_state_and_deduct_caller<
     context: &mut CTX,
     extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 ) -> Result<(), ERROR> {
-    let basefee = context.block().basefee() as u128;
-    let blob_price = context.block().blob_gasprice().unwrap_or_default();
-    let is_balance_check_disabled = context.cfg().is_balance_check_disabled();
-    let is_eip3607_disabled = context.cfg().is_eip3607_disabled();
-    let is_nonce_check_disabled = context.cfg().is_nonce_check_disabled();
-    let block = context.block().number();
-    let chain_id = context.cfg().chain_id();
-
-    let (tx, journal) = context.tx_journal_mut();
+    let (block, tx, cfg, journal, _, _) = context.all_mut();
 
     // If the extra execution context is provided, which means we are building an L2 block,
     // we skip the balance check for the anchor transaction.
-    debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
-
-    // Load caller's account.
-    let caller_account = journal.load_account_code(tx.caller())?.data;
-
-    validate_account_nonce_and_code(
-        &mut caller_account.info,
-        tx.nonce(),
-        is_eip3607_disabled,
-        is_nonce_check_disabled,
-    )?;
+    debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block.number());
 
     let is_anchor_transaction = extra_execution_ctx.as_ref().is_some_and(|ctx| {
         ctx.anchor_caller_address() == tx.caller() &&
             ctx.anchor_caller_nonce() == tx.nonce() &&
-            tx.kind().to() == Some(&get_treasury_address(chain_id))
+            tx.kind().to() == Some(&get_treasury_address(cfg.chain_id()))
     });
+
+    // Load caller's account.
+    let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+
+    validate_account_nonce_and_code_with_components(&caller_account.info, tx, cfg)?;
 
     // If the transaction is an anchor transaction, we disable the balance check.
     if is_anchor_transaction {
-        debug!(target: "taiko_evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+        debug!(target: "taiko_evm", "Anchor transaction detected, disabling balance check, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block.number());
     } else {
-        debug!(target: "taiko_evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block);
+        debug!(target: "taiko_evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block.number());
     }
 
     // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
     if tx.kind().is_call() {
-        // Nonce is already checked
-        caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+        caller_account.bump_nonce();
     }
 
     let max_balance_spending =
@@ -251,35 +237,33 @@ pub fn validate_against_state_and_deduct_caller<
 
     // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
     // Transfer will be done inside `*_inner` functions.
-    if max_balance_spending > caller_account.info.balance && !is_balance_check_disabled {
+    if max_balance_spending > *caller_account.balance() && !cfg.is_balance_check_disabled() {
         return Err(InvalidTransaction::LackOfFundForMaxFee {
             fee: Box::new(max_balance_spending),
-            balance: Box::new(caller_account.info.balance),
+            balance: Box::new(*caller_account.balance()),
         }
         .into());
     }
 
     let effective_balance_spending = tx
-        .effective_balance_spending(basefee, blob_price)
+        .effective_balance_spending(
+            block.basefee() as u128,
+            block.blob_gasprice().unwrap_or_default(),
+        )
         .expect("effective balance is always smaller than max balance so it can't overflow");
 
     // subtracting max balance spending with value that is going to be deducted later in the call.
     let gas_balance_spending =
         if is_anchor_transaction { U256::ZERO } else { effective_balance_spending - tx.value() };
 
-    let mut new_balance = caller_account.info.balance.saturating_sub(gas_balance_spending);
+    let mut new_balance = caller_account.balance().saturating_sub(gas_balance_spending);
 
-    if is_balance_check_disabled {
+    if cfg.is_balance_check_disabled() {
         // Make sure the caller's balance is at least the value of the transaction.
         new_balance = new_balance.max(tx.value());
     }
 
-    let old_balance = caller_account.info.balance;
-    // Touch account so we know it is changed.
-    caller_account.mark_touch();
-    caller_account.info.balance = new_balance;
-
-    journal.caller_accounting_journal_entry(tx.caller(), old_balance, tx.kind().is_call());
+    caller_account.set_balance(new_balance);
     Ok(())
 }
 

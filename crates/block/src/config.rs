@@ -72,7 +72,10 @@ impl TaikoEvmConfig {
 
 impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
     /// Returns an [`EvmEnvFor`] for the given payload.
-    fn evm_env_for_payload(&self, payload: &TaikoExecutionData) -> EvmEnvFor<Self> {
+    fn evm_env_for_payload(
+        &self,
+        payload: &TaikoExecutionData,
+    ) -> Result<EvmEnvFor<Self>, Self::Error> {
         let timestamp = payload.timestamp();
         let block_number = payload.block_number();
 
@@ -103,35 +106,37 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             blob_excess_gas_and_price: None,
         };
 
-        EvmEnv { cfg_env, block_env }
+        Ok(EvmEnv { cfg_env, block_env })
     }
 
     /// Returns an [`ExecutionCtxFor`] for the given payload.
     fn context_for_payload<'a>(
         &self,
         payload: &'a TaikoExecutionData,
-    ) -> ExecutionCtxFor<'a, Self> {
-        TaikoBlockExecutionCtx {
+    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
+        Ok(TaikoBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: payload.parent_beacon_block_root(),
             ommers: &[],
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
-        }
+        })
     }
 
     /// Returns an [`ExecutableTxIterator`] for the given payload.
     fn tx_iterator_for_payload(
         &self,
         payload: &TaikoExecutionData,
-    ) -> impl ExecutableTxIterator<Self> {
-        payload.execution_payload.transactions.clone().unwrap_or_default().into_iter().map(|tx| {
-            let tx =
-                TxTy::<Self::Primitives>::decode_2718_exact(tx.as_ref()).map_err(AnyError::new)?;
-            let signer = tx.try_recover().map_err(AnyError::new)?;
-            Ok::<_, AnyError>(tx.with_signer(signer))
-        })
+    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
+        Ok(payload.execution_payload.transactions.clone().unwrap_or_default().into_iter().map(
+            |tx| {
+                let tx = TxTy::<Self::Primitives>::decode_2718_exact(tx.as_ref())
+                    .map_err(AnyError::new)?;
+                let signer = tx.try_recover().map_err(AnyError::new)?;
+                Ok::<_, AnyError>(tx.with_signer(signer))
+            },
+        ))
     }
 }
 
@@ -161,7 +166,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     }
 
     /// Creates a new [`EvmEnv`] for the given header.
-    fn evm_env(&self, header: &Header) -> EvmEnvFor<Self> {
+    fn evm_env(&self, header: &Header) -> Result<EvmEnvFor<Self>, Self::Error> {
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec(taiko_revm_spec(&self.chain_spec().inner, header));
@@ -177,7 +182,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             blob_excess_gas_and_price: None,
         };
 
-        EvmEnv { cfg_env, block_env }
+        Ok(EvmEnv { cfg_env, block_env })
     }
 
     /// Returns the configured [`EvmEnv`] for `parent + 1` block.
@@ -216,15 +221,15 @@ impl ConfigureEvm for TaikoEvmConfig {
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
-    ) -> reth_evm::ExecutionCtxFor<'a, Self> {
-        TaikoBlockExecutionCtx {
+    ) -> Result<reth_evm::ExecutionCtxFor<'a, Self>, Self::Error> {
+        Ok(TaikoBlockExecutionCtx {
             parent_hash: block.header().parent_hash,
             parent_beacon_block_root: block.header().parent_beacon_block_root,
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: block.header().base_fee_per_gas.unwrap_or_default(),
             extra_data: block.header().extra_data.clone(),
-        }
+        })
     }
 
     /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for `parent + 1`
@@ -233,15 +238,15 @@ impl ConfigureEvm for TaikoEvmConfig {
         &self,
         parent: &SealedHeader,
         ctx: Self::NextBlockEnvCtx,
-    ) -> reth_evm::ExecutionCtxFor<'_, Self> {
-        TaikoBlockExecutionCtx {
+    ) -> Result<reth_evm::ExecutionCtxFor<'_, Self>, Self::Error> {
+        Ok(TaikoBlockExecutionCtx {
             parent_hash: parent.hash(),
             parent_beacon_block_root: None,
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
-        }
+        })
     }
 
     /// Returns a new EVM with the given database configured with the given environment settings,

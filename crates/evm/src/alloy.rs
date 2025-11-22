@@ -92,6 +92,8 @@ where
     /// Identifier of the EVM specification. EVM is expected to use this identifier to determine
     /// which features are enabled.
     type Spec = TaikoSpecId;
+    /// Block environment used by the EVM.
+    type BlockEnv = BlockEnv;
     /// Precompiles used by the EVM.
     type Precompiles = P;
     /// Evm inspector.
@@ -234,7 +236,7 @@ where
     }
 
     /// Consumes the EVM and returns the inner [`EvmEnv`].
-    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>)
+    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>)
     where
         Self: Sized,
     {

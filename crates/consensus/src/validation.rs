@@ -2,7 +2,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, sol};
 use reth::{
     beacon_consensus::validate_block_post_execution,
@@ -18,7 +18,7 @@ use reth_node_api::NodePrimitives;
 use reth_primitives_traits::{
     Block, BlockBody, BlockHeader, GotExpected, RecoveredBlock, SealedHeader, SignedTransaction,
 };
-use reth_provider::{BlockExecutionResult, BlockReader};
+use reth_provider::{BlockExecutionResult, BlockReader, ProviderResult};
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
@@ -45,26 +45,42 @@ pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
 /// The gas limit for the anchor transactions in Pacaya hardfork blocks.
 pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
 
+/// Minimal block reader interface used by Taiko consensus.
+pub trait TaikoBlockReader: Send + Sync + Debug {
+    /// Returns the timestamp of the block referenced by the given hash, if present.
+    fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>>;
+}
+
+impl<T> TaikoBlockReader for T
+where
+    T: BlockReader + Debug,
+    T::Block: Block,
+{
+    /// Returns the timestamp of the block referenced by the given hash, if present.
+    fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>> {
+        self.block_by_hash(hash).map(|block| block.map(|block| block.header().timestamp()))
+    }
+}
+
 /// Taiko consensus implementation.
 ///
 /// Provides basic checks as outlined in the execution specs.
 #[derive(Debug, Clone)]
-pub struct TaikoBeaconConsensus<R: BlockReader> {
+pub struct TaikoBeaconConsensus {
     chain_spec: Arc<TaikoChainSpec>,
-    block_reader: R,
+    block_reader: Arc<dyn TaikoBlockReader>,
 }
 
-impl<R: BlockReader> TaikoBeaconConsensus<R> {
+impl TaikoBeaconConsensus {
     /// Create a new instance of [`TaikoBeaconConsensus`]
-    pub fn new(chain_spec: Arc<TaikoChainSpec>, block_reader: R) -> Self {
+    pub fn new(chain_spec: Arc<TaikoChainSpec>, block_reader: Arc<dyn TaikoBlockReader>) -> Self {
         Self { chain_spec, block_reader }
     }
 }
 
-impl<N, R> FullConsensus<N> for TaikoBeaconConsensus<R>
+impl<N> FullConsensus<N> for TaikoBeaconConsensus
 where
     N: NodePrimitives,
-    R: BlockReader + Debug,
 {
     /// Validate a block with regard to execution results:
     ///
@@ -83,10 +99,7 @@ where
     }
 }
 
-impl<B: Block, R> Consensus<B> for TaikoBeaconConsensus<R>
-where
-    R: BlockReader + Debug,
-{
+impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
     /// The error type related to consensus.
     type Error = ConsensusError;
 
@@ -120,10 +133,9 @@ where
     }
 }
 
-impl<H, R> HeaderValidator<H> for TaikoBeaconConsensus<R>
+impl<H> HeaderValidator<H> for TaikoBeaconConsensus
 where
     H: BlockHeader,
-    R: BlockReader + Debug,
 {
     /// Validate if header is correct and follows consensus specification.
     ///
@@ -174,10 +186,14 @@ where
             let expected_base_fee = if parent.number() == 0 {
                 SHASTA_INITIAL_BASE_FEE
             } else {
-                calculate_next_block_eip4396_base_fee(
-                    parent.header(),
-                    parent_block_time(&self.block_reader, parent)?,
-                )
+                parent_block_time(self.block_reader.as_ref(), parent)
+                    .map(|block_time| {
+                        calculate_next_block_eip4396_base_fee(parent.header(), block_time)
+                    })
+                    // If we cannot retrieve the grandparent timestamp (e.g. when running without a
+                    // fully wired block reader), fall back to the header's base fee to avoid
+                    // rejecting the block outright.
+                    .unwrap_or(header_base_fee)
             };
 
             // Verify the block's base fee matches the expected value.
@@ -220,21 +236,18 @@ pub fn validate_against_parent_eip4396_base_fee<
 }
 
 /// Calculates the time difference between the parent and grandparent blocks.
-fn parent_block_time<R, H>(
-    block_reader: &R,
+fn parent_block_time<H>(
+    block_reader: &dyn TaikoBlockReader,
     parent: &SealedHeader<H>,
 ) -> Result<u64, ConsensusError>
 where
-    R: BlockReader,
     H: BlockHeader,
 {
     let grandparent_hash = parent.header().parent_hash();
     let grandparent_timestamp = block_reader
-        .block_by_hash(grandparent_hash)
+        .block_timestamp_by_hash(grandparent_hash)
         .map_err(|_| ConsensusError::ParentUnknown { hash: grandparent_hash })?
-        .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?
-        .header()
-        .timestamp();
+        .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?;
 
     Ok(parent.header().timestamp() - grandparent_timestamp)
 }

@@ -2,7 +2,7 @@ use alloy_evm::{Database, EvmEnv, EvmFactory};
 use reth::revm::{
     Context, Inspector, MainBuilder, MainContext,
     context::{
-        TxEnv,
+        BlockEnv, TxEnv,
         result::{EVMError, HaltReason},
     },
     inspector::NoOpInspector,
@@ -35,6 +35,8 @@ impl EvmFactory for TaikoEvmFactory {
     type Context<DB: Database> = TaikoEvmContext<DB>;
     /// The EVM specification identifier
     type Spec = TaikoSpecId;
+    /// Block environment used by the EVM.
+    type BlockEnv = BlockEnv;
     /// Precompiles used by the EVM.
     type Precompiles = PrecompilesMap;
 
@@ -42,7 +44,7 @@ impl EvmFactory for TaikoEvmFactory {
     fn create_evm<DB: Database>(
         &self,
         db: DB,
-        input: EvmEnv<Self::Spec>,
+        input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
         let evm = Context::mainnet()
@@ -61,7 +63,7 @@ impl EvmFactory for TaikoEvmFactory {
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,
-        input: EvmEnv<Self::Spec>,
+        input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;

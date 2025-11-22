@@ -64,6 +64,23 @@ where
     type Precompiles = P;
     type Frame = EthFrame<EthInterpreter>;
 
+    fn all(
+        &self,
+    ) -> (&Self::Context, &Self::Instructions, &Self::Precompiles, &FrameStack<Self::Frame>) {
+        self.inner.all()
+    }
+
+    fn all_mut(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut FrameStack<Self::Frame>,
+    ) {
+        self.inner.all_mut()
+    }
+
     /// Returns a mutable reference to the execution context
     fn ctx(&mut self) -> &mut Self::Context {
         &mut self.inner.ctx
@@ -223,6 +240,6 @@ mod test {
                 .build()
                 .unwrap(),
         );
-        assert!(state.is_ok());
+        assert!(state.is_ok(), "state: {state:?}");
     }
 }

@@ -8,7 +8,10 @@ use reth::{
     primitives::Log,
     revm::{
         State,
-        context::result::{ExecutionResult, ResultAndState},
+        context::{
+            Block as _,
+            result::{ExecutionResult, ResultAndState},
+        },
     },
 };
 use reth_evm::{
@@ -92,7 +95,7 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         // Set state clear flag if the block is after the Spurious Dragon hardfork.
         let state_clear_flag =
-            self.spec.is_spurious_dragon_active_at_block(self.evm.block().number.to());
+            self.spec.is_spurious_dragon_active_at_block(self.evm.block().number().to());
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
 
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
@@ -111,15 +114,15 @@ where
                 .account_info();
 
             // Decode the base fee share percentage from the block's extra data.
-            let base_fee_share_pgtg = if self.spec.is_shasta_active(self.evm.block().timestamp.to())
-            {
-                let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
-                pctg
-            } else if self.spec.is_ontake_active_at_block(self.evm.block().number.to()) {
-                decode_post_ontake_extra_data(self.ctx.extra_data.clone())
-            } else {
-                0
-            };
+            let base_fee_share_pgtg =
+                if self.spec.is_shasta_active(self.evm.block().timestamp().to()) {
+                    let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
+                    pctg
+                } else if self.spec.is_ontake_active_at_block(self.evm.block().number().to()) {
+                    decode_post_ontake_extra_data(self.ctx.extra_data.clone())
+                } else {
+                    0
+                };
 
             self.evm
                 .transact_system_call(
@@ -152,7 +155,7 @@ where
     ) -> Result<Option<u64>, BlockExecutionError> {
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
-        let block_available_gas = self.evm.block().gas_limit - self.gas_used;
+        let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
 
         if tx.tx().gas_limit() > block_available_gas {
             return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
@@ -162,15 +165,29 @@ where
             .into());
         }
 
-        // Execute transaction.
-        let ResultAndState { result, state } = self
-            .evm
-            .transact(&tx)
-            .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
+        let output = self.execute_transaction_without_commit(&tx)?;
 
-        if !f(&result).should_commit() {
+        if !f(&output.result).should_commit() {
             return Ok(None);
         }
+
+        let gas_used = self.commit_transaction(output, tx)?;
+        Ok(Some(gas_used))
+    }
+
+    fn execute_transaction_without_commit(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+        self.evm.transact(&tx).map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))
+    }
+
+    fn commit_transaction(
+        &mut self,
+        output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<u64, BlockExecutionError> {
+        let ResultAndState { result, state } = output;
 
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
@@ -191,7 +208,7 @@ where
         // Commit the state changes.
         self.evm.db_mut().commit(state);
 
-        Ok(Some(gas_used))
+        Ok(gas_used)
     }
 
     /// Applies any necessary changes after executing the block's transactions, completes execution
@@ -203,6 +220,7 @@ where
                 receipts: self.receipts,
                 requests: Requests::default(),
                 gas_used: self.gas_used,
+                blob_gas_used: 0,
             },
         ))
     }

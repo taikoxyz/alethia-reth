@@ -64,12 +64,14 @@ where
     type Precompiles = P;
     type Frame = EthFrame<EthInterpreter>;
 
+    /// Returns shared references to context, instructions, precompiles, and frame stack.
     fn all(
         &self,
     ) -> (&Self::Context, &Self::Instructions, &Self::Precompiles, &FrameStack<Self::Frame>) {
         self.inner.all()
     }
 
+    /// Returns mutable references to context, instructions, precompiles, and frame stack.
     fn all_mut(
         &mut self,
     ) -> (

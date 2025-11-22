@@ -226,6 +226,8 @@ pub fn validate_against_state_and_deduct_caller<
     // Load caller's account.
     let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
+    // Anchor transactions may legitimately carry a future nonce; skip the nonce check when the
+    // extra execution context marks the tx as anchor, matching the pre-upgrade behavior.
     validate_account_nonce_and_code(
         &caller_account.info,
         tx.nonce(),

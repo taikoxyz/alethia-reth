@@ -175,13 +175,18 @@ where
         Ok(Some(gas_used))
     }
 
+    /// Executes a transaction and returns the resulting state diff without persisting it; the
+    /// caller decides whether to commit.
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+        // Run the transaction but leave state buffered so the caller can decide whether to commit.
         self.evm.transact(&tx).map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))
     }
 
+    /// Commits a previously executed transaction: updates receipts, gas accounting, and writes the
+    /// buffered state changes to the database.
     fn commit_transaction(
         &mut self,
         output: ResultAndState<<Self::Evm as Evm>::HaltReason>,

@@ -56,6 +56,7 @@ where
     T: BlockReader + Debug,
     T::Block: Block,
 {
+    /// Returns the timestamp of the block referenced by the given hash, if present.
     fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>> {
         self.block_by_hash(hash).map(|block| block.map(|block| block.header().timestamp()))
     }

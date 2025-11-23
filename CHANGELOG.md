@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0](https://github.com/taikoxyz/alethia-reth/compare/v0.5.0...v0.6.0) (2025-11-22)
+
+
+### Features
+
+* **chainspec:** check Shasta activation based on timestamp ([#49](https://github.com/taikoxyz/alethia-reth/issues/49)) ([361bbdf](https://github.com/taikoxyz/alethia-reth/commit/361bbdfe9028477ccd1bf95ac9d16c46a7cc6337))
+* **chainspec:** introduce `devnet_shasta_timestamp` flag && update `anchorV4` selector ([#51](https://github.com/taikoxyz/alethia-reth/issues/51)) ([3d4332c](https://github.com/taikoxyz/alethia-reth/commit/3d4332c94380974771076d9bf2f6004e849bfd81))
+* **chainspec:** remove London check from Shasta activation checks ([#53](https://github.com/taikoxyz/alethia-reth/issues/53)) ([8660384](https://github.com/taikoxyz/alethia-reth/commit/8660384688e11ae85aa9defd3fb499464eb7bcc3))
+* **chainspec:** update devnet genesis json ([#52](https://github.com/taikoxyz/alethia-reth/issues/52)) ([89831d1](https://github.com/taikoxyz/alethia-reth/commit/89831d1ddbe0cb9b187ef012175237775f6e31a2))
+* **chainspec:** update devnet genesis JSON ([#63](https://github.com/taikoxyz/alethia-reth/issues/63)) ([bda7c4a](https://github.com/taikoxyz/alethia-reth/commit/bda7c4a4d1dfc60b612beb01e53a1a640611c315))
+* **consensus:** add first post-genesis block check in `calculate_next_block_eip4396_base_fee` ([#61](https://github.com/taikoxyz/alethia-reth/issues/61)) ([40dbd81](https://github.com/taikoxyz/alethia-reth/commit/40dbd81ab149fd3ecf3b6ac51b7534e35b8e4828))
+* **consensus:** fix an issue in `validate_header_against_parent` ([#62](https://github.com/taikoxyz/alethia-reth/issues/62)) ([b571c20](https://github.com/taikoxyz/alethia-reth/commit/b571c20e97b21bc9d58e2e1bd51eac63fbd18a21))
+* **consensus:** introduce protocol `MIN_BASE_FEE` and `MAX_BASE_FEE` for Shasta blocks ([#46](https://github.com/taikoxyz/alethia-reth/issues/46)) ([9556014](https://github.com/taikoxyz/alethia-reth/commit/95560140030697d31a6a7e067b90977ba5417779))
+* **consensus:** remove the latest `anchorV4` change introduced in protocol [#20304](https://github.com/taikoxyz/alethia-reth/issues/20304) ([#59](https://github.com/taikoxyz/alethia-reth/issues/59)) ([0e22cd5](https://github.com/taikoxyz/alethia-reth/commit/0e22cd5ac469508d5c2ef377f1f51c4696946471))
+* **consensus:** update `anchorV4` based on protocol [#20304](https://github.com/taikoxyz/alethia-reth/issues/20304) ([#58](https://github.com/taikoxyz/alethia-reth/issues/58)) ([14b1a5f](https://github.com/taikoxyz/alethia-reth/commit/14b1a5ffb6262ef8cfc7405f1461e947b6236bf5))
+* **repo:** bump `reth` dependency to `v1.9.3` ([#64](https://github.com/taikoxyz/alethia-reth/issues/64)) ([6ff4dea](https://github.com/taikoxyz/alethia-reth/commit/6ff4dea33acf33851d1c5d320d064c5bd4ad1d50))
+* **rpc:** introduce `taiko_lastBlockIDByBatchID` RPC method ([#56](https://github.com/taikoxyz/alethia-reth/issues/56)) ([d1f8a02](https://github.com/taikoxyz/alethia-reth/commit/d1f8a02af0e8311ceb3d17b415076840699d5de3))
+* **rpc:** update `anchorV4` params decoder ([#57](https://github.com/taikoxyz/alethia-reth/issues/57)) ([12fadbe](https://github.com/taikoxyz/alethia-reth/commit/12fadbe0909a12be09a906a340733e7afcfe7c83))
+
+
+### Chores
+
+* **chainspec:** update devnet genesis json ([#55](https://github.com/taikoxyz/alethia-reth/issues/55)) ([82b5f9a](https://github.com/taikoxyz/alethia-reth/commit/82b5f9a08fbe8917d269e3fe351e0d2f9e5012ee))
+
 ## [0.5.0](https://github.com/taikoxyz/alethia-reth/compare/v0.4.0...v0.5.0) (2025-10-27)
 
 

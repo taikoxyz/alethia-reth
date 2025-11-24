@@ -42,8 +42,8 @@ pub const ANCHOR_V4_SELECTOR: &[u8; 4] = &anchorV4Call::SELECTOR;
 
 /// The gas limit for the anchor transactions before Pacaya hardfork.
 pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
-/// The gas limit for the anchor transactions in Pacaya hardfork blocks.
-pub const ANCHOR_V3_GAS_LIMIT: u64 = 1_000_000;
+/// The gas limit for the anchor transactions in Pacaya and Shasta hardfork blocks.
+pub const ANCHOR_V3_V4_GAS_LIMIT: u64 = 1_000_000;
 
 /// Minimal block reader interface used by Taiko consensus.
 pub trait TaikoBlockReader: Send + Sync + Debug {
@@ -283,7 +283,7 @@ where
 
     // Ensure the gas limit is correct.
     let gas_limit = if chain_spec.is_pacaya_active_at_block(block.number()) {
-        ANCHOR_V3_GAS_LIMIT
+        ANCHOR_V3_V4_GAS_LIMIT
     } else {
         ANCHOR_V1_V2_GAS_LIMIT
     };

@@ -12,9 +12,10 @@ use reth_ethereum::EthPrimitives;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
     ConfigureEvm,
-    block::{BlockExecutionError, BlockValidationError},
+    block::{BlockExecutionError, BlockValidationError, InternalBlockExecutionError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
+use reth::revm::{context::result::EVMError, inspector::NoOpInspector};
 use reth_evm_ethereum::RethReceiptBuilder;
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
@@ -25,7 +26,7 @@ use alethia_reth_block::{
     factory::TaikoBlockExecutorFactory,
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_evm::factory::TaikoEvmFactory;
+use alethia_reth_evm::{factory::TaikoEvmFactory, jumpdest_limiter::{DEFAULT_JUMPDEST_LIMIT, JUMPDEST_LIMIT_ERR, LimitingInspector}};
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
 /// Taiko payload builder
@@ -134,20 +135,27 @@ where
 
     debug!(target: "payload_builder", id=%attributes.payload_id(), parent_header = ?parent_header.hash(), parent_number = parent_header.number, attributes = ?attributes, "building payload for block");
 
-    let mut builder = evm_config
-        .builder_for_next_block(
-            &mut db,
-            &parent_header,
-            TaikoNextBlockEnvAttributes {
-                timestamp: attributes.timestamp(),
-                suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                prev_randao: attributes.prev_randao(),
-                gas_limit: attributes.gas_limit,
-                base_fee_per_gas: attributes.base_fee_per_gas,
-                extra_data: attributes.extra_data.clone(),
-            },
-        )
-        .map_err(PayloadBuilderError::other)?;
+    let next_block_ctx = TaikoNextBlockEnvAttributes {
+        timestamp: attributes.timestamp(),
+        suggested_fee_recipient: attributes.suggested_fee_recipient(),
+        prev_randao: attributes.prev_randao(),
+        gas_limit: attributes.gas_limit,
+        base_fee_per_gas: attributes.base_fee_per_gas,
+        extra_data: attributes.extra_data.clone(),
+    };
+
+    let evm_env =
+        evm_config.next_evm_env(&parent_header, &next_block_ctx).map_err(PayloadBuilderError::other)?;
+    let ctx =
+        evm_config.context_for_next_block(&parent_header, next_block_ctx.clone()).map_err(PayloadBuilderError::other)?;
+
+    let evm = evm_config.evm_with_env_and_inspector(
+        &mut db,
+        evm_env,
+        LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+    );
+
+    let mut builder = evm_config.create_block_builder(evm, &parent_header, ctx);
 
     debug!(target: "payload_builder", id=%attributes.payload_id(), parent_header = ?parent_header.hash(), parent_number = parent_header.number, "building new payload");
     let base_fee = attributes.base_fee_per_gas;
@@ -167,14 +175,27 @@ where
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
             Err(BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+                BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) => {
                 trace!(target: "payload_builder", ?tx, "skipping invalid transaction");
                 continue;
             }
-            // this is an error that we should treat as fatal for this attempt
-            Err(err) => return Err(PayloadBuilderError::evm(err)),
+            Err(err) => {
+                let is_jumpdest_limit = matches!(
+                    &err,
+                    BlockExecutionError::Internal(InternalBlockExecutionError::EVM { error, .. })
+                        if error
+                            .downcast_ref::<EVMError<Infallible>>()
+                            .is_some_and(|evm_err| matches!(evm_err, EVMError::Custom(msg) if msg == JUMPDEST_LIMIT_ERR))
+                );
+
+                if is_jumpdest_limit {
+                    trace!(target: "payload_builder", ?tx, "skipping transaction with excessive JUMPDEST usage");
+                    continue;
+                }
+                return Err(PayloadBuilderError::evm(err));
+            }
         };
 
         // update add to total fees

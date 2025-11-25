@@ -71,11 +71,10 @@ impl EvmFactory for TaikoEvmFactory {
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
+            .build_mainnet_with_inspector(inspector)
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
-            )))
-            .with_inspector(inspector);
+            )));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }

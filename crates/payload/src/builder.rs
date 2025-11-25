@@ -174,7 +174,14 @@ where
                 continue;
             }
             // this is an error that we should treat as fatal for this attempt
-            Err(err) => return Err(PayloadBuilderError::evm(err)),
+            Err(err) => {
+                // To drop transactions halted by `JumpdestLimiter` instead of failing the payload,
+                // you can match the fatal external error and `continue` here:
+                // if matches!(err, BlockExecutionError::Evm { .. }) {
+                //     continue;
+                // }
+                return Err(PayloadBuilderError::evm(err));
+            }
         };
 
         // update add to total fees

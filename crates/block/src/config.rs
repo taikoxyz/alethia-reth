@@ -2,7 +2,6 @@ use std::{borrow::Cow, convert::Infallible, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::Decodable2718;
-use alloy_evm::Database;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
@@ -17,8 +16,7 @@ use reth::{
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
 use reth_evm::{
-    ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactory, EvmFor, ExecutableTxIterator,
-    ExecutionCtxFor,
+    ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::ExecutionPayload;
@@ -247,12 +245,6 @@ impl ConfigureEvm for TaikoEvmConfig {
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
         })
-    }
-
-    /// Returns a new EVM with the given database configured with the given environment settings,
-    /// including the spec id and transaction environment.
-    fn evm_with_env<DB: Database>(&self, db: DB, evm_env: EvmEnvFor<Self>) -> EvmFor<Self, DB> {
-        self.evm_factory().create_evm(db, evm_env)
     }
 }
 

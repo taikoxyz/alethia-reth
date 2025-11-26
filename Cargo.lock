@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-bin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-cli",
  "alethia-reth-node",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-block"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-evm",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-chainspec"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-node",
  "alloy-consensus",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-consensus"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-evm",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-db"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-primitives",
  "alloy-primitives",
@@ -187,7 +187,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-evm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alloy-evm",
  "alloy-primitives",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-network"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec",
  "eyre",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-node"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-payload"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-primitives"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alloy-primitives",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-rpc"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",

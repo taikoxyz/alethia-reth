@@ -6,7 +6,7 @@ use reth::revm::primitives::{Address, B256, U256};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
 use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
-use serde_with::{base64::Base64, serde_as, Bytes};
+use serde_with::{Bytes, base64::Base64, serde_as};
 
 /// Taiko Payload Attributes
 #[derive(Clone, Debug, PartialEq, Eq)]

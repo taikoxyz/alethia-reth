@@ -6,7 +6,7 @@ use reth::revm::primitives::{Address, B256, U256};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
 use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
-use serde_with::{Bytes, base64::Base64, serde_as};
+use serde_with::{base64::Base64, serde_as, Bytes};
 
 /// Taiko Payload Attributes
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,8 +102,12 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
 {
     /// Return a new payload attribute from the builder.
     fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
+        // Delegate to the underlying ETH payload builder to avoid self-recursion.
+        let eth_payload_attributes =
+            <Self as PayloadAttributesBuilder<EthPayloadAttributes>>::build(self, timestamp);
+
         TaikoPayloadAttributes {
-            payload_attributes: self.build(timestamp),
+            payload_attributes: eth_payload_attributes,
             base_fee_per_gas: U256::ZERO,
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
@@ -123,5 +127,36 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
                 signature: [0; 65],
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alethia_reth_chainspec::TAIKO_DEVNET;
+
+    #[test]
+    fn build_is_deterministic_and_delegates() {
+        let builder = LocalPayloadAttributesBuilder::new(TAIKO_DEVNET.clone());
+        let ts = 1_700_000_000u64;
+
+        let first: TaikoPayloadAttributes = builder.build(ts);
+        let second: TaikoPayloadAttributes = builder.build(ts);
+
+        // Delegation: timestamps come from the underlying ETH payload builder.
+        assert_eq!(first.payload_attributes.timestamp(), ts);
+        assert_eq!(second.payload_attributes.timestamp(), ts);
+
+        // Stable Taiko defaults that should not depend on randomness.
+        assert_eq!(first.block_metadata.timestamp, U256::from(ts));
+        assert_eq!(second.block_metadata.timestamp, U256::from(ts));
+        assert_eq!(first.block_metadata.gas_limit, MAXIMUM_GAS_LIMIT_BLOCK);
+        assert_eq!(second.block_metadata.gas_limit, MAXIMUM_GAS_LIMIT_BLOCK);
+        assert_eq!(first.block_metadata.tx_list, AlloyBytes::new());
+        assert_eq!(second.block_metadata.tx_list, AlloyBytes::new());
+
+        // L1 origin defaults remain zeroed and stable.
+        assert_eq!(first.l1_origin.block_id, U256::ZERO);
+        assert_eq!(first.l1_origin, second.l1_origin);
     }
 }

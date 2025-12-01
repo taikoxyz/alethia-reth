@@ -244,7 +244,7 @@ where
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         if max_transactions_lists == 0 {
             return Err(EthApiError::InvalidParams(
-                "`maxBytesPerTxList` must not be `0`".to_string(),
+                "`maxTransactionsLists` must not be `0`".to_string(),
             )
             .into());
         }
@@ -308,19 +308,25 @@ where
                 best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
                 continue;
             }
+
+            // Get effective tip for the current transaction.
+            let tip = pool_tx.effective_tip_per_gas(base_fee);
             // ensure we only pick the transactions that meet the minimum tip.
-            if pool_tx.effective_tip_per_gas(base_fee).is_none() ||
-                pool_tx.effective_tip_per_gas(base_fee).unwrap_or_default() < min_tip as u128
-            {
+            if tip.is_none() || tip.unwrap_or_default() < min_tip as u128 {
                 // skip transactions that do not meet the minimum tip requirement
                 trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
                 best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
                 continue;
             }
             // ensure we still have capacity for this transaction
-            if prebuilt_lists.last().unwrap().estimated_gas_used + pool_tx.gas_limit() >
-                block_max_gas_limit
-            {
+            let exceeds_gas = prebuilt_lists
+                .last()
+                .map(|list| {
+                    list.estimated_gas_used.saturating_add(pool_tx.gas_limit()) >
+                        block_max_gas_limit
+                })
+                .unwrap_or(true);
+            if exceeds_gas {
                 // we can't fit this transaction into the block, so we need to mark it as invalid
                 // which also removes all dependent transaction from the iterator before we can
                 // continue
@@ -342,9 +348,14 @@ where
             let tx = pool_tx.to_consensus();
             let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
-            if prebuilt_lists.last().unwrap().bytes_length + estimated_compressed_size >
-                max_bytes_per_tx_list
-            {
+            let exceeds_size = prebuilt_lists
+                .last()
+                .map(|list| {
+                    list.bytes_length.saturating_add(estimated_compressed_size) >
+                        max_bytes_per_tx_list
+                })
+                .unwrap_or(true);
+            if exceeds_size {
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     // NOTE: we simply mark the transaction as underpriced if it is not fitting into
                     // the DA blob.
@@ -382,9 +393,12 @@ where
                 }
             };
 
-            prebuilt_lists.last_mut().unwrap().estimated_gas_used += gas_used;
-            prebuilt_lists.last_mut().unwrap().bytes_length += estimated_compressed_size;
-            prebuilt_lists.last_mut().unwrap().tx_list.push(
+            let current =
+                prebuilt_lists.last_mut().expect("at least one prebuilt list is always present");
+
+            current.estimated_gas_used = current.estimated_gas_used.saturating_add(gas_used);
+            current.bytes_length = current.bytes_length.saturating_add(estimated_compressed_size);
+            current.tx_list.push(
                 self.tx_resp_builder
                     .fill_pending(tx)
                     .map_err(|e| EthApiError::Other(Box::new(e.into())))?,

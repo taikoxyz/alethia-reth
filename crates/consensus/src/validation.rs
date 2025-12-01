@@ -125,7 +125,7 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         // In Taiko network, ommer hash is always empty.
         if block.ommers_hash() != EMPTY_OMMER_ROOT_HASH {
             return Err(ConsensusError::BodyOmmersHashDiff(
-                GotExpected { got: block.ommers_hash(), expected: block.ommers_hash() }.into(),
+                GotExpected { got: block.ommers_hash(), expected: EMPTY_OMMER_ROOT_HASH }.into(),
             ));
         }
 

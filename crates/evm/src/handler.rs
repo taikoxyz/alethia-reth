@@ -162,8 +162,9 @@ fn reward_beneficiary<CTX: ContextTr>(
             ctx.anchor_caller_nonce() != tx_nonce ||
             context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
         {
-            // Total base fee income.
-            let total_fee = U256::from(basefee * (gas.spent() - gas.refunded() as u64) as u128);
+            // Total base fee income; guard against underflow if refunded exceeds spent.
+            let spent_minus_refund = gas.spent().saturating_sub(gas.refunded() as u64);
+            let total_fee = U256::from(basefee.saturating_mul(spent_minus_refund as u128));
 
             // Share the base fee income with the coinbase and treasury.
             let fee_coinbase = total_fee.saturating_mul(U256::from(ctx.base_fee_share_pctg())) /
@@ -245,12 +246,10 @@ pub fn validate_against_state_and_deduct_caller<
         .into());
     }
 
-    let effective_balance_spending = tx
-        .effective_balance_spending(
-            block.basefee() as u128,
-            block.blob_gasprice().unwrap_or_default(),
-        )
-        .expect("effective balance is always smaller than max balance so it can't overflow");
+    let effective_balance_spending = tx.effective_balance_spending(
+        block.basefee() as u128,
+        block.blob_gasprice().unwrap_or_default(),
+    )?;
 
     // subtracting max balance spending with value that is going to be deducted later in the call.
     let gas_balance_spending =

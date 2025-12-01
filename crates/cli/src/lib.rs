@@ -2,7 +2,6 @@ use std::{fmt, sync::Arc};
 
 use alloy_consensus::Header;
 use clap::Parser;
-use eyre::Ok;
 use reth::{
     CliRunner,
     cli::{Cli, Commands},

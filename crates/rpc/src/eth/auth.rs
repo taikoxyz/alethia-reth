@@ -322,7 +322,8 @@ where
             let exceeds_gas = prebuilt_lists
                 .last()
                 .map(|list| {
-                    list.estimated_gas_used.saturating_add(pool_tx.gas_limit()) > block_max_gas_limit
+                    list.estimated_gas_used.saturating_add(pool_tx.gas_limit()) >
+                        block_max_gas_limit
                 })
                 .unwrap_or(true);
             if exceeds_gas {
@@ -350,7 +351,8 @@ where
             let exceeds_size = prebuilt_lists
                 .last()
                 .map(|list| {
-                    list.bytes_length.saturating_add(estimated_compressed_size) > max_bytes_per_tx_list
+                    list.bytes_length.saturating_add(estimated_compressed_size) >
+                        max_bytes_per_tx_list
                 })
                 .unwrap_or(true);
             if exceeds_size {

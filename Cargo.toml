@@ -128,7 +128,6 @@ thiserror = { version = "2.0.0", default-features = false }
 
 # async utilities
 tokio = { version = "1", default-features = false, features = ["sync"] }
-tokio-retry = "0.3"
 
 # observability
 tracing = { version = "0.1.0", default-features = false }

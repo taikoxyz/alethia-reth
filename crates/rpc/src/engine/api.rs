@@ -1,4 +1,4 @@
-use std::{io, time::Duration};
+use std::io;
 
 use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
@@ -24,7 +24,6 @@ use reth_provider::{
 };
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
-use tokio::time::timeout;
 
 use alethia_reth_db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
@@ -33,9 +32,6 @@ use alethia_reth_db::model::{
 /// The list of all supported Engine capabilities available over the engine endpoint.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
     &["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"];
-
-/// Max time to wait for a built payload before surfacing `MissingPayload`.
-const PAYLOAD_WAIT_TIMEOUT_SECS: u64 = 60;
 
 /// Extension trait that gives access to Taiko engine API RPC methods.
 ///
@@ -113,23 +109,14 @@ where
         EngineApiError::Internal(Box::new(err))
     }
 
-    /// Waits (bounded to `PAYLOAD_WAIT_TIMEOUT_SECS`) for a built payload to appear in the payload
-    /// store; maps exhaustion to `MissingPayload` while preserving original semantics.
+    /// Waits for a built payload to appear in the payload store; maps absence to `MissingPayload`.
     async fn wait_for_built_payload(
         &self,
         payload_id: PayloadId,
     ) -> Result<EngineT::BuiltPayload, EngineApiError> {
-        // Leverage the payload builder's own resolution path instead of manual polling. This waits
-        // for the job to finish (or return the best available payload) and preserves prior timeout
-        // semantics by bounding the wait to `PAYLOAD_WAIT_TIMEOUT_SECS` seconds.
-        let resolved = timeout(
-            Duration::from_secs(PAYLOAD_WAIT_TIMEOUT_SECS),
-            self.payload_store.resolve_kind(payload_id, PayloadKind::WaitForPending),
-        )
-        .await;
-
-        match resolved {
-            Ok(Some(Ok(payload))) => Ok(payload),
+        // Leverage the payload builder's own resolution path instead of manual polling.
+        match self.payload_store.resolve_kind(payload_id, PayloadKind::WaitForPending).await {
+            Some(Ok(payload)) => Ok(payload),
             _ => Err(EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload)),
         }
     }

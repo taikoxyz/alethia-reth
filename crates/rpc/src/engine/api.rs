@@ -35,7 +35,7 @@ pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
     &["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"];
 
 /// Max time to wait for a built payload before surfacing `MissingPayload`.
-const PAYLOAD_WAIT_TIMEOUT_SECS: u64 = 12;
+const PAYLOAD_WAIT_TIMEOUT_SECS: u64 = 60;
 
 /// Extension trait that gives access to Taiko engine API RPC methods.
 ///

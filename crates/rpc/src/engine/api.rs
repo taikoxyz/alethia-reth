@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{io, time::Duration};
 
 use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
@@ -9,7 +9,7 @@ use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, Payl
 use async_trait::async_trait;
 use jsonrpsee::{RpcModule, proc_macros::rpc};
 use jsonrpsee_core::RpcResult;
-use jsonrpsee_types::ErrorCode;
+use jsonrpsee_types::ErrorObjectOwned;
 use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, transaction_pool::TransactionPool,
 };
@@ -18,12 +18,13 @@ use reth_db_api::transaction::DbTxMut;
 use reth_engine_primitives::EngineApiValidator;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
+use reth_payload_primitives::PayloadKind;
 use reth_provider::{
     BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
 };
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
-use tokio_retry::{Retry, strategy::ExponentialBackoff};
+use tokio::time::timeout;
 
 use alethia_reth_db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
@@ -32,6 +33,9 @@ use alethia_reth_db::model::{
 /// The list of all supported Engine capabilities available over the engine endpoint.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
     &["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"];
+
+/// Max time to wait for a built payload before surfacing `MissingPayload`.
+const PAYLOAD_WAIT_TIMEOUT_SECS: u64 = 12;
 
 /// Extension trait that gives access to Taiko engine API RPC methods.
 ///
@@ -86,6 +90,75 @@ where
     }
 }
 
+/// Internal helper methods for `TaikoEngineApi`.
+impl<Provider, EngineT, Pool, Validator, ChainSpec>
+    TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
+where
+    Provider:
+        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+    EngineT: EngineTypes<
+            ExecutionData = TaikoExecutionData,
+            PayloadAttributes = TaikoPayloadAttributes,
+            BuiltPayload = EthBuiltPayload,
+        >,
+    Pool: TransactionPool + 'static,
+    Validator: EngineApiValidator<EngineT>,
+    ChainSpec: EthereumHardforks + Send + Sync + 'static,
+{
+    /// Convenience helper to wrap an internal error, preserving the original message.
+    fn internal_error<E>(err: E) -> EngineApiError
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        EngineApiError::Internal(Box::new(err))
+    }
+
+    /// Waits (bounded to `PAYLOAD_WAIT_TIMEOUT_SECS`) for a built payload to appear in the payload
+    /// store; maps exhaustion to `MissingPayload` while preserving original semantics.
+    async fn wait_for_built_payload(
+        &self,
+        payload_id: PayloadId,
+    ) -> Result<EngineT::BuiltPayload, EngineApiError> {
+        // Leverage the payload builder's own resolution path instead of manual polling. This waits
+        // for the job to finish (or return the best available payload) and preserves prior timeout
+        // semantics by bounding the wait to `PAYLOAD_WAIT_TIMEOUT_SECS` seconds.
+        let resolved = timeout(
+            Duration::from_secs(PAYLOAD_WAIT_TIMEOUT_SECS),
+            self.payload_store.resolve_kind(payload_id, PayloadKind::WaitForPending),
+        )
+        .await;
+
+        match resolved {
+            Ok(Some(Ok(payload))) => Ok(payload),
+            _ => Err(EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload)),
+        }
+    }
+
+    /// Persists the L1 origin for the given built payload in a single transaction, updating the
+    /// head pointer when the block is not pre-confirmation.
+    fn persist_l1_origin(
+        &self,
+        stored_l1_origin: StoredL1Origin,
+        is_preconf_block: bool,
+    ) -> Result<(), EngineApiError> {
+        let tx = self.provider.database_provider_rw().map_err(Self::internal_error)?.into_tx();
+
+        let block_number = stored_l1_origin.block_id.to::<BlockNumber>();
+
+        tx.put::<StoredL1OriginTable>(block_number, stored_l1_origin)
+            .map_err(Self::internal_error)?;
+
+        if !is_preconf_block {
+            tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, block_number)
+                .map_err(Self::internal_error)?;
+        }
+
+        tx.commit().map_err(Self::internal_error)?;
+
+        Ok(())
+    }
+}
+
 // This is the concrete ethereum engine API implementation.
 #[async_trait]
 impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT>
@@ -113,57 +186,27 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        let status = self
-            .inner
-            .fork_choice_updated_v2(fork_choice_state, payload_attributes.clone())
-            .await?;
+        let payload_attrs = payload_attributes.clone();
 
-        if let Some(payload) = payload_attributes {
+        let status =
+            self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?;
+
+        if let Some(payload) = payload_attrs {
             let payload_id = status
                 .payload_id
-                .ok_or_else(|| EngineApiError::Other(ErrorCode::InternalError.into()))?;
+                .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
 
-            // Wait for the new payload to be built and stored, then we can store the
-            // corresponding L1 origin into the database.
-            let built_payload = Retry::spawn(
-                ExponentialBackoff::from_millis(50)
-                    .max_delay(Duration::from_secs(12))
-                    .take(3_usize),
-                || async {
-                    match self.payload_store.best_payload(payload_id).await {
-                        Some(Ok(value)) => Ok(value),
-                        _ => Err(()),
-                    }
-                },
-            )
-            .await
-            .map_err(|_| EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload))?;
+            let built_payload = self
+                .wait_for_built_payload(payload_id)
+                .await
+                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
 
             let mut stored_l1_origin: StoredL1Origin = payload.l1_origin.clone().into();
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
-            let tx = self
-                .provider
-                .database_provider_rw()
-                .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?
-                .into_tx();
-
-            tx.put::<StoredL1OriginTable>(
-                stored_l1_origin.block_id.to::<BlockNumber>(),
-                stored_l1_origin.clone(),
-            )
-            .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
-
-            if !payload.l1_origin.is_preconf_block() {
-                tx.put::<StoredL1HeadOriginTable>(
-                    STORED_L1_HEAD_ORIGIN_KEY,
-                    stored_l1_origin.block_id.to::<BlockNumber>(),
-                )
-                .map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
-            }
-
-            tx.commit().map_err(|_| EngineApiError::Other(ErrorCode::InternalError.into()))?;
-        };
+            self.persist_l1_origin(stored_l1_origin, payload.l1_origin.is_preconf_block())
+                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+        }
 
         Ok(status)
     }

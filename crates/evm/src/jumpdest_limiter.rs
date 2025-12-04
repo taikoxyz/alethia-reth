@@ -1,30 +1,35 @@
 use reth::revm::{
     Inspector,
     context::{ContextError, ContextTr, JournalTr},
-    interpreter::interpreter_types::{Jumps, LoopControl},
     interpreter::{
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, InstructionResult, Interpreter,
         InterpreterAction, interpreter::EthInterpreter,
+        interpreter_types::{Jumps, LoopControl},
     },
     primitives::{Address, Log, U256},
 };
 
-/// Inspector that aborts a transaction once it executes more than `limit` `JUMPDEST` opcodes,
-/// counting across the entire top-level transaction (including internal calls).
-/// Enabled by default via `TaikoEvmFactory` with `limit = 100`; payload building skips the
-/// offending transaction rather than failing the whole job.
-pub const JUMPDEST_LIMIT_ERR: &str = "jumpdest limit exceeded";
-pub const DEFAULT_JUMPDEST_LIMIT: u64 = 100;
+/// Inspector that aborts execution once it executes too many `JUMPDEST` opcodes.
+/// - Per-transaction limit ensures a single tx cannot dominate execution.
+/// - Per-block limit caps aggregate `JUMPDEST` hits across all txs in the block.
+///
+/// Defaults: 100 per transaction, 500 per block.
+pub const JUMPDEST_TX_LIMIT_ERR: &str = "jumpdest tx limit exceeded";
+pub const JUMPDEST_BLOCK_LIMIT_ERR: &str = "jumpdest block limit exceeded";
+pub const DEFAULT_TX_JUMPDEST_LIMIT: u64 = 100;
+pub const DEFAULT_BLOCK_JUMPDEST_LIMIT: u64 = 500;
 
 #[derive(Debug, Clone)]
 pub struct JumpdestLimiter {
-    limit: u64,
-    count: u64,
+    tx_limit: u64,
+    block_limit: u64,
+    tx_count: u64,
+    block_count: u64,
 }
 
 impl JumpdestLimiter {
-    pub const fn new(limit: u64) -> Self {
-        Self { limit, count: 0 }
+    pub const fn new(tx_limit: u64, block_limit: u64) -> Self {
+        Self { tx_limit, block_limit, tx_count: 0, block_count: 0 }
     }
 }
 
@@ -32,18 +37,28 @@ impl<CTX: ContextTr> Inspector<CTX, EthInterpreter> for JumpdestLimiter {
     fn initialize_interp(&mut self, _interp: &mut Interpreter<EthInterpreter>, ctx: &mut CTX) {
         // Reset only when entering the outermost frame of a new transaction.
         if ctx.journal().depth() == 1 {
-            self.count = 0;
+            self.tx_count = 0;
         }
     }
 
     fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, ctx: &mut CTX) {
         const JUMPDEST: u8 = 0x5b;
         if interp.bytecode.opcode() == JUMPDEST {
-            self.count += 1;
-            if self.count > self.limit {
+            self.tx_count += 1;
+            self.block_count += 1;
+
+            let (limit_hit, message) = if self.tx_count > self.tx_limit {
+                (true, JUMPDEST_TX_LIMIT_ERR)
+            } else if self.block_count > self.block_limit {
+                (true, JUMPDEST_BLOCK_LIMIT_ERR)
+            } else {
+                (false, "")
+            };
+
+            if limit_hit {
                 let err_slot = ctx.error();
                 if err_slot.is_ok() {
-                    *err_slot = Err(ContextError::Custom(JUMPDEST_LIMIT_ERR.to_string()));
+                    *err_slot = Err(ContextError::Custom(message.to_string()));
                 }
                 // Halt execution immediately; upstream will surface the custom error.
                 interp.bytecode.set_action(InterpreterAction::new_halt(
@@ -63,8 +78,8 @@ pub struct LimitingInspector<I> {
 }
 
 impl<I> LimitingInspector<I> {
-    pub fn new(limit: u64, inner: I) -> Self {
-        Self { limiter: JumpdestLimiter::new(limit), inner }
+    pub fn new(tx_limit: u64, block_limit: u64, inner: I) -> Self {
+        Self { limiter: JumpdestLimiter::new(tx_limit, block_limit), inner }
     }
 }
 
@@ -183,7 +198,11 @@ mod tests {
         let mut evm = TaikoEvmFactory.create_evm_with_inspector(
             db,
             evm_env,
-            LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
         );
         
         let result = evm.transact(
@@ -223,7 +242,11 @@ mod tests {
         let mut evm = TaikoEvmFactory.create_evm_with_inspector(
             db,
             evm_env,
-            LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
         );
         
         let result = evm.transact(
@@ -240,11 +263,7 @@ mod tests {
         match result {
             Err(err) => {
                 let err_str = format!("{:?}", err);
-                assert!(
-                    err_str.contains(JUMPDEST_LIMIT_ERR),
-                    "Expected jumpdest limit error, got: {}",
-                    err_str
-                );
+                assert!(err_str.contains(JUMPDEST_TX_LIMIT_ERR), "Expected jumpdest limit error, got: {}", err_str);
             }
             Ok(result) => panic!("Transaction should fail when exceeding JUMPDEST limit, got: {:?}", result),
         }
@@ -283,7 +302,11 @@ mod tests {
         let mut evm = TaikoEvmFactory.create_evm_with_inspector(
             db,
             evm_env,
-            LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
         );
 
         let result = evm.transact(
@@ -298,12 +321,74 @@ mod tests {
 
         match result {
             Err(err) => {
-                assert!(
-                    format!("{err:?}").contains(JUMPDEST_LIMIT_ERR),
-                    "Expected combined jumpdest limit hit, got: {err:?}"
-                );
+                assert!(format!("{err:?}").contains(JUMPDEST_TX_LIMIT_ERR), "Expected combined jumpdest limit hit, got: {err:?}");
             }
             Ok(result) => panic!("Transaction should fail when combined jumpdests exceed limit, got: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn test_block_limit_across_transactions() {
+        let mut db = InMemoryDB::default();
+        let contract_address = Address::random();
+
+        // 90 JUMPDESTs keeps each tx under the per-tx limit but will exceed block limit after 5 txs.
+        let code = create_bytecode_with_jumpdests(90);
+        let bytecode = Bytecode::new_raw_checked(code).unwrap();
+
+        db.insert_account_info(
+            contract_address,
+            AccountInfo {
+                balance: U256::from(1_000_000),
+                code_hash: bytecode.hash_slow(),
+                code: Some(bytecode),
+                nonce: 0,
+            },
+        );
+
+        let evm_env = evm_env();
+        let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+            db,
+            evm_env,
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
+        );
+
+        let caller = Address::random();
+
+        for nonce in 0..5 {
+            let res = evm.transact(
+                TxEnv::builder()
+                    .gas_limit(5_000_000)
+                    .gas_price(0)
+                    .caller(caller)
+                    .call(contract_address)
+                    .nonce(nonce)
+                    .build()
+                    .unwrap(),
+            );
+            assert!(res.is_ok(), "Transaction {nonce} should succeed, got: {res:?}");
+        }
+
+        let final_res = evm.transact(
+            TxEnv::builder()
+                .gas_limit(5_000_000)
+                .gas_price(0)
+                .caller(caller)
+                .call(contract_address)
+                .nonce(5)
+                .build()
+                .unwrap(),
+        );
+
+        match final_res {
+            Err(err) => {
+                assert!(format!("{err:?}").contains(JUMPDEST_BLOCK_LIMIT_ERR), "Expected block jumpdest limit hit, got: {err:?}");
+            }
+            Ok(result) => panic!("Transaction should fail once block jumpdest limit is exceeded, got: {result:?}"),
         }
     }
 
@@ -330,7 +415,11 @@ mod tests {
         let mut evm = TaikoEvmFactory.create_evm_with_inspector(
             db,
             evm_env,
-            LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
         );
         
         // First transaction - should succeed
@@ -370,7 +459,7 @@ mod tests {
         let contract_address = Address::random();
         
         // Create bytecode with exactly the default limit of JUMPDESTs
-        let code = create_bytecode_with_jumpdests(DEFAULT_JUMPDEST_LIMIT as usize);
+        let code = create_bytecode_with_jumpdests(DEFAULT_TX_JUMPDEST_LIMIT as usize);
         let bytecode = Bytecode::new_raw_checked(code).unwrap();
         
         db.insert_account_info(
@@ -387,7 +476,11 @@ mod tests {
         let mut evm = TaikoEvmFactory.create_evm_with_inspector(
             db,
             evm_env,
-            LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
         );
         
         let result = evm.transact(

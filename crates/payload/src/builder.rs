@@ -15,7 +15,7 @@ use reth_evm::{
     block::{BlockExecutionError, BlockValidationError, InternalBlockExecutionError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
-use reth::revm::{context::result::EVMError, inspector::NoOpInspector};
+use reth::revm::inspector::NoOpInspector;
 use reth_evm_ethereum::RethReceiptBuilder;
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
@@ -26,7 +26,13 @@ use alethia_reth_block::{
     factory::TaikoBlockExecutorFactory,
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_evm::{factory::TaikoEvmFactory, jumpdest_limiter::{DEFAULT_JUMPDEST_LIMIT, JUMPDEST_LIMIT_ERR, LimitingInspector}};
+use alethia_reth_evm::{
+    factory::TaikoEvmFactory,
+    jumpdest_limiter::{
+        DEFAULT_BLOCK_JUMPDEST_LIMIT, DEFAULT_TX_JUMPDEST_LIMIT, JUMPDEST_BLOCK_LIMIT_ERR,
+        JUMPDEST_TX_LIMIT_ERR, LimitingInspector,
+    },
+};
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
 /// Taiko payload builder
@@ -152,7 +158,11 @@ where
     let evm = evm_config.evm_with_env_and_inspector(
         &mut db,
         evm_env,
-        LimitingInspector::new(DEFAULT_JUMPDEST_LIMIT, NoOpInspector {}),
+        LimitingInspector::new(
+            DEFAULT_TX_JUMPDEST_LIMIT,
+            DEFAULT_BLOCK_JUMPDEST_LIMIT,
+            NoOpInspector {},
+        ),
     );
 
     let mut builder = evm_config.create_block_builder(evm, &parent_header, ctx);
@@ -182,15 +192,20 @@ where
                 continue;
             }
             Err(err) => {
-                let is_jumpdest_limit = matches!(
-                    &err,
-                    BlockExecutionError::Internal(InternalBlockExecutionError::EVM { error, .. })
-                        if error
-                            .downcast_ref::<EVMError<Infallible>>()
-                            .is_some_and(|evm_err| matches!(evm_err, EVMError::Custom(msg) if msg == JUMPDEST_LIMIT_ERR))
-                );
+                let (is_tx_limit, is_block_limit) = match &err {
+                    BlockExecutionError::Internal(InternalBlockExecutionError::EVM { error, .. }) => {
+                        let msg = error.to_string();
+                        (msg.contains(JUMPDEST_TX_LIMIT_ERR), msg.contains(JUMPDEST_BLOCK_LIMIT_ERR))
+                    }
+                    _ => (false, false),
+                };
 
-                if is_jumpdest_limit {
+                if is_block_limit {
+                    trace!(target: "payload_builder", ?tx, "stop building payload: block JUMPDEST limit reached");
+                    break;
+                }
+
+                if is_tx_limit {
                     trace!(target: "payload_builder", ?tx, "skipping transaction with excessive JUMPDEST usage");
                     continue;
                 }

@@ -159,6 +159,14 @@ where
 }
 
 /// Parses the proposal ID encoded in the first argument of an `anchorV4` call.
+///
+/// Layout (selector `0x20ae54eb`):
+/// - word0: offset to the encoded `(uint48,address,bytes)` tuple (relative to start of calldata
+///   after selector)
+/// - word1..3: static second argument `(uint48,bytes32,bytes32)`
+/// - at the offset: word0' = proposalId (uint48, left‑padded in 32 bytes)
+///
+/// The helper reads the offset then pulls the first word of that tuple to recover the proposal ID.
 fn extract_anchor_v4_proposal_id(input: &[u8]) -> Option<U256> {
     const SELECTOR_LEN: usize = 4;
     const WORD_SIZE: usize = 32;
@@ -195,18 +203,17 @@ mod tests {
     fn parses_anchor_v4_proposal_id_real_payload() {
         let calldata = hex_decode(concat!(
             "0x",
-            "100f758800000000000000000000000000000000000000000000000000000000",
-            "0000008000000000000000000000000000000000000000000000000000000000",
-            "0000011ef81e2241d56850e5be7436e70965d4204c30f27aa4d36d68b7099742",
-            "c3eb103ed18dfb69d83bdc222a8695ae95befa6aae341145de83e5678be4f8df",
-            "74ddbf7000000000000000000000000000000000000000000000000000000000",
-            "0000000a0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12",
-            "fa4293bc00000000000000000000000000000000000000000000000000000000",
-            "000000a000000000000000000000000000000000000000000000000000000000",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            "000000c000000000000000000000000000000000000000000000000000000000",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            "00000000"
+            // selector + head (offset to first tuple, then the static second tuple fields)
+            "20ae54eb0000000000000000000000000000000000000000000000000000000000000080",
+            "000000000000000000000000000000000000000000000000000000000000000a",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            // first tuple data (proposal params)
+            "000000000000000000000000000000000000000000000000000000000000000a",
+            "0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+            "0000000000000000000000000000000000000000000000000000000000000060",
+            // empty bytes payload for proverAuth
+            "0000000000000000000000000000000000000000000000000000000000000000"
         ));
         assert_eq!(extract_anchor_v4_proposal_id(&calldata), Some(U256::from(10u64)));
     }

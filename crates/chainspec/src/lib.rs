@@ -2,9 +2,9 @@ use std::sync::{Arc, LazyLock};
 
 use alloy_primitives::B256;
 use reth::{
-    chainspec::{make_genesis_header, ChainSpec},
+    chainspec::{ChainSpec, make_genesis_header},
     primitives::SealedHeader,
-    revm::primitives::{b256, U256},
+    revm::primitives::{U256, b256},
 };
 use reth_ethereum_forks::ChainHardforks;
 

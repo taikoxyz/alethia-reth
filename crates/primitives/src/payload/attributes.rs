@@ -1,8 +1,10 @@
-use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alloy_primitives::Bytes as AlloyBytes;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth::revm::primitives::{Address, B256, U256};
+use reth::{
+    chainspec::EthereumHardforks,
+    revm::primitives::{Address, B256, U256},
+};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
 use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
@@ -95,10 +97,11 @@ impl RpcL1Origin {
     }
 }
 
-/// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder<TaikoChainSpec>`,
+/// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder`,
 /// to build `TaikoPayloadAttributes` from the local payload attributes builder.
-impl PayloadAttributesBuilder<TaikoPayloadAttributes>
-    for LocalPayloadAttributesBuilder<TaikoChainSpec>
+impl<C> PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributesBuilder<C>
+where
+    C: Send + Sync + EthereumHardforks + 'static,
 {
     /// Return a new payload attribute from the builder.
     fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
@@ -133,11 +136,13 @@ impl PayloadAttributesBuilder<TaikoPayloadAttributes>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alethia_reth_chainspec::TAIKO_DEVNET;
+    use alloy_consensus::Header;
+    use reth::chainspec::ChainSpec;
+    use std::sync::Arc;
 
     #[test]
     fn build_is_deterministic_and_delegates() {
-        let builder = LocalPayloadAttributesBuilder::new(TAIKO_DEVNET.clone());
+        let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
         let ts = 1_700_000_000u64;
 
         let first: TaikoPayloadAttributes = builder.build(ts);

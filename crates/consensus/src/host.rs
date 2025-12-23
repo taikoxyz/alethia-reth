@@ -14,10 +14,6 @@ where
     T::Block: Block,
 {
     fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64> {
-        self.0
-            .block_by_hash(hash)
-            .ok()
-            .flatten()
-            .map(|block| block.header().timestamp())
+        self.0.block_by_hash(hash).ok().flatten().map(|block| block.header().timestamp())
     }
 }

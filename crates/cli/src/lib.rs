@@ -137,9 +137,10 @@ impl<
 
         let components = |spec: Arc<C::ChainSpec>| {
             let evm = TaikoEvmConfig::new(spec.clone());
-            let block_reader = Arc::new(ProviderTaikoBlockReader(
-                NoopProvider::<TaikoChainSpec, EthPrimitives>::new(spec.clone()),
-            ));
+            let block_reader = Arc::new(ProviderTaikoBlockReader(NoopProvider::<
+                TaikoChainSpec,
+                EthPrimitives,
+            >::new(spec.clone())));
             let consensus = Arc::new(TaikoBeaconConsensus::new(spec, block_reader));
             (evm, consensus)
         };

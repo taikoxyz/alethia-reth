@@ -1,3 +1,5 @@
 pub mod builder;
-pub mod eip4396;
-pub mod validation;
+mod host;
+
+pub use alethia_reth_consensus_core::{eip4396, validation};
+pub use host::ProviderTaikoBlockReader;

@@ -13,7 +13,7 @@ use reth_evm::{
     execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_evm_ethereum::EthBlockAssembler;
-use reth_provider::BlockExecutionResult;
+use reth_execution_types::BlockExecutionResult;
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoChainSpec;

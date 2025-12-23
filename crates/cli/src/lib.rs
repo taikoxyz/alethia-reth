@@ -22,7 +22,7 @@ use alethia_reth_node::{
     TaikoNode,
     block::config::TaikoEvmConfig,
     chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
-    consensus::validation::{TaikoBeaconConsensus, TaikoBlockReader},
+    consensus::{ProviderTaikoBlockReader, validation::TaikoBeaconConsensus},
 };
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
@@ -137,8 +137,9 @@ impl<
 
         let components = |spec: Arc<C::ChainSpec>| {
             let evm = TaikoEvmConfig::new(spec.clone());
-            let block_reader: Arc<dyn TaikoBlockReader> =
-                Arc::new(NoopProvider::<TaikoChainSpec, EthPrimitives>::new(spec.clone()));
+            let block_reader = Arc::new(ProviderTaikoBlockReader(
+                NoopProvider::<TaikoChainSpec, EthPrimitives>::new(spec.clone()),
+            ));
             let consensus = Arc::new(TaikoBeaconConsensus::new(spec, block_reader));
             (evm, consensus)
         };

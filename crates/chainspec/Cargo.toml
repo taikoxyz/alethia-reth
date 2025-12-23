@@ -13,7 +13,6 @@ default = []
 serde = ["dep:serde", "alloy-hardforks/serde"]
 
 [dependencies]
-alethia-reth-chainspec-lite = { path = "../chainspec-lite" }
 alloy-chains = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }

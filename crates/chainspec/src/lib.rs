@@ -1,6 +1,6 @@
 use std::sync::{Arc, LazyLock};
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, b256};
 use reth::{
     chainspec::{ChainSpec, make_genesis_header},
     primitives::SealedHeader,
@@ -13,9 +13,17 @@ use crate::{
     spec::TaikoChainSpec,
 };
 
-pub use alethia_reth_chainspec_lite::{
-    TAIKO_DEVNET_GENESIS_HASH, TAIKO_HOODI_GENESIS_HASH, TAIKO_MAINNET_GENESIS_HASH,
-};
+/// Genesis hash for the Taiko Devnet network.
+pub const TAIKO_DEVNET_GENESIS_HASH: B256 =
+    b256!("0x4f6dd2f48a8521061441af207cb74a69696310a3f16d289ac1c4aa39fc01c741");
+
+/// Genesis hash for the Taiko Hoodi network.
+pub const TAIKO_HOODI_GENESIS_HASH: B256 =
+    b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228");
+
+/// Genesis hash for the Taiko Mainnet network.
+pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
+    b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9");
 
 pub mod hardfork;
 pub mod parser;
@@ -115,4 +123,5 @@ mod test {
             assert_eq!(expected_hash, computed_hash, "genesis hash mismatch for {name}");
         }
     }
+
 }

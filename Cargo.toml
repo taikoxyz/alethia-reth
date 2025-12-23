@@ -2,11 +2,10 @@
 members = [
     "bin/alethia-reth",
     "crates/block",
-    "crates/block-lite",
     "crates/chainspec",
-    "crates/chainspec-lite",
     "crates/cli",
     "crates/consensus",
+    "crates/consensus-core",
     "crates/db",
     "crates/evm",
     "crates/network",
@@ -88,6 +87,7 @@ reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
@@ -106,6 +106,7 @@ reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3"
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }

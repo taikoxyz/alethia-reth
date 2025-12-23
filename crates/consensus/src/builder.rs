@@ -4,7 +4,8 @@ use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
 
-use crate::validation::{TaikoBeaconConsensus, TaikoBlockReader};
+use crate::host::ProviderTaikoBlockReader;
+use crate::validation::TaikoBeaconConsensus;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 
@@ -28,7 +29,7 @@ where
 
     /// Creates the TaikoBeaconConsensus implementation.
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        let block_reader: Arc<dyn TaikoBlockReader> = Arc::new(ctx.provider().clone());
+        let block_reader = Arc::new(ProviderTaikoBlockReader(ctx.provider().clone()));
         Ok(Arc::new(TaikoBeaconConsensus::new(ctx.chain_spec(), block_reader)))
     }
 }

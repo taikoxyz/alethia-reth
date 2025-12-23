@@ -22,7 +22,7 @@ use reth_evm::{
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
-use reth_provider::BlockExecutionResult;
+use reth_execution_types::BlockExecutionResult;
 use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;

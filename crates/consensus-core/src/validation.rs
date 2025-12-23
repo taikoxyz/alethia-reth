@@ -14,11 +14,11 @@ use reth::{
     },
     primitives::SealedBlock,
 };
+use reth_execution_types::BlockExecutionResult;
 use reth_node_api::NodePrimitives;
 use reth_primitives_traits::{
     Block, BlockBody, BlockHeader, GotExpected, RecoveredBlock, SealedHeader, SignedTransaction,
 };
-use reth_provider::{BlockExecutionResult, BlockReader, ProviderResult};
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
@@ -48,18 +48,7 @@ pub const ANCHOR_V3_V4_GAS_LIMIT: u64 = 1_000_000;
 /// Minimal block reader interface used by Taiko consensus.
 pub trait TaikoBlockReader: Send + Sync + Debug {
     /// Returns the timestamp of the block referenced by the given hash, if present.
-    fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>>;
-}
-
-impl<T> TaikoBlockReader for T
-where
-    T: BlockReader + Debug,
-    T::Block: Block,
-{
-    /// Returns the timestamp of the block referenced by the given hash, if present.
-    fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>> {
-        self.block_by_hash(hash).map(|block| block.map(|block| block.header().timestamp()))
-    }
+    fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64>;
 }
 
 /// Taiko consensus implementation.
@@ -246,7 +235,6 @@ where
     let grandparent_hash = parent.header().parent_hash();
     let grandparent_timestamp = block_reader
         .block_timestamp_by_hash(grandparent_hash)
-        .map_err(|_| ConsensusError::ParentUnknown { hash: grandparent_hash })?
         .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?;
 
     Ok(parent.header().timestamp() - grandparent_timestamp)

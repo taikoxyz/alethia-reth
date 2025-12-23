@@ -2,7 +2,9 @@
 members = [
     "bin/alethia-reth",
     "crates/block",
+    "crates/block-lite",
     "crates/chainspec",
+    "crates/chainspec-lite",
     "crates/cli",
     "crates/consensus",
     "crates/db",

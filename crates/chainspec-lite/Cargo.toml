@@ -1,0 +1,12 @@
+[package]
+name = "alethia-reth-chainspec-lite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+alloy-primitives = { workspace = true }

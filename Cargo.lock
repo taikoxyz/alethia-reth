@@ -105,9 +105,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "alethia-reth-block-lite"
+version = "0.6.0"
+dependencies = [
+ "alethia-reth-chainspec-lite",
+]
+
+[[package]]
 name = "alethia-reth-chainspec"
 version = "0.6.0"
 dependencies = [
+ "alethia-reth-chainspec-lite",
  "alloy-chains",
  "alloy-consensus",
  "alloy-eips",
@@ -124,6 +132,13 @@ dependencies = [
  "reth-trie-common",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "alethia-reth-chainspec-lite"
+version = "0.6.0"
+dependencies = [
+ "alloy-primitives",
 ]
 
 [[package]]

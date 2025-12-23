@@ -12,13 +12,16 @@ path = "src/lib.rs"
 default = []
 
 [dependencies]
-alethia-reth-chainspec = { path = "../chainspec" }
+alethia-reth-chainspec-core = { path = "../chainspec-core", default-features = false }
 alethia-reth-evm = { path = "../evm" }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
-reth = { workspace = true }
+reth-chainspec = { workspace = true }
+reth-consensus = { workspace = true }
+reth-consensus-common = { workspace = true }
+reth-ethereum-consensus = { workspace = true }
 reth-execution-types = { workspace = true }
-reth-node-api = { workspace = true }
+reth-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }

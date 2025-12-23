@@ -1,11 +1,63 @@
 use std::sync::LazyLock;
 
-use alloy_hardforks::{EthereumHardfork, ForkCondition, Hardfork};
-use rayon::prelude::ParallelExtend;
+use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition, Hardfork, hardfork};
 use reth_chainspec::ChainHardforks;
 use reth_revm::primitives::U256;
 
-pub use alethia_reth_chainspec_core::hardfork::{TaikoHardfork, TaikoHardforks};
+use crate::spec::TaikoChainSpec;
+
+hardfork!(
+  /// The name of a Taiko hardfork.
+  ///
+  /// When building a list of hardforks for a chain, it's still expected to zip with
+  /// [`EthereumHardfork`].
+  #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+  TaikoHardfork {
+      Ontake,
+      Pacaya,
+      Shasta,
+  }
+);
+
+/// Extends [`EthereumHardforks`] with Taiko network helper methods.
+#[auto_impl::auto_impl(&, Arc)]
+pub trait TaikoHardforks: EthereumHardforks {
+    /// Retrieves [`ForkCondition`] by an [`TaikoHardfork`]. If `fork` is not present, returns
+    /// [`ForkCondition::Never`].
+    fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition;
+
+    /// Convenience method to check if [`TaikoHardfork::Ontake`] is active at a given block
+    /// number.
+    fn is_ontake_active_at_block(&self, block_number: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Ontake).active_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`TaikoHardfork::Pacaya`] is active at a given block
+    /// number.
+    fn is_pacaya_active_at_block(&self, block_number: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Pacaya).active_at_block(block_number)
+    }
+
+    /// Convenience method to check if [`TaikoHardfork::Shasta`] is active at the given timestamp.
+    ///
+    /// Taiko chains always activate London at genesis, so Shasta is effectively gate-kept by the
+    /// timestamp condition alone.
+    fn is_shasta_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
+    }
+}
+
+impl TaikoHardforks for TaikoChainSpec {
+    /// Retrieves [`ForkCondition`] from `fork`. If `fork` is not present, returns
+    /// [`ForkCondition::Never`].
+    fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition {
+        match fork {
+            TaikoHardfork::Ontake => self.inner.fork(TaikoHardfork::Ontake),
+            TaikoHardfork::Pacaya => self.inner.fork(TaikoHardfork::Pacaya),
+            TaikoHardfork::Shasta => self.inner.fork(TaikoHardfork::Shasta),
+        }
+    }
+}
 
 /// Taiko Mainnet list of hardforks.
 pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
@@ -63,7 +115,7 @@ fn extend_with_shared_hardforks(
         (EthereumHardfork::Shanghai.boxed(), ForkCondition::Timestamp(0)),
     ];
 
-    shared_hardforks.par_extend(hardforks);
+    shared_hardforks.extend(hardforks);
 
     shared_hardforks
 }

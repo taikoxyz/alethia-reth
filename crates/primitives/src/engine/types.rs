@@ -1,7 +1,6 @@
-use alloy_primitives::{Address, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV1};
 use alloy_rpc_types_eth::Withdrawal;
-use reth::revm::primitives::B256;
 use reth_payload_primitives::ExecutionPayload as ExecutionPayloadTr;
 
 /// Represents the execution data for the Taiko network, which includes the execution payload and a

@@ -1,10 +1,7 @@
-use alloy_primitives::Bytes as AlloyBytes;
+use alloy_primitives::{Address, B256, Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth::{
-    chainspec::EthereumHardforks,
-    revm::primitives::{Address, B256, U256},
-};
+use reth_chainspec::EthereumHardforks;
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
 use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
@@ -137,7 +134,7 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::Header;
-    use reth::chainspec::ChainSpec;
+    use reth_chainspec::ChainSpec;
     use std::sync::Arc;
 
     #[test]

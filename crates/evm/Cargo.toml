@@ -15,13 +15,7 @@ serde = ["dep:serde"]
 [dependencies]
 alloy-evm = { workspace = true }
 alloy-primitives = { workspace = true }
-reth = { workspace = true }
-reth-ethereum = { workspace = true }
-reth-ethereum-engine-primitives = { workspace = true }
 reth-evm = { workspace = true }
-reth-evm-ethereum = { workspace = true }
-reth-primitives-traits = { workspace = true }
-reth-provider = { workspace = true }
 reth-revm = { workspace = true }
 revm-database-interface = { workspace = true }
 serde = { workspace = true, optional = true }

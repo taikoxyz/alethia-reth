@@ -6,8 +6,6 @@ use alloy_consensus::{
 use alloy_eips::merge::BEACON_NONCE;
 use alloy_primitives::logs_bloom;
 use alloy_rpc_types_eth::Withdrawals;
-use reth_primitives::Block;
-use reth_revm::context::Block as _;
 use reth_ethereum::{Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutorFactory},
@@ -15,9 +13,11 @@ use reth_evm::{
 };
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_execution_types::BlockExecutionResult;
+use reth_primitives::Block;
+use reth_revm::context::Block as _;
 
 use crate::factory::TaikoBlockExecutionCtx;
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec_core::spec::TaikoChainSpec;
 
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 #[derive(Clone, Debug)]

@@ -2,7 +2,9 @@
 members = [
     "bin/alethia-reth",
     "crates/block",
+    "crates/block-core",
     "crates/chainspec",
+    "crates/chainspec-core",
     "crates/cli",
     "crates/consensus",
     "crates/consensus-core",
@@ -25,9 +27,7 @@ license = "MIT"
 [workspace.dependencies]
 # alloy
 alloy-chains = { version = "0.2.5", default-features = false }
-alloy-consensus = { version = "1.0.41", default-features = false, features = [
-    "arbitrary",
-] }
+alloy-consensus = { version = "1.0.41", default-features = false }
 alloy-eips = { version = "1.0.41", default-features = false }
 alloy-evm = { version = "0.23.0", default-features = false }
 alloy-genesis = { version = "1.0.41", default-features = false }
@@ -69,6 +69,7 @@ op-alloy-flz = { version = "0.13.1", default-features = false }
 
 # data encoding
 parity-scale-codec = "3.2.1"
+rayon = "1.10"
 
 # reth
 reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.9.3" }
@@ -78,18 +79,22 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
@@ -97,6 +102,9 @@ reth-node-core = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-payload-validator = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
+reth-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3", default-features = false, features = [
+    "std",
+] }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }

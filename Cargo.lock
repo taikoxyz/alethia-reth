@@ -81,9 +81,9 @@ dependencies = [
 name = "alethia-reth-block"
 version = "0.6.0"
 dependencies = [
- "alethia-reth-block-core",
- "alethia-reth-chainspec-core",
  "alethia-reth-evm",
+ "alethia-reth-execution",
+ "alethia-reth-forks",
  "alethia-reth-primitives",
  "alloy-consensus",
  "alloy-eips",
@@ -103,64 +103,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "alethia-reth-block-core"
-version = "0.6.0"
-dependencies = [
- "alethia-reth-chainspec-core",
- "alethia-reth-evm",
- "alethia-reth-primitives",
- "alloy-consensus",
- "alloy-eips",
- "alloy-evm",
- "alloy-hardforks",
- "alloy-primitives",
- "alloy-rpc-types-eth",
- "reth-chainspec",
- "reth-ethereum",
- "reth-ethereum-forks",
- "reth-evm",
- "reth-evm-ethereum",
- "reth-execution-types",
- "reth-payload-primitives",
- "reth-primitives",
- "reth-primitives-traits",
- "reth-revm",
- "reth-storage-errors",
- "revm-database-interface",
-]
-
-[[package]]
 name = "alethia-reth-chainspec"
 version = "0.6.0"
 dependencies = [
- "alethia-reth-chainspec-core",
- "alloy-hardforks",
+ "alethia-reth-forks",
  "eyre",
- "rayon",
- "reth-chainspec",
  "reth-cli",
- "reth-revm",
-]
-
-[[package]]
-name = "alethia-reth-chainspec-core"
-version = "0.6.0"
-dependencies = [
- "alloy-chains",
- "alloy-consensus",
- "alloy-eips",
- "alloy-genesis",
- "alloy-hardforks",
- "alloy-primitives",
- "auto_impl",
- "reth-chainspec",
- "reth-ethereum-forks",
- "reth-evm",
- "reth-network-peers",
- "reth-primitives",
- "reth-revm",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -191,7 +139,7 @@ name = "alethia-reth-consensus"
 version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec",
- "alethia-reth-consensus-core",
+ "alethia-reth-consensus-common",
  "alethia-reth-primitives",
  "alloy-primitives",
  "eyre",
@@ -203,11 +151,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "alethia-reth-consensus-core"
+name = "alethia-reth-consensus-common"
 version = "0.6.0"
 dependencies = [
- "alethia-reth-chainspec-core",
  "alethia-reth-evm",
+ "alethia-reth-forks",
  "alloy-consensus",
  "alloy-hardforks",
  "alloy-primitives",
@@ -247,6 +195,55 @@ dependencies = [
  "revm-database-interface",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "alethia-reth-execution"
+version = "0.6.0"
+dependencies = [
+ "alethia-reth-evm",
+ "alethia-reth-forks",
+ "alethia-reth-primitives",
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-hardforks",
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "reth-chainspec",
+ "reth-ethereum",
+ "reth-ethereum-forks",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-execution-types",
+ "reth-payload-primitives",
+ "reth-primitives",
+ "reth-primitives-traits",
+ "reth-revm",
+ "reth-rpc-eth-api",
+ "reth-storage-errors",
+ "revm-database-interface",
+]
+
+[[package]]
+name = "alethia-reth-forks"
+version = "0.6.0"
+dependencies = [
+ "alloy-chains",
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-genesis",
+ "alloy-hardforks",
+ "alloy-primitives",
+ "auto_impl",
+ "reth-chainspec",
+ "reth-ethereum-forks",
+ "reth-evm",
+ "reth-network-peers",
+ "reth-primitives",
+ "reth-revm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

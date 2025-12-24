@@ -14,8 +14,8 @@ use reth_primitives::Log;
 use reth_revm::{Inspector, State};
 
 use crate::executor::TaikoBlockExecutor;
-use alethia_reth_chainspec_core::spec::{TaikoChainSpec, TaikoExecutorSpec};
 use alethia_reth_evm::factory::TaikoEvmFactory;
+use alethia_reth_forks::spec::{TaikoChainSpec, TaikoExecutorSpec};
 
 /// Context for Taiko block execution.
 #[derive(Debug, Clone)]

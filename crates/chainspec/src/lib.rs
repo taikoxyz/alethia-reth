@@ -1,4 +1,4 @@
-pub use alethia_reth_chainspec_core::{
+pub use alethia_reth_forks::{
     TAIKO_DEVNET, TAIKO_DEVNET_GENESIS_HASH, TAIKO_HOODI, TAIKO_HOODI_GENESIS_HASH, TAIKO_MAINNET,
     TAIKO_MAINNET_GENESIS_HASH,
 };
@@ -6,7 +6,7 @@ pub use alethia_reth_chainspec_core::{
 pub mod hardfork;
 
 pub mod spec {
-    pub use alethia_reth_chainspec_core::spec::*;
+    pub use alethia_reth_forks::spec::*;
 }
 
 pub mod parser;

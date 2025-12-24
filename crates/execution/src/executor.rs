@@ -1,25 +1,25 @@
 use alloy_consensus::{Transaction, TxReceipt};
-use alloy_eips::{eip7685::Requests, Encodable2718};
+use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
-    eth::receipt_builder::ReceiptBuilder, Database, FromRecoveredTx, FromTxWithEncoded,
+    Database, FromRecoveredTx, FromTxWithEncoded, eth::receipt_builder::ReceiptBuilder,
 };
 use alloy_primitives::{Address, Bytes, Uint};
 use reth_evm::{
+    Evm, OnStateHook,
     block::{
         BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
         InternalBlockExecutionError, StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
-    Evm, OnStateHook,
 };
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives::Log;
 use reth_revm::{
-    context::{
-        result::{ExecutionResult, ResultAndState},
-        Block as _,
-    },
     State,
+    context::{
+        Block as _,
+        result::{ExecutionResult, ResultAndState},
+    },
 };
 use revm_database_interface::DatabaseCommit;
 
@@ -72,9 +72,9 @@ impl<'db, DB, E, Spec, R> BlockExecutor for TaikoBlockExecutor<'_, E, Spec, R>
 where
     DB: Database + 'db,
     E: Evm<
-        DB = &'db mut State<DB>,
-        Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-    >,
+            DB = &'db mut State<DB>,
+            Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
+        >,
     Spec: TaikoExecutorSpec,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
@@ -300,7 +300,7 @@ fn decode_post_shasta_extra_data(extradata: Bytes) -> (u64, bool) {
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{U256, U64};
+    use alloy_primitives::{U64, U256};
 
     use alethia_reth_evm::alloy::decode_anchor_system_call_data;
 

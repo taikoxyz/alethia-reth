@@ -14,9 +14,5 @@ serde = ["alethia-reth-forks/serde"]
 
 [dependencies]
 alethia-reth-forks = { path = "../forks", default-features = false }
-alloy-hardforks = { workspace = true }
 eyre = { workspace = true }
-rayon = { workspace = true }
-reth-chainspec = { workspace = true }
 reth-cli = { workspace = true }
-reth-revm = { workspace = true }

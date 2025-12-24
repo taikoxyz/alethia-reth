@@ -107,12 +107,8 @@ name = "alethia-reth-chainspec"
 version = "0.6.0"
 dependencies = [
  "alethia-reth-forks",
- "alloy-hardforks",
  "eyre",
- "rayon",
- "reth-chainspec",
  "reth-cli",
- "reth-revm",
 ]
 
 [[package]]

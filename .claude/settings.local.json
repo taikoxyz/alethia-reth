@@ -33,7 +33,8 @@
       "Bash(RUSTFLAGS=\"--cfg docsrs\" cargo check --lib)",
       "Bash(cargo expand:*)",
       "mcp__ide__getDiagnostics",
-      "Bash(cargo metadata:*)"
+      "Bash(cargo metadata:*)",
+      "Bash(cat:*)"
     ],
     "deny": []
   }

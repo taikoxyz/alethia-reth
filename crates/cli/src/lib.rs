@@ -18,9 +18,9 @@ use tracing::info;
 
 use reth::args::RessArgs;
 
+use alethia_reth_execution::config::TaikoEvmConfig;
 use alethia_reth_node::{
     TaikoNode,
-    block::config::TaikoEvmConfig,
     chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
     consensus::{ProviderTaikoBlockReader, validation::TaikoBeaconConsensus},
 };

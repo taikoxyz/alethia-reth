@@ -115,6 +115,7 @@ dependencies = [
 name = "alethia-reth-cli"
 version = "0.6.0"
 dependencies = [
+ "alethia-reth-execution",
  "alethia-reth-node",
  "alloy-consensus",
  "alloy-hardforks",
@@ -268,6 +269,7 @@ dependencies = [
  "alethia-reth-consensus",
  "alethia-reth-db",
  "alethia-reth-evm",
+ "alethia-reth-execution",
  "alethia-reth-network",
  "alethia-reth-payload",
  "alethia-reth-primitives",

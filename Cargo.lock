@@ -108,6 +108,7 @@ version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec-core",
  "alethia-reth-evm",
+ "alethia-reth-primitives",
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm",
@@ -120,8 +121,11 @@ dependencies = [
  "reth-evm",
  "reth-evm-ethereum",
  "reth-execution-types",
+ "reth-payload-primitives",
  "reth-primitives",
+ "reth-primitives-traits",
  "reth-revm",
+ "reth-storage-errors",
  "revm-database-interface",
 ]
 

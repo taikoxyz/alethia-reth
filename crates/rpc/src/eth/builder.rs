@@ -1,4 +1,4 @@
-use alethia_reth_block::config::TaikoEvmConfig;
+use alethia_reth_execution::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 

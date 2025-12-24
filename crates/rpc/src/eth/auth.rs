@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
 
 use crate::eth::error::TaikoApiError;
-use alethia_reth_block::{
+use alethia_reth_execution::{
     assembler::TaikoBlockAssembler, config::TaikoNextBlockEnvAttributes,
     factory::TaikoBlockExecutorFactory,
 };

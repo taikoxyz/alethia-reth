@@ -14,7 +14,7 @@ client = []
 serde = []
 
 [dependencies]
-alethia-reth-block = { path = "../block" }
+alethia-reth-execution = { path = "../execution" }
 alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-consensus = { path = "../consensus" }
 alethia-reth-db = { path = "../db" }

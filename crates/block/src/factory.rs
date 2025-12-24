@@ -8,7 +8,7 @@ use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ExecutorBuilder};
 
-use crate::config::TaikoEvmConfig;
+use alethia_reth_execution::config::TaikoEvmConfig;
 
 /// A builder for the Taiko block executor.
 #[derive(Debug, Clone, Default)]

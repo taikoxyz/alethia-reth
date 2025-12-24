@@ -19,7 +19,7 @@ use reth_evm_ethereum::RethReceiptBuilder;
 use std::{convert::Infallible, sync::Arc};
 use tracing::{debug, trace, warn};
 
-use alethia_reth_block::{
+use alethia_reth_execution::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,

@@ -1,5 +1,5 @@
 [package]
-name = "alethia-reth-chainspec-core"
+name = "alethia-reth-forks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

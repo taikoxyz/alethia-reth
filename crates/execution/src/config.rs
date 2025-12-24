@@ -19,14 +19,15 @@ use reth_revm::{
     context::{BlockEnv, CfgEnv},
     primitives::{Address, B256, U256},
 };
+use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 use reth_storage_errors::any::AnyError;
 
 use crate::{
     assembler::TaikoBlockAssembler,
     factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
 };
-use alethia_reth_chainspec_core::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+use alethia_reth_forks::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
 /// A complete configuration of EVM for Taiko network.
@@ -185,7 +186,8 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         let block_number = payload.block_number();
 
         let blob_params = self.chain_spec().blob_params_at_timestamp(timestamp);
-        let spec = taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
+        let spec =
+            taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
 
         // configure evm env based on parent block
         let mut cfg_env =
@@ -293,5 +295,19 @@ where
         TaikoSpecId::ONTAKE
     } else {
         TaikoSpecId::GENESIS
+    }
+}
+
+impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
+    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
+    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
+        Self {
+            timestamp: parent.timestamp.saturating_add(12),
+            suggested_fee_recipient: parent.beneficiary,
+            prev_randao: B256::random(),
+            gas_limit: parent.gas_limit,
+            extra_data: parent.extra_data.clone(),
+            base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
+        }
     }
 }

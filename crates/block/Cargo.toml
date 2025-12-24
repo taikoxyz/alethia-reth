@@ -9,9 +9,9 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-alethia-reth-block-core = { path = "../block-core", default-features = false }
-alethia-reth-chainspec-core = { path = "../chainspec-core", default-features = false }
 alethia-reth-evm = { path = "../evm" }
+alethia-reth-execution = { path = "../execution", default-features = false }
+alethia-reth-forks = { path = "../forks", default-features = false }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }

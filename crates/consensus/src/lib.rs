@@ -1,8 +1,8 @@
 pub mod builder;
 
-pub use alethia_reth_consensus_core::{eip4396, validation};
+pub use alethia_reth_consensus_common::{eip4396, validation};
 
-use alethia_reth_consensus_core::validation::TaikoBlockReader;
+use alethia_reth_consensus_common::validation::TaikoBlockReader;
 use alloy_primitives::B256;
 use reth_primitives_traits::{AlloyBlockHeader, Block};
 use reth_provider::BlockReader;
@@ -18,10 +18,6 @@ where
     T::Block: Block,
 {
     fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64> {
-        self.0
-            .block_by_hash(hash)
-            .ok()
-            .flatten()
-            .map(|block| block.header().timestamp())
+        self.0.block_by_hash(hash).ok().flatten().map(|block| block.header().timestamp())
     }
 }

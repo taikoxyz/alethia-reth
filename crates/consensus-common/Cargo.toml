@@ -1,5 +1,5 @@
 [package]
-name = "alethia-reth-consensus-core"
+name = "alethia-reth-consensus-common"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,8 @@ path = "src/lib.rs"
 default = []
 
 [dependencies]
-alethia-reth-chainspec-core = { path = "../chainspec-core", default-features = false }
 alethia-reth-evm = { path = "../evm" }
+alethia-reth-forks = { path = "../forks", default-features = false }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }

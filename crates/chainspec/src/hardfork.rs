@@ -5,7 +5,7 @@ use rayon::prelude::ParallelExtend;
 use reth_chainspec::ChainHardforks;
 use reth_revm::primitives::U256;
 
-pub use alethia_reth_chainspec_core::hardfork::{TaikoHardfork, TaikoHardforks};
+pub use alethia_reth_forks::hardfork::{TaikoHardfork, TaikoHardforks};
 
 /// Taiko Mainnet list of hardforks.
 pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {

@@ -4,7 +4,7 @@ use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
 
-use crate::{validation::TaikoBeaconConsensus, ProviderTaikoBlockReader};
+use crate::{ProviderTaikoBlockReader, validation::TaikoBeaconConsensus};
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 

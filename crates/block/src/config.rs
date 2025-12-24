@@ -3,92 +3,44 @@ use std::{borrow::Cow, convert::Infallible, sync::Arc};
 use alloy_consensus::Header;
 use alloy_eips::Decodable2718;
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::Bytes;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
 use reth_node_api::ExecutionPayload;
 use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
-use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
+use reth_primitives_traits::{constants::MAX_TX_GAS_LIMIT_OSAKA, SignedTransaction, TxTy};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
-    primitives::{Address, B256, U256},
+    primitives::{B256, U256},
 };
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 use reth_storage_errors::any::AnyError;
 
-use alethia_reth_block_core::{config as core, factory::TaikoBlockExecutionCtx};
-use alethia_reth_chainspec_core::spec::TaikoChainSpec;
-use alethia_reth_evm::factory::TaikoEvmFactory;
+use alethia_reth_execution::{config as core, factory::TaikoBlockExecutionCtx};
+use alethia_reth_forks::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
 pub use core::{taiko_revm_spec, taiko_spec_by_timestamp_and_block_number};
 
-/// A complete configuration of EVM for Taiko network.
-#[derive(Debug, Clone)]
-pub struct TaikoEvmConfig {
-    inner: core::TaikoEvmConfig,
-}
-
-impl TaikoEvmConfig {
-    /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
-    pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self { inner: core::TaikoEvmConfig::new(chain_spec) }
-    }
-
-    /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
-    pub fn new_with_evm_factory(
-        chain_spec: Arc<TaikoChainSpec>,
-        evm_factory: TaikoEvmFactory,
-    ) -> Self {
-        Self { inner: core::TaikoEvmConfig::new_with_evm_factory(chain_spec, evm_factory) }
-    }
-
-    /// Returns the chain spec associated with this configuration.
-    pub const fn chain_spec(&self) -> &Arc<TaikoChainSpec> {
-        self.inner.chain_spec()
-    }
-
-    /// Returns a reference to the core config.
-    pub const fn core(&self) -> &core::TaikoEvmConfig {
-        &self.inner
-    }
-
-    /// Returns the core config, consuming `self`.
-    pub fn into_core(self) -> core::TaikoEvmConfig {
-        self.inner
-    }
-}
-
 /// Context relevant for execution of a next block w.r.t Taiko.
+///
+/// This mirrors [`core::TaikoNextBlockEnvAttributes`] to satisfy orphan rules
+/// when implementing [`BuildPendingEnv`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaikoNextBlockEnvAttributes {
     /// The timestamp of the next block.
     pub timestamp: u64,
     /// The suggested fee recipient for the next block.
-    pub suggested_fee_recipient: Address,
+    pub suggested_fee_recipient: reth_revm::primitives::Address,
     /// The randomness value for the next block.
     pub prev_randao: B256,
     /// Block gas limit.
     pub gas_limit: u64,
     /// Encoded base fee share pctg parameters to include into block's `extra_data` field.
-    pub extra_data: Bytes,
+    pub extra_data: alloy_primitives::Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
-}
-
-impl From<core::TaikoNextBlockEnvAttributes> for TaikoNextBlockEnvAttributes {
-    fn from(value: core::TaikoNextBlockEnvAttributes) -> Self {
-        Self {
-            timestamp: value.timestamp,
-            suggested_fee_recipient: value.suggested_fee_recipient,
-            prev_randao: value.prev_randao,
-            gas_limit: value.gas_limit,
-            extra_data: value.extra_data,
-            base_fee_per_gas: value.base_fee_per_gas,
-        }
-    }
 }
 
 impl From<TaikoNextBlockEnvAttributes> for core::TaikoNextBlockEnvAttributes {
@@ -104,8 +56,29 @@ impl From<TaikoNextBlockEnvAttributes> for core::TaikoNextBlockEnvAttributes {
     }
 }
 
+/// A complete configuration of EVM for Taiko network.
+///
+/// This is a newtype wrapper around the core config to allow implementing
+/// `ConfigureEngineEvm<TaikoExecutionData>` (orphan rules require a local type).
+#[derive(Debug, Clone)]
+pub struct TaikoEvmConfig {
+    inner: core::TaikoEvmConfig,
+}
+
+impl TaikoEvmConfig {
+    /// Creates a new Taiko EVM configuration with the given chain spec.
+    pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
+        Self { inner: core::TaikoEvmConfig::new(chain_spec) }
+    }
+
+    /// Returns the chain spec associated with this configuration.
+    pub const fn chain_spec(&self) -> &Arc<TaikoChainSpec> {
+        self.inner.chain_spec()
+    }
+}
+
 impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
-    /// Returns an [`EvmEnvFor`] for the given payload.
+    /// Returns the EVM environment for the given Taiko execution payload.
     fn evm_env_for_payload(
         &self,
         payload: &TaikoExecutionData,
@@ -117,7 +90,6 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         let spec =
             taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
 
-        // configure evm env based on parent block
         let mut cfg_env =
             CfgEnv::new().with_chain_id(self.chain_spec().chain().id()).with_spec(spec);
 
@@ -143,7 +115,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         Ok((cfg_env, block_env).into())
     }
 
-    /// Returns an [`ExecutionCtxFor`] for the given payload.
+    /// Returns the execution context for the given Taiko execution payload.
     fn context_for_payload<'a>(
         &self,
         payload: &'a TaikoExecutionData,
@@ -158,7 +130,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         })
     }
 
-    /// Returns an [`ExecutableTxIterator`] for the given payload.
+    /// Returns an iterator over the transactions in the given Taiko execution payload.
     fn tx_iterator_for_payload(
         &self,
         payload: &TaikoExecutionData,
@@ -207,8 +179,17 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let core_attributes: core::TaikoNextBlockEnvAttributes = attributes.clone().into();
-        self.inner.next_evm_env(parent, &core_attributes)
+        self.inner.next_evm_env(
+            parent,
+            &core::TaikoNextBlockEnvAttributes {
+                timestamp: attributes.timestamp,
+                suggested_fee_recipient: attributes.suggested_fee_recipient,
+                prev_randao: attributes.prev_randao,
+                gas_limit: attributes.gas_limit,
+                extra_data: attributes.extra_data.clone(),
+                base_fee_per_gas: attributes.base_fee_per_gas,
+            },
+        )
     }
 
     /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for a given block.
@@ -225,8 +206,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &SealedHeader,
         attributes: Self::NextBlockEnvCtx,
     ) -> Result<ExecutionCtxFor<'_, Self>, Self::Error> {
-        let core_attributes: core::TaikoNextBlockEnvAttributes = attributes.into();
-        self.inner.context_for_next_block(parent, core_attributes)
+        self.inner.context_for_next_block(parent, attributes.into())
     }
 }
 

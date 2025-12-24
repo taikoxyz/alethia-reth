@@ -1,5 +1,5 @@
 [package]
-name = "alethia-reth-block-core"
+name = "alethia-reth-forks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,23 +10,21 @@ path = "src/lib.rs"
 
 [features]
 default = []
-prover = []
+serde = ["dep:serde", "alloy-hardforks/serde"]
 
 [dependencies]
-alethia-reth-chainspec-core = { path = "../chainspec-core", default-features = false }
-alethia-reth-evm = { path = "../evm" }
+alloy-chains = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
-alloy-evm = { workspace = true }
+alloy-genesis = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
-alloy-rpc-types-eth = { workspace = true }
+auto_impl = { workspace = true }
 reth-chainspec = { workspace = true }
-reth-ethereum = { workspace = true }
 reth-ethereum-forks = { workspace = true }
 reth-evm = { workspace = true }
-reth-evm-ethereum = { workspace = true }
+reth-network-peers = { workspace = true }
 reth-primitives = { workspace = true }
 reth-revm = { workspace = true }
-reth-execution-types = { workspace = true }
-revm-database-interface = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true }

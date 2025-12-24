@@ -17,7 +17,7 @@ use reth_primitives::Block;
 use reth_revm::context::Block as _;
 
 use crate::factory::TaikoBlockExecutionCtx;
-use alethia_reth_chainspec_core::spec::TaikoChainSpec;
+use alethia_reth_forks::spec::TaikoChainSpec;
 
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 #[derive(Clone, Debug)]

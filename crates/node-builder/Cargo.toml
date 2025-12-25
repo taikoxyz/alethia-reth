@@ -1,0 +1,22 @@
+[package]
+name = "alethia-reth-node-builder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+alethia-reth-block = { path = "../block" }
+alethia-reth-chainspec = { path = "../chainspec" }
+alethia-reth-consensus = { path = "../consensus" }
+alethia-reth-primitives = { path = "../primitives" }
+alloy-primitives = { workspace = true }
+eyre = { workspace = true }
+reth-ethereum = { workspace = true }
+reth-node-api = { workspace = true }
+reth-node-builder = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-provider = { workspace = true }

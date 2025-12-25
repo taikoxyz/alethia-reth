@@ -90,15 +90,12 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "alloy-rpc-types-eth",
- "eyre",
  "reth-chainspec",
  "reth-ethereum",
  "reth-ethereum-forks",
  "reth-evm",
  "reth-evm-ethereum",
  "reth-execution-types",
- "reth-node-api",
- "reth-node-builder",
  "reth-payload-primitives",
  "reth-primitives",
  "reth-primitives-traits",
@@ -165,18 +162,14 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "alloy-sol-types",
- "eyre",
  "reth-chainspec",
  "reth-consensus",
  "reth-consensus-common",
  "reth-ethereum",
  "reth-ethereum-consensus",
  "reth-execution-types",
- "reth-node-api",
- "reth-node-builder",
  "reth-primitives",
  "reth-primitives-traits",
- "reth-provider",
 ]
 
 [[package]]
@@ -230,6 +223,7 @@ dependencies = [
  "alethia-reth-db",
  "alethia-reth-evm",
  "alethia-reth-network",
+ "alethia-reth-node-builder",
  "alethia-reth-payload",
  "alethia-reth-primitives",
  "alethia-reth-rpc",
@@ -245,6 +239,23 @@ dependencies = [
  "reth-node-ethereum",
  "reth-rpc",
  "serde",
+]
+
+[[package]]
+name = "alethia-reth-node-builder"
+version = "0.6.0"
+dependencies = [
+ "alethia-reth-block",
+ "alethia-reth-chainspec",
+ "alethia-reth-consensus",
+ "alethia-reth-primitives",
+ "alloy-primitives",
+ "eyre",
+ "reth-ethereum",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-primitives-traits",
+ "reth-provider",
 ]
 
 [[package]]

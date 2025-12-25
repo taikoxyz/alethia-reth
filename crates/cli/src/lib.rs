@@ -21,8 +21,7 @@ use reth::args::RessArgs;
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
-    TaikoNode,
-    consensus::{builder::ProviderTaikoBlockReader, validation::TaikoBeaconConsensus},
+    TaikoNode, consensus::validation::TaikoBeaconConsensus, node_builder::ProviderTaikoBlockReader,
 };
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;

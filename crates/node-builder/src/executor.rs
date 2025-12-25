@@ -1,12 +1,11 @@
 use std::future;
 
+use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ExecutorBuilder};
-
-use crate::config::TaikoEvmConfig;
 
 /// A builder for the Taiko block executor.
 #[derive(Debug, Clone, Default)]
@@ -29,7 +28,7 @@ where
     fn build_evm(
         self,
         ctx: &BuilderContext<Node>,
-    ) -> impl Future<Output = eyre::Result<Self::EVM>> + Send {
+    ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
         future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
     }
 }

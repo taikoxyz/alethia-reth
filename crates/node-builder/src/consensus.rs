@@ -1,16 +1,14 @@
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
+use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_consensus::validation::{TaikoBeaconConsensus, TaikoBlockReader};
+use alethia_reth_primitives::engine::TaikoEngineTypes;
 use alloy_primitives::B256;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
 use reth_primitives_traits::{AlloyBlockHeader, Block};
 use reth_provider::BlockReader;
-use std::fmt::Debug;
-
-use crate::validation::{TaikoBeaconConsensus, TaikoBlockReader};
-use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_primitives::engine::TaikoEngineTypes;
 
 /// Adapter that exposes a `reth_provider::BlockReader` as a Taiko block reader.
 #[derive(Debug)]

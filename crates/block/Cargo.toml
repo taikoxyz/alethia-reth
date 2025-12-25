@@ -9,10 +9,13 @@ license.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = ["engine", "rpc"]
+default = ["net"]
 prover = []
-engine = ["dep:alethia-reth-primitives", "dep:reth-payload-primitives"]
-rpc = ["dep:reth-rpc-eth-api"]
+net = [
+    "dep:alethia-reth-primitives",
+    "dep:reth-payload-primitives",
+    "dep:reth-rpc-eth-api",
+]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }

@@ -157,7 +157,6 @@ version = "0.6.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-evm",
- "alethia-reth-primitives",
  "alloy-consensus",
  "alloy-hardforks",
  "alloy-primitives",

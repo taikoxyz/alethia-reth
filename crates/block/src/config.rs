@@ -8,11 +8,11 @@ use alloy_rpc_types_eth::Withdrawals;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
-#[cfg(feature = "engine")]
+#[cfg(feature = "net")]
 use reth_evm::ConfigureEngineEvm;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
-#[cfg(feature = "engine")]
+#[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
 use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
@@ -20,7 +20,7 @@ use reth_revm::{
     context::{BlockEnv, CfgEnv},
     primitives::{Address, B256, U256},
 };
-#[cfg(feature = "rpc")]
+#[cfg(feature = "net")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
 use reth_storage_errors::any::AnyError;
 
@@ -30,7 +30,7 @@ use crate::{
 };
 use alethia_reth_chainspec::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
-#[cfg(feature = "engine")]
+#[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
 /// A complete configuration of EVM for Taiko network.
@@ -179,7 +179,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "net")]
 impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
     /// Returns an [`EvmEnvFor`] for the given payload.
     fn evm_env_for_payload(
@@ -302,7 +302,7 @@ where
     }
 }
 
-#[cfg(feature = "rpc")]
+#[cfg(feature = "net")]
 impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
     fn build_pending_env(parent: &SealedHeader<Header>) -> Self {

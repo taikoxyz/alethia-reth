@@ -26,8 +26,8 @@ use crate::{
     assembler::TaikoBlockAssembler,
     factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
 };
+use alethia_reth_chainspec::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
-use alethia_reth_forks::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
 /// A complete configuration of EVM for Taiko network.

@@ -1,12 +1,30 @@
 use std::sync::Arc;
 
+use alloy_primitives::B256;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
+use reth_primitives_traits::{AlloyBlockHeader, Block};
+use reth_provider::BlockReader;
+use std::fmt::Debug;
 
-use crate::{ProviderTaikoBlockReader, validation::TaikoBeaconConsensus};
+use crate::validation::{TaikoBeaconConsensus, TaikoBlockReader};
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
+
+/// Adapter that exposes a `reth_provider::BlockReader` as a Taiko block reader.
+#[derive(Debug)]
+pub struct ProviderTaikoBlockReader<T>(pub T);
+
+impl<T> TaikoBlockReader for ProviderTaikoBlockReader<T>
+where
+    T: BlockReader + Debug,
+    T::Block: Block,
+{
+    fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64> {
+        self.0.block_by_hash(hash).ok().flatten().map(|block| block.header().timestamp())
+    }
+}
 
 /// A basic Taiko consensus builder.
 #[derive(Debug, Default, Clone)]

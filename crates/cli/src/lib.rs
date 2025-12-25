@@ -18,11 +18,11 @@ use tracing::info;
 
 use reth::args::RessArgs;
 
-use alethia_reth_execution::config::TaikoEvmConfig;
+use alethia_reth_block::config::TaikoEvmConfig;
+use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
     TaikoNode,
-    chainspec::{parser::TaikoChainSpecParser, spec::TaikoChainSpec},
-    consensus::{ProviderTaikoBlockReader, validation::TaikoBeaconConsensus},
+    consensus::{builder::ProviderTaikoBlockReader, validation::TaikoBeaconConsensus},
 };
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
@@ -30,7 +30,10 @@ use reth_storage_api::noop::NoopProvider;
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
 
 pub mod command;
+pub mod parser;
 pub mod tables;
+
+pub use parser::TaikoChainSpecParser;
 
 /// Additional Taiko CLI arguments layered on top of `RessArgs`.
 #[derive(Debug, clap::Args)]

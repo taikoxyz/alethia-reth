@@ -24,8 +24,8 @@ use reth_revm::{
 use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;
+use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
-use alethia_reth_forks::spec::TaikoExecutorSpec;
 
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {

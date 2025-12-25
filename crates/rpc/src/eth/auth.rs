@@ -34,15 +34,15 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, trace};
 
 use crate::eth::error::TaikoApiError;
+use alethia_reth_block::{
+    assembler::TaikoBlockAssembler, config::TaikoNextBlockEnvAttributes,
+    factory::TaikoBlockExecutorFactory,
+};
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_execution::{
-    assembler::TaikoBlockAssembler, config::TaikoNextBlockEnvAttributes,
-    factory::TaikoBlockExecutorFactory,
-};
 use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::RpcL1Origin,
 };

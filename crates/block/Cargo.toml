@@ -8,23 +8,33 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+prover = []
+
 [dependencies]
+alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-execution = { path = "../execution", default-features = false }
-alethia-reth-forks = { path = "../forks", default-features = false }
-alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
+alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
+alloy-evm = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
 eyre = { workspace = true }
 reth-chainspec = { workspace = true }
 reth-ethereum = { workspace = true }
+reth-ethereum-forks = { workspace = true }
 reth-evm = { workspace = true }
+reth-evm-ethereum = { workspace = true }
+reth-execution-types = { workspace = true }
 reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
+reth-payload-primitives = { workspace = true }
 reth-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }
 reth-revm = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
 reth-storage-errors = { workspace = true }
+revm-database-interface = { workspace = true }

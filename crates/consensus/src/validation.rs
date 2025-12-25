@@ -19,8 +19,8 @@ use reth_primitives_traits::{
 };
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
-use alethia_reth_forks::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 
 sol! {
     function anchor(bytes32, bytes32, uint64, uint32) external;

@@ -8,8 +8,7 @@ pub use alethia_reth_payload as payload;
 pub use alethia_reth_primitives as primitives;
 pub use alethia_reth_rpc as rpc;
 
-use alethia_reth_execution::config::TaikoEvmConfig;
-use block::factory::TaikoExecutorBuilder;
+use block::{builder::TaikoExecutorBuilder, config::TaikoEvmConfig};
 use chainspec::spec::TaikoChainSpec;
 use consensus::builder::TaikoConsensusBuilder;
 use network::TaikoNetworkBuilder;

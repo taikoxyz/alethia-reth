@@ -10,9 +10,21 @@ path = "src/lib.rs"
 
 [features]
 default = []
-serde = ["alethia-reth-forks/serde"]
+serde = ["dep:serde", "alloy-hardforks/serde"]
 
 [dependencies]
-alethia-reth-forks = { path = "../forks", default-features = false }
-eyre = { workspace = true }
-reth-cli = { workspace = true }
+alloy-chains = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-genesis = { workspace = true }
+alloy-hardforks = { workspace = true }
+alloy-primitives = { workspace = true }
+auto_impl = { workspace = true }
+reth-chainspec = { workspace = true }
+reth-ethereum-forks = { workspace = true }
+reth-evm = { workspace = true }
+reth-network-peers = { workspace = true }
+reth-primitives = { workspace = true }
+reth-revm = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true }

@@ -8,8 +8,8 @@ members = [
     "crates/db",
     "crates/evm",
     "crates/network",
-    "crates/node-builder",
     "crates/node",
+    "crates/node-builder",
     "crates/payload",
     "crates/primitives",
     "crates/rpc",
@@ -116,9 +116,6 @@ reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
-
-# alethia reth
-alethia-reth-node-builder = { path = "crates/node-builder" }
 
 # revm
 revm-database-interface = { version = "8.0.5", default-features = false }

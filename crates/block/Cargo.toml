@@ -9,13 +9,15 @@ license.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["engine", "rpc"]
 prover = []
+engine = ["dep:alethia-reth-primitives", "dep:reth-payload-primitives"]
+rpc = ["dep:reth-rpc-eth-api"]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", default-features = false }
+alethia-reth-primitives = { path = "../primitives", default-features = false, optional = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }
@@ -28,10 +30,10 @@ reth-ethereum-forks = { workspace = true }
 reth-evm = { workspace = true }
 reth-evm-ethereum = { workspace = true }
 reth-execution-types = { workspace = true }
-reth-payload-primitives = { workspace = true }
+reth-payload-primitives = { workspace = true, optional = true }
 reth-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }
 reth-revm = { workspace = true }
-reth-rpc-eth-api = { workspace = true }
+reth-rpc-eth-api = { workspace = true, optional = true }
 reth-storage-errors = { workspace = true }
 revm-database-interface = { workspace = true }

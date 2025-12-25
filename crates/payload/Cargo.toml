@@ -12,9 +12,9 @@ path = "src/lib.rs"
 default = []
 
 [dependencies]
-alethia-reth-execution = { path = "../execution" }
 alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-evm = { path = "../evm" }
+alethia-reth-execution = { path = "../execution" }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }

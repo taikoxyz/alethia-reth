@@ -69,7 +69,6 @@ op-alloy-flz = { version = "0.13.1", default-features = false }
 
 # data encoding
 parity-scale-codec = "3.2.1"
-rayon = "1.10"
 
 # reth
 reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.9.3" }

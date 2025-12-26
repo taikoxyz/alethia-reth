@@ -5,24 +5,24 @@ use alloy_eips::Decodable2718;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{
-    chainspec::EthChainSpec,
-    primitives::{BlockTy, SealedBlock, SealedHeader},
-    revm::{
-        context::{BlockEnv, CfgEnv},
-        primitives::{Address, B256, U256},
-    },
-};
+use reth_chainspec::EthChainSpec;
 use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
-use reth_evm::{
-    ConfigureEngineEvm, ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-};
+#[cfg(feature = "net")]
+use reth_evm::ConfigureEngineEvm;
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_node_api::ExecutionPayload;
+#[cfg(feature = "net")]
+use reth_payload_primitives::ExecutionPayload;
+use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
 use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
-use reth_provider::errors::any::AnyError;
+use reth_revm::{
+    context::{BlockEnv, CfgEnv},
+    primitives::{Address, B256, U256},
+};
+#[cfg(feature = "net")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
+use reth_storage_errors::any::AnyError;
 
 use crate::{
     assembler::TaikoBlockAssembler,
@@ -30,6 +30,7 @@ use crate::{
 };
 use alethia_reth_chainspec::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+#[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
 /// A complete configuration of EVM for Taiko network.
@@ -65,76 +66,6 @@ impl TaikoEvmConfig {
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<TaikoChainSpec> {
         self.executor_factory.spec()
-    }
-}
-
-impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
-    /// Returns an [`EvmEnvFor`] for the given payload.
-    fn evm_env_for_payload(
-        &self,
-        payload: &TaikoExecutionData,
-    ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let timestamp = payload.timestamp();
-        let block_number = payload.block_number();
-
-        let blob_params = self.chain_spec().blob_params_at_timestamp(timestamp);
-        let spec =
-            taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
-
-        // configure evm env based on parent block
-        let mut cfg_env =
-            CfgEnv::new().with_chain_id(self.chain_spec().chain().id()).with_spec(spec);
-
-        if let Some(blob_params) = &blob_params {
-            cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
-        }
-
-        if self.chain_spec().is_osaka_active_at_timestamp(timestamp) {
-            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
-        }
-
-        let block_env = BlockEnv {
-            number: U256::from(block_number),
-            beneficiary: payload.execution_payload.fee_recipient,
-            timestamp: U256::from(timestamp),
-            difficulty: U256::ZERO,
-            prevrandao: Some(payload.execution_payload.prev_randao),
-            gas_limit: payload.execution_payload.gas_limit,
-            basefee: payload.execution_payload.base_fee_per_gas.saturating_to(),
-            blob_excess_gas_and_price: None,
-        };
-
-        Ok(EvmEnv { cfg_env, block_env })
-    }
-
-    /// Returns an [`ExecutionCtxFor`] for the given payload.
-    fn context_for_payload<'a>(
-        &self,
-        payload: &'a TaikoExecutionData,
-    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        Ok(TaikoBlockExecutionCtx {
-            parent_hash: payload.parent_hash(),
-            parent_beacon_block_root: payload.parent_beacon_block_root(),
-            ommers: &[],
-            withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
-            basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
-            extra_data: payload.execution_payload.extra_data.clone(),
-        })
-    }
-
-    /// Returns an [`ExecutableTxIterator`] for the given payload.
-    fn tx_iterator_for_payload(
-        &self,
-        payload: &TaikoExecutionData,
-    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        Ok(payload.execution_payload.transactions.clone().unwrap_or_default().into_iter().map(
-            |tx| {
-                let tx = TxTy::<Self::Primitives>::decode_2718_exact(tx.as_ref())
-                    .map_err(AnyError::new)?;
-                let signer = tx.try_recover().map_err(AnyError::new)?;
-                Ok::<_, AnyError>(tx.with_signer(signer))
-            },
-        ))
     }
 }
 
@@ -248,6 +179,77 @@ impl ConfigureEvm for TaikoEvmConfig {
     }
 }
 
+#[cfg(feature = "net")]
+impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
+    /// Returns an [`EvmEnvFor`] for the given payload.
+    fn evm_env_for_payload(
+        &self,
+        payload: &TaikoExecutionData,
+    ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let timestamp = payload.timestamp();
+        let block_number = payload.block_number();
+
+        let blob_params = self.chain_spec().blob_params_at_timestamp(timestamp);
+        let spec =
+            taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
+
+        // configure evm env based on parent block
+        let mut cfg_env =
+            CfgEnv::new().with_chain_id(self.chain_spec().chain().id()).with_spec(spec);
+
+        if let Some(blob_params) = &blob_params {
+            cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
+        }
+
+        if self.chain_spec().is_osaka_active_at_timestamp(timestamp) {
+            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
+
+        let block_env = BlockEnv {
+            number: U256::from(block_number),
+            beneficiary: payload.execution_payload.fee_recipient,
+            timestamp: U256::from(timestamp),
+            difficulty: U256::ZERO,
+            prevrandao: Some(payload.execution_payload.prev_randao),
+            gas_limit: payload.execution_payload.gas_limit,
+            basefee: payload.execution_payload.base_fee_per_gas.saturating_to(),
+            blob_excess_gas_and_price: None,
+        };
+
+        Ok((cfg_env, block_env).into())
+    }
+
+    /// Returns an [`ExecutionCtxFor`] for the given payload.
+    fn context_for_payload<'a>(
+        &self,
+        payload: &'a TaikoExecutionData,
+    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
+        Ok(TaikoBlockExecutionCtx {
+            parent_hash: payload.parent_hash(),
+            parent_beacon_block_root: payload.parent_beacon_block_root(),
+            ommers: &[],
+            withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
+            basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
+            extra_data: payload.execution_payload.extra_data.clone(),
+        })
+    }
+
+    /// Returns an [`ExecutableTxIterator`] for the given payload.
+    fn tx_iterator_for_payload(
+        &self,
+        payload: &TaikoExecutionData,
+    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
+        Ok(payload.execution_payload.transactions.clone().unwrap_or_default().into_iter().map(
+            |tx| {
+                let tx = TxTy::<Self::Primitives>::decode_2718_exact(tx.as_ref())
+                    .map_err(AnyError::new)?;
+                let signer = tx.try_recover().map_err(AnyError::new)?;
+                Ok::<_, AnyError>(tx.with_signer(signer))
+            },
+        ))
+    }
+}
+
 /// Context relevant for execution of a next block w.r.t Taiko.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaikoNextBlockEnvAttributes {
@@ -263,20 +265,6 @@ pub struct TaikoNextBlockEnvAttributes {
     pub extra_data: Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
-}
-
-impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
-    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
-    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
-        Self {
-            timestamp: parent.timestamp.saturating_add(12),
-            suggested_fee_recipient: parent.beneficiary,
-            prev_randao: B256::random(),
-            gas_limit: parent.gas_limit,
-            extra_data: parent.extra_data.clone(),
-            base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
-        }
-    }
 }
 
 /// Map the latest active hardfork at the given header to a [`TaikoSpecId`].
@@ -311,5 +299,20 @@ where
         TaikoSpecId::ONTAKE
     } else {
         TaikoSpecId::GENESIS
+    }
+}
+
+#[cfg(feature = "net")]
+impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
+    /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
+    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
+        Self {
+            timestamp: parent.timestamp.saturating_add(12),
+            suggested_fee_recipient: parent.beneficiary,
+            prev_randao: B256::random(),
+            gas_limit: parent.gas_limit,
+            extra_data: parent.extra_data.clone(),
+            base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
+        }
     }
 }

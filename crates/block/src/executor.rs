@@ -4,16 +4,6 @@ use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded, eth::receipt_builder::ReceiptBuilder,
 };
 use alloy_primitives::{Address, Bytes, Uint};
-use reth::{
-    primitives::Log,
-    revm::{
-        State,
-        context::{
-            Block as _,
-            result::{ExecutionResult, ResultAndState},
-        },
-    },
-};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
@@ -22,7 +12,15 @@ use reth_evm::{
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
-use reth_provider::BlockExecutionResult;
+use reth_execution_types::BlockExecutionResult;
+use reth_primitives::Log;
+use reth_revm::{
+    State,
+    context::{
+        Block as _,
+        result::{ExecutionResult, ResultAndState},
+    },
+};
 use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;

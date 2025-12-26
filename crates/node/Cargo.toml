@@ -13,11 +13,7 @@ default = ["serde"]
 arbitrary = []
 client = []
 prover = []
-serde = [
-    "dep:serde",
-    "alethia-reth-chainspec/serde",
-    "alethia-reth-primitives/serde",
-]
+serde = ["dep:serde", "alethia-reth-chainspec/serde", "alethia-reth-primitives/serde"]
 
 [dependencies]
 alethia-reth-block = { path = "../block" }
@@ -26,6 +22,7 @@ alethia-reth-consensus = { path = "../consensus" }
 alethia-reth-db = { path = "../db" }
 alethia-reth-evm = { path = "../evm" }
 alethia-reth-network = { path = "../network" }
+alethia-reth-node-builder = { path = "../node-builder" }
 alethia-reth-payload = { path = "../payload" }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alethia-reth-rpc = { path = "../rpc" }

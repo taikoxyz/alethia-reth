@@ -4,21 +4,19 @@ use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Tr
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, sol};
-use reth::{
-    beacon_consensus::validate_block_post_execution,
-    chainspec::EthChainSpec,
-    consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
-    consensus_common::validation::{
-        validate_against_parent_hash_number, validate_body_against_header,
-        validate_header_base_fee, validate_header_extra_data, validate_header_gas,
-    },
-    primitives::SealedBlock,
+use reth_chainspec::EthChainSpec;
+use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
+use reth_consensus_common::validation::{
+    validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
+    validate_header_extra_data, validate_header_gas,
 };
-use reth_node_api::NodePrimitives;
+use reth_ethereum_consensus::validate_block_post_execution;
+use reth_execution_types::BlockExecutionResult;
+use reth_primitives::SealedBlock;
 use reth_primitives_traits::{
-    Block, BlockBody, BlockHeader, GotExpected, RecoveredBlock, SealedHeader, SignedTransaction,
+    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
+    SignedTransaction,
 };
-use reth_provider::{BlockExecutionResult, BlockReader, ProviderResult};
 
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
@@ -48,18 +46,7 @@ pub const ANCHOR_V3_V4_GAS_LIMIT: u64 = 1_000_000;
 /// Minimal block reader interface used by Taiko consensus.
 pub trait TaikoBlockReader: Send + Sync + Debug {
     /// Returns the timestamp of the block referenced by the given hash, if present.
-    fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>>;
-}
-
-impl<T> TaikoBlockReader for T
-where
-    T: BlockReader + Debug,
-    T::Block: Block,
-{
-    /// Returns the timestamp of the block referenced by the given hash, if present.
-    fn block_timestamp_by_hash(&self, hash: B256) -> ProviderResult<Option<u64>> {
-        self.block_by_hash(hash).map(|block| block.map(|block| block.header().timestamp()))
-    }
+    fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64>;
 }
 
 /// Taiko consensus implementation.
@@ -246,7 +233,6 @@ where
     let grandparent_hash = parent.header().parent_hash();
     let grandparent_timestamp = block_reader
         .block_timestamp_by_hash(grandparent_hash)
-        .map_err(|_| ConsensusError::ParentUnknown { hash: grandparent_hash })?
         .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?;
 
     Ok(parent.header().timestamp() - grandparent_timestamp)

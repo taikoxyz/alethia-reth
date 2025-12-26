@@ -20,12 +20,11 @@ alloy-genesis = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
 auto_impl = { workspace = true }
-eyre = { workspace = true }
-reth = { workspace = true }
-reth-cli = { workspace = true }
+reth-chainspec = { workspace = true }
 reth-ethereum-forks = { workspace = true }
 reth-evm = { workspace = true }
 reth-network-peers = { workspace = true }
-reth-trie-common = { workspace = true }
+reth-primitives = { workspace = true }
+reth-revm = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }

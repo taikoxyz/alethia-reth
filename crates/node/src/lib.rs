@@ -4,14 +4,15 @@ pub use alethia_reth_consensus as consensus;
 pub use alethia_reth_db as db;
 pub use alethia_reth_evm as evm;
 pub use alethia_reth_network as network;
+pub use alethia_reth_node_builder as node_builder;
 pub use alethia_reth_payload as payload;
 pub use alethia_reth_primitives as primitives;
 pub use alethia_reth_rpc as rpc;
 
-use block::{config::TaikoEvmConfig, factory::TaikoExecutorBuilder};
+use block::config::TaikoEvmConfig;
 use chainspec::spec::TaikoChainSpec;
-use consensus::builder::TaikoConsensusBuilder;
 use network::TaikoNetworkBuilder;
+use node_builder::{TaikoConsensusBuilder, TaikoExecutorBuilder};
 use payload::TaikoPayloadBuilderBuilder;
 use primitives::engine::TaikoEngineTypes;
 use reth::{

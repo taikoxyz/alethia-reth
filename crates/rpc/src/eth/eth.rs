@@ -226,7 +226,11 @@ mod tests {
     fn hex_decode(value: &str) -> Vec<u8> {
         let value = value.strip_prefix("0x").unwrap_or(value);
         let digits: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(digits.len() % 2 == 0, "hex value must have an even length (got {})", digits.len());
+        assert!(
+            digits.len().is_multiple_of(2),
+            "hex value must have an even length (got {})",
+            digits.len()
+        );
         digits
             .as_bytes()
             .chunks(2)

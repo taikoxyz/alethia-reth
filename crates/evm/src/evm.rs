@@ -9,6 +9,8 @@ use reth_revm::{
 };
 use revm_database_interface::Database;
 
+use crate::zk_gas::{TaikoChainContext, ZkGasViolation};
+
 /// Custom EVM for Taiko, we extend the RevmEvm with
 /// [`TaikoEvmExtraContext`] to provide additional context
 /// for Anchor transaction pre-execution checks and base fee sharing.
@@ -18,7 +20,10 @@ pub struct TaikoEvm<CTX, INSP, P> {
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 
-impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
+impl<CTX, INSP, P> TaikoEvm<CTX, INSP, P>
+where
+    CTX: ContextTr<Chain = TaikoChainContext>,
+{
     /// Creates a new instance of [`TaikoEvm`].
     pub fn new(
         inner: RevmEvm<
@@ -44,6 +49,31 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             anchor_caller_address,
             anchor_caller_nonce,
         });
+    }
+}
+
+impl<CTX, INSP, P> TaikoEvm<CTX, INSP, P>
+where
+    CTX: ContextTr<Chain = TaikoChainContext>,
+{
+    /// Resets zk gas accounting before executing a new transaction.
+    pub fn reset_zk_gas_for_tx(&mut self) {
+        self.inner.ctx.chain_mut().reset_for_tx();
+    }
+
+    /// Returns the zk gas used by the most recently executed transaction.
+    pub fn zk_gas_tx_used(&self) -> u64 {
+        self.inner.ctx.chain().tx_zk_used()
+    }
+
+    /// Returns the zk gas violation for the current transaction, if any.
+    pub fn zk_gas_violation(&self) -> Option<ZkGasViolation> {
+        self.inner.ctx.chain().violation()
+    }
+
+    /// Enables or disables zk gas metering for the current execution.
+    pub fn set_zk_gas_metering_enabled(&mut self, enabled: bool) {
+        self.inner.ctx.chain_mut().set_metering_enabled(enabled);
     }
 }
 
@@ -184,27 +214,44 @@ impl TaikoEvmExtraExecutionCtx {
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{U64, U256};
+    use alloy_primitives::U256;
     use reth_revm::{
-        Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, db::InMemoryDB,
+        Context, ExecuteEvm, MainBuilder, MainContext,
+        context::TxEnv,
+        db::InMemoryDB,
+        inspector::NoOpInspector,
+        interpreter::{instructions::instruction_table, interpreter::EthInterpreter},
         state::AccountInfo,
     };
+    use std::sync::Arc;
 
-    use crate::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
+    use crate::{
+        alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoEvmContext},
+        zk_gas::TaikoChainContext,
+    };
+    use alethia_reth_chainspec::zk_gas::ZkGasConfig;
 
     use super::*;
 
     #[test]
     fn test_transact_one_with_extra_execution_context() {
         let golden_touch_address = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
-        let nonce = U64::random().to::<u64>();
+        let nonce = 1u64;
         let mut db = InMemoryDB::default();
         db.insert_account_info(
             golden_touch_address,
             AccountInfo { nonce, balance: U256::from(0), ..Default::default() },
         );
 
-        let mut taiko_evm = TaikoEvm::new(Context::mainnet().with_db(db).build_mainnet());
+        let base_table =
+            Arc::new(instruction_table::<EthInterpreter, TaikoEvmContext<InMemoryDB>>());
+        let chain_context = TaikoChainContext::new(ZkGasConfig::default(), base_table);
+        let mut taiko_evm = TaikoEvm::new(
+            Context::mainnet()
+                .with_chain(chain_context)
+                .with_db(db)
+                .build_mainnet_with_inspector(NoOpInspector {}),
+        );
 
         let mut state = taiko_evm.transact_one(
             TxEnv::builder()

@@ -44,7 +44,8 @@ pub struct TaikoEvmConfig {
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
+        let zk_gas_config = *chain_spec.zk_gas_config();
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::new(zk_gas_config))
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
@@ -57,7 +58,7 @@ impl TaikoEvmConfig {
             executor_factory: TaikoBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,
-                evm_factory,
+                evm_factory.clone(),
             ),
             evm_factory,
         }

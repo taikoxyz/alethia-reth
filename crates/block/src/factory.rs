@@ -1,7 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
-use alloy_consensus::{Header, Transaction, TxReceipt};
-use alloy_eips::Encodable2718;
+use alloy_consensus::Header;
 use alloy_evm::{
     Database, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
     block::{BlockExecutorFactory, BlockExecutorFor},
@@ -10,7 +9,6 @@ use alloy_evm::{
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_primitives::Log;
 use reth_revm::{Inspector, State};
 
 use crate::executor::TaikoBlockExecutor;
@@ -72,24 +70,27 @@ impl<R, Spec, EvmFactory> TaikoBlockExecutorFactory<R, Spec, EvmFactory> {
     }
 }
 
-impl<R, Spec, EvmF> BlockExecutorFactory for TaikoBlockExecutorFactory<R, Spec, EvmF>
+// NOTE: Specialized to TaikoEvmFactory + RethReceiptBuilder because TaikoBlockExecutor requires
+// ZkGasEvm, which is only implemented by TaikoEvmWrapper.
+impl<Spec> BlockExecutorFactory
+    for TaikoBlockExecutorFactory<RethReceiptBuilder, Spec, TaikoEvmFactory>
 where
-    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     Spec: TaikoExecutorSpec,
-    EvmF: EvmFactory<Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>>,
+    <TaikoEvmFactory as EvmFactory>::Tx: FromRecoveredTx<<RethReceiptBuilder as ReceiptBuilder>::Transaction>
+        + FromTxWithEncoded<<RethReceiptBuilder as ReceiptBuilder>::Transaction>,
     Self: 'static,
 {
     /// The EVM factory used by the executor.
-    type EvmFactory = EvmF;
+    type EvmFactory = TaikoEvmFactory;
     /// Context required for block execution.
     ///
     /// This is similar to [`crate::EvmEnv`], but only contains context unrelated to EVM and
     /// required for execution of an entire block.
     type ExecutionCtx<'a> = TaikoBlockExecutionCtx<'a>;
     /// Transaction type used by the executor.
-    type Transaction = R::Transaction;
+    type Transaction = <RethReceiptBuilder as ReceiptBuilder>::Transaction;
     /// Receipt type produced by the executor.
-    type Receipt = R::Receipt;
+    type Receipt = <RethReceiptBuilder as ReceiptBuilder>::Receipt;
 
     /// Reference to EVM factory used by the executor.
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -99,12 +100,12 @@ where
     /// Creates an Taiko block executor with given EVM and execution context.
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: EvmF::Evm<&'a mut State<DB>, I>,
+        evm: <TaikoEvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
         DB: Database + 'a,
-        I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
+        I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<&'a mut State<DB>>> + 'a,
     {
         TaikoBlockExecutor::new(
             evm,
@@ -132,7 +133,7 @@ mod tests {
     fn test_taiko_block_executor_factory_creation() {
         let receipt_builder = RethReceiptBuilder::default();
         let spec = Arc::new(TaikoChainSpec::default());
-        let evm_factory = TaikoEvmFactory;
+        let evm_factory = TaikoEvmFactory::default();
 
         TaikoBlockExecutorFactory::new(receipt_builder, spec.clone(), evm_factory);
     }

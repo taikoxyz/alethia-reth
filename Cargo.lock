@@ -190,6 +190,7 @@ dependencies = [
 name = "alethia-reth-evm"
 version = "0.6.0"
 dependencies = [
+ "alethia-reth-chainspec",
  "alloy-evm",
  "alloy-primitives",
  "reth-evm",

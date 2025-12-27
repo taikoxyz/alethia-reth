@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use alloy_evm::{Database, EvmEnv, EvmFactory};
 use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
@@ -6,6 +8,7 @@ use reth_revm::{
         BlockEnv, TxEnv,
         result::{EVMError, HaltReason},
     },
+    handler::instructions::EthInstructions,
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
     precompile::{PrecompileSpecId, Precompiles},
@@ -13,13 +16,38 @@ use reth_revm::{
 
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
+    error::TaikoInvalidTxError,
     evm::TaikoEvm,
     spec::TaikoSpecId,
+    zk_gas::{TaikoChainContext, build_zk_instruction_table},
 };
+use alethia_reth_chainspec::zk_gas::ZkGasConfig;
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
-#[derive(Default, Debug, Clone, Copy)]
-pub struct TaikoEvmFactory;
+#[derive(Debug, Clone)]
+pub struct TaikoEvmFactory {
+    /// Shared zk gas configuration used to initialize chain context.
+    zk_gas_config: ZkGasConfig,
+}
+
+impl Default for TaikoEvmFactory {
+    /// Creates a factory with the default zk gas configuration.
+    fn default() -> Self {
+        Self { zk_gas_config: ZkGasConfig::default() }
+    }
+}
+
+impl TaikoEvmFactory {
+    /// Creates a new factory with the provided zk gas configuration.
+    pub fn new(zk_gas_config: ZkGasConfig) -> Self {
+        Self { zk_gas_config }
+    }
+
+    /// Returns the zk gas configuration used by this factory.
+    pub fn zk_gas_config(&self) -> ZkGasConfig {
+        self.zk_gas_config
+    }
+}
 
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.
@@ -28,7 +56,8 @@ impl EvmFactory for TaikoEvmFactory {
     /// Transaction environment.
     type Tx = TxEnv;
     /// EVM error.
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    type Error<DBError: core::error::Error + Send + Sync + 'static> =
+        EVMError<DBError, TaikoInvalidTxError>;
     /// Halt reason.
     type HaltReason = HaltReason;
     /// The EVM context for inspectors.
@@ -47,7 +76,14 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
+        let base_table = Arc::new(reth_revm::interpreter::instructions::instruction_table::<
+            EthInterpreter,
+            TaikoEvmContext<DB>,
+        >());
+        let instruction_table = build_zk_instruction_table::<TaikoEvmContext<DB>>(&base_table);
+        let chain_context = TaikoChainContext::new(self.zk_gas_config, base_table);
         let evm = Context::mainnet()
+            .with_chain(chain_context)
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
@@ -56,7 +92,10 @@ impl EvmFactory for TaikoEvmFactory {
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
+        let mut evm = TaikoEvm::new(evm);
+        evm.inner.instruction = EthInstructions::new(instruction_table);
+
+        TaikoEvmWrapper::new(evm, false)
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -67,7 +106,14 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
+        let base_table = Arc::new(reth_revm::interpreter::instructions::instruction_table::<
+            EthInterpreter,
+            TaikoEvmContext<DB>,
+        >());
+        let instruction_table = build_zk_instruction_table::<TaikoEvmContext<DB>>(&base_table);
+        let chain_context = TaikoChainContext::new(self.zk_gas_config, base_table);
         let evm = Context::mainnet()
+            .with_chain(chain_context)
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
@@ -77,6 +123,9 @@ impl EvmFactory for TaikoEvmFactory {
             )))
             .with_inspector(inspector);
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
+        let mut evm = TaikoEvm::new(evm);
+        evm.inner.instruction = EthInstructions::new(instruction_table);
+
+        TaikoEvmWrapper::new(evm, true)
     }
 }

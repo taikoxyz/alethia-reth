@@ -12,7 +12,7 @@ use reth_chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Ha
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 
-use crate::{TAIKO_DEVNET_GENESIS_HASH, hardfork::TaikoHardfork};
+use crate::{TAIKO_DEVNET_GENESIS_HASH, hardfork::TaikoHardfork, zk_gas::ZkGasConfig};
 
 /// An Taiko chain specification.
 ///
@@ -24,6 +24,13 @@ use crate::{TAIKO_DEVNET_GENESIS_HASH, hardfork::TaikoHardfork};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaikoChainSpec {
     pub inner: ChainSpec,
+}
+
+impl TaikoChainSpec {
+    /// Returns the shared zk gas configuration for all Taiko chains.
+    pub fn zk_gas_config(&self) -> &'static ZkGasConfig {
+        &crate::zk_gas::DEFAULT_ZK_GAS_CONFIG
+    }
 }
 
 impl From<Genesis> for TaikoChainSpec {
@@ -156,6 +163,11 @@ impl TaikoExecutorSpec for TaikoChainSpec {
     fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition {
         self.inner.hardforks.fork(fork)
     }
+
+    /// Returns the shared zk gas configuration for all Taiko chains.
+    fn zk_gas_config(&self) -> &'static ZkGasConfig {
+        TaikoChainSpec::zk_gas_config(self)
+    }
 }
 
 /// Helper trait for applying Taiko devnet specific overrides.
@@ -190,6 +202,9 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
     /// Retrieves [`ForkCondition`] by an [`TaikoHardfork`]. If `fork` is not present, returns
     /// [`ForkCondition::Never`].
     fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition;
+
+    /// Returns the shared zk gas configuration for all Taiko chains.
+    fn zk_gas_config(&self) -> &'static ZkGasConfig;
 
     /// Convenience method to check if an [`TaikoHardfork`] is active at a given block number.
     fn is_taiko_fork_active_at_block(&self, fork: TaikoHardfork, block_number: u64) -> bool {

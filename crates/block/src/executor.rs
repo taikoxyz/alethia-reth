@@ -24,8 +24,11 @@ use reth_revm::{
 use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;
-use alethia_reth_chainspec::spec::TaikoExecutorSpec;
-use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
+use alethia_reth_chainspec::{spec::TaikoExecutorSpec, zk_gas::ZkGasConfig};
+use alethia_reth_evm::{
+    alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, error::TaikoInvalidTxError, handler::get_treasury_address,
+    zk_gas::ZkGasEvm,
+};
 
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -45,6 +48,10 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
+    /// Total zk gas used by transactions in this block.
+    ///
+    /// This aggregates per-transaction zk gas to enforce the block zk gas limit.
+    zk_gas_used: u64,
     /// Flag indicating whether the executor has been initialized with the anchor transaction info
     /// in `apply_pre_execution_changes`.
     evm_extra_execution_ctx_initialized: bool,
@@ -55,13 +62,14 @@ where
     Spec: Clone,
     R: ReceiptBuilder,
 {
-    /// Creates a new [`TaikoBlockExecutor`]
+    /// Creates a new [`TaikoBlockExecutor`] with zeroed gas counters.
     pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
         Self {
             evm,
             ctx,
             receipts: Vec::new(),
             gas_used: 0,
+            zk_gas_used: 0,
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
@@ -77,6 +85,7 @@ where
             DB = &'db mut State<DB>,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
         >,
+    E: ZkGasEvm,
     Spec: TaikoExecutorSpec,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
@@ -165,11 +174,21 @@ where
 
         let output = self.execute_transaction_without_commit(&tx)?;
 
+        let zk_gas_config: &ZkGasConfig = self.spec.zk_gas_config();
+        let tx_zk_used = self.evm.zk_gas_tx_used();
+        let next_block_zk_used = validate_block_zk_limit(
+            self.zk_gas_used,
+            tx_zk_used,
+            zk_gas_config.block_limit,
+            tx.tx().trie_hash(),
+        )?;
+
         if !f(&output.result).should_commit() {
             return Ok(None);
         }
 
         let gas_used = self.commit_transaction(output, tx)?;
+        self.zk_gas_used = next_block_zk_used;
         Ok(Some(gas_used))
     }
 
@@ -300,9 +319,38 @@ fn decode_post_shasta_extra_data(extradata: Bytes) -> (u64, bool) {
     (base_fee_share_pctg, is_low_bond_proposal)
 }
 
+/// Validates the next block-level zk gas usage and returns the updated total.
+///
+/// This checks for overflow when adding the transaction's zk gas to the running block total,
+/// and returns a structured invalid-transaction error keyed by the transaction hash on failure.
+fn validate_block_zk_limit(
+    block_zk_used: u64,
+    tx_zk_used: u64,
+    block_zk_limit: u64,
+    tx_hash: alloy_primitives::B256,
+) -> Result<u64, BlockValidationError> {
+    let next_block_zk_used =
+        block_zk_used.checked_add(tx_zk_used).ok_or(BlockValidationError::InvalidTx {
+            hash: tx_hash,
+            error: Box::new(TaikoInvalidTxError::ZkBlockGasOverflow { used: block_zk_used }),
+        })?;
+
+    if next_block_zk_used > block_zk_limit {
+        return Err(BlockValidationError::InvalidTx {
+            hash: tx_hash,
+            error: Box::new(TaikoInvalidTxError::ZkBlockGasLimitExceeded {
+                limit: block_zk_limit,
+                used: next_block_zk_used,
+            }),
+        });
+    }
+
+    Ok(next_block_zk_used)
+}
+
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{U64, U256};
+    use alloy_primitives::{B256, U256};
 
     use alethia_reth_evm::alloy::decode_anchor_system_call_data;
 
@@ -310,8 +358,8 @@ mod test {
 
     #[test]
     fn test_encode_anchor_system_call_data() {
-        let base_fee_share_pctg = U64::random().to::<u64>();
-        let caller_nonce = U64::random().to::<u64>();
+        let base_fee_share_pctg = 1u64;
+        let caller_nonce = 2u64;
         let encoded_data = encode_anchor_system_call_data(base_fee_share_pctg, caller_nonce);
         assert_eq!(encoded_data.len(), 16);
         assert_eq!(&encoded_data[..8], &base_fee_share_pctg.to_be_bytes());
@@ -324,7 +372,7 @@ mod test {
 
     #[test]
     fn test_decode_post_ontake_extra_data() {
-        let base_fee_share_pctg = U64::random().to::<u64>();
+        let base_fee_share_pctg = 1u64;
 
         assert_eq!(
             decode_post_ontake_extra_data(Bytes::copy_from_slice(
@@ -332,5 +380,12 @@ mod test {
             )),
             base_fee_share_pctg
         );
+    }
+
+    /// Ensures block-level zk gas limit rejects transactions that exceed the limit.
+    #[test]
+    fn test_validate_block_zk_limit_exceeds() {
+        let result = validate_block_zk_limit(10, 15, 20, B256::ZERO);
+        assert!(result.is_err());
     }
 }

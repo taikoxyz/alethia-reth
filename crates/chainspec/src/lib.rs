@@ -13,6 +13,7 @@ use crate::{
 
 pub mod hardfork;
 pub mod spec;
+pub mod zk_gas;
 
 /// Genesis hash for the Taiko Devnet network.
 pub const TAIKO_DEVNET_GENESIS_HASH: B256 =

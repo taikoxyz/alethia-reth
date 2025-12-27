@@ -5,8 +5,9 @@ use std::{
 
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::hex;
+use core::fmt;
 use reth_revm::{
-    Context, ExecuteEvm, InspectEvm, Inspector,
+    Context, ExecuteEvm, InspectEvm, Inspector, Journal,
     context::{
         BlockEnv, CfgEnv, TxEnv,
         result::{EVMError, ExecutionResult, HaltReason, Output, ResultAndState, SuccessReason},
@@ -17,9 +18,33 @@ use reth_revm::{
 };
 use tracing::debug;
 
-use crate::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};
+use crate::{
+    error::TaikoInvalidTxError,
+    evm::TaikoEvm,
+    handler::get_treasury_address,
+    spec::TaikoSpecId,
+    zk_gas::{TaikoChainContext, ZkGasEvm},
+};
 
 pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
+
+/// Structured errors emitted when decoding anchor system call data fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnchorSystemCallError {
+    /// The anchor system call data is invalid or cannot be decoded.
+    InvalidEncodedData,
+}
+
+impl fmt::Display for AnchorSystemCallError {
+    /// Formats the anchor system call error for diagnostics.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidEncodedData => {
+                write!(f, "invalid encoded anchor system call data")
+            }
+        }
+    }
+}
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
@@ -49,6 +74,28 @@ impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     }
 }
 
+impl<DB: Database, INSP, P> ZkGasEvm for TaikoEvmWrapper<DB, INSP, P> {
+    /// Returns the zk gas used by the most recently executed transaction.
+    fn zk_gas_tx_used(&self) -> u64 {
+        self.inner.zk_gas_tx_used()
+    }
+
+    /// Returns the zk gas violation for the current transaction, if any.
+    fn zk_gas_violation(&self) -> Option<crate::zk_gas::ZkGasViolation> {
+        self.inner.zk_gas_violation()
+    }
+
+    /// Enables or disables zk gas metering for the current execution.
+    fn zk_gas_set_metering_enabled(&mut self, enabled: bool) {
+        self.inner.set_zk_gas_metering_enabled(enabled);
+    }
+
+    /// Resets zk gas tracking before executing a new transaction.
+    fn zk_gas_reset_for_tx(&mut self) {
+        self.inner.reset_zk_gas_for_tx();
+    }
+}
+
 impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
     type Target = TaikoEvmContext<DB>;
 
@@ -65,7 +112,8 @@ impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
     }
 }
 
-pub type TaikoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
+pub type TaikoEvmContext<DB> =
+    Context<BlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB, Journal<DB>, TaikoChainContext>;
 
 /// An instance of an ethereum virtual machine.
 ///
@@ -85,7 +133,7 @@ where
     type Tx = TxEnv;
     /// Error type returned by EVM. Contains either errors related to invalid transactions or
     /// internal irrecoverable execution errors.
-    type Error = EVMError<DB::Error>;
+    type Error = EVMError<DB::Error, TaikoInvalidTxError>;
     /// Halt reason. Enum over all possible reasons for halting the execution. When execution halts,
     /// it means that transaction is valid, however, it's execution was interrupted (e.g because of
     /// running out of gas or overflowing stack).
@@ -155,7 +203,9 @@ where
             contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
-                .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
+                .ok_or_else(|| {
+                    EVMError::Custom(AnchorSystemCallError::InvalidEncodedData.to_string())
+                })?;
             debug!(target: "taiko_evm", "Anchor system call detected: base_fee_share_pctg = {}, caller_nonce = {}", base_fee_share_pctg, caller_nonce);
 
             // Set the Anchor transaction information for the later EVM execution.
@@ -202,6 +252,8 @@ where
         let mut basefee = 0;
         let mut disable_nonce_check = true;
 
+        // Disable zk gas metering for system calls so they do not consume the zk budget.
+        self.inner.set_zk_gas_metering_enabled(false);
         // ensure the block gas limit is >= the tx
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
         // disable the base fee check for this call by setting the base fee to zero
@@ -217,6 +269,8 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // swap back to the previous nonce check flag
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        // Re-enable zk gas metering after the system call completes.
+        self.inner.set_zk_gas_metering_enabled(true);
 
         // NOTE: We assume that only the contract storage is modified. Revm currently marks the
         // caller and block beneficiary accounts as "touched" when we do the above transact calls,

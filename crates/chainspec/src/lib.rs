@@ -16,7 +16,7 @@ pub mod spec;
 
 /// Genesis hash for the Taiko Devnet network.
 pub const TAIKO_DEVNET_GENESIS_HASH: B256 =
-    b256!("0x4f6dd2f48a8521061441af207cb74a69696310a3f16d289ac1c4aa39fc01c741");
+    b256!("0x2d9cdce87eaf3236d92ac047b566dd44628d71f28e18c1a8da2dab7dcce91467");
 
 /// Genesis hash for the Taiko Hoodi network.
 pub const TAIKO_HOODI_GENESIS_HASH: B256 =

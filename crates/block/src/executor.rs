@@ -113,11 +113,8 @@ where
 
             // Decode the base fee share percentage from the block's extra data.
             let base_fee_share_pgtg =
-                if self.spec.is_shasta_active(self.evm.block().timestamp().to()) {
-                    let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
-                    pctg
-                } else if self.spec.is_ontake_active_at_block(self.evm.block().number().to()) {
-                    decode_post_ontake_extra_data(self.ctx.extra_data.clone())
+                if self.spec.is_ontake_active_at_block(self.evm.block().number().to()) {
+                    decode_extra_data_base_fee_share(self.ctx.extra_data.clone())
                 } else {
                     0
                 };
@@ -284,20 +281,11 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
     Bytes::copy_from_slice(&buf)
 }
 
-// Decode the extra data from the post Ontake block to extract the base fee share percentage,
-// which is stored in the first 32 bytes of the extra data.
-fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
+// Decode the extra data to extract the base fee share percentage,
+// which is stored in the first 32 bytes as a U256.
+fn decode_extra_data_base_fee_share(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0]
-}
-
-// Decode the extra data from the Shasta block to extract the base fee sharing percentage and
-// designated prover flag.
-fn decode_post_shasta_extra_data(extradata: Bytes) -> (u64, bool) {
-    let bytes = extradata.as_ref();
-    let base_fee_share_pctg = bytes.first().copied().unwrap_or_default() as u64;
-    let is_low_bond_proposal = bytes.get(1).map(|b| b & 0x01 != 0).unwrap_or(false);
-    (base_fee_share_pctg, is_low_bond_proposal)
 }
 
 #[cfg(test)]
@@ -323,11 +311,11 @@ mod test {
     }
 
     #[test]
-    fn test_decode_post_ontake_extra_data() {
+    fn test_decode_extra_data_base_fee_share() {
         let base_fee_share_pctg = U64::random().to::<u64>();
 
         assert_eq!(
-            decode_post_ontake_extra_data(Bytes::copy_from_slice(
+            decode_extra_data_base_fee_share(Bytes::copy_from_slice(
                 &U256::from_limbs([base_fee_share_pctg, 0, 0, 0]).to_be_bytes::<32>(),
             )),
             base_fee_share_pctg

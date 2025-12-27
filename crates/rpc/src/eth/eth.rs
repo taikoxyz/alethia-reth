@@ -160,13 +160,14 @@ where
 
 /// Parses the proposal ID encoded in the first argument of an `anchorV4` call.
 ///
-/// Layout (selector `0x20ae54eb`):
-/// - word0: offset to the encoded `(uint48,address,bytes)` tuple (relative to start of calldata
-///   after selector)
-/// - word1..3: static second argument `(uint48,bytes32,bytes32)`
-/// - at the offset: word0' = proposalId (uint48, left‑padded in 32 bytes)
+/// Layout:
+/// - selector (4 bytes)
+/// - word0: proposalId (uint48, left-padded in 32 bytes)
+/// - word1: blockNumber (uint48, left-padded in 32 bytes)
+/// - word2: blockHash (bytes32)
+/// - word3: stateRoot (bytes32)
 ///
-/// The helper reads the offset then pulls the first word of that tuple to recover the proposal ID.
+/// The proposalId is directly at word0 after the selector.
 fn extract_anchor_v4_proposal_id(input: &[u8]) -> Option<U256> {
     const SELECTOR_LEN: usize = 4;
     const WORD_SIZE: usize = 32;
@@ -176,22 +177,8 @@ fn extract_anchor_v4_proposal_id(input: &[u8]) -> Option<U256> {
     }
 
     let calldata = &input[SELECTOR_LEN..];
-    if calldata.len() < WORD_SIZE {
-        return None;
-    }
-
-    let mut offset_bytes = [0u8; WORD_SIZE];
-    offset_bytes.copy_from_slice(&calldata[..WORD_SIZE]);
-    let offset = usize::try_from(U256::from_be_bytes(offset_bytes)).ok()?;
-
-    let proposal_id_start = SELECTOR_LEN.checked_add(offset)?;
-    let proposal_id_end = proposal_id_start.checked_add(WORD_SIZE)?;
-    if proposal_id_end > input.len() {
-        return None;
-    }
-
     let mut proposal_id_bytes = [0u8; WORD_SIZE];
-    proposal_id_bytes.copy_from_slice(&input[proposal_id_start..proposal_id_end]);
+    proposal_id_bytes.copy_from_slice(&calldata[..WORD_SIZE]);
     Some(U256::from_be_bytes(proposal_id_bytes))
 }
 
@@ -201,19 +188,24 @@ mod tests {
 
     #[test]
     fn parses_anchor_v4_proposal_id_real_payload() {
+        // New anchorV4 layout: ((uint48), (uint48, bytes32, bytes32))
+        // - selector (4 bytes)
+        // - proposalId (uint48, left-padded to 32 bytes) = 10
+        // - blockNumber (uint48, left-padded to 32 bytes) = 100
+        // - blockHash (bytes32)
+        // - stateRoot (bytes32)
         let calldata = hex_decode(concat!(
             "0x",
-            // selector + head (offset to first tuple, then the static second tuple fields)
-            "20ae54eb0000000000000000000000000000000000000000000000000000000000000080",
+            // selector (will be computed from new signature)
+            "00000000",
+            // proposalId = 10
             "000000000000000000000000000000000000000000000000000000000000000a",
+            // blockNumber = 100
+            "0000000000000000000000000000000000000000000000000000000000000064",
+            // blockHash
             "1111111111111111111111111111111111111111111111111111111111111111",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-            // first tuple data (proposal params)
-            "000000000000000000000000000000000000000000000000000000000000000a",
-            "0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-            "0000000000000000000000000000000000000000000000000000000000000060",
-            // empty bytes payload for proverAuth
-            "0000000000000000000000000000000000000000000000000000000000000000"
+            // stateRoot
+            "2222222222222222222222222222222222222222222222222222222222222222"
         ));
         assert_eq!(extract_anchor_v4_proposal_id(&calldata), Some(U256::from(10u64)));
     }

@@ -28,10 +28,7 @@ sol! {
     function anchor(bytes32, bytes32, uint64, uint32) external;
     function anchorV2(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32)) external;
     function anchorV3(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32), bytes32[]) external;
-    function anchorV4(
-        (uint48, address, bytes),
-        (uint48, bytes32, bytes32)
-    ) external;
+    function anchorV4((uint48, bytes32, bytes32)) external;
 }
 
 /// Anchor / system transaction call selectors.
@@ -386,6 +383,11 @@ mod test {
         // Empty input
         let empty_input = [];
         assert!(validate_input_selector(&empty_input, &expected_selector).is_err());
+    }
+
+    #[test]
+    fn test_anchor_v4_selector_matches_protocol() {
+        assert_eq!(ANCHOR_V4_SELECTOR, &[0x52, 0x3e, 0x68, 0x54]);
     }
 
     #[test]

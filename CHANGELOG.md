@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.7.0](https://github.com/taikoxyz/alethia-reth/compare/v0.6.0...v0.7.0) (2026-01-03)
+
+
+### Features
+
+* **chainspec:** changes for moving bond to L1 ([#81](https://github.com/taikoxyz/alethia-reth/issues/81)) ([1690b37](https://github.com/taikoxyz/alethia-reth/commit/1690b37a79c545d1f39deeb6f8fee5d1750c8415))
+* **chainspec:** update devnet genesis JSON ([#74](https://github.com/taikoxyz/alethia-reth/issues/74)) ([6fa1e25](https://github.com/taikoxyz/alethia-reth/commit/6fa1e25c5f55016f6d73213147ffa337d54b7749))
+* **chainspec:** update devnet genesis JSON ([#75](https://github.com/taikoxyz/alethia-reth/issues/75)) ([ad01127](https://github.com/taikoxyz/alethia-reth/commit/ad011273c05d05fd034f2957cd5c6f46003f6d07))
+* **chainspec:** update devnet genesis JSON ([#76](https://github.com/taikoxyz/alethia-reth/issues/76)) ([3366970](https://github.com/taikoxyz/alethia-reth/commit/336697077754eef59f9916b9e7843301686c483f))
+* **chainspec:** update devnet genesis JSON ([#77](https://github.com/taikoxyz/alethia-reth/issues/77)) ([f87699f](https://github.com/taikoxyz/alethia-reth/commit/f87699fc736caeb59d87be1e3170fecf15a3cc6f))
+* **consensus:** update `anchorV4` selector for sequential proving design && update devnet genesis json ([#73](https://github.com/taikoxyz/alethia-reth/issues/73)) ([e07c13f](https://github.com/taikoxyz/alethia-reth/commit/e07c13fc011798adfa5436f24646b7305337cdf3))
+* rename some crates ([a3cccc0](https://github.com/taikoxyz/alethia-reth/commit/a3cccc0dd6cb76a0b82f929d82db1a7199c247eb))
+
+
+### Bug Fixes
+
+* **payload:** fix a self-recursion issue in `build` ([#70](https://github.com/taikoxyz/alethia-reth/issues/70)) ([09fc76a](https://github.com/taikoxyz/alethia-reth/commit/09fc76ab9343aebef43b3106a067d061d375e137))
+
+
+### Chores
+
+* **block:** remove an unnecessary method override for `ConfigureEvm` ([#69](https://github.com/taikoxyz/alethia-reth/issues/69)) ([588e077](https://github.com/taikoxyz/alethia-reth/commit/588e077400e7276304cd907eb0bc679b608b4b51))
+* **consensus,evm:** harden helers and payload accounting ([3efd144](https://github.com/taikoxyz/alethia-reth/commit/3efd1442f82c2430471b0cd1e6a48a32e6196166))
+* **consensus,evm:** harden helpers and payload accounting ([#71](https://github.com/taikoxyz/alethia-reth/issues/71)) ([3efd144](https://github.com/taikoxyz/alethia-reth/commit/3efd1442f82c2430471b0cd1e6a48a32e6196166))
+* **consensus:** rename `ANCHOR_V3_GAS_LIMIT` to `ANCHOR_V3_V4_GAS_LIMIT` ([#65](https://github.com/taikoxyz/alethia-reth/issues/65)) ([9d9899d](https://github.com/taikoxyz/alethia-reth/commit/9d9899db9abe0d3bcfaf475d6afc75716df2c741))
+
+
+### Code Refactoring
+
+* **repo:** introduce minimum scope of dependencies for zkvm usage ([#79](https://github.com/taikoxyz/alethia-reth/issues/79)) ([a3cccc0](https://github.com/taikoxyz/alethia-reth/commit/a3cccc0dd6cb76a0b82f929d82db1a7199c247eb))
+* **rpc:** use payload builder resolve path for `wait_for_built_payload` ([#72](https://github.com/taikoxyz/alethia-reth/issues/72)) ([bc8a18f](https://github.com/taikoxyz/alethia-reth/commit/bc8a18f97eb14542fa14bea4c8c3501d911419a8))
+
 ## [0.6.0](https://github.com/taikoxyz/alethia-reth/compare/v0.5.0...v0.6.0) (2025-11-22)
 
 

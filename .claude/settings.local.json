@@ -32,7 +32,9 @@
       "Bash(cargo doc:*)",
       "Bash(RUSTFLAGS=\"--cfg docsrs\" cargo check --lib)",
       "Bash(cargo expand:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(just clippy:*)",
+      "Bash(just test:*)"
     ],
     "deny": []
   }

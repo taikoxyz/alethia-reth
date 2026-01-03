@@ -9,28 +9,34 @@ license.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["net"]
 prover = []
+net = [
+    "dep:alethia-reth-primitives",
+    "dep:reth-payload-primitives",
+    "dep:reth-rpc-eth-api",
+]
 
 [dependencies]
-alethia-reth-chainspec = { path = "../chainspec" }
+alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
+alethia-reth-primitives = { path = "../primitives", default-features = false, optional = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
-eyre = { workspace = true }
-reth = { workspace = true }
+reth-chainspec = { workspace = true }
 reth-ethereum = { workspace = true }
 reth-ethereum-forks = { workspace = true }
 reth-evm = { workspace = true }
 reth-evm-ethereum = { workspace = true }
-reth-node-api = { workspace = true }
-reth-node-builder = { workspace = true }
+reth-execution-types = { workspace = true }
+reth-payload-primitives = { workspace = true, optional = true }
+reth-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }
-reth-provider = { workspace = true }
-reth-rpc-eth-api = { workspace = true }
+reth-revm = { workspace = true }
+reth-rpc-eth-api = { workspace = true, optional = true }
+reth-storage-errors = { workspace = true }
 revm-database-interface = { workspace = true }

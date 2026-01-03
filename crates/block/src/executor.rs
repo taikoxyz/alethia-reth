@@ -26,6 +26,7 @@ use revm_database_interface::DatabaseCommit;
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
+use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
 
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -114,8 +115,7 @@ where
             // Decode the base fee share percentage from the block's extra data.
             let base_fee_share_pgtg =
                 if self.spec.is_shasta_active(self.evm.block().timestamp().to()) {
-                    let (pctg, _) = decode_post_shasta_extra_data(self.ctx.extra_data.clone());
-                    pctg
+                    decode_shasta_basefee_sharing_pctg(self.ctx.extra_data.as_ref()) as u64
                 } else if self.spec.is_ontake_active_at_block(self.evm.block().number().to()) {
                     decode_post_ontake_extra_data(self.ctx.extra_data.clone())
                 } else {
@@ -289,15 +289,6 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
 fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0]
-}
-
-// Decode the extra data from the Shasta block to extract the base fee sharing percentage and
-// designated prover flag.
-fn decode_post_shasta_extra_data(extradata: Bytes) -> (u64, bool) {
-    let bytes = extradata.as_ref();
-    let base_fee_share_pctg = bytes.first().copied().unwrap_or_default() as u64;
-    let is_low_bond_proposal = bytes.get(1).map(|b| b & 0x01 != 0).unwrap_or(false);
-    (base_fee_share_pctg, is_low_bond_proposal)
 }
 
 #[cfg(test)]

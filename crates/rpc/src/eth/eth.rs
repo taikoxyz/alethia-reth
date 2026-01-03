@@ -12,7 +12,7 @@ use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
-use alethia_reth_primitives::payload::attributes::RpcL1Origin;
+use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
 
 /// trait interface for a custom rpc namespace: `taiko`
 ///
@@ -71,7 +71,9 @@ where
                 break;
             }
 
-            let Some(proposal_id) = extract_anchor_v4_proposal_id(input) else {
+            let Some(proposal_id) =
+                decode_shasta_proposal_id(block.header().extra_data().as_ref()).map(U256::from)
+            else {
                 break;
             };
 
@@ -158,87 +160,21 @@ where
     }
 }
 
-/// Parses the proposal ID encoded in the first argument of an `anchorV4` call.
-///
-/// Layout (selector `0x20ae54eb`):
-/// - word0: offset to the encoded `(uint48,address,bytes)` tuple (relative to start of calldata
-///   after selector)
-/// - word1..3: static second argument `(uint48,bytes32,bytes32)`
-/// - at the offset: word0' = proposalId (uint48, left‑padded in 32 bytes)
-///
-/// The helper reads the offset then pulls the first word of that tuple to recover the proposal ID.
-fn extract_anchor_v4_proposal_id(input: &[u8]) -> Option<U256> {
-    const SELECTOR_LEN: usize = 4;
-    const WORD_SIZE: usize = 32;
-
-    if input.len() < SELECTOR_LEN + WORD_SIZE {
-        return None;
-    }
-
-    let calldata = &input[SELECTOR_LEN..];
-    if calldata.len() < WORD_SIZE {
-        return None;
-    }
-
-    let mut offset_bytes = [0u8; WORD_SIZE];
-    offset_bytes.copy_from_slice(&calldata[..WORD_SIZE]);
-    let offset = usize::try_from(U256::from_be_bytes(offset_bytes)).ok()?;
-
-    let proposal_id_start = SELECTOR_LEN.checked_add(offset)?;
-    let proposal_id_end = proposal_id_start.checked_add(WORD_SIZE)?;
-    if proposal_id_end > input.len() {
-        return None;
-    }
-
-    let mut proposal_id_bytes = [0u8; WORD_SIZE];
-    proposal_id_bytes.copy_from_slice(&input[proposal_id_start..proposal_id_end]);
-    Some(U256::from_be_bytes(proposal_id_bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_anchor_v4_proposal_id_real_payload() {
-        let calldata = hex_decode(concat!(
-            "0x",
-            // selector + head (offset to first tuple, then the static second tuple fields)
-            "20ae54eb0000000000000000000000000000000000000000000000000000000000000080",
-            "000000000000000000000000000000000000000000000000000000000000000a",
-            "1111111111111111111111111111111111111111111111111111111111111111",
-            "2222222222222222222222222222222222222222222222222222222222222222",
-            // first tuple data (proposal params)
-            "000000000000000000000000000000000000000000000000000000000000000a",
-            "0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-            "0000000000000000000000000000000000000000000000000000000000000060",
-            // empty bytes payload for proverAuth
-            "0000000000000000000000000000000000000000000000000000000000000000"
-        ));
-        assert_eq!(extract_anchor_v4_proposal_id(&calldata), Some(U256::from(10u64)));
+    fn parses_shasta_proposal_id_from_extra_data() {
+        let extra = [0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        assert_eq!(
+            decode_shasta_proposal_id(&extra).map(U256::from),
+            Some(U256::from(0x010203040506u64))
+        );
     }
 
     #[test]
-    fn returns_none_for_truncated_calldata() {
-        assert!(extract_anchor_v4_proposal_id(&[0u8; 10]).is_none());
-    }
-
-    fn hex_decode(value: &str) -> Vec<u8> {
-        let value = value.strip_prefix("0x").unwrap_or(value);
-        let digits: String = value.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(
-            digits.len().is_multiple_of(2),
-            "hex value must have an even length (got {})",
-            digits.len()
-        );
-        digits
-            .as_bytes()
-            .chunks(2)
-            .map(|chunk| {
-                let hi = (chunk[0] as char).to_digit(16).expect("invalid hex") as u8;
-                let lo = (chunk[1] as char).to_digit(16).expect("invalid hex") as u8;
-                (hi << 4) | lo
-            })
-            .collect()
+    fn returns_none_for_truncated_extra_data() {
+        assert!(decode_shasta_proposal_id(&[0x2a]).is_none());
     }
 }

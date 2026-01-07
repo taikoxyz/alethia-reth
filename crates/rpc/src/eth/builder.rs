@@ -13,13 +13,6 @@ use reth_rpc::eth::core::EthRpcConverterFor;
 #[derive(Debug, Default)]
 pub struct TaikoEthApiBuilder(EthereumEthApiBuilder);
 
-impl TaikoEthApiBuilder {
-    /// Creates a new instance of `TaikoEthApiBuilder`.
-    pub fn new() -> Self {
-        Self(EthereumEthApiBuilder::default())
-    }
-}
-
 impl<N> EthApiBuilder<N> for TaikoEthApiBuilder
 where
     N: FullNodeComponents<Evm = TaikoEvmConfig>,
@@ -36,6 +29,6 @@ where
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
         let api = ctx.eth_api_builder().build();
 
-        Ok(TaikoEthApi(api))
+        Ok(api)
     }
 }

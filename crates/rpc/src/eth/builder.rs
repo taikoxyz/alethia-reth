@@ -27,8 +27,6 @@ where
 
     /// Builds the [`TaikoEthApi`] from the given context.
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
-        let api = ctx.eth_api_builder().build();
-
-        Ok(api)
+        Ok(ctx.eth_api_builder().build())
     }
 }

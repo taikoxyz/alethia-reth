@@ -106,19 +106,7 @@ where
         DB: Database + 'a,
         I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
     {
-        TaikoBlockExecutor::new(
-            evm,
-            TaikoBlockExecutionCtx {
-                parent_hash: ctx.parent_hash,
-                parent_beacon_block_root: ctx.parent_beacon_block_root,
-                ommers: ctx.ommers,
-                withdrawals: ctx.withdrawals,
-                basefee_per_gas: ctx.basefee_per_gas,
-                extra_data: ctx.extra_data,
-            },
-            &self.spec,
-            &self.receipt_builder,
-        )
+        TaikoBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)
     }
 }
 

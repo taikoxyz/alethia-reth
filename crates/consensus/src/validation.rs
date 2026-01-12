@@ -1,10 +1,8 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
-use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, sol};
-use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_consensus_common::validation::{
     validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
@@ -202,15 +200,10 @@ where
     }
 }
 
-/// Validates the base fee against the parent.
+/// Validates that the header has a base fee set (required after EIP-4396).
 #[inline]
-pub fn validate_against_parent_eip4396_base_fee<
-    ChainSpec: EthChainSpec + EthereumHardforks + TaikoHardforks,
-    H: BlockHeader,
->(
+pub fn validate_against_parent_eip4396_base_fee<H: BlockHeader>(
     header: &H,
-    _parent: &H,
-    _chain_spec: &ChainSpec,
 ) -> Result<(), ConsensusError> {
     if header.base_fee_per_gas().is_none() {
         return Err(ConsensusError::BaseFeeMissing);
@@ -330,29 +323,12 @@ mod test {
 
     #[test]
     fn test_validate_against_parent_eip4396_base_fee() {
-        let parent_header = &Header::default();
-        let mut header = parent_header.clone();
-        header.parent_hash = parent_header.hash_slow();
-        header.number = parent_header.number + 1;
+        let mut header = Header::default();
 
-        assert!(
-            validate_against_parent_eip4396_base_fee(
-                &header,
-                parent_header,
-                &Arc::new(TaikoChainSpec::default())
-            )
-            .is_err()
-        );
+        assert!(validate_against_parent_eip4396_base_fee(&header).is_err());
 
         header.base_fee_per_gas = Some(U64::random().to::<u64>());
-        assert!(
-            validate_against_parent_eip4396_base_fee(
-                &header,
-                parent_header,
-                &Arc::new(TaikoChainSpec::default())
-            )
-            .is_ok()
-        );
+        assert!(validate_against_parent_eip4396_base_fee(&header).is_ok());
     }
 
     #[test]

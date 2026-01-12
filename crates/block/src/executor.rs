@@ -308,9 +308,10 @@ mod test {
         assert_eq!(&encoded_data[..8], &base_fee_share_pctg.to_be_bytes());
         assert_eq!(&encoded_data[8..], &caller_nonce.to_be_bytes());
 
-        let decoded_data = decode_anchor_system_call_data(&encoded_data);
-        assert_eq!(decoded_data.unwrap().0, base_fee_share_pctg);
-        assert_eq!(decoded_data.unwrap().1, caller_nonce);
+        let (decoded_pctg, decoded_nonce) =
+            decode_anchor_system_call_data(&encoded_data).expect("decoding should succeed");
+        assert_eq!(decoded_pctg, base_fee_share_pctg);
+        assert_eq!(decoded_nonce, caller_nonce);
     }
 
     #[test]

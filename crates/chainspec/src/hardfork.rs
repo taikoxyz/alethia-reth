@@ -51,11 +51,7 @@ impl TaikoHardforks for TaikoChainSpec {
     /// Retrieves [`ForkCondition`] from `fork`. If `fork` is not present, returns
     /// [`ForkCondition::Never`].
     fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition {
-        match fork {
-            TaikoHardfork::Ontake => self.inner.fork(TaikoHardfork::Ontake),
-            TaikoHardfork::Pacaya => self.inner.fork(TaikoHardfork::Pacaya),
-            TaikoHardfork::Shasta => self.inner.fork(TaikoHardfork::Shasta),
-        }
+        self.inner.fork(fork)
     }
 }
 

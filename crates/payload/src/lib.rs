@@ -38,10 +38,9 @@ where
     async fn build_payload_builder(
         self,
         ctx: &BuilderContext<Node>,
-        pool: Pool,
+        _pool: Pool,
         evm_config: TaikoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
-        let _ = pool;
         Ok(TaikoPayloadBuilder::new(ctx.provider().clone(), evm_config))
     }
 }

@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["net"]
-prover = []
+prover = ["dep:alethia-reth-primitives"]
 net = [
     "dep:alethia-reth-primitives",
     "dep:reth-payload-primitives",

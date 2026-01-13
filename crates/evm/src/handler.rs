@@ -27,7 +27,7 @@ use crate::evm::TaikoEvmExtraExecutionCtx;
 /// reward for the beneficiary.
 #[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
-    pub _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
+    _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
     // This field might will be `None` when during some execution simulation calls
     // like `eth_call`.
     extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,

@@ -22,7 +22,6 @@ pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TaikoChainSpec>, eyre::Er
 
 /// Taiko chain specification parser.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct TaikoChainSpecParser;
 
 impl ChainSpecParser for TaikoChainSpecParser {

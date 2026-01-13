@@ -27,7 +27,6 @@ use std::sync::Arc;
 
 /// Builder for [`TaikoEngineValidator`].
 #[derive(Debug, Default, Clone)]
-#[non_exhaustive]
 pub struct TaikoEngineValidatorBuilder;
 
 impl<N> PayloadValidatorBuilder<N> for TaikoEngineValidatorBuilder

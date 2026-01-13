@@ -9,7 +9,6 @@ use reth_node_builder::{BuilderContext, components::ExecutorBuilder};
 
 /// A builder for the Taiko block executor.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 pub struct TaikoExecutorBuilder;
 
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder

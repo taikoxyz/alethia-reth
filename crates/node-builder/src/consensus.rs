@@ -26,7 +26,6 @@ where
 
 /// A basic Taiko consensus builder.
 #[derive(Debug, Default, Clone)]
-#[non_exhaustive]
 pub struct TaikoConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for TaikoConsensusBuilder

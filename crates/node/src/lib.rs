@@ -154,10 +154,10 @@ where
         ComponentsBuilder::default()
             .node_types()
             .pool(EthereumPoolBuilder::default())
-            .executor(TaikoExecutorBuilder::default())
+            .executor(TaikoExecutorBuilder)
             .payload(BasicPayloadServiceBuilder::new(TaikoPayloadBuilderBuilder))
             .network(TaikoNetworkBuilder)
-            .consensus(TaikoConsensusBuilder::default())
+            .consensus(TaikoConsensusBuilder)
     }
 
     /// Returns the node add-ons.

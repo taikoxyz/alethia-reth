@@ -12,6 +12,7 @@ path = "src/lib.rs"
 default = ["net"]
 prover = []
 net = [
+    "alethia-reth-primitives/net",
     "dep:reth-payload-primitives",
     "dep:reth-rpc-eth-api",
 ]
@@ -19,7 +20,7 @@ net = [
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", default-features = false, features = ["serde"] }
+alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }

@@ -4,7 +4,7 @@ use alloy_consensus::Transaction;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256, State},
+    revm::{State, cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256},
 };
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -12,16 +12,14 @@ use reth_basic_payload_builder::{
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
+    ConfigureEvm,
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
-    ConfigureEvm,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_primitives::{Header as RethHeader, Recovered};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
-use reth_transaction_pool::{
-    error::InvalidPoolTransactionError, BestTransactions, BestTransactionsAttributes,
-};
+use reth_transaction_pool::{BestTransactionsAttributes, error::InvalidPoolTransactionError};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
@@ -30,7 +28,7 @@ use alethia_reth_block::{
     factory::TaikoBlockExecutorFactory,
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::{validate_anchor_transaction, AnchorValidationContext};
+use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
@@ -46,19 +44,14 @@ pub struct TaikoPayloadBuilder<Client, Pool, EvmConfig = TaikoEvmConfig> {
 }
 
 /// Outcome of executing the transaction phase for a payload build.
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum ExecutionOutcome {
     /// Execution was cancelled before completion.
     Cancelled,
     /// Execution completed successfully with accumulated fees.
-    Completed {
-        /// Total fees collected from executed transactions.
-        total_fees: U256,
-    },
+    Completed(U256),
 }
 
 /// Context for executing transactions in new mode (anchor + pool transactions).
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct PoolExecutionContext<'a> {
     /// Prebuilt anchor transaction for new mode.
     anchor_tx: &'a Recovered<EthTransactionSigned>,
@@ -113,7 +106,7 @@ fn execute_provided_transactions(
         total_fees += U256::from(miner_fee) * U256::from(gas_used);
     }
 
-    Ok(ExecutionOutcome::Completed { total_fees })
+    Ok(ExecutionOutcome::Completed(total_fees))
 }
 
 /// Executes new-mode transactions: injects the anchor transaction, then pulls
@@ -130,10 +123,10 @@ where
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
-        Transaction: reth_transaction_pool::PoolTransaction<
-            Consensus = reth_ethereum::TransactionSigned,
+            Transaction: reth_transaction_pool::PoolTransaction<
+                Consensus = reth_ethereum::TransactionSigned,
+            >,
         >,
-    >,
 {
     debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
 
@@ -227,7 +220,7 @@ where
         trace!(target: "payload_builder", ?tx, gas_used, "included transaction from pool");
     }
 
-    Ok(ExecutionOutcome::Completed { total_fees })
+    Ok(ExecutionOutcome::Completed(total_fees))
 }
 
 impl<Client, Pool, EvmConfig> TaikoPayloadBuilder<Client, Pool, EvmConfig> {
@@ -313,24 +306,24 @@ fn taiko_payload<EvmConfig, Client, Pool>(
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
     EvmConfig: ConfigureEvm<
-        Primitives = EthPrimitives,
-        Error = Infallible,
-        NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-        BlockExecutorFactory = TaikoBlockExecutorFactory<
-            RethReceiptBuilder,
-            Arc<TaikoChainSpec>,
-            TaikoEvmFactory,
+            Primitives = EthPrimitives,
+            Error = Infallible,
+            NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
+            BlockExecutorFactory = TaikoBlockExecutorFactory<
+                RethReceiptBuilder,
+                Arc<TaikoChainSpec>,
+                TaikoEvmFactory,
+            >,
+            BlockAssembler = TaikoBlockAssembler,
         >,
-        BlockAssembler = TaikoBlockAssembler,
-    >,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
-        Transaction: reth_transaction_pool::PoolTransaction<
-            Consensus = reth_ethereum::TransactionSigned,
+            Transaction: reth_transaction_pool::PoolTransaction<
+                Consensus = reth_ethereum::TransactionSigned,
+            >,
         >,
-    >,
 {
     let BuildArguments { mut cached_reads, config, cancel, best_payload: _ } = args;
     let PayloadConfig { parent_header, attributes } = config;
@@ -363,56 +356,40 @@ where
     // Get the base fee from the builder (already calculated based on attributes)
     let base_fee = builder.evm_mut().block.basefee;
 
-    // Step 2: Execute transactions - either from provided list (legacy) or from mempool (new mode)
-    let execution_outcome = if let Some(ref transactions) = attributes.transactions {
-        // Legacy mode: Use provided transactions
-        debug!(target: "payload_builder", id=%attributes.payload_id(), tx_count=transactions.len(), "using provided transaction list");
-
-        let outcome = execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)?;
-
-        if let ExecutionOutcome::Completed { total_fees } = outcome {
-            debug!(target: "payload_builder", id=%attributes.payload_id(), total_fees=%total_fees, "finished executing provided transactions");
-        }
-
-        outcome
-    } else {
-        // New mode: Select transactions from mempool
-        debug!(target: "payload_builder", id=%attributes.payload_id(), "selecting transactions from mempool");
-
-        let anchor_tx = match attributes.anchor_transaction.as_ref() {
-            Some(anchor_tx) => anchor_tx,
-            None => {
-                warn!(
-                    target: "payload_builder",
-                    id=%attributes.payload_id(),
-                    "missing prebuilt anchor transaction in new mode"
-                );
-                return Err(PayloadBuilderError::MissingPayload);
+    // Execute transactions - either from provided list (legacy) or from mempool (new mode)
+    let total_fees = match &attributes.transactions {
+        Some(transactions) => {
+            // Legacy mode: Use provided transactions
+            debug!(target: "payload_builder", id=%attributes.payload_id(), tx_count=transactions.len(), "using provided transaction list");
+            match execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)? {
+                ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
+                ExecutionOutcome::Completed(fees) => fees,
             }
-        };
-
-        let ctx = PoolExecutionContext {
-            anchor_tx,
-            parent_header: &parent_header,
-            block_timestamp: attributes.timestamp(),
-            payload_id: attributes.payload_id().to_string(),
-            base_fee,
-            gas_limit: attributes.gas_limit,
-        };
-
-        let outcome =
-            execute_anchor_and_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)?;
-
-        if let ExecutionOutcome::Completed { total_fees } = outcome {
-            debug!(target: "payload_builder", id=%attributes.payload_id(), total_fees=%total_fees, "finished selecting transactions from mempool");
         }
+        None => {
+            // New mode: Select transactions from mempool
+            debug!(target: "payload_builder", id=%attributes.payload_id(), "selecting transactions from mempool");
 
-        outcome
-    };
+            let anchor_tx = attributes.anchor_transaction.as_ref().ok_or_else(|| {
+                warn!(target: "payload_builder", id=%attributes.payload_id(), "missing prebuilt anchor transaction in new mode");
+                PayloadBuilderError::MissingPayload
+            })?;
 
-    let total_fees = match execution_outcome {
-        ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
-        ExecutionOutcome::Completed { total_fees } => total_fees,
+            let ctx = PoolExecutionContext {
+                anchor_tx,
+                parent_header: &parent_header,
+                block_timestamp: attributes.timestamp(),
+                payload_id: attributes.payload_id().to_string(),
+                base_fee,
+                gas_limit: attributes.gas_limit,
+            };
+
+            match execute_anchor_and_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)?
+            {
+                ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
+                ExecutionOutcome::Completed(fees) => fees,
+            }
+        }
     };
 
     let BlockBuilderOutcome { execution_result: _, block, .. } =

@@ -228,7 +228,7 @@ where
     Ok(parent.header().timestamp() - grandparent_timestamp)
 }
 
-/// Validates the anchor transaction in the block.
+/// Context required to validate an anchor transaction.
 pub struct AnchorValidationContext {
     /// Timestamp for hardfork selection.
     pub timestamp: u64,

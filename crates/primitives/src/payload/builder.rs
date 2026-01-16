@@ -1,4 +1,4 @@
-use alloy_primitives::{keccak256, Address, Bytes, B256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawals;
@@ -104,24 +104,19 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
         };
 
         // Compute tx_list_hash based on whether tx_list is provided
-        let tx_list_hash = attributes
-            .block_metadata
-            .tx_list
-            .as_ref()
-            .map(|bytes| keccak256(bytes.clone()))
-            .unwrap_or_default();
+        let tx_list_hash =
+            attributes.block_metadata.tx_list.as_deref().map(keccak256).unwrap_or_default();
 
-        let anchor_transaction = match &attributes.anchor_transaction {
-            None => None,
-            Some(bytes) => {
-                let tx = TransactionSigned::decode(&mut &bytes[..])
-                    .map_err(|_| alloy_rlp::Error::Custom("invalid anchor_transaction"))?;
-                Some(
-                    tx.try_into_recovered()
-                        .map_err(|_| alloy_rlp::Error::Custom("anchor tx not recoverable"))?,
-                )
-            }
-        };
+        let anchor_transaction = attributes
+            .anchor_transaction
+            .as_ref()
+            .map(|bytes| {
+                TransactionSigned::decode(&mut &bytes[..])
+                    .map_err(|_| alloy_rlp::Error::Custom("invalid anchor_transaction"))?
+                    .try_into_recovered()
+                    .map_err(|_| alloy_rlp::Error::Custom("anchor tx not recoverable"))
+            })
+            .transpose()?;
 
         let res = Self {
             payload_attributes,
@@ -202,12 +197,7 @@ pub(crate) fn payload_id_taiko(
     }
 
     // Include tx_list hash if provided (legacy mode), otherwise use zero hash (new mode)
-    let tx_hash = attributes
-        .block_metadata
-        .tx_list
-        .as_ref()
-        .map(|bytes| keccak256(bytes.clone()))
-        .unwrap_or_default();
+    let tx_hash = attributes.block_metadata.tx_list.as_deref().map(keccak256).unwrap_or_default();
     hasher.update(tx_hash);
     hasher.update(attributes.block_metadata.extra_data.as_ref());
 
@@ -226,7 +216,7 @@ mod test {
     use super::*;
     use crate::payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes};
     use alloy_consensus::Header;
-    use alloy_primitives::{hex, Address, Bytes, U256};
+    use alloy_primitives::{Address, Bytes, U256, hex};
     use reth_chainspec::ChainSpec;
     use reth_engine_local::LocalPayloadAttributesBuilder;
     use reth_ethereum_engine_primitives::EthPayloadAttributes;

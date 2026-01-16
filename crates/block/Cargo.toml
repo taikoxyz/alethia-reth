@@ -22,7 +22,7 @@ serde = ["dep:alethia-reth-primitives", "alethia-reth-primitives?/serde"]
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", optional = true }
+alethia-reth-primitives = { path = "../primitives", default-features = false, optional = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }

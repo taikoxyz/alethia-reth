@@ -211,7 +211,7 @@ fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp
     Vec::<TransactionSigned>::decode(&mut &bytes[..])
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "net"))]
 mod test {
     use super::*;
     use crate::payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes};

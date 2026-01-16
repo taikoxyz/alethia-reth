@@ -1,6 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
-use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, Transaction};
+use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH};
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, sol};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
@@ -228,25 +228,28 @@ where
     Ok(parent.header().timestamp() - grandparent_timestamp)
 }
 
-/// Validates the anchor transaction in the block.
-pub fn validate_anchor_transaction_in_block<B>(
-    block: &RecoveredBlock<B>,
-    chain_spec: &TaikoChainSpec,
-) -> Result<(), ConsensusError>
-where
-    B: Block,
-{
-    let anchor_transaction = match block.body().transactions().first() {
-        Some(tx) => tx,
-        None => return Ok(()),
-    };
+/// Context required to validate an anchor transaction.
+pub struct AnchorValidationContext {
+    /// Timestamp for hardfork selection.
+    pub timestamp: u64,
+    /// Block number for hardfork selection and gas limit rules.
+    pub block_number: u64,
+    /// Base fee per gas for tip validation.
+    pub base_fee_per_gas: u64,
+}
 
+/// Validates a single anchor transaction against the current hardfork rules.
+pub fn validate_anchor_transaction(
+    anchor_transaction: &impl SignedTransaction,
+    chain_spec: &TaikoChainSpec,
+    ctx: AnchorValidationContext,
+) -> Result<(), ConsensusError> {
     // Ensure the input data starts with one of the anchor selectors.
-    if chain_spec.is_shasta_active(block.header().timestamp()) {
+    if chain_spec.is_shasta_active(ctx.timestamp) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V4_SELECTOR)?;
-    } else if chain_spec.is_pacaya_active_at_block(block.number()) {
+    } else if chain_spec.is_pacaya_active_at_block(ctx.block_number) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;
-    } else if chain_spec.is_ontake_active_at_block(block.number()) {
+    } else if chain_spec.is_ontake_active_at_block(ctx.block_number) {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V2_SELECTOR)?;
     } else {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V1_SELECTOR)?;
@@ -258,7 +261,7 @@ where
     }
 
     // Ensure the gas limit is correct.
-    let gas_limit = if chain_spec.is_pacaya_active_at_block(block.number()) {
+    let gas_limit = if chain_spec.is_pacaya_active_at_block(ctx.block_number) {
         ANCHOR_V3_V4_GAS_LIMIT
     } else {
         ANCHOR_V1_V2_GAS_LIMIT
@@ -272,13 +275,9 @@ where
 
     // Ensure the tip is equal to zero.
     let anchor_transaction_tip =
-        anchor_transaction
-            .effective_tip_per_gas(block.header().base_fee_per_gas().ok_or_else(|| {
-                ConsensusError::Other("Block base fee per gas must be set".into())
-            })?)
-            .ok_or_else(|| {
-                ConsensusError::Other("Anchor transaction tip must be set to zero".into())
-            })?;
+        anchor_transaction.effective_tip_per_gas(ctx.base_fee_per_gas).ok_or_else(|| {
+            ConsensusError::Other("Anchor transaction tip must be set to zero".into())
+        })?;
 
     if anchor_transaction_tip != 0 {
         return Err(ConsensusError::Other(format!(
@@ -297,6 +296,32 @@ where
     }
 
     Ok(())
+}
+
+/// Validates the anchor transaction in the block.
+pub fn validate_anchor_transaction_in_block<B>(
+    block: &RecoveredBlock<B>,
+    chain_spec: &TaikoChainSpec,
+) -> Result<(), ConsensusError>
+where
+    B: Block,
+{
+    let anchor_transaction = match block.body().transactions().first() {
+        Some(tx) => tx,
+        None => return Ok(()),
+    };
+
+    validate_anchor_transaction(
+        anchor_transaction,
+        chain_spec,
+        AnchorValidationContext {
+            timestamp: block.header().timestamp(),
+            block_number: block.number(),
+            base_fee_per_gas: block.header().base_fee_per_gas().ok_or_else(|| {
+                ConsensusError::Other("Block base fee per gas must be set".into())
+            })?,
+        },
+    )
 }
 
 // Validates the transaction input data against the expected selector.

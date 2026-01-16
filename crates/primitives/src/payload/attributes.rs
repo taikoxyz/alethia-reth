@@ -21,6 +21,12 @@ pub struct TaikoPayloadAttributes {
     pub block_metadata: TaikoBlockMetadata,
     /// The L1 origin information for the L2 block.
     pub l1_origin: RpcL1Origin,
+    /// Prebuilt anchor transaction (RLP-encoded signed transaction).
+    ///
+    /// When provided, the payload builder uses this transaction
+    /// instead of building an anchor transaction from checkpoint parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_transaction: Option<AlloyBytes>,
 }
 
 impl PayloadAttributes for TaikoPayloadAttributes {
@@ -55,7 +61,11 @@ pub struct TaikoBlockMetadata {
     /// The mix hash for the L2 block.
     pub mix_hash: B256,
     /// The RLP-encoded transaction list for the L2 block.
-    pub tx_list: AlloyBytes,
+    ///
+    /// - `None`: Transactions should be selected from the mempool.
+    /// - `Some(bytes)`: Use the provided transaction list (legacy mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_list: Option<AlloyBytes>,
     /// The extra data for the L2 block.
     #[serde_as(as = "Base64")]
     pub extra_data: AlloyBytes,
@@ -114,7 +124,7 @@ where
                 timestamp: U256::from(timestamp),
                 gas_limit: MAXIMUM_GAS_LIMIT_BLOCK,
                 mix_hash: B256::random(),
-                tx_list: AlloyBytes::new(),
+                tx_list: Some(AlloyBytes::new()),
                 extra_data: AlloyBytes::new(),
             },
             l1_origin: RpcL1Origin {
@@ -126,6 +136,7 @@ where
                 is_forced_inclusion: false,
                 signature: [0; 65],
             },
+            anchor_transaction: None,
         }
     }
 }
@@ -154,8 +165,8 @@ mod tests {
         assert_eq!(second.block_metadata.timestamp, U256::from(ts));
         assert_eq!(first.block_metadata.gas_limit, MAXIMUM_GAS_LIMIT_BLOCK);
         assert_eq!(second.block_metadata.gas_limit, MAXIMUM_GAS_LIMIT_BLOCK);
-        assert_eq!(first.block_metadata.tx_list, AlloyBytes::new());
-        assert_eq!(second.block_metadata.tx_list, AlloyBytes::new());
+        assert_eq!(first.block_metadata.tx_list, Some(AlloyBytes::new()));
+        assert_eq!(second.block_metadata.tx_list, Some(AlloyBytes::new()));
 
         // L1 origin defaults remain zeroed and stable.
         assert_eq!(first.l1_origin.block_id, U256::ZERO);

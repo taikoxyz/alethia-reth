@@ -4,3 +4,4 @@
 .worktrees/
 .idea/
 error.log
+.vscode/

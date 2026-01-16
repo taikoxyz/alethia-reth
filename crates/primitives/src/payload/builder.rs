@@ -161,6 +161,7 @@ pub(crate) fn payload_id_taiko(
     }
     let tx_hash = keccak256(attributes.block_metadata.tx_list.clone());
     hasher.update(tx_hash);
+    hasher.update(attributes.block_metadata.extra_data.as_ref());
 
     let mut out = hasher.finalize();
     out[0] = payload_version;
@@ -174,7 +175,12 @@ fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp
 
 #[cfg(test)]
 mod test {
+    use alloy_consensus::Header;
     use alloy_primitives::hex;
+    use reth_chainspec::ChainSpec;
+    use reth_engine_local::LocalPayloadAttributesBuilder;
+    use reth_node_api::PayloadAttributesBuilder;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -189,5 +195,21 @@ mod test {
         )));
 
         assert!(!with_anchor_decoded.unwrap().is_empty());
+    }
+
+    #[test]
+    fn payload_id_changes_with_extra_data() {
+        let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
+        let parent = B256::from([1u8; 32]);
+        let mut base_attributes: TaikoPayloadAttributes = builder.build(1_700_000_000);
+        base_attributes.block_metadata.extra_data = Bytes::from_static(b"extra-a");
+
+        let mut other_attributes = base_attributes.clone();
+        other_attributes.block_metadata.extra_data = Bytes::from_static(b"extra-b");
+
+        let first = payload_id_taiko(&parent, &base_attributes, 1);
+        let second = payload_id_taiko(&parent, &other_attributes, 1);
+
+        assert_ne!(first, second);
     }
 }

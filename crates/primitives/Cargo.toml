@@ -12,23 +12,19 @@ path = "src/lib.rs"
 default = ["serde", "net"]
 serde = [
     "dep:serde",
+    "dep:alloy-serde",
     "alloy-primitives/serde",
     "alloy-rpc-types-engine/serde",
     "alloy-rpc-types-eth/serde",
 ]
 net = [
     "serde",
-    "dep:alloy-primitives",
     "dep:alloy-rlp",
-    "dep:alloy-rpc-types-engine",
-    "dep:alloy-rpc-types-eth",
-    "dep:alloy-serde",
     "dep:reth-chainspec",
     "dep:reth-engine-local",
     "dep:reth-ethereum",
     "dep:reth-ethereum-engine-primitives",
     "dep:reth-node-api",
-    "dep:reth-payload-primitives",
     "dep:reth-primitives",
     "dep:reth-primitives-traits",
     "dep:serde_with",
@@ -37,17 +33,17 @@ net = [
 ]
 
 [dependencies]
-alloy-primitives = { workspace = true, optional = true }
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true, optional = true }
-alloy-rpc-types-engine = { workspace = true, optional = true }
-alloy-rpc-types-eth = { workspace = true, optional = true }
+alloy-rpc-types-engine = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
 alloy-serde = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
 reth-engine-local = { workspace = true, optional = true }
 reth-ethereum = { workspace = true, optional = true }
 reth-ethereum-engine-primitives = { workspace = true, optional = true }
 reth-node-api = { workspace = true, optional = true }
-reth-payload-primitives = { workspace = true, optional = true }
+reth-payload-primitives = { workspace = true }
 reth-primitives = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

@@ -176,7 +176,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
 /// Generates the payload id for the configured payload from the [`TaikoPayloadAttributes`].
 ///
 /// Returns an 8-byte identifier by hashing the payload components with sha256 hash.
-pub(crate) fn payload_id_taiko(
+pub fn payload_id_taiko(
     parent: &B256,
     attributes: &TaikoPayloadAttributes,
     payload_version: u8,

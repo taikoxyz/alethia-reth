@@ -7,8 +7,8 @@ use alethia_reth_node::{
         eth::{TaikoExt, TaikoExtApiServer},
     },
 };
-use reth::{builder::NodeHandle, ress::install_ress_subprotocol};
-use reth_rpc::eth::{EthApiTypes, RpcNodeCore};
+use reth::{api::FullNodeComponents, builder::NodeHandle, ress::install_ress_subprotocol};
+use reth_rpc::eth::EthApiTypes;
 use tracing::info;
 
 #[global_allocator]
@@ -37,7 +37,7 @@ fn main() {
                     let taiko_auth_rpc_ext = TaikoAuthExt::new(
                         provider,
                         ctx.node().pool().clone(),
-                        ctx.registry.eth_api().tx_resp_builder().clone(),
+                        ctx.registry.eth_api().converter().clone(),
                         ctx.node().evm_config().clone(),
                     );
                     ctx.auth_module.merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;

@@ -175,7 +175,7 @@ where
             trace!(target: "payload_builder", "skipping pool transaction that exceeds remaining block gas");
             best_txs.mark_invalid(
                 &pool_tx,
-                InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), ctx.gas_limit),
+                &InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), ctx.gas_limit),
             );
             continue;
         }
@@ -198,7 +198,7 @@ where
                         &pool_tx,
                         // Use a generic consensus invalid mapping for non-nonce
                         // validation errors to evict the transaction and its descendants.
-                        InvalidPoolTransactionError::Consensus(
+                        &InvalidPoolTransactionError::Consensus(
                             InvalidTransactionError::TxTypeNotSupported,
                         ),
                     );

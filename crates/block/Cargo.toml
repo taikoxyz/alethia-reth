@@ -11,10 +11,7 @@ path = "src/lib.rs"
 [features]
 default = ["net"]
 prover = []
-net = [
-    "dep:reth-payload-primitives",
-    "dep:reth-rpc-eth-api",
-]
+net = ["dep:reth-payload-primitives", "dep:reth-rpc-eth-api"]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }

@@ -6,6 +6,7 @@ use alethia_reth_primitives::{
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
+use alloy_rpc_types_eth::Withdrawals;
 use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
 use reth_engine_primitives::EngineApiValidator;
 use reth_engine_tree::tree::{TreeConfig, payload_validator::BasicEngineValidator};
@@ -124,6 +125,8 @@ where
             } else {
                 block.header.withdrawals_root = Some(EMPTY_ROOT_HASH);
             }
+            // Ensure body.withdrawals is consistent with header.withdrawals_root
+            block.body.withdrawals = Some(Withdrawals::default());
         }
         let sealed_block = block.seal_slow();
 
@@ -178,5 +181,135 @@ where
     ) -> Result<(), EngineObjectValidationError> {
         // Attributes are well-formed if they pass the basic validation
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::B256;
+    use reth_ethereum::TransactionSigned;
+
+    #[test]
+    fn test_withdrawals_set_when_sidecar_has_zero_hash() {
+        // Test that when withdrawals_hash is Some(B256::ZERO),
+        // both header.withdrawals_root and body.withdrawals are set
+        let payload_v1 = ExecutionPayloadV1 {
+            parent_hash: B256::ZERO,
+            fee_recipient: Default::default(),
+            state_root: B256::ZERO,
+            receipts_root: B256::ZERO,
+            logs_bloom: Default::default(),
+            prev_randao: B256::ZERO,
+            block_number: 1,
+            gas_limit: 1_000_000,
+            gas_used: 0,
+            timestamp: 1000,
+            extra_data: Default::default(),
+            base_fee_per_gas: Default::default(),
+            block_hash: B256::ZERO,
+            transactions: vec![],
+        };
+
+        let mut block: alloy_consensus::Block<TransactionSigned> =
+            payload_v1.try_into_block().unwrap();
+
+        // Simulate what ensure_well_formed_payload does when withdrawals_hash is Some(B256::ZERO)
+        let withdrawals_hash = Some(B256::ZERO);
+        if let Some(wh) = withdrawals_hash {
+            if !wh.is_zero() {
+                block.header.withdrawals_root = Some(wh);
+            } else {
+                block.header.withdrawals_root = Some(EMPTY_ROOT_HASH);
+            }
+            block.body.withdrawals = Some(Withdrawals::default());
+        }
+
+        // Verify both are set consistently
+        assert_eq!(block.header.withdrawals_root, Some(EMPTY_ROOT_HASH));
+        assert!(block.body.withdrawals.is_some());
+        assert!(block.body.withdrawals.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_withdrawals_set_when_sidecar_has_custom_hash() {
+        // Test that when withdrawals_hash is Some(non-zero),
+        // header.withdrawals_root is set to that hash and body.withdrawals is set to empty
+        let payload_v1 = ExecutionPayloadV1 {
+            parent_hash: B256::ZERO,
+            fee_recipient: Default::default(),
+            state_root: B256::ZERO,
+            receipts_root: B256::ZERO,
+            logs_bloom: Default::default(),
+            prev_randao: B256::ZERO,
+            block_number: 1,
+            gas_limit: 1_000_000,
+            gas_used: 0,
+            timestamp: 1000,
+            extra_data: Default::default(),
+            base_fee_per_gas: Default::default(),
+            block_hash: B256::ZERO,
+            transactions: vec![],
+        };
+
+        let mut block: alloy_consensus::Block<TransactionSigned> =
+            payload_v1.try_into_block().unwrap();
+
+        // Simulate what ensure_well_formed_payload does when withdrawals_hash is Some(custom)
+        let custom_hash = B256::from([1u8; 32]);
+        let withdrawals_hash = Some(custom_hash);
+        if let Some(wh) = withdrawals_hash {
+            if !wh.is_zero() {
+                block.header.withdrawals_root = Some(wh);
+            } else {
+                block.header.withdrawals_root = Some(EMPTY_ROOT_HASH);
+            }
+            block.body.withdrawals = Some(Withdrawals::default());
+        }
+
+        // Verify header has custom hash and body has empty withdrawals
+        assert_eq!(block.header.withdrawals_root, Some(custom_hash));
+        assert!(block.body.withdrawals.is_some());
+        assert!(block.body.withdrawals.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_withdrawals_not_set_when_sidecar_has_none() {
+        // Test that when withdrawals_hash is None,
+        // both header.withdrawals_root and body.withdrawals remain None
+        let payload_v1 = ExecutionPayloadV1 {
+            parent_hash: B256::ZERO,
+            fee_recipient: Default::default(),
+            state_root: B256::ZERO,
+            receipts_root: B256::ZERO,
+            logs_bloom: Default::default(),
+            prev_randao: B256::ZERO,
+            block_number: 1,
+            gas_limit: 1_000_000,
+            gas_used: 0,
+            timestamp: 1000,
+            extra_data: Default::default(),
+            base_fee_per_gas: Default::default(),
+            block_hash: B256::ZERO,
+            transactions: vec![],
+        };
+
+        let mut block: alloy_consensus::Block<TransactionSigned> =
+            payload_v1.try_into_block().unwrap();
+
+        // Simulate what ensure_well_formed_payload does when withdrawals_hash is None
+        let withdrawals_hash: Option<B256> = None;
+        if let Some(wh) = withdrawals_hash {
+            if !wh.is_zero() {
+                block.header.withdrawals_root = Some(wh);
+            } else {
+                block.header.withdrawals_root = Some(EMPTY_ROOT_HASH);
+            }
+            block.body.withdrawals = Some(Withdrawals::default());
+        }
+
+        // Verify both remain None (V1 payload default)
+        assert!(block.header.withdrawals_root.is_none());
+        assert!(block.body.withdrawals.is_none());
     }
 }

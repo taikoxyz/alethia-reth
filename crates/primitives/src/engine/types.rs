@@ -59,6 +59,11 @@ impl ExecutionPayloadTr for TaikoExecutionData {
         None
     }
 
+    /// Returns the access list associated with the block, if any.
+    fn block_access_list(&self) -> Option<&Bytes> {
+        None
+    }
+
     /// Returns the parent beacon block root, if applicable.
     fn parent_beacon_block_root(&self) -> Option<B256> {
         None
@@ -72,6 +77,11 @@ impl ExecutionPayloadTr for TaikoExecutionData {
     /// Returns the gas used in the block.
     fn gas_used(&self) -> u64 {
         self.execution_payload.gas_used
+    }
+
+    /// Returns the number of transactions in the payload.
+    fn transaction_count(&self) -> usize {
+        self.execution_payload.transactions.as_ref().map_or(0, Vec::len)
     }
 }
 

@@ -169,7 +169,7 @@ impl<
             }
             Commands::DumpGenesis(command) => runner.run_blocking_until_ctrl_c(command.execute()),
             Commands::Db(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
+                runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
             }
             Commands::Download(command) => {
                 runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())

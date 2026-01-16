@@ -221,6 +221,7 @@ mod test {
     use reth_engine_local::LocalPayloadAttributesBuilder;
     use reth_ethereum_engine_primitives::EthPayloadAttributes;
     use reth_node_api::PayloadAttributesBuilder;
+    use reth_primitives_traits::SealedHeader;
     use std::sync::Arc;
 
     fn default_l1_origin() -> RpcL1Origin {
@@ -312,15 +313,18 @@ mod test {
     #[test]
     fn payload_id_changes_with_extra_data() {
         let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
-        let parent = B256::from([1u8; 32]);
-        let mut base_attributes: TaikoPayloadAttributes = builder.build(1_700_000_000);
+        let parent_hash = B256::from([1u8; 32]);
+        // Create a parent header to pass to the builder
+        let parent_header = Header { timestamp: 1_700_000_000, ..Default::default() };
+        let parent = SealedHeader::seal_slow(parent_header);
+        let mut base_attributes: TaikoPayloadAttributes = builder.build(&parent);
         base_attributes.block_metadata.extra_data = Bytes::from_static(b"extra-a");
 
         let mut other_attributes = base_attributes.clone();
         other_attributes.block_metadata.extra_data = Bytes::from_static(b"extra-b");
 
-        let first = payload_id_taiko(&parent, &base_attributes, 1);
-        let second = payload_id_taiko(&parent, &other_attributes, 1);
+        let first = payload_id_taiko(&parent_hash, &base_attributes, 1);
+        let second = payload_id_taiko(&parent_hash, &other_attributes, 1);
 
         assert_ne!(first, second);
     }

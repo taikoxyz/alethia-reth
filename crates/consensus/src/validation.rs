@@ -1,6 +1,8 @@
 use std::{fmt::Debug, sync::Arc};
 
-use alloy_consensus::{BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH};
+use alloy_consensus::{
+    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
+};
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, sol};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
@@ -82,9 +84,6 @@ where
 }
 
 impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
-    /// The error type related to consensus.
-    type Error = ConsensusError;
-
     /// Ensures the block response data matches the header.
     ///
     /// This ensures the body response items match the header's hashes:
@@ -137,7 +136,7 @@ where
             return Err(ConsensusError::TheMergeOmmerRootIsNotEmpty);
         }
 
-        validate_header_extra_data(header)?;
+        validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
         validate_header_gas(header)?;
         validate_header_base_fee(header, &self.chain_spec)
     }

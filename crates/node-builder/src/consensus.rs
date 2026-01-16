@@ -16,7 +16,7 @@ pub struct ProviderTaikoBlockReader<T>(pub T);
 
 impl<T> TaikoBlockReader for ProviderTaikoBlockReader<T>
 where
-    T: BlockReader + Debug,
+    T: BlockReader + Debug + Send + Sync,
     T::Block: Block,
 {
     fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64> {

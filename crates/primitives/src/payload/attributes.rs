@@ -1,10 +1,10 @@
 use alloy_primitives::{Address, B256, Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use alloy_rpc_types_eth::Withdrawal;
-use reth_chainspec::EthereumHardforks;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
-use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
+use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
 use serde_with::{Bytes, base64::Base64, serde_as};
 
 /// Taiko Payload Attributes
@@ -106,15 +106,19 @@ impl RpcL1Origin {
 
 /// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder`,
 /// to build `TaikoPayloadAttributes` from the local payload attributes builder.
-impl<C> PayloadAttributesBuilder<TaikoPayloadAttributes> for LocalPayloadAttributesBuilder<C>
+impl<C> PayloadAttributesBuilder<TaikoPayloadAttributes, C::Header>
+    for LocalPayloadAttributesBuilder<C>
 where
-    C: Send + Sync + EthereumHardforks + 'static,
+    C: EthChainSpec + EthereumHardforks + 'static,
 {
     /// Return a new payload attribute from the builder.
-    fn build(&self, timestamp: u64) -> TaikoPayloadAttributes {
+    fn build(&self, parent: &SealedHeader<C::Header>) -> TaikoPayloadAttributes {
         // Delegate to the underlying ETH payload builder to avoid self-recursion.
-        let eth_payload_attributes =
-            <Self as PayloadAttributesBuilder<EthPayloadAttributes>>::build(self, timestamp);
+        let eth_payload_attributes = <Self as PayloadAttributesBuilder<
+            EthPayloadAttributes,
+            C::Header,
+        >>::build(self, parent);
+        let timestamp = eth_payload_attributes.timestamp;
 
         TaikoPayloadAttributes {
             payload_attributes: eth_payload_attributes,
@@ -151,18 +155,14 @@ mod tests {
     #[test]
     fn build_is_deterministic_and_delegates() {
         let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
-        let ts = 1_700_000_000u64;
+        // Build a sealed header to pass to the builder
+        let parent_header = Header::default();
+        let parent = SealedHeader::seal_slow(parent_header);
 
-        let first: TaikoPayloadAttributes = builder.build(ts);
-        let second: TaikoPayloadAttributes = builder.build(ts);
-
-        // Delegation: timestamps come from the underlying ETH payload builder.
-        assert_eq!(first.payload_attributes.timestamp(), ts);
-        assert_eq!(second.payload_attributes.timestamp(), ts);
+        let first: TaikoPayloadAttributes = builder.build(&parent);
+        let second: TaikoPayloadAttributes = builder.build(&parent);
 
         // Stable Taiko defaults that should not depend on randomness.
-        assert_eq!(first.block_metadata.timestamp, U256::from(ts));
-        assert_eq!(second.block_metadata.timestamp, U256::from(ts));
         assert_eq!(first.block_metadata.gas_limit, MAXIMUM_GAS_LIMIT_BLOCK);
         assert_eq!(second.block_metadata.gas_limit, MAXIMUM_GAS_LIMIT_BLOCK);
         assert_eq!(first.block_metadata.tx_list, Some(AlloyBytes::new()));

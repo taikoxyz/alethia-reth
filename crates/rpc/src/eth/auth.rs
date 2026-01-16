@@ -305,7 +305,7 @@ where
             {
                 // NOTE: we simply mark the transaction as underpriced if it is not from a local
                 // account.
-                best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
+                best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
                 continue;
             }
 
@@ -315,7 +315,7 @@ where
             if tip.is_none() || tip.unwrap_or_default() < min_tip as u128 {
                 // skip transactions that do not meet the minimum tip requirement
                 trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
-                best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
+                best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
                 continue;
             }
             // ensure we still have capacity for this transaction
@@ -333,7 +333,7 @@ where
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     best_txs.mark_invalid(
                         &pool_tx,
-                        InvalidPoolTransactionError::ExceedsGasLimit(
+                        &InvalidPoolTransactionError::ExceedsGasLimit(
                             pool_tx.gas_limit(),
                             block_max_gas_limit,
                         ),
@@ -359,7 +359,7 @@ where
                 if prebuilt_lists.len() == max_transactions_lists as usize {
                     // NOTE: we simply mark the transaction as underpriced if it is not fitting into
                     // the DA blob.
-                    best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
+                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
                     continue;
                 }
                 prebuilt_lists.push(PreBuiltTxList::default());
@@ -380,7 +380,7 @@ where
                         trace!(target: "taiko_rpc_payload_builder", %error, ?tx, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
+                            &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );

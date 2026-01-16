@@ -2,4 +2,5 @@
 .bmad-core/
 .code/
 .worktrees/
+.idea/
 error.log

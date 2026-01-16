@@ -45,6 +45,7 @@ alloy-rpc-types-trace = { version = "1.0.41", default-features = false }
 alloy-rpc-types-txpool = { version = "1.0.41", default-features = false }
 alloy-serde = { version = "1.0.41", default-features = false }
 alloy-signer = { version = "1.0.41", default-features = false }
+alloy-signer-local = { version = "1.0.41", default-features = false }
 alloy-sol-types = { version = "1.4.1", default-features = false }
 
 # general utilities

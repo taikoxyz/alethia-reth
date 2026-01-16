@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["serde"]
+net = []
 serde = [
     "dep:serde",
     "alloy-primitives/serde",

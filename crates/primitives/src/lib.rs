@@ -1,3 +1,4 @@
+#[cfg(feature = "net")]
 pub mod engine;
 pub mod extra_data;
 pub mod payload;

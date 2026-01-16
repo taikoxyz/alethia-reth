@@ -209,6 +209,7 @@ pub(crate) fn payload_id_taiko(
         .map(|bytes| keccak256(bytes.clone()))
         .unwrap_or_default();
     hasher.update(tx_hash);
+    hasher.update(attributes.block_metadata.extra_data.as_ref());
 
     let mut out = hasher.finalize();
     out[0] = payload_version;
@@ -224,8 +225,13 @@ fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp
 mod test {
     use super::*;
     use crate::payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes};
+    use alloy_consensus::Header;
     use alloy_primitives::{hex, Address, Bytes, U256};
+    use reth_chainspec::ChainSpec;
+    use reth_engine_local::LocalPayloadAttributesBuilder;
     use reth_ethereum_engine_primitives::EthPayloadAttributes;
+    use reth_node_api::PayloadAttributesBuilder;
+    use std::sync::Arc;
 
     fn default_l1_origin() -> RpcL1Origin {
         RpcL1Origin {
@@ -311,5 +317,21 @@ mod test {
 
         assert!(attrs.transactions.is_none(), "New mode should use mempool selection");
         assert_eq!(attrs.tx_list_hash, B256::ZERO, "tx_list_hash should be zero without tx_list");
+    }
+
+    #[test]
+    fn payload_id_changes_with_extra_data() {
+        let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
+        let parent = B256::from([1u8; 32]);
+        let mut base_attributes: TaikoPayloadAttributes = builder.build(1_700_000_000);
+        base_attributes.block_metadata.extra_data = Bytes::from_static(b"extra-a");
+
+        let mut other_attributes = base_attributes.clone();
+        other_attributes.block_metadata.extra_data = Bytes::from_static(b"extra-b");
+
+        let first = payload_id_taiko(&parent, &base_attributes, 1);
+        let second = payload_id_taiko(&parent, &other_attributes, 1);
+
+        assert_ne!(first, second);
     }
 }

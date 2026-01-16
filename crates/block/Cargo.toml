@@ -16,9 +16,7 @@ net = [
     "dep:reth-payload-primitives",
     "dep:reth-rpc-eth-api",
 ]
-serde = [
-    "alethia-reth-primitives?/serde",
-]
+serde = ["dep:alethia-reth-primitives", "alethia-reth-primitives?/serde"]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }

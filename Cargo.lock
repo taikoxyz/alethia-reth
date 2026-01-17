@@ -275,6 +275,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "eyre",
+ "op-alloy-flz",
  "reth",
  "reth-basic-payload-builder",
  "reth-chainspec",

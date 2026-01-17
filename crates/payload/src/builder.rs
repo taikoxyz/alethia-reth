@@ -1,10 +1,12 @@
 use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::Transaction;
+use alloy_eips::{eip4844::BYTES_PER_BLOB, Encodable2718};
+use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{State, cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256},
+    revm::{cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256, State},
 };
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -12,14 +14,14 @@ use reth_basic_payload_builder::{
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
-    ConfigureEvm,
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
+    ConfigureEvm,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_primitives::{Header as RethHeader, Recovered};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
-use reth_transaction_pool::{BestTransactionsAttributes, error::InvalidPoolTransactionError};
+use reth_transaction_pool::{error::InvalidPoolTransactionError, BestTransactionsAttributes};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
@@ -28,7 +30,7 @@ use alethia_reth_block::{
     factory::TaikoBlockExecutorFactory,
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
+use alethia_reth_consensus::validation::{validate_anchor_transaction, AnchorValidationContext};
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
@@ -123,10 +125,10 @@ where
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
-            Transaction: reth_transaction_pool::PoolTransaction<
-                Consensus = reth_ethereum::TransactionSigned,
-            >,
+        Transaction: reth_transaction_pool::PoolTransaction<
+            Consensus = reth_ethereum::TransactionSigned,
         >,
+    >,
 {
     debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
 
@@ -143,6 +145,7 @@ where
     .map_err(PayloadBuilderError::other)?;
 
     let mut cumulative_gas_used = 0u64;
+    let mut cumulative_bytes: u64 = 0;
 
     // Execute the anchor transaction as the first transaction in the block
     match builder.execute_transaction(ctx.anchor_tx.clone()) {
@@ -183,6 +186,16 @@ where
         // Get the consensus transaction from the pool transaction
         let tx = pool_tx.to_consensus();
 
+        // Calculate estimated compressed size for DA layer
+        let estimated_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
+
+        // Check if adding this transaction would exceed the blob size limit
+        if cumulative_bytes.saturating_add(estimated_size) > BYTES_PER_BLOB as u64 {
+            trace!(target: "payload_builder", "skipping pool transaction that exceeds blob size limit");
+            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+            continue;
+        }
+
         // Try to execute the transaction
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
@@ -210,6 +223,7 @@ where
         };
 
         cumulative_gas_used += gas_used;
+        cumulative_bytes += estimated_size;
 
         // Add transaction fees to total
         let miner_fee = tx
@@ -306,24 +320,24 @@ fn taiko_payload<EvmConfig, Client, Pool>(
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
     EvmConfig: ConfigureEvm<
-            Primitives = EthPrimitives,
-            Error = Infallible,
-            NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
-            BlockExecutorFactory = TaikoBlockExecutorFactory<
-                RethReceiptBuilder,
-                Arc<TaikoChainSpec>,
-                TaikoEvmFactory,
-            >,
-            BlockAssembler = TaikoBlockAssembler,
+        Primitives = EthPrimitives,
+        Error = Infallible,
+        NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
+        BlockExecutorFactory = TaikoBlockExecutorFactory<
+            RethReceiptBuilder,
+            Arc<TaikoChainSpec>,
+            TaikoEvmFactory,
         >,
+        BlockAssembler = TaikoBlockAssembler,
+    >,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
-            Transaction: reth_transaction_pool::PoolTransaction<
-                Consensus = reth_ethereum::TransactionSigned,
-            >,
+        Transaction: reth_transaction_pool::PoolTransaction<
+            Consensus = reth_ethereum::TransactionSigned,
         >,
+    >,
 {
     let BuildArguments { mut cached_reads, config, cancel, best_payload: _ } = args;
     let PayloadConfig { parent_header, attributes } = config;

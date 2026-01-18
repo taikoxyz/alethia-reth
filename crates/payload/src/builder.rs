@@ -148,6 +148,7 @@ where
     let mut cumulative_bytes: u64 = 0;
 
     // Execute the anchor transaction as the first transaction in the block
+    // NOTE: anchor transaction dose not contribute to the total DA size limit calculation.
     match builder.execute_transaction(ctx.anchor_tx.clone()) {
         Ok(gas_used) => {
             cumulative_gas_used += gas_used;
@@ -192,6 +193,8 @@ where
         // Check if adding this transaction would exceed the blob size limit
         if cumulative_bytes.saturating_add(estimated_size) > BYTES_PER_BLOB as u64 {
             trace!(target: "payload_builder", "skipping pool transaction that exceeds blob size limit");
+            // NOTE: we simply mark the transaction as underpriced if it is not fitting into
+            // the DA blob.
             best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
             continue;
         }

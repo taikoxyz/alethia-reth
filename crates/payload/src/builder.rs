@@ -191,7 +191,7 @@ where
         let estimated_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
         // Check if adding this transaction would exceed the blob size limit
-        if cumulative_bytes.saturating_add(estimated_size) > BYTES_PER_BLOB as u64 {
+        if cumulative_bytes + estimated_size > BYTES_PER_BLOB as u64 {
             trace!(target: "payload_builder", "skipping pool transaction that exceeds blob size limit");
             // NOTE: we simply mark the transaction as underpriced if it is not fitting into
             // the DA blob.

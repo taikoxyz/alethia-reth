@@ -148,7 +148,7 @@ where
     let mut cumulative_bytes: u64 = 0;
 
     // Execute the anchor transaction as the first transaction in the block
-    // NOTE: anchor transaction dose not contribute to the total DA size limit calculation.
+    // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
     match builder.execute_transaction(ctx.anchor_tx.clone()) {
         Ok(gas_used) => {
             cumulative_gas_used += gas_used;

@@ -108,9 +108,9 @@ where
         }
 
         // 2. Filter by locals (if configured)
-        if let Some(ref local_accounts) = config.locals
-            && !local_accounts.is_empty()
-            && !local_accounts.contains(&pool_tx.sender())
+        if let Some(ref local_accounts) = config.locals &&
+            !local_accounts.is_empty() &&
+            !local_accounts.contains(&pool_tx.sender())
         {
             // Mark as underpriced to skip this transaction and its dependents
             best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);

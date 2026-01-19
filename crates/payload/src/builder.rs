@@ -1,6 +1,8 @@
 use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::Transaction;
+use alloy_eips::{Encodable2718, eip4844::BYTES_PER_BLOB};
+use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},
@@ -143,8 +145,10 @@ where
     .map_err(PayloadBuilderError::other)?;
 
     let mut cumulative_gas_used = 0u64;
+    let mut cumulative_bytes: u64 = 0;
 
     // Execute the anchor transaction as the first transaction in the block
+    // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
     match builder.execute_transaction(ctx.anchor_tx.clone()) {
         Ok(gas_used) => {
             cumulative_gas_used += gas_used;
@@ -183,6 +187,18 @@ where
         // Get the consensus transaction from the pool transaction
         let tx = pool_tx.to_consensus();
 
+        // Calculate estimated compressed size for DA layer
+        let estimated_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
+
+        // Check if adding this transaction would exceed the blob size limit
+        if cumulative_bytes + estimated_size > BYTES_PER_BLOB as u64 {
+            trace!(target: "payload_builder", "skipping pool transaction that exceeds blob size limit");
+            // NOTE: we simply mark the transaction as underpriced if it is not fitting into
+            // the DA blob.
+            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+            continue;
+        }
+
         // Try to execute the transaction
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
@@ -210,6 +226,7 @@ where
         };
 
         cumulative_gas_used += gas_used;
+        cumulative_bytes += estimated_size;
 
         // Add transaction fees to total
         let miner_fee = tx

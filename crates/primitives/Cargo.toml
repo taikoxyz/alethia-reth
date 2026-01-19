@@ -17,10 +17,7 @@ serde = [
     "alloy-rpc-types-eth/serde",
 ]
 
-net = [
-    "dep:reth-engine-local",
-    "dep:reth-node-api",
-]
+net = ["dep:reth-engine-local", "dep:reth-node-api"]
 
 [dependencies]
 alloy-consensus = { workspace = true }

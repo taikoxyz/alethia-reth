@@ -2,28 +2,19 @@
 use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::BlockHeader;
-use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
 use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth::{
-    primitives::InvalidTransactionError,
     revm::primitives::Address,
-    transaction_pool::{
-        BestTransactionsAttributes, PoolConsensusTx, PoolTransaction, TransactionPool,
-        error::InvalidPoolTransactionError,
-    },
+    transaction_pool::{PoolConsensusTx, PoolTransaction, TransactionPool},
 };
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
-use reth_evm::{
-    ConfigureEngineEvm,
-    block::{BlockExecutionError, BlockValidationError},
-    execute::BlockBuilder,
-};
+use reth_evm::ConfigureEngineEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
@@ -31,12 +22,14 @@ use reth_revm::{State, database::StateProviderDatabase};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
 use serde::{Deserialize, Serialize};
-use tracing::{info, trace};
+use tracing::info;
 
 use crate::eth::error::TaikoApiError;
 use alethia_reth_block::{
-    assembler::TaikoBlockAssembler, config::TaikoNextBlockEnvAttributes,
+    assembler::TaikoBlockAssembler,
+    config::TaikoNextBlockEnvAttributes,
     factory::TaikoBlockExecutorFactory,
+    tx_selection::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions},
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_db::model::{
@@ -265,7 +258,6 @@ where
             .with_database(StateProviderDatabase::new(&state_provider))
             .with_bundle_update()
             .build();
-        let mut prebuilt_lists = vec![PreBuiltTxList::default()];
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
@@ -288,123 +280,47 @@ where
                 EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
             })?;
 
-        let mut best_txs =
-            self.pool.best_transactions_with_attributes(BestTransactionsAttributes {
-                basefee: base_fee,
-                blob_fee: None,
-            });
-
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
-        // Start iterating over the best transactions in the pool.
-        while let Some(pool_tx) = best_txs.next() {
-            // ensure if the local accounts are provided, the transaction is from a local account.
-            if let Some(local_accounts) = locals.as_ref() &&
-                !local_accounts.is_empty() &&
-                !local_accounts.contains(&pool_tx.sender())
-            {
-                // NOTE: we simply mark the transaction as underpriced if it is not from a local
-                // account.
-                best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
-                continue;
+        // Use the shared transaction selection logic
+        let config = TxSelectionConfig {
+            base_fee,
+            gas_limit_per_list: block_max_gas_limit,
+            max_da_bytes_per_list: max_bytes_per_tx_list,
+            max_lists: max_transactions_lists as usize,
+            min_tip,
+            locals,
+        };
+
+        match select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false) {
+            Ok(SelectionOutcome::Completed(lists)) => {
+                // Convert ExecutedTxList to PreBuiltTxList with RPC transactions
+                lists
+                    .into_iter()
+                    .map(|list| {
+                        let tx_list = list
+                            .transactions
+                            .into_iter()
+                            .map(|etx| {
+                                self.tx_resp_builder
+                                    .fill_pending(etx.tx)
+                                    .map_err(|e| EthApiError::Other(Box::new(e.into())))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(PreBuiltTxList {
+                            tx_list,
+                            estimated_gas_used: list.total_gas_used,
+                            bytes_length: list.total_da_bytes,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, EthApiError>>()
+                    .map_err(Into::into)
             }
-
-            // Get effective tip for the current transaction.
-            let tip = pool_tx.effective_tip_per_gas(base_fee);
-            // ensure we only pick the transactions that meet the minimum tip.
-            if tip.is_none() || tip.unwrap_or_default() < min_tip as u128 {
-                // skip transactions that do not meet the minimum tip requirement
-                trace!(target: "taiko_rpc_payload_builder", ?pool_tx, "skipping transaction with insufficient tip");
-                best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
-                continue;
+            Ok(SelectionOutcome::Cancelled) => {
+                // Should never happen since we pass || false
+                unreachable!("tx selection should never be cancelled")
             }
-            // ensure we still have capacity for this transaction
-            let exceeds_gas = prebuilt_lists
-                .last()
-                .map(|list| {
-                    list.estimated_gas_used.saturating_add(pool_tx.gas_limit()) >
-                        block_max_gas_limit
-                })
-                .unwrap_or(true);
-            if exceeds_gas {
-                // we can't fit this transaction into the block, so we need to mark it as invalid
-                // which also removes all dependent transaction from the iterator before we can
-                // continue
-                if prebuilt_lists.len() == max_transactions_lists as usize {
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        &InvalidPoolTransactionError::ExceedsGasLimit(
-                            pool_tx.gas_limit(),
-                            block_max_gas_limit,
-                        ),
-                    );
-                    continue;
-                }
-
-                prebuilt_lists.push(PreBuiltTxList::default());
-            }
-
-            // convert tx to a signed transaction
-            let tx = pool_tx.to_consensus();
-            let estimated_compressed_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
-
-            let exceeds_size = prebuilt_lists
-                .last()
-                .map(|list| {
-                    list.bytes_length.saturating_add(estimated_compressed_size) >
-                        max_bytes_per_tx_list
-                })
-                .unwrap_or(true);
-            if exceeds_size {
-                if prebuilt_lists.len() == max_transactions_lists as usize {
-                    // NOTE: we simply mark the transaction as underpriced if it is not fitting into
-                    // the DA blob.
-                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
-                    continue;
-                }
-                prebuilt_lists.push(PreBuiltTxList::default());
-            }
-
-            let gas_used = match builder.execute_transaction(tx.clone()) {
-                Ok(gas_used) => gas_used,
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                })) => {
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(target: "taiko_rpc_payload_builder", %error, ?tx, "skipping nonce too low transaction");
-                    } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(target: "taiko_rpc_payload_builder", %error, ?tx, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            &InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                    }
-                    continue;
-                }
-                // this is an error that we should treat as fatal for this attempt
-                Err(err) => {
-                    return Err(EthApiError::Internal(err.into()).into());
-                }
-            };
-
-            let current =
-                prebuilt_lists.last_mut().expect("at least one prebuilt list is always present");
-
-            current.estimated_gas_used = current.estimated_gas_used.saturating_add(gas_used);
-            current.bytes_length = current.bytes_length.saturating_add(estimated_compressed_size);
-            current.tx_list.push(
-                self.tx_resp_builder
-                    .fill_pending(tx)
-                    .map_err(|e| EthApiError::Other(Box::new(e.into())))?,
-            );
+            Err(err) => Err(EthApiError::Internal(err.into()).into()),
         }
-
-        Ok(prebuilt_lists)
     }
 }

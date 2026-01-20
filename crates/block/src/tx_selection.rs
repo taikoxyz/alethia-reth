@@ -125,33 +125,29 @@ where
             continue;
         }
 
-        // 4. Check gas limit for current list, start new list if needed
-        let current = lists.last().expect("at least one list always exists");
-        if current.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list {
-            if lists.len() >= config.max_lists {
-                // Can't fit in any list, mark as exceeding gas limit
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        config.gas_limit_per_list,
-                    ),
-                );
-                continue;
-            }
-            // Start a new list
-            lists.push(ExecutedTxList::default());
-        }
-
-        // 5. Calculate DA size and check limit
+        // 4. Calculate DA size upfront (needed for limit checks)
         let tx = pool_tx.to_consensus();
         let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
+        // 5. Check if transaction fits in current list; if not, try starting a new one
         let current = lists.last().expect("at least one list always exists");
-        if current.total_da_bytes + da_size > config.max_da_bytes_per_list {
+        let exceeds_gas = current.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list;
+        let exceeds_da = current.total_da_bytes + da_size > config.max_da_bytes_per_list;
+
+        if exceeds_gas || exceeds_da {
             if lists.len() >= config.max_lists {
-                // Can't fit in any list due to DA size, mark as underpriced
-                best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                // Can't fit in any list
+                if exceeds_gas {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            config.gas_limit_per_list,
+                        ),
+                    );
+                } else {
+                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                }
                 continue;
             }
             // Start a new list

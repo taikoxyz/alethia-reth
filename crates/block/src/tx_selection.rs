@@ -32,9 +32,9 @@ pub struct TxSelectionConfig {
     pub max_lists: usize,
     /// Minimum tip required for a transaction to be included.
     pub min_tip: u64,
-    /// Optional list of local accounts to prioritize.
-    /// If set and non-empty, only transactions from these accounts are included.
-    pub locals: Option<Vec<Address>>,
+    /// Local accounts to prioritize.
+    /// If non-empty, only transactions from these accounts are included.
+    pub locals: Vec<Address>,
 }
 
 /// A successfully executed transaction with metadata.
@@ -108,10 +108,7 @@ where
         }
 
         // 2. Filter by locals (if configured)
-        if let Some(ref local_accounts) = config.locals &&
-            !local_accounts.is_empty() &&
-            !local_accounts.contains(&pool_tx.sender())
-        {
+        if !config.locals.is_empty() && !config.locals.contains(&pool_tx.sender()) {
             // Mark as underpriced to skip this transaction and its dependents
             best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
             continue;

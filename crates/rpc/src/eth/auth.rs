@@ -289,7 +289,7 @@ where
             max_da_bytes_per_list: max_bytes_per_tx_list,
             max_lists: max_transactions_lists as usize,
             min_tip,
-            locals,
+            locals: locals.unwrap_or_default(),
         };
 
         match select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false) {

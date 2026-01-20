@@ -162,7 +162,7 @@ where
         max_da_bytes_per_list: BYTES_PER_BLOB as u64,
         max_lists: 1,
         min_tip: 0,
-        locals: None,
+        locals: vec![],
     };
 
     match select_and_execute_pool_transactions(builder, pool, &config, || cancel.is_cancelled()) {

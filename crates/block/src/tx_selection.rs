@@ -133,7 +133,23 @@ where
         let tx = pool_tx.to_consensus();
         let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
-        // 5. Check if transaction fits in current list; if not, try starting a new one
+        // 5. Early reject transactions that cannot fit in any list
+        if pool_tx.gas_limit() > config.gas_limit_per_list {
+            best_txs.mark_invalid(
+                &pool_tx,
+                &InvalidPoolTransactionError::ExceedsGasLimit(
+                    pool_tx.gas_limit(),
+                    config.gas_limit_per_list,
+                ),
+            );
+            continue;
+        }
+        if da_size > config.max_da_bytes_per_list {
+            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+            continue;
+        }
+
+        // 6. Check if transaction fits in current list; if not, try starting a new one
         let current = lists.last().ok_or_else(lists_empty_error)?;
         let exceeds_gas = current.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list;
         let exceeds_da = current.total_da_bytes + da_size > config.max_da_bytes_per_list;
@@ -158,7 +174,7 @@ where
             lists.push(ExecutedTxList::default());
         }
 
-        // 6. Execute transaction
+        // 7. Execute transaction
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -184,7 +200,7 @@ where
             Err(err) => return Err(err),
         };
 
-        // 7. Record successful transaction
+        // 8. Record successful transaction
         let current = lists.last_mut().ok_or_else(lists_empty_error)?;
         current.total_gas_used += gas_used;
         current.total_da_bytes += da_size;

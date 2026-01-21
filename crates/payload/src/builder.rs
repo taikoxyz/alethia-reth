@@ -29,7 +29,9 @@ use alethia_reth_block::{
     tx_selection::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions},
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
+use alethia_reth_consensus::validation::{
+    ANCHOR_V3_V4_GAS_LIMIT, AnchorValidationContext, validate_anchor_transaction,
+};
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
@@ -351,7 +353,7 @@ where
                 block_timestamp: attributes.timestamp(),
                 payload_id: attributes.payload_id().to_string(),
                 base_fee,
-                gas_limit: attributes.gas_limit,
+                gas_limit: attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
             };
 
             match execute_anchor_and_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)?

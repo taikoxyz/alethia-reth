@@ -90,6 +90,7 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "alloy-rpc-types-eth",
+ "op-alloy-flz",
  "reth-chainspec",
  "reth-ethereum",
  "reth-ethereum-forks",
@@ -102,7 +103,9 @@ dependencies = [
  "reth-revm",
  "reth-rpc-eth-api",
  "reth-storage-errors",
+ "reth-transaction-pool",
  "revm-database-interface",
+ "tracing",
 ]
 
 [[package]]
@@ -280,6 +283,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-engine-local",
+ "reth-errors",
  "reth-ethereum",
  "reth-ethereum-engine-primitives",
  "reth-evm",

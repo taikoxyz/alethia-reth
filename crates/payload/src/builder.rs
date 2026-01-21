@@ -1,8 +1,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use alloy_consensus::Transaction;
-use alloy_eips::{Encodable2718, eip4844::BYTES_PER_BLOB};
-use op_alloy_flz::tx_estimated_size_fjord_bytes;
+use alloy_eips::eip4844::BYTES_PER_BLOB;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},
@@ -11,6 +10,7 @@ use reth::{
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
+use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
@@ -20,19 +20,27 @@ use reth_evm::{
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_primitives::{Header as RethHeader, Recovered};
-use reth_primitives_traits::transaction::error::InvalidTransactionError;
-use reth_transaction_pool::{BestTransactionsAttributes, error::InvalidPoolTransactionError};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
+    tx_selection::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions},
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
+use alethia_reth_consensus::validation::{
+    ANCHOR_V3_V4_GAS_LIMIT, AnchorValidationContext, validate_anchor_transaction,
+};
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
+
+/// Creates an error for when a transaction's effective tip cannot be calculated.
+fn missing_tip_error(base_fee: u64) -> PayloadBuilderError {
+    PayloadBuilderError::Internal(RethError::msg(format!(
+        "effective tip missing for executed transaction (base_fee={base_fee})"
+    )))
+}
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +112,7 @@ fn execute_provided_transactions(
 
         // Add transaction fees to total
         let miner_fee =
-            tx.effective_tip_per_gas(base_fee).expect("fee is always valid; execution succeeded");
+            tx.effective_tip_per_gas(base_fee).ok_or_else(|| missing_tip_error(base_fee))?;
         total_fees += U256::from(miner_fee) * U256::from(gas_used);
     }
 
@@ -144,16 +152,11 @@ where
     )
     .map_err(PayloadBuilderError::other)?;
 
-    let mut cumulative_gas_used = 0u64;
-    let mut cumulative_bytes: u64 = 0;
-
     // Execute the anchor transaction as the first transaction in the block
     // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
     match builder.execute_transaction(ctx.anchor_tx.clone()) {
         Ok(gas_used) => {
-            cumulative_gas_used += gas_used;
             // Note: Anchor transaction has zero priority fee (tip), so no fees to add
-            // to total_fees
             debug!(target: "payload_builder", id=%ctx.payload_id, gas_used, "anchor transaction executed successfully");
         }
         Err(err) => {
@@ -162,82 +165,34 @@ where
         }
     }
 
-    // Get best transactions from the pool
-    let mut best_txs =
-        pool.best_transactions_with_attributes(BestTransactionsAttributes::new(ctx.base_fee, None));
+    // Use the shared transaction selection logic for pool transactions
+    let config = TxSelectionConfig {
+        base_fee: ctx.base_fee,
+        gas_limit_per_list: ctx.gas_limit,
+        max_da_bytes_per_list: BYTES_PER_BLOB as u64,
+        max_lists: 1,
+        min_tip: 0,
+        locals: vec![],
+    };
 
-    let mut total_fees = U256::ZERO;
-
-    // Execute transactions from the pool until gas limit is reached or no more transactions
-    while let Some(pool_tx) = best_txs.next() {
-        // Check if the job was cancelled
-        if cancel.is_cancelled() {
-            return Ok(ExecutionOutcome::Cancelled);
+    match select_and_execute_pool_transactions(builder, pool, &config, || cancel.is_cancelled()) {
+        Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
+        Ok(SelectionOutcome::Completed(lists)) => {
+            // Calculate total fees from the executed transactions
+            let total_fees = match lists.first() {
+                Some(list) => list.transactions.iter().try_fold(U256::ZERO, |acc, etx| {
+                    let tip = etx
+                        .tx
+                        .effective_tip_per_gas(ctx.base_fee)
+                        .ok_or_else(|| missing_tip_error(ctx.base_fee))?;
+                    Ok::<_, PayloadBuilderError>(acc + U256::from(tip) * U256::from(etx.gas_used))
+                })?,
+                None => U256::ZERO,
+            };
+            Ok(ExecutionOutcome::Completed(total_fees))
         }
-
-        if cumulative_gas_used + pool_tx.gas_limit() > ctx.gas_limit {
-            trace!(target: "payload_builder", "skipping pool transaction that exceeds remaining block gas");
-            best_txs.mark_invalid(
-                &pool_tx,
-                &InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), ctx.gas_limit),
-            );
-            continue;
-        }
-
-        // Get the consensus transaction from the pool transaction
-        let tx = pool_tx.to_consensus();
-
-        // Calculate estimated compressed size for DA layer
-        let estimated_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
-
-        // Check if adding this transaction would exceed the blob size limit
-        if cumulative_bytes + estimated_size > BYTES_PER_BLOB as u64 {
-            trace!(target: "payload_builder", "skipping pool transaction that exceeds blob size limit");
-            // NOTE: we simply mark the transaction as underpriced if it is not fitting into
-            // the DA blob.
-            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
-            continue;
-        }
-
-        // Try to execute the transaction
-        let gas_used = match builder.execute_transaction(tx.clone()) {
-            Ok(gas_used) => gas_used,
-            // Handle validation errors by marking transaction as invalid and continuing
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                error, ..
-            })) => {
-                if error.is_nonce_too_low() {
-                    trace!(target: "payload_builder", %error, ?tx, "skipping nonce too low transaction from pool");
-                } else {
-                    trace!(target: "payload_builder", %error, ?tx, "skipping invalid transaction and its descendants from pool");
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        // Use a generic consensus invalid mapping for non-nonce
-                        // validation errors to evict the transaction and its descendants.
-                        &InvalidPoolTransactionError::Consensus(
-                            InvalidTransactionError::TxTypeNotSupported,
-                        ),
-                    );
-                }
-                continue;
-            }
-            // Fatal errors that should stop payload building
-            Err(err) => return Err(PayloadBuilderError::evm(err)),
-        };
-
-        cumulative_gas_used += gas_used;
-        cumulative_bytes += estimated_size;
-
-        // Add transaction fees to total
-        let miner_fee = tx
-            .effective_tip_per_gas(ctx.base_fee)
-            .expect("fee is always valid; execution succeeded");
-        total_fees += U256::from(miner_fee) * U256::from(gas_used);
-
-        trace!(target: "payload_builder", ?tx, gas_used, "included transaction from pool");
+        Err(err) => Err(PayloadBuilderError::evm(err)),
     }
-
-    Ok(ExecutionOutcome::Completed(total_fees))
 }
 
 impl<Client, Pool, EvmConfig> TaikoPayloadBuilder<Client, Pool, EvmConfig> {
@@ -398,7 +353,7 @@ where
                 block_timestamp: attributes.timestamp(),
                 payload_id: attributes.payload_id().to_string(),
                 base_fee,
-                gas_limit: attributes.gas_limit,
+                gas_limit: attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
             };
 
             match execute_anchor_and_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)?

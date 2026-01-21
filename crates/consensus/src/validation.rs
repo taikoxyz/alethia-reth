@@ -143,10 +143,7 @@ where
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
 
-        if !header.difficulty().is_zero() {
-            return Err(ConsensusError::TheMergeDifficultyIsNotZero);
-        }
-
+        // Difficulty is repurposed to carry zk gas usage, so it's no longer enforced to be zero.
         if !header.nonce().is_some_and(|nonce| nonce.is_zero()) {
             return Err(ConsensusError::TheMergeNonceIsNotZero);
         }

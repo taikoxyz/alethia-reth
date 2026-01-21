@@ -17,7 +17,10 @@ use reth_evm::{
 };
 use reth::revm::inspector::NoOpInspector;
 use reth_evm_ethereum::RethReceiptBuilder;
-use std::{convert::Infallible, sync::Arc};
+use std::{
+    convert::Infallible,
+    sync::{Arc, atomic::AtomicU64},
+};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
@@ -152,8 +155,11 @@ where
 
     let evm_env =
         evm_config.next_evm_env(&parent_header, &next_block_ctx).map_err(PayloadBuilderError::other)?;
-    let ctx =
+    let mut ctx =
         evm_config.context_for_next_block(&parent_header, next_block_ctx.clone()).map_err(PayloadBuilderError::other)?;
+
+    let zk_gas_counter = Arc::new(AtomicU64::new(0));
+    ctx.zk_gas_counter = Some(zk_gas_counter.clone());
 
     let evm = evm_config.evm_with_env_and_inspector(
         &mut db,
@@ -162,7 +168,8 @@ where
             DEFAULT_TX_JUMPDEST_LIMIT,
             DEFAULT_BLOCK_JUMPDEST_LIMIT,
             NoOpInspector {},
-        ),
+        )
+        .with_zk_gas_counter(zk_gas_counter),
     );
 
     let mut builder = evm_config.create_block_builder(evm, &parent_header, ctx);

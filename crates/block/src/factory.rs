@@ -1,4 +1,11 @@
-use std::{borrow::Cow, future, sync::Arc};
+use std::{
+    borrow::Cow,
+    future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
@@ -39,6 +46,17 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub basefee_per_gas: u64,
     /// Block extra data.
     pub extra_data: Bytes,
+    /// Shared zk gas counter (optional).
+    pub zk_gas_counter: Option<Arc<AtomicU64>>,
+}
+
+impl<'a> TaikoBlockExecutionCtx<'a> {
+    pub fn zk_gas_used(&self) -> u64 {
+        self.zk_gas_counter
+            .as_ref()
+            .map(|counter| counter.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
 }
 
 /// Taiko block executor factory.
@@ -122,6 +140,7 @@ where
                 withdrawals: ctx.withdrawals,
                 basefee_per_gas: ctx.basefee_per_gas,
                 extra_data: ctx.extra_data,
+                zk_gas_counter: ctx.zk_gas_counter.clone(),
             },
             &self.spec,
             &self.receipt_builder,

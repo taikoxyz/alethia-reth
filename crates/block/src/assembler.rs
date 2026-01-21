@@ -4,7 +4,7 @@ use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
 use alloy_eips::merge::BEACON_NONCE;
-use alloy_primitives::logs_bloom;
+use alloy_primitives::{logs_bloom, U256};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{primitives::Block, revm::context::Block as _};
 use reth_ethereum::{Receipt, TransactionSigned};
@@ -72,6 +72,8 @@ where
         let withdrawals = Some(Withdrawals::default());
         let withdrawals_root = Some(EMPTY_WITHDRAWALS);
 
+        let zk_gas_used = ctx.zk_gas_used();
+
         let header = Header {
             parent_hash: ctx.parent_hash,
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
@@ -87,7 +89,7 @@ where
             base_fee_per_gas: Some(block_env.basefee()),
             number: block_env.number().to(),
             gas_limit: block_env.gas_limit(),
-            difficulty: block_env.difficulty(),
+            difficulty: block_env.difficulty() + U256::from(zk_gas_used),
             gas_used: *gas_used,
             extra_data: ctx.extra_data,
             parent_beacon_block_root: ctx.parent_beacon_block_root,

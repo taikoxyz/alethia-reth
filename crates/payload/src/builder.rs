@@ -10,6 +10,7 @@ use reth::{
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
+use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
@@ -31,6 +32,13 @@ use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
+
+/// Creates an error for when a transaction's effective tip cannot be calculated.
+fn missing_tip_error(base_fee: u64) -> PayloadBuilderError {
+    PayloadBuilderError::Internal(RethError::msg(format!(
+        "effective tip missing for executed transaction (base_fee={base_fee})"
+    )))
+}
 
 /// Taiko payload builder
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +110,7 @@ fn execute_provided_transactions(
 
         // Add transaction fees to total
         let miner_fee =
-            tx.effective_tip_per_gas(base_fee).expect("fee is always valid; execution succeeded");
+            tx.effective_tip_per_gas(base_fee).ok_or_else(|| missing_tip_error(base_fee))?;
         total_fees += U256::from(miner_fee) * U256::from(gas_used);
     }
 
@@ -169,15 +177,16 @@ where
         Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
         Ok(SelectionOutcome::Completed(lists)) => {
             // Calculate total fees from the executed transactions
-            let total_fees = lists.first().map_or(U256::ZERO, |list| {
-                list.transactions.iter().fold(U256::ZERO, |acc, etx| {
+            let total_fees = match lists.first() {
+                Some(list) => list.transactions.iter().try_fold(U256::ZERO, |acc, etx| {
                     let tip = etx
                         .tx
                         .effective_tip_per_gas(ctx.base_fee)
-                        .expect("fee is always valid; execution succeeded");
-                    acc + U256::from(tip) * U256::from(etx.gas_used)
-                })
-            });
+                        .ok_or_else(|| missing_tip_error(ctx.base_fee))?;
+                    Ok::<_, PayloadBuilderError>(acc + U256::from(tip) * U256::from(etx.gas_used))
+                })?,
+                None => U256::ZERO,
+            };
             Ok(ExecutionOutcome::Completed(total_fees))
         }
         Err(err) => Err(PayloadBuilderError::evm(err)),

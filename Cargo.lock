@@ -283,6 +283,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-engine-local",
+ "reth-errors",
  "reth-ethereum",
  "reth-ethereum-engine-primitives",
  "reth-evm",

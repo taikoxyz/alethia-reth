@@ -8,7 +8,7 @@ use alloy_primitives::Address;
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
-    block::{BlockExecutionError, BlockValidationError},
+    block::{BlockExecutionError, BlockValidationError, InternalBlockExecutionError},
     execute::BlockBuilder,
 };
 use reth_primitives::Recovered;
@@ -66,6 +66,13 @@ pub enum SelectionOutcome {
     Cancelled,
     /// Selection completed successfully with the produced lists.
     Completed(Vec<ExecutedTxList>),
+}
+
+/// Creates an internal error for when the transaction list invariant is violated.
+fn lists_empty_error() -> BlockExecutionError {
+    BlockExecutionError::Internal(InternalBlockExecutionError::msg(
+        "tx selection invariant violated: lists is empty",
+    ))
 }
 
 /// Selects and executes transactions from the pool.
@@ -127,7 +134,7 @@ where
         let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
         // 5. Check if transaction fits in current list; if not, try starting a new one
-        let current = lists.last().expect("at least one list always exists");
+        let current = lists.last().ok_or_else(lists_empty_error)?;
         let exceeds_gas = current.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list;
         let exceeds_da = current.total_da_bytes + da_size > config.max_da_bytes_per_list;
 
@@ -178,7 +185,7 @@ where
         };
 
         // 7. Record successful transaction
-        let current = lists.last_mut().expect("at least one list always exists");
+        let current = lists.last_mut().ok_or_else(lists_empty_error)?;
         current.total_gas_used += gas_used;
         current.total_da_bytes += da_size;
         current.transactions.push(ExecutedTx { tx, gas_used, da_size });

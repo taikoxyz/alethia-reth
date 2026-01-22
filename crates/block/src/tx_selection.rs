@@ -61,36 +61,52 @@ pub struct ExecutedTxList {
     pub total_da_bytes: u64,
 }
 
+/// Minimum slack to trigger real-size checks even for small limits.
 const MIN_DA_HEADROOM_BYTES: u64 = 8 * 1024;
+/// Percentage-based slack to trigger real-size checks near the DA limit.
 const DA_HEADROOM_PERCENT: u64 = 2;
 
+/// Computes the headroom used to decide when to run real RLP+zlib sizing.
 fn da_headroom(limit: u64) -> u64 {
     let pct = limit.saturating_mul(DA_HEADROOM_PERCENT) / 100;
     pct.max(MIN_DA_HEADROOM_BYTES)
 }
 
+/// Combines executed txs with DA-size tracking for a single list.
 #[derive(Debug, Default)]
 struct ListState {
+    /// Executed transactions and cumulative metrics for this list.
     executed: ExecutedTxList,
+    /// DA-size tracking state for this list.
     da_state: TxListState,
 }
 
+/// Tracks DA-size inputs and cached real-size results for a tx list.
 #[derive(Debug, Default)]
 struct TxListState {
+    /// Raw transaction bytes (EIP-2718 encoding) included in this list.
     raw_txs: Vec<Vec<u8>>,
+    /// Sum of fast estimates for the list so far.
     est_total: u64,
+    /// Cached real compressed size with the list length it corresponds to.
     cached_real: Option<(usize, usize)>,
 }
 
+/// Result of checking whether a candidate tx fits the DA-size limit.
 #[derive(Debug, Clone, Copy)]
 enum DaFit {
+    /// Fits based on fast estimates only.
     FitsEstimated,
+    /// Fits based on a real RLP+zlib size calculation.
     FitsReal(usize),
+    /// Would overflow current list but may fit in a new list.
     NeedsNewList,
+    /// Too large to fit even as the first tx in a list.
     TooLarge,
 }
 
 impl TxListState {
+    /// Determines how a candidate tx fits against DA limits for the current list.
     fn check_da_fit(
         &self,
         est: u64,
@@ -112,6 +128,7 @@ impl TxListState {
         Ok(DaFit::FitsReal(real_size))
     }
 
+    /// Adds a tx's raw bytes and size metadata to the list state.
     fn push_raw(&mut self, raw: Vec<u8>, est: u64, real_size: Option<usize>) {
         self.raw_txs.push(raw);
         self.est_total = self.est_total.saturating_add(est);
@@ -119,6 +136,7 @@ impl TxListState {
     }
 }
 
+/// Computes the real RLP+zlib size for the current list plus a candidate tx.
 fn txlist_real_size_bytes_with_candidate(
     raw_txs: &[Vec<u8>],
     candidate: &[u8],
@@ -128,6 +146,7 @@ fn txlist_real_size_bytes_with_candidate(
     txlist_real_size_bytes_from_slices(&slices)
 }
 
+/// Encodes a list of raw tx slices as RLP and returns the zlib-compressed size.
 fn txlist_real_size_bytes_from_slices(slices: &[&[u8]]) -> Result<usize, BlockExecutionError> {
     let mut rlp_encoded = Vec::new();
     alloy_rlp::encode_list::<&[u8], [u8]>(slices, &mut rlp_encoded);

@@ -15,7 +15,7 @@ use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
-use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
+use reth_primitives_traits::{constants::MAX_TX_GAS_LIMIT_OSAKA, SignedTransaction, TxTy};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     primitives::{Address, B256, U256},
@@ -98,7 +98,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     fn evm_env(&self, header: &Header) -> Result<EvmEnvFor<Self>, Self::Error> {
         let cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
-            .with_spec(taiko_revm_spec(&self.chain_spec().inner, header));
+            .with_spec_and_mainnet_gas_params(taiko_revm_spec(&self.chain_spec().inner, header));
 
         let block_env = BlockEnv {
             number: U256::from(header.number()),
@@ -124,13 +124,13 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg = CfgEnv::new().with_chain_id(self.chain_spec().inner.chain().id()).with_spec(
-            taiko_spec_by_timestamp_and_block_number(
+        let cfg = CfgEnv::new()
+            .with_chain_id(self.chain_spec().inner.chain().id())
+            .with_spec_and_mainnet_gas_params(taiko_spec_by_timestamp_and_block_number(
                 &self.chain_spec().inner,
                 attributes.timestamp,
                 parent.number + 1,
-            ),
-        );
+            ));
 
         let block_env: BlockEnv = BlockEnv {
             number: U256::from(parent.number + 1),
@@ -194,8 +194,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
 
         // configure evm env based on parent block
-        let mut cfg_env =
-            CfgEnv::new().with_chain_id(self.chain_spec().chain().id()).with_spec(spec);
+        let mut cfg_env = CfgEnv::new()
+            .with_chain_id(self.chain_spec().chain().id())
+            .with_spec_and_mainnet_gas_params(spec);
 
         if let Some(blob_params) = &blob_params {
             cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);

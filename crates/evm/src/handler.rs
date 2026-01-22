@@ -6,6 +6,7 @@ use reth_revm::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{HaltReason, InvalidTransaction},
     },
+    context_interface::journaled_state::account::JournaledAccountTr,
     handler::{
         EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler, PrecompileProvider,
         instructions::InstructionProvider,
@@ -218,7 +219,7 @@ pub fn validate_against_state_and_deduct_caller<
     // Load caller's account.
     let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
-    validate_account_nonce_and_code_with_components(&caller_account.info, tx, cfg)?;
+    validate_account_nonce_and_code_with_components(&caller_account.account().info, tx, cfg)?;
 
     // If the transaction is an anchor transaction, we disable the balance check.
     if is_anchor_transaction {

@@ -243,6 +243,11 @@ where
         &self.evm
     }
 
+    /// Returns a reference to all recorded receipts.
+    fn receipts(&self) -> &[Self::Receipt] {
+        &self.receipts
+    }
+
     /// Executes all transactions in a block, applying pre and post execution changes.
     /// NOTE: For proving system, we skip the invalid transactions directly inside this function.
     #[cfg(feature = "prover")]

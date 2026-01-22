@@ -123,11 +123,6 @@ impl TxListState {
     }
 }
 
-fn txlist_real_size_bytes(raw_txs: &[Vec<u8>]) -> Result<usize, BlockExecutionError> {
-    let slices: Vec<&[u8]> = raw_txs.iter().map(|tx| tx.as_slice()).collect();
-    txlist_real_size_bytes_from_slices(&slices)
-}
-
 fn txlist_real_size_bytes_with_candidate(
     raw_txs: &[Vec<u8>],
     candidate: &[u8],
@@ -352,7 +347,7 @@ mod tests {
     #[test]
     fn da_size_check_rejects_single_tx_over_limit() {
         let tx = vec![0u8; 256];
-        let size = txlist_real_size_bytes(&[tx.clone()]).expect("size");
+        let size = txlist_real_size_bytes_with_candidate(&[], &tx).expect("size");
         let limit = (size as u64).saturating_sub(1);
         let headroom = limit;
         let list = TxListState::default();
@@ -366,7 +361,8 @@ mod tests {
     fn da_size_check_requests_new_list_when_overflowing() {
         let tx_a = vec![0u8; 128];
         let tx_b = vec![1u8; 128];
-        let size_ab = txlist_real_size_bytes(&[tx_a.clone(), tx_b.clone()]).expect("size");
+        let size_ab =
+            txlist_real_size_bytes_with_candidate(&[tx_a.clone()], &tx_b).expect("size");
         let limit = (size_ab as u64).saturating_sub(1);
         let headroom = limit;
         let mut list = TxListState::default();

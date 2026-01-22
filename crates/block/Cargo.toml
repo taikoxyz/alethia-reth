@@ -13,6 +13,7 @@ default = ["net"]
 prover = []
 net = [
     "dep:alethia-reth-primitives",
+    "alethia-reth-primitives?/serde",
     "alethia-reth-primitives?/net",
     "dep:reth-payload-primitives",
     "dep:reth-rpc-eth-api",

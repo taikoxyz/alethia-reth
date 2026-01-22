@@ -141,7 +141,7 @@ fn txlist_real_size_bytes_from_slices(
     slices: &[&[u8]],
 ) -> Result<usize, BlockExecutionError> {
     let mut rlp_encoded = Vec::new();
-    alloy_rlp::encode_list(slices, &mut rlp_encoded);
+    alloy_rlp::encode_list::<&[u8], [u8]>(slices, &mut rlp_encoded);
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(&rlp_encoded).map_err(|err| {
@@ -355,7 +355,7 @@ mod tests {
         let size = txlist_real_size_bytes(&[tx.clone()]).expect("size");
         let limit = (size as u64).saturating_sub(1);
         let headroom = limit;
-        let mut list = TxListState::default();
+        let list = TxListState::default();
         let decision = list
             .check_da_fit(1, &tx, limit, headroom)
             .expect("fit check");

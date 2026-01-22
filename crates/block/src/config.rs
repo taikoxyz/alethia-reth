@@ -15,7 +15,7 @@ use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
-use reth_primitives_traits::{constants::MAX_TX_GAS_LIMIT_OSAKA, SignedTransaction, TxTy};
+use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     primitives::{Address, B256, U256},

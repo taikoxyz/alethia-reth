@@ -106,11 +106,7 @@ impl TxListState {
 
         let real_size = txlist_real_size_bytes_with_candidate(&self.raw_txs, candidate)?;
         if (real_size as u64) > limit {
-            return Ok(if self.raw_txs.is_empty() {
-                DaFit::TooLarge
-            } else {
-                DaFit::NeedsNewList
-            });
+            return Ok(if self.raw_txs.is_empty() { DaFit::TooLarge } else { DaFit::NeedsNewList });
         }
 
         Ok(DaFit::FitsReal(real_size))
@@ -132,9 +128,7 @@ fn txlist_real_size_bytes_with_candidate(
     txlist_real_size_bytes_from_slices(&slices)
 }
 
-fn txlist_real_size_bytes_from_slices(
-    slices: &[&[u8]],
-) -> Result<usize, BlockExecutionError> {
+fn txlist_real_size_bytes_from_slices(slices: &[&[u8]]) -> Result<usize, BlockExecutionError> {
     let mut rlp_encoded = Vec::new();
     alloy_rlp::encode_list::<&[u8], [u8]>(slices, &mut rlp_encoded);
 
@@ -288,7 +282,8 @@ where
             let gas_used = match builder.execute_transaction(tx.clone()) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error, ..
+                    error,
+                    ..
                 })) => {
                     if error.is_nonce_too_low() {
                         // Nonce too low - just skip, don't mark invalid
@@ -325,19 +320,14 @@ where
                 }
                 DaFit::NeedsNewList | DaFit::TooLarge => {}
             }
-            current
-                .executed
-                .transactions
-                .push(ExecutedTx { tx, gas_used, da_size });
+            current.executed.transactions.push(ExecutedTx { tx, gas_used, da_size });
 
             trace!(target: "tx_selection", gas_used, da_size, "included transaction from pool");
             break;
         }
     }
 
-    Ok(SelectionOutcome::Completed(
-        lists.into_iter().map(|list| list.executed).collect(),
-    ))
+    Ok(SelectionOutcome::Completed(lists.into_iter().map(|list| list.executed).collect()))
 }
 
 #[cfg(test)]
@@ -351,9 +341,7 @@ mod tests {
         let limit = (size as u64).saturating_sub(1);
         let headroom = limit;
         let list = TxListState::default();
-        let decision = list
-            .check_da_fit(1, &tx, limit, headroom)
-            .expect("fit check");
+        let decision = list.check_da_fit(1, &tx, limit, headroom).expect("fit check");
         assert!(matches!(decision, DaFit::TooLarge));
     }
 
@@ -361,15 +349,12 @@ mod tests {
     fn da_size_check_requests_new_list_when_overflowing() {
         let tx_a = vec![0u8; 128];
         let tx_b = vec![1u8; 128];
-        let size_ab =
-            txlist_real_size_bytes_with_candidate(&[tx_a.clone()], &tx_b).expect("size");
+        let size_ab = txlist_real_size_bytes_with_candidate(&[tx_a.clone()], &tx_b).expect("size");
         let limit = (size_ab as u64).saturating_sub(1);
         let headroom = limit;
         let mut list = TxListState::default();
         list.push_raw(tx_a, 1, None);
-        let decision = list
-            .check_da_fit(1, &tx_b, limit, headroom)
-            .expect("fit check");
+        let decision = list.check_da_fit(1, &tx_b, limit, headroom).expect("fit check");
         assert!(matches!(decision, DaFit::NeedsNewList));
     }
 }

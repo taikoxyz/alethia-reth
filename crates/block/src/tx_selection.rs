@@ -5,6 +5,7 @@
 
 use alloy_eips::Encodable2718;
 use alloy_primitives::Address;
+use flate2::{Compression, write::ZlibEncoder};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
@@ -17,6 +18,7 @@ use reth_transaction_pool::{
     BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
+use std::io::Write;
 use tracing::trace;
 
 /// Configuration for transaction selection.
@@ -57,6 +59,103 @@ pub struct ExecutedTxList {
     pub total_gas_used: u64,
     /// Total DA bytes used by all transactions in this list.
     pub total_da_bytes: u64,
+}
+
+const MIN_DA_HEADROOM_BYTES: u64 = 8 * 1024;
+const DA_HEADROOM_PERCENT: u64 = 2;
+
+fn da_headroom(limit: u64) -> u64 {
+    let pct = limit.saturating_mul(DA_HEADROOM_PERCENT) / 100;
+    pct.max(MIN_DA_HEADROOM_BYTES)
+}
+
+#[derive(Debug, Default)]
+struct ListState {
+    executed: ExecutedTxList,
+    da_state: TxListState,
+}
+
+#[derive(Debug, Default)]
+struct TxListState {
+    raw_txs: Vec<Vec<u8>>,
+    est_total: u64,
+    cached_real: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DaFit {
+    FitsEstimated,
+    FitsReal(usize),
+    NeedsNewList,
+    TooLarge,
+}
+
+impl TxListState {
+    fn check_da_fit(
+        &self,
+        est: u64,
+        candidate: &[u8],
+        limit: u64,
+        headroom: u64,
+    ) -> Result<DaFit, BlockExecutionError> {
+        let threshold = limit.saturating_sub(headroom);
+        let est_after = self.est_total.saturating_add(est);
+        if est_after <= threshold {
+            return Ok(DaFit::FitsEstimated);
+        }
+
+        let real_size = txlist_real_size_bytes_with_candidate(&self.raw_txs, candidate)?;
+        if (real_size as u64) > limit {
+            return Ok(if self.raw_txs.is_empty() {
+                DaFit::TooLarge
+            } else {
+                DaFit::NeedsNewList
+            });
+        }
+
+        Ok(DaFit::FitsReal(real_size))
+    }
+
+    fn push_raw(&mut self, raw: Vec<u8>, est: u64, real_size: Option<usize>) {
+        self.raw_txs.push(raw);
+        self.est_total = self.est_total.saturating_add(est);
+        self.cached_real = real_size.map(|size| (size, self.raw_txs.len()));
+    }
+}
+
+fn txlist_real_size_bytes(raw_txs: &[Vec<u8>]) -> Result<usize, BlockExecutionError> {
+    let slices: Vec<&[u8]> = raw_txs.iter().map(|tx| tx.as_slice()).collect();
+    txlist_real_size_bytes_from_slices(&slices)
+}
+
+fn txlist_real_size_bytes_with_candidate(
+    raw_txs: &[Vec<u8>],
+    candidate: &[u8],
+) -> Result<usize, BlockExecutionError> {
+    let mut slices: Vec<&[u8]> = raw_txs.iter().map(|tx| tx.as_slice()).collect();
+    slices.push(candidate);
+    txlist_real_size_bytes_from_slices(&slices)
+}
+
+fn txlist_real_size_bytes_from_slices(
+    slices: &[&[u8]],
+) -> Result<usize, BlockExecutionError> {
+    let mut rlp_encoded = Vec::new();
+    alloy_rlp::encode_list(slices, &mut rlp_encoded);
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&rlp_encoded).map_err(|err| {
+        BlockExecutionError::Internal(InternalBlockExecutionError::msg(format!(
+            "txlist zlib encode failed: {err}"
+        )))
+    })?;
+    let compressed = encoder.finish().map_err(|err| {
+        BlockExecutionError::Internal(InternalBlockExecutionError::msg(format!(
+            "txlist zlib finish failed: {err}"
+        )))
+    })?;
+
+    Ok(compressed.len())
 }
 
 /// Outcome of the transaction selection process.
@@ -106,9 +205,10 @@ where
     let mut best_txs = pool
         .best_transactions_with_attributes(BestTransactionsAttributes::new(config.base_fee, None));
 
-    let mut lists = vec![ExecutedTxList::default()];
+    let mut lists = vec![ListState::default()];
+    let headroom = da_headroom(config.max_da_bytes_per_list);
 
-    while let Some(pool_tx) = best_txs.next() {
+    'select: while let Some(pool_tx) = best_txs.next() {
         // 1. Check cancellation
         if is_cancelled() {
             return Ok(SelectionOutcome::Cancelled);
@@ -129,11 +229,7 @@ where
             continue;
         }
 
-        // 4. Calculate DA size upfront (needed for limit checks)
-        let tx = pool_tx.to_consensus();
-        let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
-
-        // 5. Early reject transactions that cannot fit in any list
+        // 4. Early reject transactions that cannot fit in any list
         if pool_tx.gas_limit() > config.gas_limit_per_list {
             best_txs.mark_invalid(
                 &pool_tx,
@@ -144,20 +240,19 @@ where
             );
             continue;
         }
-        if da_size > config.max_da_bytes_per_list {
-            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
-            continue;
-        }
 
-        // 6. Check if transaction fits in current list; if not, try starting a new one
-        let current = lists.last().ok_or_else(lists_empty_error)?;
-        let exceeds_gas = current.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list;
-        let exceeds_da = current.total_da_bytes + da_size > config.max_da_bytes_per_list;
+        // 5. Calculate DA size upfront (needed for limit checks)
+        let tx = pool_tx.to_consensus();
+        let tx_bytes = tx.encoded_2718();
+        let da_size = tx_estimated_size_fjord_bytes(&tx_bytes);
 
-        if exceeds_gas || exceeds_da {
-            if lists.len() >= config.max_lists {
-                // Can't fit in any list
-                if exceeds_gas {
+        loop {
+            // 6. Check if transaction fits in current list; if not, try starting a new one
+            let current = lists.last_mut().ok_or_else(lists_empty_error)?;
+            let exceeds_gas =
+                current.executed.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list;
+            if exceeds_gas {
+                if lists.len() >= config.max_lists {
                     best_txs.mark_invalid(
                         &pool_tx,
                         &InvalidPoolTransactionError::ExceedsGasLimit(
@@ -165,49 +260,120 @@ where
                             config.gas_limit_per_list,
                         ),
                     );
-                } else {
+                    continue 'select;
+                }
+                // Start a new list and retry the same tx
+                lists.push(ListState::default());
+                continue;
+            }
+
+            let da_fit = current.da_state.check_da_fit(
+                da_size,
+                &tx_bytes,
+                config.max_da_bytes_per_list,
+                headroom,
+            )?;
+            match da_fit {
+                DaFit::NeedsNewList => {
+                    if lists.len() >= config.max_lists {
+                        best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                        continue 'select;
+                    }
+                    lists.push(ListState::default());
+                    continue;
+                }
+                DaFit::TooLarge => {
                     best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                    continue 'select;
                 }
-                continue;
+                DaFit::FitsEstimated | DaFit::FitsReal(_) => {}
             }
-            // Start a new list
-            lists.push(ExecutedTxList::default());
+
+            // 7. Execute transaction
+            let gas_used = match builder.execute_transaction(tx.clone()) {
+                Ok(gas_used) => gas_used,
+                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                    error, ..
+                })) => {
+                    if error.is_nonce_too_low() {
+                        // Nonce too low - just skip, don't mark invalid
+                        // (could be a race condition, transaction might be valid later)
+                        trace!(target: "tx_selection", %error, ?tx, "skipping nonce too low transaction");
+                    } else {
+                        // Other validation error - mark invalid to skip dependents
+                        trace!(target: "tx_selection", %error, ?tx, "skipping invalid transaction and its descendants");
+                        best_txs.mark_invalid(
+                            &pool_tx,
+                            &InvalidPoolTransactionError::Consensus(
+                                InvalidTransactionError::TxTypeNotSupported,
+                            ),
+                        );
+                    }
+                    continue 'select;
+                }
+                // Fatal error - stop selection
+                Err(err) => return Err(err),
+            };
+
+            // 8. Record successful transaction
+            let current = lists.last_mut().ok_or_else(lists_empty_error)?;
+            current.executed.total_gas_used += gas_used;
+            match da_fit {
+                DaFit::FitsEstimated => {
+                    current.executed.total_da_bytes =
+                        current.executed.total_da_bytes.saturating_add(da_size);
+                    current.da_state.push_raw(tx_bytes, da_size, None);
+                }
+                DaFit::FitsReal(real_size) => {
+                    current.executed.total_da_bytes = real_size as u64;
+                    current.da_state.push_raw(tx_bytes, da_size, Some(real_size));
+                }
+                DaFit::NeedsNewList | DaFit::TooLarge => {}
+            }
+            current
+                .executed
+                .transactions
+                .push(ExecutedTx { tx, gas_used, da_size });
+
+            trace!(target: "tx_selection", gas_used, da_size, "included transaction from pool");
+            break;
         }
-
-        // 7. Execute transaction
-        let gas_used = match builder.execute_transaction(tx.clone()) {
-            Ok(gas_used) => gas_used,
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                error, ..
-            })) => {
-                if error.is_nonce_too_low() {
-                    // Nonce too low - just skip, don't mark invalid
-                    // (could be a race condition, transaction might be valid later)
-                    trace!(target: "tx_selection", %error, ?tx, "skipping nonce too low transaction");
-                } else {
-                    // Other validation error - mark invalid to skip dependents
-                    trace!(target: "tx_selection", %error, ?tx, "skipping invalid transaction and its descendants");
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        &InvalidPoolTransactionError::Consensus(
-                            InvalidTransactionError::TxTypeNotSupported,
-                        ),
-                    );
-                }
-                continue;
-            }
-            // Fatal error - stop selection
-            Err(err) => return Err(err),
-        };
-
-        // 8. Record successful transaction
-        let current = lists.last_mut().ok_or_else(lists_empty_error)?;
-        current.total_gas_used += gas_used;
-        current.total_da_bytes += da_size;
-        current.transactions.push(ExecutedTx { tx, gas_used, da_size });
-
-        trace!(target: "tx_selection", gas_used, da_size, "included transaction from pool");
     }
 
-    Ok(SelectionOutcome::Completed(lists))
+    Ok(SelectionOutcome::Completed(
+        lists.into_iter().map(|list| list.executed).collect(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn da_size_check_rejects_single_tx_over_limit() {
+        let tx = vec![0u8; 256];
+        let size = txlist_real_size_bytes(&[tx.clone()]).expect("size");
+        let limit = (size as u64).saturating_sub(1);
+        let headroom = limit;
+        let mut list = TxListState::default();
+        let decision = list
+            .check_da_fit(1, &tx, limit, headroom)
+            .expect("fit check");
+        assert!(matches!(decision, DaFit::TooLarge));
+    }
+
+    #[test]
+    fn da_size_check_requests_new_list_when_overflowing() {
+        let tx_a = vec![0u8; 128];
+        let tx_b = vec![1u8; 128];
+        let size_ab = txlist_real_size_bytes(&[tx_a.clone(), tx_b.clone()]).expect("size");
+        let limit = (size_ab as u64).saturating_sub(1);
+        let headroom = limit;
+        let mut list = TxListState::default();
+        list.push_raw(tx_a, 1, None);
+        let decision = list
+            .check_da_fit(1, &tx_b, limit, headroom)
+            .expect("fit check");
+        assert!(matches!(decision, DaFit::NeedsNewList));
+    }
 }

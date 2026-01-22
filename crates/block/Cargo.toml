@@ -28,7 +28,9 @@ alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
+flate2 = { workspace = true }
 op-alloy-flz = { workspace = true }
 reth-chainspec = { workspace = true }
 reth-ethereum = { workspace = true }

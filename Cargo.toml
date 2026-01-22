@@ -67,6 +67,7 @@ jsonrpsee-types = "0.26.0"
 op-alloy-flz = { version = "0.13.1", default-features = false }
 
 # data encoding
+flate2 = { version = "1.0", default-features = false, features = ["zlib"] }
 parity-scale-codec = "3.2.1"
 
 # reth

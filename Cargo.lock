@@ -89,7 +89,9 @@ dependencies = [
  "alloy-evm",
  "alloy-hardforks",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-rpc-types-eth",
+ "flate2",
  "op-alloy-flz",
  "reth-chainspec",
  "reth-ethereum",
@@ -3498,6 +3500,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
 dependencies = [
  "crc32fast",
+ "libz-sys",
  "miniz_oxide",
 ]
 

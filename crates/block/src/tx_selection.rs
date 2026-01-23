@@ -5,6 +5,7 @@
 
 use alloy_eips::Encodable2718;
 use alloy_primitives::Address;
+use alloy_rlp::encode_list;
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
@@ -28,6 +29,9 @@ pub struct TxSelectionConfig {
     pub gas_limit_per_list: u64,
     /// Maximum DA bytes allowed per list (compressed size).
     pub max_da_bytes_per_list: u64,
+    /// When non-zero, run a full RLP+zlib size check once the estimated list size is within this
+    /// many bytes of the limit.
+    pub da_size_zlib_guard_bytes: u64,
     /// Maximum number of transaction lists to produce.
     pub max_lists: usize,
     /// Minimum tip required for a transaction to be included.
@@ -68,11 +72,66 @@ pub enum SelectionOutcome {
     Completed(Vec<ExecutedTxList>),
 }
 
+/// Default threshold for triggering the zlib guard check.
+pub const DEFAULT_DA_ZLIB_GUARD_BYTES: u64 = 4 * 1024;
+
+const ZLIB_COMPRESSION_LEVEL: u8 = 6;
+
 /// Creates an internal error for when the transaction list invariant is violated.
 fn lists_empty_error() -> BlockExecutionError {
     BlockExecutionError::Internal(InternalBlockExecutionError::msg(
         "tx selection invariant violated: lists is empty",
     ))
+}
+
+fn should_check_zlib_da_size(config: &TxSelectionConfig, estimated_after: u64) -> bool {
+    config.da_size_zlib_guard_bytes > 0 &&
+        estimated_after.saturating_add(config.da_size_zlib_guard_bytes) >= config.max_da_bytes_per_list
+}
+
+fn zlib_tx_list_size_bytes(
+    list: &ExecutedTxList,
+    candidate: &Recovered<TransactionSigned>,
+) -> u64 {
+    let mut txs: Vec<&TransactionSigned> = Vec::with_capacity(list.transactions.len() + 1);
+    txs.extend(list.transactions.iter().map(|etx| etx.tx.inner()));
+    txs.push(candidate.inner());
+
+    let mut rlp_bytes = Vec::new();
+    encode_list::<&TransactionSigned, TransactionSigned>(&txs, &mut rlp_bytes);
+
+    miniz_oxide::deflate::compress_to_vec_zlib(&rlp_bytes, ZLIB_COMPRESSION_LEVEL).len() as u64
+}
+
+fn exceeds_da_limit(
+    list: &ExecutedTxList,
+    tx: &Recovered<TransactionSigned>,
+    tx_da_estimated: u64,
+    config: &TxSelectionConfig,
+) -> bool {
+    let estimated_after = list.total_da_bytes.saturating_add(tx_da_estimated);
+    if estimated_after > config.max_da_bytes_per_list {
+        return true;
+    }
+
+    if should_check_zlib_da_size(config, estimated_after) {
+        let actual = zlib_tx_list_size_bytes(list, tx);
+        return actual > config.max_da_bytes_per_list;
+    }
+
+    false
+}
+
+fn exceeds_list_limits(
+    list: &ExecutedTxList,
+    tx: &Recovered<TransactionSigned>,
+    tx_gas_limit: u64,
+    tx_da_estimated: u64,
+    config: &TxSelectionConfig,
+) -> (bool, bool) {
+    let exceeds_gas = list.total_gas_used.saturating_add(tx_gas_limit) > config.gas_limit_per_list;
+    let exceeds_da = exceeds_da_limit(list, tx, tx_da_estimated, config);
+    (exceeds_gas, exceeds_da)
 }
 
 /// Selects and executes transactions from the pool.
@@ -151,8 +210,8 @@ where
 
         // 6. Check if transaction fits in current list; if not, try starting a new one
         let current = lists.last().ok_or_else(lists_empty_error)?;
-        let exceeds_gas = current.total_gas_used + pool_tx.gas_limit() > config.gas_limit_per_list;
-        let exceeds_da = current.total_da_bytes + da_size > config.max_da_bytes_per_list;
+        let (exceeds_gas, exceeds_da) =
+            exceeds_list_limits(current, &tx, pool_tx.gas_limit(), da_size, config);
 
         if exceeds_gas || exceeds_da {
             if lists.len() >= config.max_lists {
@@ -172,6 +231,24 @@ where
             }
             // Start a new list
             lists.push(ExecutedTxList::default());
+
+            let current = lists.last().ok_or_else(lists_empty_error)?;
+            let (exceeds_gas, exceeds_da) =
+                exceeds_list_limits(current, &tx, pool_tx.gas_limit(), da_size, config);
+            if exceeds_gas || exceeds_da {
+                if exceeds_gas {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            config.gas_limit_per_list,
+                        ),
+                    );
+                } else {
+                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                }
+                continue;
+            }
         }
 
         // 7. Execute transaction
@@ -210,4 +287,72 @@ where
     }
 
     Ok(SelectionOutcome::Completed(lists))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_primitives::{Address, Bytes, B256, ChainId, Signature, TxKind, U256};
+
+    fn make_signed_legacy_tx(input: Bytes) -> TransactionSigned {
+        let tx = TxLegacy {
+            chain_id: Some(ChainId::from(1u64)),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input,
+        };
+        let signature = Signature::new(U256::from(1), U256::from(2), false);
+        let signed = Signed::new_unchecked(tx, signature, B256::ZERO);
+        signed.into()
+    }
+
+    fn lcg_bytes(len: usize) -> Bytes {
+        let mut out = Vec::with_capacity(len);
+        let mut x = 0u8;
+        for _ in 0..len {
+            x = x.wrapping_mul(73).wrapping_add(41);
+            out.push(x);
+        }
+        Bytes::from(out)
+    }
+
+    #[test]
+    fn zlib_guard_rejects_when_actual_exceeds_limit() {
+        let list = ExecutedTxList::default();
+        let mut candidate = None;
+
+        for len in (64..=2048).step_by(64) {
+            let tx = make_signed_legacy_tx(lcg_bytes(len));
+            let estimated = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
+            let recovered = Recovered::new_unchecked(tx, Address::ZERO);
+            let actual = zlib_tx_list_size_bytes(&list, &recovered);
+            if actual > estimated {
+                candidate = Some((recovered, estimated, actual));
+                break;
+            }
+        }
+
+        let (recovered, estimated, actual) =
+            candidate.expect("no tx found where zlib size exceeds estimate");
+
+        let mut config = TxSelectionConfig {
+            base_fee: 0,
+            gas_limit_per_list: u64::MAX,
+            max_da_bytes_per_list: estimated,
+            da_size_zlib_guard_bytes: 1,
+            max_lists: 1,
+            min_tip: 0,
+            locals: vec![],
+        };
+
+        assert!(actual > config.max_da_bytes_per_list);
+        assert!(exceeds_da_limit(&list, &recovered, estimated, &config));
+
+        config.da_size_zlib_guard_bytes = 0;
+        assert!(!exceeds_da_limit(&list, &recovered, estimated, &config));
+    }
 }

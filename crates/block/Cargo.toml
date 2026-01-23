@@ -28,6 +28,8 @@ alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+miniz_oxide = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 op-alloy-flz = { workspace = true }
 reth-chainspec = { workspace = true }

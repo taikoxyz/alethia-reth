@@ -91,7 +91,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-eth",
- "miniz_oxide",
+ "flate2",
  "op-alloy-flz",
  "reth-chainspec",
  "reth-ethereum",

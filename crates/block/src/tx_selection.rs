@@ -85,14 +85,12 @@ fn lists_empty_error() -> BlockExecutionError {
 }
 
 fn should_check_zlib_da_size(config: &TxSelectionConfig, estimated_after: u64) -> bool {
-    config.da_size_zlib_guard_bytes > 0 &&
-        estimated_after.saturating_add(config.da_size_zlib_guard_bytes) >= config.max_da_bytes_per_list
+    config.da_size_zlib_guard_bytes > 0
+        && estimated_after.saturating_add(config.da_size_zlib_guard_bytes)
+            >= config.max_da_bytes_per_list
 }
 
-fn zlib_tx_list_size_bytes(
-    list: &ExecutedTxList,
-    candidate: &Recovered<TransactionSigned>,
-) -> u64 {
+fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<TransactionSigned>) -> u64 {
     let mut txs: Vec<&TransactionSigned> = Vec::with_capacity(list.transactions.len() + 1);
     txs.extend(list.transactions.iter().map(|etx| etx.tx.inner()));
     txs.push(candidate.inner());
@@ -293,7 +291,7 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{Signed, TxLegacy};
-    use alloy_primitives::{Address, Bytes, B256, ChainId, Signature, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 
     fn make_signed_legacy_tx(input: Bytes) -> TransactionSigned {
         let tx = TxLegacy {

@@ -268,8 +268,8 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
+                BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),

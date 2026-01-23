@@ -16,7 +16,7 @@ use reth_primitives::Recovered;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactionsAttributes, PoolTransaction, TransactionPool,
-    error::InvalidPoolTransactionError,
+    error::{InvalidPoolTransactionError, PoolTransactionError},
 };
 use tracing::trace;
 
@@ -75,7 +75,32 @@ pub enum SelectionOutcome {
 /// Default threshold for triggering the zlib guard check.
 pub const DEFAULT_DA_ZLIB_GUARD_BYTES: u64 = 4 * 1024;
 
+// Matches the zlib compression level used for DA submission. Update if protocol changes.
 const ZLIB_COMPRESSION_LEVEL: u8 = 6;
+
+#[derive(Debug)]
+struct DaLimitExceeded {
+    size: u64,
+    limit: u64,
+}
+
+impl core::fmt::Display for DaLimitExceeded {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "transaction list DA size {} exceeds limit {}", self.size, self.limit)
+    }
+}
+
+impl std::error::Error for DaLimitExceeded {}
+
+impl PoolTransactionError for DaLimitExceeded {
+    fn is_bad_transaction(&self) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 /// Creates an internal error for when the transaction list invariant is violated.
 fn lists_empty_error() -> BlockExecutionError {
@@ -85,9 +110,10 @@ fn lists_empty_error() -> BlockExecutionError {
 }
 
 fn should_check_zlib_da_size(config: &TxSelectionConfig, estimated_after: u64) -> bool {
-    config.da_size_zlib_guard_bytes > 0
-        && estimated_after.saturating_add(config.da_size_zlib_guard_bytes)
-            >= config.max_da_bytes_per_list
+    // Inclusive boundary: trigger once we're within guard bytes of the limit.
+    config.da_size_zlib_guard_bytes > 0 &&
+        estimated_after.saturating_add(config.da_size_zlib_guard_bytes) >=
+            config.max_da_bytes_per_list
 }
 
 fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<TransactionSigned>) -> u64 {
@@ -98,7 +124,9 @@ fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<Transact
     let mut rlp_bytes = Vec::new();
     encode_list::<&TransactionSigned, TransactionSigned>(&txs, &mut rlp_bytes);
 
-    miniz_oxide::deflate::compress_to_vec_zlib(&rlp_bytes, ZLIB_COMPRESSION_LEVEL).len() as u64
+    let compressed_len =
+        miniz_oxide::deflate::compress_to_vec_zlib(&rlp_bytes, ZLIB_COMPRESSION_LEVEL).len();
+    u64::try_from(compressed_len).unwrap_or(u64::MAX)
 }
 
 fn exceeds_da_limit(
@@ -106,18 +134,21 @@ fn exceeds_da_limit(
     tx: &Recovered<TransactionSigned>,
     tx_da_estimated: u64,
     config: &TxSelectionConfig,
-) -> bool {
+) -> Option<u64> {
     let estimated_after = list.total_da_bytes.saturating_add(tx_da_estimated);
     if estimated_after > config.max_da_bytes_per_list {
-        return true;
+        return Some(estimated_after);
     }
 
     if should_check_zlib_da_size(config, estimated_after) {
+        // This is intentionally late-bound and only triggered near the limit.
         let actual = zlib_tx_list_size_bytes(list, tx);
-        return actual > config.max_da_bytes_per_list;
+        if actual > config.max_da_bytes_per_list {
+            return Some(actual);
+        }
     }
 
-    false
+    None
 }
 
 fn exceeds_list_limits(
@@ -126,10 +157,14 @@ fn exceeds_list_limits(
     tx_gas_limit: u64,
     tx_da_estimated: u64,
     config: &TxSelectionConfig,
-) -> (bool, bool) {
+) -> (bool, Option<u64>) {
     let exceeds_gas = list.total_gas_used.saturating_add(tx_gas_limit) > config.gas_limit_per_list;
     let exceeds_da = exceeds_da_limit(list, tx, tx_da_estimated, config);
     (exceeds_gas, exceeds_da)
+}
+
+fn da_limit_error(size: u64, limit: u64) -> InvalidPoolTransactionError {
+    InvalidPoolTransactionError::Other(Box::new(DaLimitExceeded { size, limit }))
 }
 
 /// Selects and executes transactions from the pool.
@@ -202,7 +237,7 @@ where
             continue;
         }
         if da_size > config.max_da_bytes_per_list {
-            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+            best_txs.mark_invalid(&pool_tx, &da_limit_error(da_size, config.max_da_bytes_per_list));
             continue;
         }
 
@@ -211,7 +246,7 @@ where
         let (exceeds_gas, exceeds_da) =
             exceeds_list_limits(current, &tx, pool_tx.gas_limit(), da_size, config);
 
-        if exceeds_gas || exceeds_da {
+        if exceeds_gas || exceeds_da.is_some() {
             if lists.len() >= config.max_lists {
                 // Can't fit in any list
                 if exceeds_gas {
@@ -222,8 +257,11 @@ where
                             config.gas_limit_per_list,
                         ),
                     );
-                } else {
-                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                } else if let Some(size) = exceeds_da {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &da_limit_error(size, config.max_da_bytes_per_list),
+                    );
                 }
                 continue;
             }
@@ -233,7 +271,7 @@ where
             let current = lists.last().ok_or_else(lists_empty_error)?;
             let (exceeds_gas, exceeds_da) =
                 exceeds_list_limits(current, &tx, pool_tx.gas_limit(), da_size, config);
-            if exceeds_gas || exceeds_da {
+            if exceeds_gas || exceeds_da.is_some() {
                 if exceeds_gas {
                     best_txs.mark_invalid(
                         &pool_tx,
@@ -242,8 +280,11 @@ where
                             config.gas_limit_per_list,
                         ),
                     );
-                } else {
-                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+                } else if let Some(size) = exceeds_da {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        &da_limit_error(size, config.max_da_bytes_per_list),
+                    );
                 }
                 continue;
             }
@@ -348,9 +389,9 @@ mod tests {
         };
 
         assert!(actual > config.max_da_bytes_per_list);
-        assert!(exceeds_da_limit(&list, &recovered, estimated, &config));
+        assert!(exceeds_da_limit(&list, &recovered, estimated, &config).is_some());
 
         config.da_size_zlib_guard_bytes = 0;
-        assert!(!exceeds_da_limit(&list, &recovered, estimated, &config));
+        assert!(exceeds_da_limit(&list, &recovered, estimated, &config).is_none());
     }
 }

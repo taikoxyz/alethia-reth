@@ -57,9 +57,9 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
         core::cmp::Ordering::Greater => {
             let gas_used_delta = parent_gas_used - parent_adjusted_gas_target;
             let base_fee_per_gas_delta = core::cmp::max(
-                parent_base_fee_per_gas as u128 * gas_used_delta as u128
-                    / parent_base_gas_target as u128
-                    / BASE_FEE_MAX_CHANGE_DENOMINATOR,
+                parent_base_fee_per_gas as u128 * gas_used_delta as u128 /
+                    parent_base_gas_target as u128 /
+                    BASE_FEE_MAX_CHANGE_DENOMINATOR,
                 1,
             ) as u64;
             base_fee = base_fee.saturating_add(base_fee_per_gas_delta);
@@ -68,9 +68,9 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
         // If gas used is less than adjusted target, decrease base fee
         core::cmp::Ordering::Less => {
             let gas_used_delta = parent_adjusted_gas_target - parent_gas_used;
-            let base_fee_per_gas_delta = (parent_base_fee_per_gas as u128 * gas_used_delta as u128
-                / parent_base_gas_target as u128
-                / BASE_FEE_MAX_CHANGE_DENOMINATOR) as u64;
+            let base_fee_per_gas_delta = (parent_base_fee_per_gas as u128 * gas_used_delta as u128 /
+                parent_base_gas_target as u128 /
+                BASE_FEE_MAX_CHANGE_DENOMINATOR) as u64;
             base_fee = base_fee.saturating_sub(base_fee_per_gas_delta);
         }
     }

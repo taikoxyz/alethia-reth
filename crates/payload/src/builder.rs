@@ -100,8 +100,8 @@ fn execute_provided_transactions(
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
             Err(BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. }
-                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+                BlockValidationError::InvalidTx { .. } |
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) => {
                 trace!(target: "payload_builder", ?tx, "skipping invalid transaction in legacy mode");
                 continue;

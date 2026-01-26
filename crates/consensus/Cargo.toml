@@ -14,7 +14,6 @@ default = []
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives" }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }

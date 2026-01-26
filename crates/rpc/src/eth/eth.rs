@@ -10,7 +10,7 @@ use reth_rpc_eth_types::EthApiError;
 use crate::eth::error::TaikoApiError;
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
-    BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
 use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
 
@@ -47,38 +47,54 @@ where
         Self { provider }
     }
 
-    /// Finds the last Shasta block number that contains an Anchor transaction with the given batch
-    /// ID. It scans blocks backwards from the latest block until it finds a matching
-    /// transaction or reaches the genesis block.
-    fn find_last_block_number_by_batch_id(
-        &self,
-        batch_id: U256,
-    ) -> Result<Option<u64>, EthApiError> {
+    /// Retrieves the last block number for a batch by scanning the latest Shasta blocks.
+    fn resolve_last_block_number_by_batch_id(&self, batch_id: U256) -> RpcResult<U256> {
         let mut current_block = self
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
             .map_err(|e| EthApiError::Internal(e.into()))?;
+
+        let Some(latest_block) = current_block else {
+            return Err(TaikoApiError::GethNotFound.into());
+        };
+
+        let Some(first_tx) = latest_block.body().transactions().first() else {
+            return Err(TaikoApiError::GethNotFound.into());
+        };
+
+        if !first_tx.input().as_ref().starts_with(ANCHOR_V4_SELECTOR) {
+            return Err(TaikoApiError::GethNotFound.into());
+        }
+
+        let (latest_proposal_id, _) =
+            decode_shasta_proposal_id(latest_block.header().extra_data().as_ref())
+                .map_err(|_| TaikoApiError::GethNotFound)?;
+
+        if batch_id > U256::from(latest_proposal_id) {
+            return Err(TaikoApiError::GethNotFound.into());
+        }
+
+        current_block = Some(latest_block);
 
         while let Some(block) = current_block {
             let Some(first_tx) = block.body().transactions().first() else {
                 break;
             };
 
-            let input = first_tx.input();
-            let input = input.as_ref();
-
-            if !input.starts_with(ANCHOR_V4_SELECTOR) {
+            if !first_tx.input().as_ref().starts_with(ANCHOR_V4_SELECTOR) {
                 break;
             }
 
-            let Some(proposal_id) =
-                decode_shasta_proposal_id(block.header().extra_data().as_ref()).map(U256::from)
-            else {
-                break;
-            };
+            let (proposal_id, end_of_proposal) =
+                decode_shasta_proposal_id(block.header().extra_data().as_ref())
+                    .map_err(|_| TaikoApiError::GethNotFound)?;
+            let proposal_id = U256::from(proposal_id);
 
             if proposal_id == batch_id {
-                return Ok(Some(block.header().number()));
+                if !end_of_proposal {
+                    return Err(TaikoApiError::GethNotFound.into());
+                }
+                return Ok(U256::from(block.header().number()));
             }
 
             let block_number = block.header().number();
@@ -92,27 +108,7 @@ where
                 .map_err(|e| EthApiError::Internal(e.into()))?;
         }
 
-        Ok(None)
-    }
-
-    /// Retrieves the last block number for a batch, preferring the DB cache before falling back to
-    /// a scan.
-    fn resolve_last_block_number_by_batch_id(&self, batch_id: U256) -> RpcResult<U256> {
-        let provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
-        if let Some(block_number) = provider
-            .into_tx()
-            .get::<BatchToLastBlock>(batch_id.to())
-            .map_err(|_| EthApiError::InternalEthError)?
-        {
-            return Ok(U256::from(block_number));
-        }
-
-        let block_number = self
-            .find_last_block_number_by_batch_id(batch_id)?
-            .ok_or(TaikoApiError::GethNotFound)?;
-
-        Ok(U256::from(block_number))
+        Err(TaikoApiError::GethNotFound.into())
     }
 }
 
@@ -166,15 +162,14 @@ mod tests {
 
     #[test]
     fn parses_shasta_proposal_id_from_extra_data() {
-        let extra = [0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-        assert_eq!(
-            decode_shasta_proposal_id(&extra).map(U256::from),
-            Some(U256::from(0x010203040506u64))
-        );
+        let extra = [0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x01];
+        let (proposal_id, end_of_proposal) = decode_shasta_proposal_id(&extra).unwrap();
+        assert_eq!(U256::from(proposal_id), U256::from(0x010203040506u64));
+        assert!(end_of_proposal);
     }
 
     #[test]
-    fn returns_none_for_truncated_extra_data() {
-        assert!(decode_shasta_proposal_id(&[0x2a]).is_none());
+    fn returns_error_for_invalid_extra_data_len() {
+        assert!(decode_shasta_proposal_id(&[0x2a]).is_err());
     }
 }

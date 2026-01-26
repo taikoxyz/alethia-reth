@@ -33,7 +33,7 @@ use alethia_reth_block::{
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_db::model::{
-    BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::{
@@ -67,8 +67,6 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>>;
     #[method(name = "setL1OriginSignature")]
     async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<RpcL1Origin>;
-    #[method(name = "setBatchToLastBlock")]
-    async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<u64>;
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
         &self,
@@ -171,19 +169,6 @@ where
         tx.commit().map_err(|_| EthApiError::InternalEthError)?;
 
         Ok(l1_origin.into_rpc())
-    }
-
-    /// Sets the mapping from batch ID to its last block number in the database.
-    async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<u64> {
-        let tx = self
-            .provider
-            .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?
-            .into_tx();
-        tx.put::<BatchToLastBlock>(batch_id.to(), block_number.to())
-            .map_err(|_| EthApiError::InternalEthError)?;
-        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
-        Ok(batch_id.to())
     }
 
     /// Updates the L1 origin in the database.

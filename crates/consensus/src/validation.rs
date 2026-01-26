@@ -21,6 +21,7 @@ use reth_primitives_traits::{
 use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
+use alethia_reth_primitives::SHASTA_EXTRA_DATA_LEN;
 
 sol! {
     function anchor(bytes32, bytes32, uint64, uint32) external;
@@ -144,6 +145,15 @@ where
         }
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
+        if self.chain_spec.is_shasta_active(header.timestamp()) &&
+            header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
+        {
+            return Err(ConsensusError::Other(format!(
+                "Shasta extra-data length invalid: {} != {}",
+                header.extra_data().len(),
+                SHASTA_EXTRA_DATA_LEN
+            )));
+        }
         validate_header_gas(header)?;
         validate_header_base_fee(header, &self.chain_spec)
     }
@@ -345,8 +355,11 @@ fn validate_input_selector(
 
 #[cfg(test)]
 mod test {
+    use alethia_reth_chainspec::{TAIKO_DEVNET, spec::TaikoDevnetConfigExt};
+    use alethia_reth_primitives::SHASTA_EXTRA_DATA_LEN;
     use alloy_consensus::Header;
-    use alloy_primitives::U64;
+    use alloy_primitives::{B256, Bytes};
+    use std::sync::Arc;
 
     use super::validate_input_selector;
 
@@ -358,7 +371,7 @@ mod test {
 
         assert!(validate_against_parent_eip4396_base_fee(&header).is_err());
 
-        header.base_fee_per_gas = Some(U64::random().to::<u64>());
+        header.base_fee_per_gas = Some(1);
         assert!(validate_against_parent_eip4396_base_fee(&header).is_ok());
     }
 
@@ -414,5 +427,27 @@ mod test {
         parent.gas_used = 10_000_000;
         let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
+    }
+
+    #[test]
+    fn rejects_invalid_shasta_extra_data_len() {
+        #[derive(Debug)]
+        struct NoopReader;
+        impl TaikoBlockReader for NoopReader {
+            fn block_timestamp_by_hash(&self, _: B256) -> Option<u64> {
+                None
+            }
+        }
+
+        let spec = (*TAIKO_DEVNET).clone().as_ref().clone_with_devnet_shasta_timestamp(0).unwrap();
+        let consensus = TaikoBeaconConsensus::new(Arc::new(spec), Arc::new(NoopReader));
+
+        let mut header = Header::default();
+        header.timestamp = 1;
+        header.base_fee_per_gas = Some(1);
+        header.extra_data = Bytes::copy_from_slice(&[0u8; SHASTA_EXTRA_DATA_LEN - 1]);
+
+        let sealed = SealedHeader::seal_slow(header);
+        assert!(consensus.validate_header(&sealed).is_err());
     }
 }

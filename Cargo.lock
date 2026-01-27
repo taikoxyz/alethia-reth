@@ -101,6 +101,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-rpc-eth-api",
+ "reth-storage-api",
  "revm-database-interface",
 ]
 

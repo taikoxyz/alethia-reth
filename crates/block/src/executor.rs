@@ -27,7 +27,10 @@ use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
-use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
+use alethia_reth_evm::{
+    alloy::TAIKO_GOLDEN_TOUCH_ADDRESS,
+    handler::get_treasury_address,
+};
 
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -277,6 +280,142 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes};
+    use alethia_reth_chainspec::spec::TaikoChainSpec;
+    use alethia_reth_evm::jumpdest_limiter::{
+        DEFAULT_BLOCK_JUMPDEST_LIMIT, DEFAULT_TX_JUMPDEST_LIMIT, LimitingInspector,
+    };
+    use alethia_reth_evm::zk_gas::JUMPDEST_ZK_GAS;
+    use alloy_consensus::{Header, Signed, TxLegacy};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+    use reth::{
+        primitives::Recovered,
+        revm::{
+            bytecode::Bytecode,
+            db::InMemoryDB,
+            inspector::NoOpInspector,
+            primitives::KECCAK_EMPTY,
+            state::AccountInfo,
+            State,
+        },
+    };
+    use reth_ethereum::TransactionSigned;
+    use reth_evm::{ConfigureEvm, execute::BlockBuilder};
+    use reth_primitives_traits::SealedHeader;
+    use reth_storage_api::noop::NoopProvider;
+    use std::sync::{Arc, atomic::AtomicU64};
+
+    fn create_bytecode_with_jumpdests(count: usize) -> Bytes {
+        let mut code = vec![0x5b; count];
+        code.push(0x00); // STOP to end execution
+        Bytes::from(code)
+    }
+
+    fn legacy_tx(to: Address, gas_limit: u64, gas_price: u128, chain_id: u64) -> TransactionSigned {
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce: 0,
+            gas_price,
+            gas_limit,
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: Bytes::default(),
+        };
+        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+        let signed = Signed::new_unhashed(tx, signature);
+        signed.into()
+    }
+
+    #[test]
+    fn test_block_difficulty_contains_zk_gas() {
+        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let evm_config = TaikoEvmConfig::new(chain_spec.clone());
+        let block_gas_limit = 30_000_000u64;
+        let base_fee = 1u64;
+
+        let parent_header = Header {
+            number: 0,
+            gas_limit: block_gas_limit,
+            base_fee_per_gas: Some(base_fee),
+            timestamp: 1,
+            beneficiary: Address::ZERO,
+            ..Default::default()
+        };
+        let parent = SealedHeader::new_unhashed(parent_header);
+
+        let next_ctx = TaikoNextBlockEnvAttributes {
+            timestamp: 2,
+            suggested_fee_recipient: Address::ZERO,
+            prev_randao: B256::ZERO,
+            gas_limit: block_gas_limit,
+            extra_data: Bytes::default(),
+            base_fee_per_gas: base_fee,
+        };
+
+        let evm_env = evm_config
+            .next_evm_env(parent.header(), &next_ctx)
+            .expect("evm env");
+        let mut ctx = evm_config
+            .context_for_next_block(&parent, next_ctx)
+            .expect("execution ctx");
+
+        let zk_gas_counter = Arc::new(AtomicU64::new(0));
+        ctx.zk_gas_counter = Some(zk_gas_counter.clone());
+
+        let jumpdest_count = 10usize;
+        let contract_address = Address::random();
+        let sender = Address::random();
+
+        let mut db = InMemoryDB::default();
+        let code = create_bytecode_with_jumpdests(jumpdest_count);
+        let bytecode = Bytecode::new_raw_checked(code).unwrap();
+        db.insert_account_info(
+            contract_address,
+            AccountInfo {
+                balance: U256::from(1_000_000u64),
+                nonce: 0,
+                code_hash: bytecode.hash_slow(),
+                code: Some(bytecode),
+            },
+        );
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(10_000_000u64),
+                nonce: 0,
+                code_hash: KECCAK_EMPTY,
+                code: None,
+            },
+        );
+
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let evm = evm_config.evm_with_env_and_inspector(
+            &mut state,
+            evm_env,
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            )
+            .with_zk_gas_counter(zk_gas_counter),
+        );
+
+        let mut builder = evm_config.create_block_builder(evm, &parent, ctx);
+        builder.apply_pre_execution_changes().expect("pre-execution changes");
+
+        let chain_id = chain_spec.inner.chain().id();
+        let tx_signed = legacy_tx(contract_address, 1_000_000, base_fee as u128, chain_id);
+        let recovered = Recovered::new_unchecked(tx_signed, sender);
+        builder.execute_transaction(recovered).expect("execute tx");
+
+        let outcome = builder.finish(NoopProvider::default()).expect("finish block");
+        let header = outcome.block.sealed_block().header();
+        let expected = U256::from(jumpdest_count as u64 * JUMPDEST_ZK_GAS);
+        assert_eq!(header.difficulty, expected);
+    }
+}
 // Encode the anchor system call data for the Anchor contract sender account information
 // and the base fee share percentage.
 fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {

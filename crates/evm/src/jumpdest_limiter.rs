@@ -8,6 +8,12 @@ use reth::revm::{
     },
     primitives::{Address, Log, U256},
 };
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use crate::zk_gas::{JUMPDEST_ZK_GAS, ZkGasTracker};
 
 /// Inspector that aborts execution once it executes too many `JUMPDEST` opcodes.
 /// - Per-transaction limit ensures a single tx cannot dominate execution.
@@ -25,11 +31,26 @@ pub struct JumpdestLimiter {
     block_limit: u64,
     tx_count: u64,
     block_count: u64,
+    zk_gas_counter: Option<Arc<AtomicU64>>,
 }
 
 impl JumpdestLimiter {
     pub const fn new(tx_limit: u64, block_limit: u64) -> Self {
-        Self { tx_limit, block_limit, tx_count: 0, block_count: 0 }
+        Self {
+            tx_limit,
+            block_limit,
+            tx_count: 0,
+            block_count: 0,
+            zk_gas_counter: None,
+        }
+    }
+
+    pub fn set_zk_gas_counter(&mut self, counter: Arc<AtomicU64>) {
+        self.zk_gas_counter = Some(counter);
+    }
+
+    pub const fn block_count(&self) -> u64 {
+        self.block_count
     }
 }
 
@@ -46,6 +67,9 @@ impl<CTX: ContextTr> Inspector<CTX, EthInterpreter> for JumpdestLimiter {
         if interp.bytecode.opcode() == JUMPDEST {
             self.tx_count += 1;
             self.block_count += 1;
+            if let Some(counter) = &self.zk_gas_counter {
+                counter.fetch_add(JUMPDEST_ZK_GAS, Ordering::Relaxed);
+            }
 
             let (limit_hit, message) = if self.tx_count > self.tx_limit {
                 (true, JUMPDEST_TX_LIMIT_ERR)
@@ -80,6 +104,17 @@ pub struct LimitingInspector<I> {
 impl<I> LimitingInspector<I> {
     pub fn new(tx_limit: u64, block_limit: u64, inner: I) -> Self {
         Self { limiter: JumpdestLimiter::new(tx_limit, block_limit), inner }
+    }
+
+    pub fn with_zk_gas_counter(mut self, counter: Arc<AtomicU64>) -> Self {
+        self.limiter.set_zk_gas_counter(counter);
+        self
+    }
+}
+
+impl<I> ZkGasTracker for LimitingInspector<I> {
+    fn zk_gas_used(&self) -> u64 {
+        self.limiter.block_count().saturating_mul(JUMPDEST_ZK_GAS)
     }
 }
 
@@ -130,6 +165,7 @@ mod tests {
     use super::*;
     use crate::factory::TaikoEvmFactory;
     use crate::spec::TaikoSpecId;
+    use crate::zk_gas::{JUMPDEST_ZK_GAS, ZkGasTracker};
     use reth::revm::{
         bytecode::Bytecode,
         context::{BlockEnv, CfgEnv, TxEnv},
@@ -173,6 +209,53 @@ mod tests {
         let mut cfg_env = CfgEnv::<TaikoSpecId>::default();
         cfg_env.disable_nonce_check = true;
         EvmEnv { cfg_env, block_env: block_env_with_gas_limit() }
+    }
+
+    #[test]
+    fn test_zk_gas_used_counts_jumpdest() {
+        let mut db = InMemoryDB::default();
+        let contract_address = Address::random();
+        let jumpdest_count = 42usize;
+
+        let code = create_bytecode_with_jumpdests(jumpdest_count);
+        let bytecode = Bytecode::new_raw_checked(code).unwrap();
+
+        db.insert_account_info(
+            contract_address,
+            AccountInfo {
+                balance: U256::from(1_000_000),
+                code_hash: bytecode.hash_slow(),
+                code: Some(bytecode),
+                nonce: 0,
+            },
+        );
+
+        let evm_env = evm_env();
+        let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+            db,
+            evm_env,
+            LimitingInspector::new(
+                DEFAULT_TX_JUMPDEST_LIMIT,
+                DEFAULT_BLOCK_JUMPDEST_LIMIT,
+                NoOpInspector {},
+            ),
+        );
+
+        let result = evm.transact(
+            TxEnv::builder()
+                .gas_limit(1_000_000)
+                .gas_price(0)
+                .caller(Address::random())
+                .call(contract_address)
+                .build()
+                .unwrap(),
+        );
+
+        assert!(result.is_ok(), "Transaction should succeed with JUMPDESTs within limit");
+        assert_eq!(
+            evm.inspector().zk_gas_used(),
+            (jumpdest_count as u64) * JUMPDEST_ZK_GAS
+        );
     }
 
     #[test]

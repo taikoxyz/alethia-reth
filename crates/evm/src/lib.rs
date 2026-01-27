@@ -6,3 +6,4 @@ pub mod factory;
 pub mod handler;
 pub mod jumpdest_limiter;
 pub mod spec;
+pub mod zk_gas;

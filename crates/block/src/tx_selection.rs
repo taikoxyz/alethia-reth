@@ -7,7 +7,7 @@ use alloy_eips::Encodable2718;
 use alloy_primitives::Address;
 use alloy_rlp::encode_list;
 use core::fmt;
-use flate2::{write::ZlibEncoder, Compression};
+use flate2::{Compression, write::ZlibEncoder};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
@@ -17,8 +17,8 @@ use reth_evm::{
 use reth_primitives::Recovered;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    error::{InvalidPoolTransactionError, PoolTransactionError},
     BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    error::{InvalidPoolTransactionError, PoolTransactionError},
 };
 use std::{
     error::Error,
@@ -449,7 +449,7 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{Signed, TxLegacy};
-    use alloy_primitives::{Address, Bytes, ChainId, Signature, TxKind, B256, U256};
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 
     fn make_signed_legacy_tx(input: Bytes) -> TransactionSigned {
         let tx = TxLegacy {

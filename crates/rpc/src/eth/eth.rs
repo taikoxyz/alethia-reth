@@ -514,8 +514,7 @@ mod tests {
                 is_forced_inclusion: false,
                 signature: [0u8; 65],
             };
-            tx.put::<StoredL1OriginTable>(head_number, stored_origin)
-                .expect("insert l1 origin");
+            tx.put::<StoredL1OriginTable>(head_number, stored_origin).expect("insert l1 origin");
             tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, head_number)
                 .expect("insert head l1 origin");
         }

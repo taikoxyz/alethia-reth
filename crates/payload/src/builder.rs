@@ -26,7 +26,10 @@ use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
-    tx_selection::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions},
+    tx_selection::{
+        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
+        select_and_execute_pool_transactions,
+    },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{
@@ -170,6 +173,7 @@ where
         base_fee: ctx.base_fee,
         gas_limit_per_list: ctx.gas_limit,
         max_da_bytes_per_list: BYTES_PER_BLOB as u64,
+        da_size_zlib_guard_bytes: DEFAULT_DA_ZLIB_GUARD_BYTES,
         max_lists: 1,
         min_tip: 0,
         locals: vec![],

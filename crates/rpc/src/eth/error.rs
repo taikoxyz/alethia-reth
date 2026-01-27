@@ -5,6 +5,10 @@ use jsonrpsee_types::error::{ErrorCode, ErrorObjectOwned};
 pub enum TaikoApiError {
     #[error("not found")]
     GethNotFound,
+    #[error(
+        "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed"
+    )]
+    ProposalLastBlockUncertain,
 }
 
 impl From<TaikoApiError> for ErrorObjectOwned {
@@ -14,6 +18,11 @@ impl From<TaikoApiError> for ErrorObjectOwned {
             TaikoApiError::GethNotFound => ErrorObjectOwned::owned(
                 ErrorCode::ServerError(-32004).code(),
                 "not found",
+                None::<()>,
+            ),
+            TaikoApiError::ProposalLastBlockUncertain => ErrorObjectOwned::owned(
+                ErrorCode::ServerError(-32005).code(),
+                "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed",
                 None::<()>,
             ),
         }

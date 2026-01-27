@@ -9,6 +9,10 @@ pub enum TaikoApiError {
         "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed"
     )]
     ProposalLastBlockUncertain,
+    #[error(
+        "proposal last block lookback exceeded: BatchToLastBlockID missing and lookback limit reached"
+    )]
+    ProposalLastBlockLookbackExceeded,
 }
 
 impl From<TaikoApiError> for ErrorObjectOwned {
@@ -23,6 +27,11 @@ impl From<TaikoApiError> for ErrorObjectOwned {
             TaikoApiError::ProposalLastBlockUncertain => ErrorObjectOwned::owned(
                 ErrorCode::ServerError(-32005).code(),
                 "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed",
+                None::<()>,
+            ),
+            TaikoApiError::ProposalLastBlockLookbackExceeded => ErrorObjectOwned::owned(
+                ErrorCode::ServerError(-32006).code(),
+                "proposal last block lookback exceeded: BatchToLastBlockID missing and lookback limit reached",
                 None::<()>,
             ),
         }

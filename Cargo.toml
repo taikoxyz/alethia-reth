@@ -67,8 +67,8 @@ jsonrpsee-types = "0.26.0"
 op-alloy-flz = { version = "0.13.1", default-features = false }
 
 # data encoding
-parity-scale-codec = "3.2.1"
 flate2 = "1.1.5"
+parity-scale-codec = "3.2.1"
 
 # reth
 reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", tag = "v1.10.1" }

@@ -44,6 +44,26 @@ enum LastBlockSearchResult {
     Found(u64),
     NotFound,
     UncertainAtHead,
+    LookbackExceeded,
+}
+
+/// Maximum number of blocks to scan backwards when resolving a batch ID.
+/// Derived from protocol limits: 1024 derivation sources * DERIVATION_SOURCE_MAX_BLOCKS (192).
+const MAX_BACKWARD_SCAN_BLOCKS: u64 = 192 * 1024;
+#[cfg(test)]
+// Keep unit tests fast by using a smaller lookback window.
+const TEST_MAX_BACKWARD_SCAN_BLOCKS: u64 = 64;
+
+/// Returns the maximum number of blocks to scan backwards.
+fn max_backward_scan_blocks() -> u64 {
+    #[cfg(test)]
+    {
+        TEST_MAX_BACKWARD_SCAN_BLOCKS
+    }
+    #[cfg(not(test))]
+    {
+        MAX_BACKWARD_SCAN_BLOCKS
+    }
 }
 
 impl<Provider> TaikoExt<Provider>
@@ -68,7 +88,7 @@ where
 
     /// Finds the last Shasta block number that contains an Anchor transaction with the given batch
     /// ID. It scans blocks backwards from the latest block until it finds a matching
-    /// transaction or reaches the genesis block.
+    /// transaction, reaches the genesis block, or hits the backward scan limit.
     fn find_last_block_number_by_batch_id(
         &self,
         batch_id: U256,
@@ -99,7 +119,13 @@ where
             return Ok(LastBlockSearchResult::NotFound);
         }
 
+        let mut scanned_blocks = 0u64;
+
         while let Some(block) = current_block {
+            if scanned_blocks >= max_backward_scan_blocks() {
+                return Ok(LastBlockSearchResult::LookbackExceeded);
+            }
+            scanned_blocks += 1;
             let Some(first_tx) = block.body().transactions().first() else {
                 break;
             };
@@ -159,6 +185,9 @@ where
                 Err(TaikoApiError::ProposalLastBlockUncertain.into())
             }
             LastBlockSearchResult::NotFound => Err(TaikoApiError::GethNotFound.into()),
+            LastBlockSearchResult::LookbackExceeded => {
+                Err(TaikoApiError::ProposalLastBlockLookbackExceeded.into())
+            }
         }
     }
 }
@@ -408,6 +437,98 @@ mod tests {
         assert_eq!(
             err.message(),
             "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed",
+        );
+    }
+
+    #[test]
+    fn uses_expected_lookback_limit_constant() {
+        assert_eq!(MAX_BACKWARD_SCAN_BLOCKS, 192 * 1024);
+    }
+
+    #[test]
+    fn returns_lookback_exceeded_when_scan_exceeds_limit() {
+        let max_scan = max_backward_scan_blocks();
+        let head_number = max_scan + 1;
+        let target_batch_id = U256::from(1u64);
+
+        let mut input = ANCHOR_V4_SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 4]);
+        let input = Bytes::from(input);
+
+        let build_anchor_tx = |input: &Bytes| {
+            let tx = TxLegacy {
+                chain_id: None,
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: input.clone(),
+            };
+
+            TransactionSigned::new_unhashed(
+                tx.into(),
+                Signature::new(U256::from(1), U256::from(2), false),
+            )
+        };
+
+        let factory = create_taiko_test_provider_factory();
+        let mut provider_rw = factory.provider_rw().expect("provider rw");
+        let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+        let genesis_block = genesis_header.into_block(BlockBody::default());
+        let genesis_recovered = RecoveredBlock::new_unhashed(genesis_block, vec![]);
+        provider_rw.insert_block(&genesis_recovered).expect("insert genesis block");
+
+        let mut head_header = None;
+
+        for number in 1..=head_number {
+            let mut extra = [0u8; 7];
+            extra[0] = 0x2a;
+            extra[1..7].copy_from_slice(&number.to_be_bytes()[2..]);
+
+            let header = Header {
+                number,
+                gas_limit: 1_000_000,
+                extra_data: extra.to_vec().into(),
+                ..Default::default()
+            };
+            let body =
+                BlockBody { transactions: vec![build_anchor_tx(&input)], ..Default::default() };
+            let block = header.clone().into_block(body);
+            let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+            provider_rw.insert_block(&recovered).expect("insert block");
+
+            if number == head_number {
+                head_header = Some(header);
+            }
+        }
+
+        {
+            let tx = provider_rw.tx_mut();
+            let stored_origin = StoredL1Origin {
+                block_id: U256::from(head_number),
+                l2_block_hash: Default::default(),
+                l1_block_height: U256::from(1u64),
+                l1_block_hash: Default::default(),
+                build_payload_args_id: [0u8; 8],
+                is_forced_inclusion: false,
+                signature: [0u8; 65],
+            };
+            tx.put::<StoredL1OriginTable>(head_number, stored_origin).expect("insert l1 origin");
+            tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, head_number)
+                .expect("insert head l1 origin");
+        }
+        provider_rw.commit().expect("commit");
+
+        let latest = SealedHeader::seal_slow(head_header.expect("head header"));
+        let provider = BlockchainProvider::with_latest(factory, latest).expect("provider");
+        let api = TaikoExt::new(provider);
+
+        let err = api.resolve_last_block_number_by_batch_id(target_batch_id).unwrap_err();
+        assert_eq!(err.code(), -32006);
+        assert_eq!(
+            err.message(),
+            "proposal last block lookback exceeded: BatchToLastBlockID missing and lookback limit reached",
         );
     }
 }

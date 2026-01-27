@@ -6,7 +6,8 @@
 use alloy_eips::Encodable2718;
 use alloy_primitives::Address;
 use alloy_rlp::encode_list;
-use flate2::{Compression, write::ZlibEncoder};
+use core::fmt;
+use flate2::{write::ZlibEncoder, Compression};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
@@ -16,10 +17,14 @@ use reth_evm::{
 use reth_primitives::Recovered;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::{InvalidPoolTransactionError, PoolTransactionError},
+    BestTransactionsAttributes, PoolTransaction, TransactionPool,
 };
-use std::io::Write;
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+    io::Write,
+};
 use tracing::trace;
 
 /// Configuration for transaction selection.
@@ -85,23 +90,28 @@ fn zlib_compression() -> Compression {
 /// Error raised when the DA size limit would be exceeded.
 #[derive(Debug)]
 struct DaLimitExceeded {
+    /// The DA size that was calculated.
     size: u64,
+    /// The DA size limit that was exceeded.
     limit: u64,
 }
 
-impl core::fmt::Display for DaLimitExceeded {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for DaLimitExceeded {
+    /// Formats the DA limit exceeded error message.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "transaction list DA size {} exceeds limit {}", self.size, self.limit)
     }
 }
 
-impl std::error::Error for DaLimitExceeded {}
+impl Error for DaLimitExceeded {}
 
 impl PoolTransactionError for DaLimitExceeded {
+    /// Indicates that this error does not represent a bad transaction.
     fn is_bad_transaction(&self) -> bool {
         false
     }
 
+    /// Allows downcasting to the concrete error type.
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -119,6 +129,7 @@ struct DaRatioState {
 }
 
 impl Default for DaRatioState {
+    /// Creates a default DA ratio state.
     fn default() -> Self {
         Self { max_ratio_micros: RATIO_SCALE, sampled_mid: false, sampled_high: false }
     }
@@ -438,7 +449,7 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{Signed, TxLegacy};
-    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, ChainId, Signature, TxKind, B256, U256};
 
     fn make_signed_legacy_tx(input: Bytes) -> TransactionSigned {
         let tx = TxLegacy {

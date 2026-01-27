@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.7.0](https://github.com/taikoxyz/alethia-reth/compare/v0.6.0...v0.7.0) (2026-01-27)
+
+
+### Features
+
+* **block:** add zlib guard for DA size limit ([#98](https://github.com/taikoxyz/alethia-reth/issues/98)) ([008f71a](https://github.com/taikoxyz/alethia-reth/commit/008f71acbdf7e16cc9c001f106e1210c64605e82))
+* **chainspec:** changes for moving bond to L1 ([#81](https://github.com/taikoxyz/alethia-reth/issues/81)) ([1690b37](https://github.com/taikoxyz/alethia-reth/commit/1690b37a79c545d1f39deeb6f8fee5d1750c8415))
+* **chainspec:** update devnet genesis JSON ([#74](https://github.com/taikoxyz/alethia-reth/issues/74)) ([6fa1e25](https://github.com/taikoxyz/alethia-reth/commit/6fa1e25c5f55016f6d73213147ffa337d54b7749))
+* **chainspec:** update devnet genesis JSON ([#75](https://github.com/taikoxyz/alethia-reth/issues/75)) ([ad01127](https://github.com/taikoxyz/alethia-reth/commit/ad011273c05d05fd034f2957cd5c6f46003f6d07))
+* **chainspec:** update devnet genesis JSON ([#76](https://github.com/taikoxyz/alethia-reth/issues/76)) ([3366970](https://github.com/taikoxyz/alethia-reth/commit/336697077754eef59f9916b9e7843301686c483f))
+* **chainspec:** update devnet genesis JSON ([#77](https://github.com/taikoxyz/alethia-reth/issues/77)) ([f87699f](https://github.com/taikoxyz/alethia-reth/commit/f87699fc736caeb59d87be1e3170fecf15a3cc6f))
+* **consensus:** add Shasta EOP flag and remove batch-to-last-block DB mapping ([#99](https://github.com/taikoxyz/alethia-reth/issues/99)) ([cf52f4c](https://github.com/taikoxyz/alethia-reth/commit/cf52f4cdf253a29cc357b6ae1f57b6702ef9736c))
+* **consensus:** update `anchorV4` selector for sequential proving design && update devnet genesis json ([#73](https://github.com/taikoxyz/alethia-reth/issues/73)) ([e07c13f](https://github.com/taikoxyz/alethia-reth/commit/e07c13fc011798adfa5436f24646b7305337cdf3))
+* **payload:** add blob size limit check in new mode block building ([#93](https://github.com/taikoxyz/alethia-reth/issues/93)) ([3e0fdad](https://github.com/taikoxyz/alethia-reth/commit/3e0fdad9b9fbf7f6550c7209185fd6623468452c))
+* **payload:** align Engine API block build flow and drop redundant txlist prebuild ([#89](https://github.com/taikoxyz/alethia-reth/issues/89)) ([a3732d3](https://github.com/taikoxyz/alethia-reth/commit/a3732d3ca6a473ce96274e58d26bdef75ad2befe))
+* **payload:** make `payload_id_taiko` public ([#92](https://github.com/taikoxyz/alethia-reth/issues/92)) ([5137cd8](https://github.com/taikoxyz/alethia-reth/commit/5137cd8aa1a5c1602bd61b0851211dfdf5913c3b))
+* rename some crates ([a3cccc0](https://github.com/taikoxyz/alethia-reth/commit/a3cccc0dd6cb76a0b82f929d82db1a7199c247eb))
+* **repo:** bump `reth` dependency to `v1.10.0` ([#91](https://github.com/taikoxyz/alethia-reth/issues/91)) ([2d6587c](https://github.com/taikoxyz/alethia-reth/commit/2d6587c91c7857144a047b5cf9b011510609b2c8))
+* **rpc:** cap batch lookback and return explicit lookback-exceeded error ([#101](https://github.com/taikoxyz/alethia-reth/issues/101)) ([e507512](https://github.com/taikoxyz/alethia-reth/commit/e5075126189949ba6ae6a8082f08aaa0352c7f52))
+* **rpc:** derive proposal scan head from head L1 origin ([#100](https://github.com/taikoxyz/alethia-reth/issues/100)) ([3f2d51d](https://github.com/taikoxyz/alethia-reth/commit/3f2d51d28e57f69d97ea5a2cc090b23fbeb8ce19))
+
+
+### Bug Fixes
+
+* decouple primitives from net feature ([69428d8](https://github.com/taikoxyz/alethia-reth/commit/69428d8dfab9281116920c169d05c74718e8c16b))
+* **miner:** include extra data in payload id calculation ([e42d4b0](https://github.com/taikoxyz/alethia-reth/commit/e42d4b0fd91b6339c87ad0ac4da148a689b3c62f))
+* **payload:** fix a self-recursion issue in `build` ([#70](https://github.com/taikoxyz/alethia-reth/issues/70)) ([09fc76a](https://github.com/taikoxyz/alethia-reth/commit/09fc76ab9343aebef43b3106a067d061d375e137))
+* **payload:** include extra data in payload id calculation ([#87](https://github.com/taikoxyz/alethia-reth/issues/87)) ([e42d4b0](https://github.com/taikoxyz/alethia-reth/commit/e42d4b0fd91b6339c87ad0ac4da148a689b3c62f))
+* **repo:** decouple `primitives` from `net` feature ([#85](https://github.com/taikoxyz/alethia-reth/issues/85)) ([69428d8](https://github.com/taikoxyz/alethia-reth/commit/69428d8dfab9281116920c169d05c74718e8c16b))
+* **rpc:** ensure withdrawals consistency in `eth_getBlockByNumber` response ([#90](https://github.com/taikoxyz/alethia-reth/issues/90)) ([dc179e6](https://github.com/taikoxyz/alethia-reth/commit/dc179e6138ebda069bf4d3f2d27dce60daf122ec))
+* **rpc:** ensure withdrawals consistency in eth_getBlockByNumber response ([dc179e6](https://github.com/taikoxyz/alethia-reth/commit/dc179e6138ebda069bf4d3f2d27dce60daf122ec))
+
+
+### Chores
+
+* **block:** add `serde` feature ([#88](https://github.com/taikoxyz/alethia-reth/issues/88)) ([c1b15c4](https://github.com/taikoxyz/alethia-reth/commit/c1b15c4e3e10586c4025277f39868eb2a74ce92f))
+* **block:** remove an unnecessary method override for `ConfigureEvm` ([#69](https://github.com/taikoxyz/alethia-reth/issues/69)) ([588e077](https://github.com/taikoxyz/alethia-reth/commit/588e077400e7276304cd907eb0bc679b608b4b51))
+* **consensus,evm:** harden helers and payload accounting ([3efd144](https://github.com/taikoxyz/alethia-reth/commit/3efd1442f82c2430471b0cd1e6a48a32e6196166))
+* **consensus,evm:** harden helpers and payload accounting ([#71](https://github.com/taikoxyz/alethia-reth/issues/71)) ([3efd144](https://github.com/taikoxyz/alethia-reth/commit/3efd1442f82c2430471b0cd1e6a48a32e6196166))
+* **consensus:** rename `ANCHOR_V3_GAS_LIMIT` to `ANCHOR_V3_V4_GAS_LIMIT` ([#65](https://github.com/taikoxyz/alethia-reth/issues/65)) ([9d9899d](https://github.com/taikoxyz/alethia-reth/commit/9d9899db9abe0d3bcfaf475d6afc75716df2c741))
+* **repo:** align `reth` dependencies to `v1.10.1` ([#97](https://github.com/taikoxyz/alethia-reth/issues/97)) ([20f8584](https://github.com/taikoxyz/alethia-reth/commit/20f8584a682ff12db183179299a935ac19a939aa))
+* **repo:** bump `reth` to `v1.10.2` ([#102](https://github.com/taikoxyz/alethia-reth/issues/102)) ([a89ade3](https://github.com/taikoxyz/alethia-reth/commit/a89ade33e6561f121f644f7cb91cb73c6e5063e4))
+
+
+### Code Refactoring
+
+* **block:** extract shared transaction selection logic into `tx_selection` module ([#94](https://github.com/taikoxyz/alethia-reth/issues/94)) ([03e4879](https://github.com/taikoxyz/alethia-reth/commit/03e4879989c412cc5c542c7017dc26b25bfd3455))
+* **node-builder:** simplify builder structs and remove unnecessary attributes ([#84](https://github.com/taikoxyz/alethia-reth/issues/84)) ([8b1d020](https://github.com/taikoxyz/alethia-reth/commit/8b1d020f66e5394764cb1ebcc70e2e864b6d973c))
+* **repo:** introduce minimum scope of dependencies for zkvm usage ([#79](https://github.com/taikoxyz/alethia-reth/issues/79)) ([a3cccc0](https://github.com/taikoxyz/alethia-reth/commit/a3cccc0dd6cb76a0b82f929d82db1a7199c247eb))
+* **repo:** simplify some implementation ([#83](https://github.com/taikoxyz/alethia-reth/issues/83)) ([8871786](https://github.com/taikoxyz/alethia-reth/commit/887178653bc0a277a19c05c5b4a4270b5a10109f))
+* **rpc:** replace TaikoEthApi newtype with type alias ([#82](https://github.com/taikoxyz/alethia-reth/issues/82)) ([a011964](https://github.com/taikoxyz/alethia-reth/commit/a0119642a88c47acac42471c2585bbb9b42a9110))
+* **rpc:** use payload builder resolve path for `wait_for_built_payload` ([#72](https://github.com/taikoxyz/alethia-reth/issues/72)) ([bc8a18f](https://github.com/taikoxyz/alethia-reth/commit/bc8a18f97eb14542fa14bea4c8c3501d911419a8))
+* simplify builder structs and remove unnecessary attributes ([8b1d020](https://github.com/taikoxyz/alethia-reth/commit/8b1d020f66e5394764cb1ebcc70e2e864b6d973c))
+
 ## [0.6.0](https://github.com/taikoxyz/alethia-reth/compare/v0.5.0...v0.6.0) (2025-11-22)
 
 

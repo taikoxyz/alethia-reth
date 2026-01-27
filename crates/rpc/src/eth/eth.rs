@@ -146,10 +146,11 @@ where
             if let Ok(Some(block_number)) = batch_lookup {
                 return Ok(U256::from(block_number));
             }
-            if let Err(error) = batch_lookup
-                && !Self::is_missing_table_error(&error) {
-                    return Err(EthApiError::InternalEthError.into());
-                }
+            if let Err(error) = batch_lookup &&
+                !Self::is_missing_table_error(&error)
+            {
+                return Err(EthApiError::InternalEthError.into());
+            }
         }
 
         match self.find_last_block_number_by_batch_id(batch_id)? {

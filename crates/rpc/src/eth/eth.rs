@@ -38,6 +38,8 @@ where
     provider: Provider,
 }
 
+/// The result of searching for the last block number by batch ID.
+#[derive(Debug, PartialEq, Eq)]
 enum LastBlockSearchResult {
     Found(u64),
     NotFound,
@@ -48,6 +50,7 @@ impl<Provider> TaikoExt<Provider>
 where
     Provider: DatabaseProviderFactory + BlockReaderIdExt,
 {
+    /// Checks if the given database error indicates a missing table or key.
     fn is_missing_table_error(error: &DatabaseError) -> bool {
         match error {
             DatabaseError::Open(info) | DatabaseError::Read(info) => {

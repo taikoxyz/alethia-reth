@@ -75,6 +75,11 @@ tables! {
     type Key = BlockNumber;
     type Value = BlockNumber;
   }
+
+  table BatchToLastBlock {
+    type Key = BlockNumber;
+    type Value = BlockNumber;
+  }
 }
 
 #[cfg(test)]

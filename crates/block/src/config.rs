@@ -107,7 +107,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             difficulty: U256::ZERO,
             prevrandao: header.mix_hash(),
             gas_limit: header.gas_limit(),
-            basefee: header.base_fee_per_gas().unwrap(),
+            basefee: header.base_fee_per_gas().unwrap_or_default(),
             blob_excess_gas_and_price: None,
         };
 

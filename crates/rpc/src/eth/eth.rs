@@ -1,14 +1,12 @@
-use alloy_primitives::U256;
-use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth_db_api::transaction::DbTx;
-use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
-use reth_rpc_eth_types::EthApiError;
-
-use crate::eth::error::TaikoApiError;
+use crate::eth::error::{TaikoApiError, internal_eth_error};
 use alethia_reth_db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
 use alethia_reth_primitives::payload::attributes::RpcL1Origin;
+use alloy_primitives::U256;
+use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use reth_db_api::transaction::DbTx;
+use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
 
 /// trait interface for a custom rpc namespace: `taiko`
 ///
@@ -46,14 +44,13 @@ where
 {
     /// Retrieves the L1 origin by its ID from the database.
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>> {
-        let provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
+        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
 
         Ok(Some(
             provider
                 .into_tx()
                 .get::<StoredL1OriginTable>(id.to())
-                .map_err(|_| EthApiError::InternalEthError)?
+                .map_err(internal_eth_error)?
                 .ok_or(TaikoApiError::GethNotFound)?
                 .into_rpc(),
         ))
@@ -61,14 +58,13 @@ where
 
     /// Retrieves the head L1 origin from the database.
     fn head_l1_origin(&self) -> RpcResult<Option<RpcL1Origin>> {
-        let provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
+        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
 
         self.l1_origin_by_id(U256::from(
             provider
                 .into_tx()
                 .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-                .map_err(|_| EthApiError::InternalEthError)?
+                .map_err(internal_eth_error)?
                 .ok_or(TaikoApiError::GethNotFound)?,
         ))
     }

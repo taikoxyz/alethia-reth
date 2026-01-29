@@ -1,5 +1,5 @@
 #![allow(clippy::too_many_arguments)]
-use std::{convert::Infallible, sync::Arc};
+use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as _, Transaction as _};
 use alloy_eips::{BlockId, BlockNumberOrTag};
@@ -27,7 +27,7 @@ use reth_rpc_eth_types::EthApiError;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::eth::error::TaikoApiError;
+use crate::eth::error::{TaikoApiError, internal_eth_error};
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::TaikoNextBlockEnvAttributes,
@@ -177,7 +177,7 @@ where
         let latest_block = self
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
-            .map_err(|e| EthApiError::Internal(e.into()))?;
+            .map_err(internal_eth_error)?;
         // If there is no head, the lookup cannot proceed.
         let Some(latest_block) = latest_block else {
             return Ok(LastBlockSearchResult::NotFound);
@@ -185,8 +185,7 @@ where
         // Capture the latest block number to detect head-only matches.
         let head_number = latest_block.header().number();
         // Read-only database provider for L1 origin lookups during scanning.
-        let db_provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
+        let db_provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
         // Read-only transaction used for repeated L1 origin reads.
         let db_tx = db_provider.into_tx();
 
@@ -228,7 +227,7 @@ where
                         current_block = self
                             .provider
                             .block_by_number_or_tag(BlockNumberOrTag::Number(block_number - 1))
-                            .map_err(|e| EthApiError::Internal(e.into()))?;
+                            .map_err(internal_eth_error)?;
                         continue;
                     }
                 }
@@ -236,7 +235,7 @@ where
                 Err(error) => {
                     // Treat missing-table errors as empty data; fail on real DB errors.
                     if !Self::is_missing_table_error(&error) {
-                        return Err(EthApiError::InternalEthError);
+                        return Err(internal_eth_error(error));
                     }
                 }
             }
@@ -265,7 +264,7 @@ where
             current_block = self
                 .provider
                 .block_by_number_or_tag(BlockNumberOrTag::Number(block_number - 1))
-                .map_err(|e| EthApiError::Internal(e.into()))?;
+                .map_err(internal_eth_error)?;
         }
 
         Ok(LastBlockSearchResult::NotFound)
@@ -281,7 +280,7 @@ where
             if let Err(error) = batch_lookup &&
                 !Self::is_missing_table_error(&error)
             {
-                return Err(EthApiError::InternalEthError.into());
+                return Err(internal_eth_error(error).into());
             }
         }
 
@@ -311,7 +310,6 @@ where
     Evm: ConfigureEngineEvm<
             TaikoExecutionData,
             Primitives = EthPrimitives,
-            Error = Infallible,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
@@ -320,34 +318,27 @@ where
             >,
             BlockAssembler = TaikoBlockAssembler,
         > + 'static,
+    Evm::Error: core::fmt::Debug,
 {
     /// Sets the L1 head origin in the database.
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
-        let tx = self
-            .provider
-            .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?
-            .into_tx();
+        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
 
         tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
-            .map_err(|_| EthApiError::InternalEthError)?;
+            .map_err(internal_eth_error)?;
 
-        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
+        tx.commit().map_err(internal_eth_error)?;
 
         Ok(id)
     }
 
     /// Sets the L1 origin signature in the database.
     async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<RpcL1Origin> {
-        let tx = self
-            .provider
-            .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?
-            .into_tx();
+        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
 
         let mut l1_origin = tx
             .get::<StoredL1OriginTable>(id.to())
-            .map_err(|_| EthApiError::InternalEthError)?
+            .map_err(internal_eth_error)?
             .ok_or(TaikoApiError::GethNotFound)?;
 
         l1_origin.signature = <[u8; 65]>::try_from(signature.as_ref()).map_err(|_| {
@@ -355,46 +346,36 @@ where
         })?;
 
         tx.put::<StoredL1OriginTable>(l1_origin.block_id.to(), l1_origin.clone())
-            .map_err(|_| EthApiError::InternalEthError)?;
+            .map_err(internal_eth_error)?;
 
-        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
+        tx.commit().map_err(internal_eth_error)?;
 
         Ok(l1_origin.into_rpc())
     }
 
     /// Sets the mapping from batch ID to its last block number in the database.
     async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<u64> {
-        let tx = self
-            .provider
-            .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?
-            .into_tx();
-        tx.put::<BatchToLastBlock>(batch_id.to(), block_number.to())
-            .map_err(|_| EthApiError::InternalEthError)?;
-        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
+        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
+        tx.put::<BatchToLastBlock>(batch_id.to(), block_number.to()).map_err(internal_eth_error)?;
+        tx.commit().map_err(internal_eth_error)?;
         Ok(batch_id.to())
     }
 
     /// Updates the L1 origin in the database.
     async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>> {
-        let tx = self
-            .provider
-            .database_provider_rw()
-            .map_err(|_| EthApiError::InternalEthError)?
-            .into_tx();
+        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
 
         tx.put::<StoredL1OriginTable>(l1_origin.block_id.to(), (&l1_origin).into())
-            .map_err(|_| EthApiError::InternalEthError)?;
+            .map_err(internal_eth_error)?;
 
-        tx.commit().map_err(|_| EthApiError::InternalEthError)?;
+        tx.commit().map_err(internal_eth_error)?;
 
         Ok(Some(l1_origin))
     }
 
     /// Retrieves the last L1 origin for the given batch ID.
     async fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>> {
-        let provider =
-            self.provider.database_provider_ro().map_err(|_| EthApiError::InternalEthError)?;
+        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
 
         let block_id = self.resolve_last_block_number_by_batch_id(batch_id)?;
 
@@ -402,7 +383,7 @@ where
             provider
                 .into_tx()
                 .get::<StoredL1OriginTable>(block_id.to())
-                .map_err(|_| EthApiError::InternalEthError)?
+                .map_err(internal_eth_error)?
                 .ok_or(TaikoApiError::GethNotFound)?
                 .into_rpc(),
         ))
@@ -457,7 +438,7 @@ where
         let parent_block = self
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
-            .map_err(|e| EthApiError::Internal(e.into()))?
+            .map_err(internal_eth_error)?
             .ok_or(EthApiError::HeaderNotFound(BlockId::Number(BlockNumberOrTag::Latest)))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();

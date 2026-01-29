@@ -298,9 +298,11 @@ where
     let mut best_txs = pool
         .best_transactions_with_attributes(BestTransactionsAttributes::new(config.base_fee, None));
 
-    let mut lists = vec![ExecutedTxList::default()];
+    let mut lists = Vec::with_capacity(config.max_lists.max(1));
+    lists.push(ExecutedTxList::default());
     // Per-list state for adaptive DA size calibration.
-    let mut da_guard_states = vec![DaRatioState::default()];
+    let mut da_guard_states = Vec::with_capacity(config.max_lists.max(1));
+    da_guard_states.push(DaRatioState::default());
 
     while let Some(pool_tx) = best_txs.next() {
         // 1. Check cancellation

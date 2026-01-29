@@ -383,7 +383,7 @@ where
             .map_err(|_| EthApiError::InternalEthError)?
             .into_tx();
 
-        tx.put::<StoredL1OriginTable>(l1_origin.block_id.to(), l1_origin.clone().into())
+        tx.put::<StoredL1OriginTable>(l1_origin.block_id.to(), (&l1_origin).into())
             .map_err(|_| EthApiError::InternalEthError)?;
 
         tx.commit().map_err(|_| EthApiError::InternalEthError)?;

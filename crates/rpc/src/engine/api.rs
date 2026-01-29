@@ -173,12 +173,18 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        let payload_attrs = payload_attributes.clone();
+        let (stored_l1_origin, is_preconf_block) = match payload_attributes.as_ref() {
+            Some(payload) => (
+                Some(StoredL1Origin::from(&payload.l1_origin)),
+                payload.l1_origin.is_preconf_block(),
+            ),
+            None => (None, false),
+        };
 
         let status =
             self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?;
 
-        if let Some(payload) = payload_attrs {
+        if let Some(mut stored_l1_origin) = stored_l1_origin {
             let payload_id = status
                 .payload_id
                 .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
@@ -188,10 +194,9 @@ where
                 .await
                 .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
 
-            let mut stored_l1_origin: StoredL1Origin = payload.l1_origin.clone().into();
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
-            self.persist_l1_origin(stored_l1_origin, payload.l1_origin.is_preconf_block())
+            self.persist_l1_origin(stored_l1_origin, is_preconf_block)
                 .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
         }
 

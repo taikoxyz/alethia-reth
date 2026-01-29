@@ -250,7 +250,7 @@ where
         &self,
         args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
     ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
-        taiko_payload(self.evm_config.clone(), self.client.clone(), self.pool.clone(), args)
+        taiko_payload(&self.evm_config, &self.client, &self.pool, args)
     }
 
     /// Invoked when the payload job is being resolved and there is no payload yet.
@@ -275,9 +275,9 @@ where
 // Build a Taiko network payload using the given attributes.
 #[inline]
 fn taiko_payload<EvmConfig, Client, Pool>(
-    evm_config: EvmConfig,
-    client: Client,
-    pool: Pool,
+    evm_config: &EvmConfig,
+    client: &Client,
+    pool: &Pool,
     args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where

@@ -50,6 +50,21 @@ impl From<RpcL1Origin> for StoredL1Origin {
     }
 }
 
+impl From<&RpcL1Origin> for StoredL1Origin {
+    // Converts a borrowed `RpcL1Origin` into a `StoredL1Origin` without cloning.
+    fn from(rpc_l1_origin: &RpcL1Origin) -> Self {
+        StoredL1Origin {
+            block_id: rpc_l1_origin.block_id,
+            l2_block_hash: rpc_l1_origin.l2_block_hash,
+            l1_block_height: rpc_l1_origin.l1_block_height.unwrap_or(U256::ZERO),
+            l1_block_hash: rpc_l1_origin.l1_block_hash.unwrap_or(B256::ZERO),
+            build_payload_args_id: rpc_l1_origin.build_payload_args_id,
+            is_forced_inclusion: rpc_l1_origin.is_forced_inclusion,
+            signature: rpc_l1_origin.signature,
+        }
+    }
+}
+
 impl StoredL1Origin {
     /// Converts the stored representation back into its RPC form.
     pub fn into_rpc(self) -> RpcL1Origin {

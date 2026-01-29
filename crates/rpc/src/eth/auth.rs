@@ -1,5 +1,5 @@
 #![allow(clippy::too_many_arguments)]
-use std::{convert::Infallible, sync::Arc};
+use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as _, Transaction as _};
 use alloy_eips::{BlockId, BlockNumberOrTag};
@@ -310,7 +310,6 @@ where
     Evm: ConfigureEngineEvm<
             TaikoExecutionData,
             Primitives = EthPrimitives,
-            Error = Infallible,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
@@ -319,6 +318,7 @@ where
             >,
             BlockAssembler = TaikoBlockAssembler,
         > + 'static,
+    Evm::Error: core::fmt::Debug,
 {
     /// Sets the L1 head origin in the database.
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {

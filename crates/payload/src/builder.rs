@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc};
+use std::sync::Arc;
 
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
@@ -210,7 +210,6 @@ impl<Client, Pool, EvmConfig> PayloadBuilder for TaikoPayloadBuilder<Client, Poo
 where
     EvmConfig: ConfigureEvm<
             Primitives = EthPrimitives,
-            Error = Infallible,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
@@ -219,6 +218,7 @@ where
             >,
             BlockAssembler = TaikoBlockAssembler,
         > + Clone,
+    EvmConfig::Error: core::fmt::Debug,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader
@@ -283,7 +283,6 @@ fn taiko_payload<EvmConfig, Client, Pool>(
 where
     EvmConfig: ConfigureEvm<
             Primitives = EthPrimitives,
-            Error = Infallible,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
                 RethReceiptBuilder,
@@ -292,6 +291,7 @@ where
             >,
             BlockAssembler = TaikoBlockAssembler,
         >,
+    EvmConfig::Error: core::fmt::Debug,
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,

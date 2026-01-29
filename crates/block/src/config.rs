@@ -1,4 +1,4 @@
-use std::{borrow::Cow, convert::Infallible, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::Decodable2718;
@@ -32,6 +32,21 @@ use alethia_reth_chainspec::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
+
+/// Error when base fee is missing from a block header.
+#[derive(Debug)]
+pub struct MissingBaseFee {
+    /// The block number where base fee was missing.
+    pub block_number: u64,
+}
+
+impl std::fmt::Display for MissingBaseFee {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "missing base_fee_per_gas in block {}", self.block_number)
+    }
+}
+
+impl std::error::Error for MissingBaseFee {}
 
 /// A complete configuration of EVM for Taiko network.
 #[derive(Debug, Clone)]
@@ -73,7 +88,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     /// The primitives type used by the EVM.
     type Primitives = EthPrimitives;
     /// The error type that is returned by [`Self::next_evm_env`].
-    type Error = Infallible;
+    type Error = AnyError;
     /// Context required for configuring next block environment.
     ///
     /// Contains values that can't be derived from the parent block.
@@ -100,6 +115,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec_and_mainnet_gas_params(taiko_revm_spec(&self.chain_spec().inner, header));
 
+        let basefee: u64 = header
+            .base_fee_per_gas()
+            .ok_or_else(|| AnyError::new(MissingBaseFee { block_number: header.number() }))?;
         let block_env = BlockEnv {
             number: U256::from(header.number()),
             beneficiary: header.beneficiary(),
@@ -107,7 +125,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             difficulty: U256::ZERO,
             prevrandao: header.mix_hash(),
             gas_limit: header.gas_limit(),
-            basefee: header.base_fee_per_gas().unwrap_or_default(),
+            basefee,
             blob_excess_gas_and_price: None,
         };
 
@@ -151,12 +169,16 @@ impl ConfigureEvm for TaikoEvmConfig {
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
     ) -> Result<reth_evm::ExecutionCtxFor<'a, Self>, Self::Error> {
+        let basefee_per_gas = block
+            .header()
+            .base_fee_per_gas
+            .ok_or_else(|| AnyError::new(MissingBaseFee { block_number: block.header().number }))?;
         Ok(TaikoBlockExecutionCtx {
             parent_hash: block.header().parent_hash,
             parent_beacon_block_root: block.header().parent_beacon_block_root,
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
-            basefee_per_gas: block.header().base_fee_per_gas.unwrap_or_default(),
+            basefee_per_gas,
             extra_data: block.header().extra_data.clone(),
         })
     }

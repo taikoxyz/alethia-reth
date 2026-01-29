@@ -72,5 +72,4 @@ where
                 .ok_or(TaikoApiError::GethNotFound)?,
         ))
     }
-
 }

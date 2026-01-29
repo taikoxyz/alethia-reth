@@ -11,7 +11,10 @@ use reth::{
     revm::primitives::Address,
     transaction_pool::{PoolConsensusTx, PoolTransaction, TransactionPool},
 };
-use reth_db_api::{DatabaseError, transaction::{DbTx, DbTxMut}};
+use reth_db_api::{
+    DatabaseError,
+    transaction::{DbTx, DbTxMut},
+};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::ConfigureEngineEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -25,7 +28,6 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::eth::error::TaikoApiError;
-use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::TaikoNextBlockEnvAttributes,
@@ -36,6 +38,7 @@ use alethia_reth_block::{
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
@@ -175,6 +178,7 @@ where
             .provider
             .block_by_number_or_tag(BlockNumberOrTag::Latest)
             .map_err(|e| EthApiError::Internal(e.into()))?;
+        // If there is no head, the lookup cannot proceed.
         let Some(latest_block) = latest_block else {
             return Ok(LastBlockSearchResult::NotFound);
         };
@@ -196,6 +200,7 @@ where
                 return Ok(LastBlockSearchResult::LookbackExceeded);
             }
             scanned_blocks += 1;
+            // Anchor transactions are expected to be first; bail if missing.
             let Some(first_tx) = block.body().transactions().first() else {
                 break;
             };
@@ -203,6 +208,7 @@ where
             let input = first_tx.input();
             let input = input.as_ref();
 
+            // Stop scanning once the anchor selector is no longer present.
             if !input.starts_with(ANCHOR_V4_SELECTOR) {
                 break;
             }
@@ -213,10 +219,12 @@ where
             let l1_origin_lookup = db_tx.get::<StoredL1OriginTable>(block_number);
             match l1_origin_lookup {
                 Ok(Some(l1_origin)) => {
+                    // Skip preconfirmation blocks where L1 height is zero.
                     if l1_origin.l1_block_height == U256::ZERO {
                         if block_number == 0 {
                             break;
                         }
+                        // Move to the previous block and continue scanning.
                         current_block = self
                             .provider
                             .block_by_number_or_tag(BlockNumberOrTag::Number(block_number - 1))
@@ -226,12 +234,14 @@ where
                 }
                 Ok(None) => {}
                 Err(error) => {
+                    // Treat missing-table errors as empty data; fail on real DB errors.
                     if !Self::is_missing_table_error(&error) {
                         return Err(EthApiError::InternalEthError);
                     }
                 }
             }
 
+            // Decode the Shasta proposal ID from the block extra data.
             let Some(proposal_id) =
                 decode_shasta_proposal_id(block.header().extra_data().as_ref()).map(U256::from)
             else {
@@ -239,9 +249,11 @@ where
             };
 
             if proposal_id == batch_id {
+                // A match at the head is still uncertain without a cache mapping.
                 if head_number == block.header().number() {
                     return Ok(LastBlockSearchResult::UncertainAtHead);
                 }
+                // Found a confirmed match below head.
                 return Ok(LastBlockSearchResult::Found(block.header().number()));
             }
 
@@ -249,6 +261,7 @@ where
                 break;
             }
 
+            // Walk backwards one block and continue scanning.
             current_block = self
                 .provider
                 .block_by_number_or_tag(BlockNumberOrTag::Number(block_number - 1))
@@ -265,7 +278,9 @@ where
             if let Ok(Some(block_number)) = batch_lookup {
                 return Ok(U256::from(block_number));
             }
-            if let Err(error) = batch_lookup && !Self::is_missing_table_error(&error) {
+            if let Err(error) = batch_lookup &&
+                !Self::is_missing_table_error(&error)
+            {
                 return Err(EthApiError::InternalEthError.into());
             }
         }
@@ -909,8 +924,7 @@ mod tests {
                 is_forced_inclusion: false,
                 signature: [0u8; 65],
             };
-            tx.put::<StoredL1OriginTable>(1, confirmed_origin)
-                .expect("insert confirmed l1 origin");
+            tx.put::<StoredL1OriginTable>(1, confirmed_origin).expect("insert confirmed l1 origin");
             // Stored L1 origin for the preconfirmation head block.
             let preconf_origin = StoredL1Origin {
                 block_id: U256::from(2u64),
@@ -921,8 +935,7 @@ mod tests {
                 is_forced_inclusion: false,
                 signature: [0u8; 65],
             };
-            tx.put::<StoredL1OriginTable>(2, preconf_origin)
-                .expect("insert preconf l1 origin");
+            tx.put::<StoredL1OriginTable>(2, preconf_origin).expect("insert preconf l1 origin");
         }
         provider_rw.commit().expect("commit");
 

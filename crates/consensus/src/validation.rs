@@ -174,10 +174,8 @@ where
             let expected_base_fee = if parent.number() == 0 {
                 SHASTA_INITIAL_BASE_FEE
             } else {
-                let parent_base_fee = parent
-                    .header()
-                    .base_fee_per_gas()
-                    .ok_or(ConsensusError::BaseFeeMissing)?;
+                let parent_base_fee =
+                    parent.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
                 parent_block_time(self.block_reader.as_ref(), parent)
                     .map(|block_time| {
                         calculate_next_block_eip4396_base_fee(
@@ -353,8 +351,8 @@ fn validate_input_selector(
 
 #[cfg(test)]
 mod test {
-    use alloy_consensus::Header;
     use super::validate_input_selector;
+    use alloy_consensus::Header;
 
     use super::*;
 

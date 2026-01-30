@@ -198,9 +198,8 @@ fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<Transact
     txs.extend(list.transactions.iter().map(|etx| etx.tx.inner()));
     txs.push(candidate.inner());
 
-    let mut rlp_bytes = Vec::with_capacity(list_length::<&TransactionSigned, TransactionSigned>(
-        &txs,
-    ));
+    let mut rlp_bytes =
+        Vec::with_capacity(list_length::<&TransactionSigned, TransactionSigned>(&txs));
     encode_list::<&TransactionSigned, TransactionSigned>(&txs, &mut rlp_bytes);
 
     let mut encoder = ZlibEncoder::new(Vec::new(), zlib_compression());

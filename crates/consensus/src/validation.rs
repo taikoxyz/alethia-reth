@@ -174,9 +174,15 @@ where
             let expected_base_fee = if parent.number() == 0 {
                 SHASTA_INITIAL_BASE_FEE
             } else {
+                let parent_base_fee =
+                    parent.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
                 parent_block_time(self.block_reader.as_ref(), parent)
                     .map(|block_time| {
-                        calculate_next_block_eip4396_base_fee(parent.header(), block_time)
+                        calculate_next_block_eip4396_base_fee(
+                            parent.header(),
+                            block_time,
+                            parent_base_fee,
+                        )
                     })
                     // If we cannot retrieve the grandparent timestamp (e.g. when running without a
                     // fully wired block reader), fall back to the header's base fee to avoid
@@ -345,10 +351,8 @@ fn validate_input_selector(
 
 #[cfg(test)]
 mod test {
-    use alloy_consensus::Header;
-    use alloy_primitives::U64;
-
     use super::validate_input_selector;
+    use alloy_consensus::Header;
 
     use super::*;
 
@@ -358,7 +362,7 @@ mod test {
 
         assert!(validate_against_parent_eip4396_base_fee(&header).is_err());
 
-        header.base_fee_per_gas = Some(U64::random().to::<u64>());
+        header.base_fee_per_gas = Some(1);
         assert!(validate_against_parent_eip4396_base_fee(&header).is_ok());
     }
 
@@ -399,12 +403,20 @@ mod test {
 
         // Test 1: Gas used equals target (gas_limit / 2)
         parent.gas_used = 15_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
 
         // Test 2: Gas used above target
         parent.gas_used = 20_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(
             base_fee, MAX_BASE_FEE,
             "Base fee should stay clamped at MAX_BASE_FEE when the parent is already at the cap"
@@ -412,7 +424,11 @@ mod test {
 
         // Test 3: Gas used below target
         parent.gas_used = 10_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
     }
 }

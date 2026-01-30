@@ -25,12 +25,14 @@ pub const MAX_BASE_FEE: u64 = 1_000_000_000; // 1 Gwei
 /// # Arguments
 /// * `parent` - The parent block header
 /// * `parent_block_time` - The time between the parent block and its parent (in seconds)
+/// * `parent_base_fee_per_gas` - The parent block base fee per gas (validated by caller)
 ///
 /// # Returns
 /// The calculated base fee for the next block
 pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     parent: &H,
     parent_block_time: u64,
+    parent_base_fee_per_gas: u64,
 ) -> u64 {
     // First post-genesis block lacks a grandparent timestamp, so keep the default base
     // fee.
@@ -43,8 +45,6 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
         parent_base_gas_target * parent_block_time / BLOCK_TIME_TARGET,
         parent_gas_limit * MAX_GAS_TARGET_PERCENT / 100,
     );
-    let parent_base_fee_per_gas =
-        parent.base_fee_per_gas().expect("parent block must have base fee");
     let parent_gas_used = parent.gas_used();
     let mut base_fee = parent_base_fee_per_gas;
 
@@ -101,7 +101,11 @@ mod tests {
         // Test 1: Gas used equals adjusted target with standard block time
         // Adjusted target = 15_000_000 * 2 / 2 = 15_000_000
         parent.gas_used = 15_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(
             base_fee, 900_000_000,
             "Base fee should remain the same when at adjusted target"
@@ -109,17 +113,29 @@ mod tests {
 
         // Test 2: Gas used above adjusted target
         parent.gas_used = 20_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee, 937_500_000, "Base fee should increase when above adjusted target");
 
         // Test 3: Gas used below adjusted target
         parent.gas_used = 10_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee, 862_500_000, "Base fee should decrease when below adjusted target");
 
         // Test 4: Edge case - zero gas used
         parent.gas_used = 0;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee, 787_500_000, "Base fee should decrease with zero gas used");
 
         // Test 5: Different block times affecting adjusted target
@@ -127,19 +143,31 @@ mod tests {
 
         // With 1 second block time: adjusted_target = 15_000_000 * 1 / 2 = 7_500_000
         // gas_used (15_000_000) > adjusted_target (7_500_000), so base fee increases
-        let base_fee_1s = calculate_next_block_eip4396_base_fee(&parent, 1);
+        let base_fee_1s = calculate_next_block_eip4396_base_fee(
+            &parent,
+            1,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee_1s, 956_250_000, "Base fee should increase with shorter block time");
 
         // With 4 seconds block time: adjusted_target = min(15_000_000 * 4 / 2, 30_000_000 * 0.95) =
         // min(30_000_000, 28_500_000) = 28_500_000 gas_used (15_000_000) < adjusted_target
         // (28_500_000), so base fee decreases
-        let base_fee_4s = calculate_next_block_eip4396_base_fee(&parent, 4);
+        let base_fee_4s = calculate_next_block_eip4396_base_fee(
+            &parent,
+            4,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee_4s, 798_750_000, "Base fee should decrease with longer block time");
 
         // Test 6: Verify exact calculation
         parent.gas_used = 16_000_000;
         parent.base_fee_per_gas = Some(900_000_000);
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, 2);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            2,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         // gas_used_delta = 16_000_000 - 15_000_000 = 1_000_000
         // base_fee_delta = max(900_000_000 * 1_000_000 / 15_000_000 / 8, 1) = max(7_500_000, 1) =
         // 7_500_000
@@ -157,12 +185,20 @@ mod tests {
         };
 
         parent.gas_used = 16_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee, MAX_BASE_FEE, "Base fee should not exceed MAX_BASE_FEE");
 
         parent.base_fee_per_gas = Some(MIN_BASE_FEE);
         parent.gas_used = 14_000_000;
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(base_fee, MIN_BASE_FEE, "Base fee should not go below MIN_BASE_FEE");
     }
 
@@ -174,7 +210,11 @@ mod tests {
             ..Default::default()
         };
 
-        let base_fee = calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET);
+        let base_fee = calculate_next_block_eip4396_base_fee(
+            &parent,
+            BLOCK_TIME_TARGET,
+            parent.base_fee_per_gas.expect("parent base fee set"),
+        );
         assert_eq!(
             base_fee, SHASTA_INITIAL_BASE_FEE,
             "First post-genesis block should use the default Shasta base fee"

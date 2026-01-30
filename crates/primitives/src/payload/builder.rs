@@ -187,7 +187,7 @@ pub fn payload_id_taiko(
     hasher.update(attributes.payload_attributes.prev_randao.as_slice());
     hasher.update(attributes.payload_attributes.suggested_fee_recipient.as_slice());
     if let Some(withdrawals) = &attributes.payload_attributes.withdrawals {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(withdrawals.length());
         withdrawals.encode(&mut buf);
         hasher.update(buf);
     }
@@ -203,7 +203,9 @@ pub fn payload_id_taiko(
 
     let mut out = hasher.finalize();
     out[0] = payload_version;
-    PayloadId::new(out.as_slice()[..8].try_into().expect("sufficient length"))
+    let mut id_bytes = [0u8; 8];
+    id_bytes.copy_from_slice(&out[..8]);
+    PayloadId::new(id_bytes)
 }
 
 // Decodes the given RLP-encoded bytes into transactions.

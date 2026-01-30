@@ -26,7 +26,6 @@ pub const MAX_BASE_FEE: u64 = 1_000_000_000; // 1 Gwei
 /// * `parent` - The parent block header
 /// * `parent_block_time` - The time between the parent block and its parent (in seconds)
 /// * `parent_base_fee_per_gas` - The parent block base fee per gas (validated by caller)
-/// * `parent_base_fee_per_gas` - The parent block base fee per gas (validated by caller)
 ///
 /// # Returns
 /// The calculated base fee for the next block

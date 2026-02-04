@@ -214,7 +214,32 @@ where
 
             // Current block number used for DB lookups and traversal.
             let block_number = block.header().number();
+
+            // Decode the Shasta proposal ID from the block extra data.
+            let Some(proposal_id) =
+                decode_shasta_proposal_id(block.header().extra_data().as_ref()).map(U256::from)
+            else {
+                break;
+            };
+
+            if proposal_id < batch_id {
+                return Ok(LastBlockSearchResult::NotFound);
+            }
+
+            if proposal_id > batch_id {
+                if block_number == 0 {
+                    break;
+                }
+                // Walk backwards one block and continue scanning.
+                current_block = self
+                    .provider
+                    .block_by_number_or_tag(BlockNumberOrTag::Number(block_number - 1))
+                    .map_err(internal_eth_error)?;
+                continue;
+            }
+
             // L1 origin lookup to skip preconfirmation blocks.
+            let mut has_l1_origin = false;
             let l1_origin_lookup = db_tx.get::<StoredL1OriginTable>(block_number);
             match l1_origin_lookup {
                 Ok(Some(l1_origin)) => {
@@ -230,6 +255,7 @@ where
                             .map_err(internal_eth_error)?;
                         continue;
                     }
+                    has_l1_origin = true;
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -240,31 +266,15 @@ where
                 }
             }
 
-            // Decode the Shasta proposal ID from the block extra data.
-            let Some(proposal_id) =
-                decode_shasta_proposal_id(block.header().extra_data().as_ref()).map(U256::from)
-            else {
-                break;
-            };
-
-            if proposal_id == batch_id {
-                // A match at the head is still uncertain without a cache mapping.
-                if head_number == block.header().number() {
+            // A match at the head is still uncertain without a cache mapping.
+            if head_number == block.header().number() {
+                if !has_l1_origin {
                     return Ok(LastBlockSearchResult::UncertainAtHead);
                 }
-                // Found a confirmed match below head.
                 return Ok(LastBlockSearchResult::Found(block.header().number()));
             }
-
-            if block_number == 0 {
-                break;
-            }
-
-            // Walk backwards one block and continue scanning.
-            current_block = self
-                .provider
-                .block_by_number_or_tag(BlockNumberOrTag::Number(block_number - 1))
-                .map_err(internal_eth_error)?;
+            // Found a confirmed match below head.
+            return Ok(LastBlockSearchResult::Found(block.header().number()));
         }
 
         Ok(LastBlockSearchResult::NotFound)
@@ -698,16 +708,6 @@ mod tests {
 
         {
             let tx = provider_rw.tx_mut();
-            let stored_origin = StoredL1Origin {
-                block_id: U256::from(header.number),
-                l2_block_hash: Default::default(),
-                l1_block_height: U256::from(1u64),
-                l1_block_hash: Default::default(),
-                build_payload_args_id: [0u8; 8],
-                is_forced_inclusion: false,
-                signature: [0u8; 65],
-            };
-            tx.put::<StoredL1OriginTable>(header.number, stored_origin).expect("insert l1 origin");
             tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, header.number)
                 .expect("insert head l1 origin");
         }
@@ -825,6 +825,75 @@ mod tests {
             err.message(),
             "proposal last block lookback exceeded: BatchToLastBlockID missing and lookback limit reached",
         );
+    }
+
+    #[test]
+    /// Returns not-found when the proposal ID is lower than the target batch ID.
+    fn returns_not_found_when_proposal_id_below_batch_id() {
+        let max_scan = max_backward_scan_blocks();
+        let head_number = max_scan + 1;
+        let target_batch_id = U256::from(head_number + 1);
+
+        let mut input = ANCHOR_V4_SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 4]);
+        let input = Bytes::from(input);
+
+        let build_anchor_tx = |input: &Bytes| {
+            let tx = TxLegacy {
+                chain_id: None,
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: input.clone(),
+            };
+
+            TransactionSigned::new_unhashed(
+                tx.into(),
+                Signature::new(U256::from(1), U256::from(2), false),
+            )
+        };
+
+        let factory = create_taiko_test_provider_factory();
+        let provider_rw = factory.provider_rw().expect("provider rw");
+        let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+        let genesis_block = genesis_header.into_block(BlockBody::default());
+        let genesis_recovered = RecoveredBlock::new_unhashed(genesis_block, vec![]);
+        provider_rw.insert_block(&genesis_recovered).expect("insert genesis block");
+
+        let mut head_header = None;
+
+        for number in 1..=head_number {
+            let mut extra = [0u8; 7];
+            extra[0] = 0x2a;
+            extra[1..7].copy_from_slice(&number.to_be_bytes()[2..]);
+
+            let header = Header {
+                number,
+                gas_limit: 1_000_000,
+                extra_data: extra.to_vec().into(),
+                ..Default::default()
+            };
+            let body =
+                BlockBody { transactions: vec![build_anchor_tx(&input)], ..Default::default() };
+            let block = header.clone().into_block(body);
+            let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+            provider_rw.insert_block(&recovered).expect("insert block");
+
+            if number == head_number {
+                head_header = Some(header);
+            }
+        }
+        provider_rw.commit().expect("commit");
+
+        let latest = SealedHeader::seal_slow(head_header.expect("head header"));
+        let provider = BlockchainProvider::with_latest(factory, latest).expect("provider");
+        let api = TaikoAuthExt::new(provider, (), (), ());
+
+        let err = api.resolve_last_block_number_by_batch_id(target_batch_id).unwrap_err();
+        assert_eq!(err.code(), -32004);
+        assert_eq!(err.message(), "not found");
     }
 
     #[test]

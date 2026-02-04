@@ -214,12 +214,18 @@ where
 
             // Current block number used for DB lookups and traversal.
             let block_number = block.header().number();
+            if block_number == 0 {
+                break;
+            }
 
             // Decode the Shasta proposal ID from the block extra data.
-            let Some(proposal_id) =
-                decode_shasta_proposal_id(block.header().extra_data().as_ref()).map(U256::from)
-            else {
-                break;
+            let extra = block.header().extra_data();
+            let extra = extra.as_ref();
+            let Some(proposal_id) = decode_shasta_proposal_id(extra).map(U256::from) else {
+                return Err(EthApiError::InvalidParams(format!(
+                    "extraData too short for proposalId: {}",
+                    extra.len()
+                )));
             };
 
             if proposal_id < batch_id {
@@ -227,9 +233,6 @@ where
             }
 
             if proposal_id > batch_id {
-                if block_number == 0 {
-                    break;
-                }
                 // Walk backwards one block and continue scanning.
                 current_block = self
                     .provider
@@ -245,9 +248,6 @@ where
                 Ok(Some(l1_origin)) => {
                     // Skip preconfirmation blocks where L1 height is zero.
                     if l1_origin.l1_block_height == U256::ZERO {
-                        if block_number == 0 {
-                            break;
-                        }
                         // Move to the previous block and continue scanning.
                         current_block = self
                             .provider
@@ -894,6 +894,61 @@ mod tests {
         let err = api.resolve_last_block_number_by_batch_id(target_batch_id).unwrap_err();
         assert_eq!(err.code(), -32004);
         assert_eq!(err.message(), "not found");
+    }
+
+    #[test]
+    /// Returns invalid params when extra data is too short to decode the proposal ID.
+    fn returns_invalid_params_when_extra_data_too_short() {
+        let batch_id = U256::from(1u64);
+        let extra = vec![0x2a];
+
+        let mut input = ANCHOR_V4_SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 4]);
+        let input = Bytes::from(input);
+
+        let build_anchor_tx = |input: &Bytes| {
+            let tx = TxLegacy {
+                chain_id: None,
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: input.clone(),
+            };
+
+            TransactionSigned::new_unhashed(
+                tx.into(),
+                Signature::new(U256::from(1), U256::from(2), false),
+            )
+        };
+
+        let factory = create_taiko_test_provider_factory();
+        let provider_rw = factory.provider_rw().expect("provider rw");
+        let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+        let genesis_block = genesis_header.into_block(BlockBody::default());
+        let genesis_recovered = RecoveredBlock::new_unhashed(genesis_block, vec![]);
+        provider_rw.insert_block(&genesis_recovered).expect("insert genesis block");
+
+        let header = Header {
+            number: 1,
+            gas_limit: 1_000_000,
+            extra_data: extra.into(),
+            ..Default::default()
+        };
+        let body = BlockBody { transactions: vec![build_anchor_tx(&input)], ..Default::default() };
+        let block = header.clone().into_block(body);
+        let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+        provider_rw.insert_block(&recovered).expect("insert block");
+        provider_rw.commit().expect("commit");
+
+        let latest = SealedHeader::seal_slow(header);
+        let provider = BlockchainProvider::with_latest(factory, latest).expect("provider");
+        let api = TaikoAuthExt::new(provider, (), (), ());
+
+        let err = api.resolve_last_block_number_by_batch_id(batch_id).unwrap_err();
+        assert_eq!(err.code(), -32602);
+        assert_eq!(err.message(), "extraData too short for proposalId: 1");
     }
 
     #[test]

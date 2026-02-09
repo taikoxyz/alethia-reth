@@ -13,9 +13,25 @@ default = []
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec" }
+alethia-reth-db = { path = "../db" }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 eyre = { workspace = true }
+futures = "0.3"
 reth = { workspace = true }
+reth-db-api = { workspace = true }
+reth-eth-wire = { workspace = true }
 reth-ethereum = { workspace = true }
+reth-network-api = { workspace = true }
 reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
+reth-provider = { workspace = true }
+reth-storage-errors = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+reth-network = { workspace = true, features = ["test-utils"] }
+reth-provider = { workspace = true, features = ["test-utils"] }
+reth-tracing = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

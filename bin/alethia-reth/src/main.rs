@@ -2,6 +2,7 @@
 use alethia_reth_cli::{TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs};
 use alethia_reth_node::{
     TaikoNode,
+    network::{TaikoAuxSyncConfig, install_taiko_aux_subprotocol},
     rpc::eth::{
         auth::{TaikoAuthExt, TaikoAuthExtApiServer},
         eth::{TaikoExt, TaikoExtApiServer},
@@ -46,6 +47,14 @@ fn main() {
                 })
                 .launch_with_debug_capabilities()
                 .await?;
+
+            // Install taiko auxiliary-table sync subprotocol.
+            install_taiko_aux_subprotocol(
+                node.provider.clone(),
+                node.network.clone(),
+                node.task_executor.clone(),
+                TaikoAuxSyncConfig::default(),
+            )?;
 
             // Install ress subprotocol.
             if ress.enabled {

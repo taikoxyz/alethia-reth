@@ -9,6 +9,9 @@ use tracing::info;
 
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 
+pub mod taiko_aux;
+pub use taiko_aux::{TaikoAuxSyncConfig, install_taiko_aux_subprotocol};
+
 /// A basic Taiko network builder service.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TaikoNetworkBuilder;

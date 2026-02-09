@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use alethia_reth_chainspec::{
-    spec::TaikoChainSpec, TAIKO_DEVNET, TAIKO_HOODI, TAIKO_MAINNET, TAIKO_MASAYA,
+    TAIKO_DEVNET, TAIKO_HOODI, TAIKO_MAINNET, TAIKO_MASAYA, spec::TaikoChainSpec,
 };
-use reth_cli::chainspec::{parse_genesis, ChainSpecParser};
+use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 
 /// Chains supported by alethia-reth. First value should be used as the default.
 pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "taiko-hoodi", "devnet", "masaya"];

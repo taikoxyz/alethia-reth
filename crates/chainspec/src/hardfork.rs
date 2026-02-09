@@ -82,6 +82,15 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ]))
 });
 
+/// Taiko Masaya list of hardforks.
+pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
+    ChainHardforks::new(extend_with_shared_hardforks(vec![
+        (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
+        (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
+    ]))
+});
+
 // Extend the given hardforks with shared common Ethereum hardforks.
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
@@ -142,5 +151,12 @@ mod test {
         let shasta = TAIKO_HOODI_HARDFORKS.fork(TaikoHardfork::Shasta);
         assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
         assert_eq!(shasta, ForkCondition::Timestamp(1_770_296_400));
+    }
+
+    #[test]
+    fn test_masaya_shasta_uses_timestamp_activation() {
+        let shasta = TAIKO_MASAYA_HARDFORKS.fork(TaikoHardfork::Shasta);
+        assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
+        assert_eq!(shasta, ForkCondition::Timestamp(0));
     }
 }

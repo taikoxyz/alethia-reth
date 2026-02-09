@@ -7,7 +7,10 @@ use reth_primitives::SealedHeader;
 use reth_revm::primitives::U256;
 
 use crate::{
-    hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_HOODI_HARDFORKS, TAIKO_MAINNET_HARDFORKS},
+    hardfork::{
+        TAIKO_DEVNET_HARDFORKS, TAIKO_HOODI_HARDFORKS, TAIKO_MAINNET_HARDFORKS,
+        TAIKO_MASAYA_HARDFORKS,
+    },
     spec::TaikoChainSpec,
 };
 
@@ -26,6 +29,10 @@ pub const TAIKO_HOODI_GENESIS_HASH: B256 =
 pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
     b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9");
 
+/// Genesis hash for the Taiko Masaya network.
+pub const TAIKO_MASAYA_GENESIS_HASH: B256 =
+    b256!("0xeef96dc254e1ac4a0044b116e38b16dface1a153d9299c056552898a43f8513e");
+
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_mainnet_chain_spec().into());
@@ -37,6 +44,10 @@ pub static TAIKO_DEVNET: LazyLock<Arc<TaikoChainSpec>> =
 /// The Taiko Hoodi spec
 pub static TAIKO_HOODI: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_hoodi_chain_spec().into());
+
+/// The Taiko Masaya spec
+pub static TAIKO_MASAYA: LazyLock<Arc<TaikoChainSpec>> =
+    LazyLock::new(|| make_taiko_masaya_chain_spec().into());
 
 // Creates a new [`ChainSpec`] for the Taiko Devnet network.
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
@@ -62,6 +73,15 @@ fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
         include_str!("genesis/mainnet.json"),
         TAIKO_MAINNET_GENESIS_HASH,
         TAIKO_MAINNET_HARDFORKS.clone(),
+    )
+}
+
+// Creates a new [`ChainSpec`] for the Taiko Masaya network.
+fn make_taiko_masaya_chain_spec() -> TaikoChainSpec {
+    make_taiko_chain_spec(
+        include_str!("genesis/masaya.json"),
+        TAIKO_MASAYA_GENESIS_HASH,
+        TAIKO_MASAYA_HARDFORKS.clone(),
     )
 }
 
@@ -111,6 +131,11 @@ mod test {
                 "mainnet",
                 make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
                 TAIKO_MAINNET_GENESIS_HASH,
+            ),
+            (
+                "masaya",
+                make_taiko_masaya_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_MASAYA_GENESIS_HASH,
             ),
         ];
 

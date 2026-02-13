@@ -1,10 +1,10 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
+    constants::MAXIMUM_EXTRA_DATA_SIZE, BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::{Address, B256, U256};
-use alloy_sol_types::{SolCall, sol};
+use alloy_sol_types::{sol, SolCall};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
     validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
@@ -18,8 +18,13 @@ use reth_primitives_traits::{
     SignedTransaction,
 };
 
-use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
-use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
+use crate::eip4396::{
+    calculate_next_block_eip4396_base_fee, MAINNET_MIN_BASE_FEE, MIN_BASE_FEE,
+    SHASTA_INITIAL_BASE_FEE,
+};
+use alethia_reth_chainspec::{
+    hardfork::TaikoHardforks, spec::TaikoChainSpec, TAIKO_MAINNET_GENESIS_HASH,
+};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 sol! {
@@ -168,6 +173,13 @@ where
                     timestamp: header.timestamp(),
                 });
             }
+            // For mainnet, we use a different minimum base fee to clamp the calculated base fee.
+            let min_base_fee_to_clamp =
+                if self.chain_spec.inner.genesis_hash() == TAIKO_MAINNET_GENESIS_HASH {
+                    MAINNET_MIN_BASE_FEE
+                } else {
+                    MIN_BASE_FEE
+                };
 
             // Calculate the expected base fee using EIP-4396 rules. For the first post-genesis
             // block there is no grandparent timestamp, so reuse the default Shasta base fee.
@@ -182,6 +194,7 @@ where
                             parent.header(),
                             block_time,
                             parent_base_fee,
+                            min_base_fee_to_clamp,
                         )
                     })
                     // If we cannot retrieve the grandparent timestamp (e.g. when running without a
@@ -390,7 +403,7 @@ mod test {
     #[test]
     fn test_validate_header_against_parent() {
         use crate::eip4396::{
-            BLOCK_TIME_TARGET, MAX_BASE_FEE, calculate_next_block_eip4396_base_fee,
+            calculate_next_block_eip4396_base_fee, BLOCK_TIME_TARGET, MAX_BASE_FEE, MIN_BASE_FEE,
         };
 
         // Test calculate_next_block_eip4396_base_fee function
@@ -407,6 +420,7 @@ mod test {
             &parent,
             BLOCK_TIME_TARGET,
             parent.base_fee_per_gas.expect("parent base fee set"),
+            MIN_BASE_FEE,
         );
         assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
 
@@ -416,6 +430,7 @@ mod test {
             &parent,
             BLOCK_TIME_TARGET,
             parent.base_fee_per_gas.expect("parent base fee set"),
+            MIN_BASE_FEE,
         );
         assert_eq!(
             base_fee, MAX_BASE_FEE,
@@ -428,6 +443,7 @@ mod test {
             &parent,
             BLOCK_TIME_TARGET,
             parent.base_fee_per_gas.expect("parent base fee set"),
+            MIN_BASE_FEE,
         );
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
     }

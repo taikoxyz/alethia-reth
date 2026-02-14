@@ -1,10 +1,10 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    constants::MAXIMUM_EXTRA_DATA_SIZE, BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH,
+    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
 use alloy_primitives::{Address, B256, U256};
-use alloy_sol_types::{sol, SolCall};
+use alloy_sol_types::{SolCall, sol};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
     validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
@@ -19,10 +19,10 @@ use reth_primitives_traits::{
 };
 
 use crate::eip4396::{
-    calculate_next_block_eip4396_base_fee, MAINNET_MIN_BASE_FEE, MIN_BASE_FEE,
-    SHASTA_INITIAL_BASE_FEE,
+    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
+    calculate_next_block_eip4396_base_fee,
 };
-use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec, TAIKO_MAINNET};
+use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 sol! {
@@ -406,7 +406,7 @@ mod test {
     #[test]
     fn test_validate_header_against_parent() {
         use crate::eip4396::{
-            calculate_next_block_eip4396_base_fee, BLOCK_TIME_TARGET, MAX_BASE_FEE, MIN_BASE_FEE,
+            BLOCK_TIME_TARGET, MAX_BASE_FEE, MIN_BASE_FEE, calculate_next_block_eip4396_base_fee,
         };
 
         // Test calculate_next_block_eip4396_base_fee function

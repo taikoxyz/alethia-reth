@@ -8,12 +8,12 @@ use reth_revm::{
     },
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
-    precompile::{PrecompileSpecId, Precompiles},
 };
 
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
+    precompiles::TaikoPrecompiles,
     spec::TaikoSpecId,
 };
 
@@ -47,14 +47,13 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
+        let taiko_precompiles = TaikoPrecompiles::new_with_spec(spec_id).into();
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
             .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )));
+            .with_precompiles(taiko_precompiles);
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
     }
@@ -67,14 +66,13 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
+        let taiko_precompiles = TaikoPrecompiles::new_with_spec(spec_id).into();
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
             .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )))
+            .with_precompiles(taiko_precompiles)
             .with_inspector(inspector);
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)

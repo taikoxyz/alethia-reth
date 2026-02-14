@@ -18,8 +18,11 @@ use reth_primitives_traits::{
     SignedTransaction,
 };
 
-use crate::eip4396::{SHASTA_INITIAL_BASE_FEE, calculate_next_block_eip4396_base_fee};
-use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
+use crate::eip4396::{
+    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
+    calculate_next_block_eip4396_base_fee,
+};
+use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 sol! {
@@ -168,6 +171,7 @@ where
                     timestamp: header.timestamp(),
                 });
             }
+            let min_base_fee_to_clamp = min_base_fee_to_clamp(self.chain_spec.as_ref());
 
             // Calculate the expected base fee using EIP-4396 rules. For the first post-genesis
             // block there is no grandparent timestamp, so reuse the default Shasta base fee.
@@ -182,6 +186,7 @@ where
                             parent.header(),
                             block_time,
                             parent_base_fee,
+                            min_base_fee_to_clamp,
                         )
                     })
                     // If we cannot retrieve the grandparent timestamp (e.g. when running without a
@@ -238,6 +243,16 @@ where
         .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?;
 
     Ok(parent.header().timestamp() - grandparent_timestamp)
+}
+
+#[inline]
+/// Returns the minimum base fee to clamp to based on the chain ID.
+fn min_base_fee_to_clamp(chain_spec: &TaikoChainSpec) -> u64 {
+    if chain_spec.inner.chain.id() == TAIKO_MAINNET.inner.chain.id() {
+        MAINNET_MIN_BASE_FEE
+    } else {
+        MIN_BASE_FEE
+    }
 }
 
 /// Context required to validate an anchor transaction.
@@ -352,6 +367,7 @@ fn validate_input_selector(
 #[cfg(test)]
 mod test {
     use super::validate_input_selector;
+    use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
     use alloy_consensus::Header;
 
     use super::*;
@@ -390,7 +406,7 @@ mod test {
     #[test]
     fn test_validate_header_against_parent() {
         use crate::eip4396::{
-            BLOCK_TIME_TARGET, MAX_BASE_FEE, calculate_next_block_eip4396_base_fee,
+            BLOCK_TIME_TARGET, MAX_BASE_FEE, MIN_BASE_FEE, calculate_next_block_eip4396_base_fee,
         };
 
         // Test calculate_next_block_eip4396_base_fee function
@@ -407,6 +423,7 @@ mod test {
             &parent,
             BLOCK_TIME_TARGET,
             parent.base_fee_per_gas.expect("parent base fee set"),
+            MIN_BASE_FEE,
         );
         assert_eq!(base_fee, 1_000_000_000, "Base fee should remain the same when at target");
 
@@ -416,6 +433,7 @@ mod test {
             &parent,
             BLOCK_TIME_TARGET,
             parent.base_fee_per_gas.expect("parent base fee set"),
+            MIN_BASE_FEE,
         );
         assert_eq!(
             base_fee, MAX_BASE_FEE,
@@ -428,7 +446,19 @@ mod test {
             &parent,
             BLOCK_TIME_TARGET,
             parent.base_fee_per_gas.expect("parent base fee set"),
+            MIN_BASE_FEE,
         );
         assert!(base_fee < 1_000_000_000, "Base fee should decrease when below target");
+    }
+
+    #[test]
+    fn test_min_base_fee_to_clamp_uses_chain_id() {
+        let mut non_mainnet_spec = TAIKO_DEVNET.as_ref().clone();
+        non_mainnet_spec.inner.chain = TAIKO_MAINNET.inner.chain;
+        assert_eq!(
+            min_base_fee_to_clamp(&non_mainnet_spec),
+            MAINNET_MIN_BASE_FEE,
+            "Mainnet clamp should be selected by chain id"
+        );
     }
 }

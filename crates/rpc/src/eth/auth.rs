@@ -136,7 +136,7 @@ enum LastBlockSearchResult {
 }
 
 /// Maximum number of blocks to scan backwards when resolving a batch ID.
-const MAX_BACKWARD_SCAN_BLOCKS: u64 = 192 * 1024;
+const MAX_BACKWARD_SCAN_BLOCKS: u64 = 192 * 21_600;
 #[cfg(test)]
 /// Shorter backward scan limit for test execution.
 const TEST_MAX_BACKWARD_SCAN_BLOCKS: u64 = 64;
@@ -282,16 +282,15 @@ where
 
     /// Resolves the last block number, preferring the DB cache before scanning.
     fn resolve_last_block_number_by_batch_id(&self, batch_id: U256) -> RpcResult<U256> {
-        if let Ok(provider) = self.provider.database_provider_ro() {
-            let batch_lookup = provider.into_tx().get::<BatchToLastBlock>(batch_id.to());
-            if let Ok(Some(block_number)) = batch_lookup {
-                return Ok(U256::from(block_number));
-            }
-            if let Err(error) = batch_lookup &&
-                !Self::is_missing_table_error(&error)
-            {
-                return Err(internal_eth_error(error).into());
-            }
+        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
+        let batch_lookup = provider.into_tx().get::<BatchToLastBlock>(batch_id.to());
+        if let Ok(Some(block_number)) = batch_lookup {
+            return Ok(U256::from(block_number));
+        }
+        if let Err(error) = batch_lookup &&
+            !Self::is_missing_table_error(&error)
+        {
+            return Err(internal_eth_error(error).into());
         }
 
         match self.find_last_block_number_by_batch_id(batch_id)? {
@@ -304,6 +303,16 @@ where
                 Err(TaikoApiError::ProposalLastBlockLookbackExceeded.into())
             }
         }
+    }
+
+    /// Reads a stored L1 origin by resolved block ID.
+    fn read_l1_origin_by_block_id(&self, block_id: U256) -> RpcResult<Option<RpcL1Origin>> {
+        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
+        Ok(provider
+            .into_tx()
+            .get::<StoredL1OriginTable>(block_id.to())
+            .map_err(internal_eth_error)?
+            .map(|l1_origin| l1_origin.into_rpc()))
     }
 }
 
@@ -385,18 +394,9 @@ where
 
     /// Retrieves the last L1 origin for the given batch ID.
     async fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>> {
-        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
-
         let block_id = self.resolve_last_block_number_by_batch_id(batch_id)?;
 
-        Ok(Some(
-            provider
-                .into_tx()
-                .get::<StoredL1OriginTable>(block_id.to())
-                .map_err(internal_eth_error)?
-                .ok_or(TaikoApiError::GethNotFound)?
-                .into_rpc(),
-        ))
+        self.read_l1_origin_by_block_id(block_id)
     }
 
     /// Retrieves the last block ID for the given batch ID.
@@ -532,7 +532,8 @@ where
 mod tests {
     use super::*;
     use alethia_reth_db::model::{
-        STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
+        BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
+        StoredL1OriginTable,
     };
     use alloy_consensus::{BlockBody, Header, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
@@ -657,7 +658,7 @@ mod tests {
         let api = TaikoAuthExt::new(provider, (), (), ());
 
         let err = api.resolve_last_block_number_by_batch_id(proposal_id).unwrap_err();
-        assert_eq!(err.code(), -32005);
+        assert_eq!(err.code(), -32000);
         assert_eq!(
             err.message(),
             "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed",
@@ -725,7 +726,7 @@ mod tests {
         let api = TaikoAuthExt::new(provider, (), (), ());
 
         let err = api.resolve_last_block_number_by_batch_id(proposal_id).unwrap_err();
-        assert_eq!(err.code(), -32005);
+        assert_eq!(err.code(), -32000);
         assert_eq!(
             err.message(),
             "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed",
@@ -735,7 +736,7 @@ mod tests {
     #[test]
     /// Verifies the production lookback limit constant.
     fn uses_expected_lookback_limit_constant() {
-        assert_eq!(MAX_BACKWARD_SCAN_BLOCKS, 192 * 1024);
+        assert_eq!(MAX_BACKWARD_SCAN_BLOCKS, 192 * 21_600);
     }
 
     #[test]
@@ -820,7 +821,7 @@ mod tests {
         let api = TaikoAuthExt::new(provider, (), (), ());
 
         let err = api.resolve_last_block_number_by_batch_id(target_batch_id).unwrap_err();
-        assert_eq!(err.code(), -32006);
+        assert_eq!(err.code(), -32000);
         assert_eq!(
             err.message(),
             "proposal last block lookback exceeded: BatchToLastBlockID missing and lookback limit reached",
@@ -892,8 +893,35 @@ mod tests {
         let api = TaikoAuthExt::new(provider, (), (), ());
 
         let err = api.resolve_last_block_number_by_batch_id(target_batch_id).unwrap_err();
-        assert_eq!(err.code(), -32004);
+        assert_eq!(err.code(), -32000);
         assert_eq!(err.message(), "not found");
+    }
+
+    #[test]
+    /// Returns None when batch mapping exists but no L1 origin row is present.
+    fn returns_none_when_batch_mapping_exists_but_l1_origin_missing() {
+        let batch_id = U256::from(1u64);
+        let block_id = U256::from(7u64);
+
+        let factory = create_taiko_test_provider_factory();
+        let mut provider_rw = factory.provider_rw().expect("provider rw");
+        let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+        let genesis_block = genesis_header.clone().into_block(BlockBody::default());
+        let genesis_recovered = RecoveredBlock::new_unhashed(genesis_block, vec![]);
+        provider_rw.insert_block(&genesis_recovered).expect("insert genesis block");
+        {
+            let tx = provider_rw.tx_mut();
+            tx.put::<BatchToLastBlock>(batch_id.to(), block_id.to()).expect("insert batch mapping");
+        }
+        provider_rw.commit().expect("commit");
+
+        let latest = SealedHeader::seal_slow(genesis_header);
+        let provider = BlockchainProvider::with_latest(factory, latest).expect("provider");
+        let api = TaikoAuthExt::new(provider, (), (), ());
+
+        let resolved = api.resolve_last_block_number_by_batch_id(batch_id).unwrap();
+        assert_eq!(resolved, block_id);
+        assert_eq!(api.read_l1_origin_by_block_id(resolved).unwrap(), None);
     }
 
     #[test]

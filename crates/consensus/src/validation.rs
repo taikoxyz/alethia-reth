@@ -1,10 +1,10 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
+    constants::MAXIMUM_EXTRA_DATA_SIZE, BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::{Address, B256, U256};
-use alloy_sol_types::{SolCall, sol};
+use alloy_sol_types::{sol, SolCall};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
     validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
@@ -19,10 +19,10 @@ use reth_primitives_traits::{
 };
 
 use crate::eip4396::{
-    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
-    calculate_next_block_eip4396_base_fee,
+    calculate_next_block_eip4396_base_fee, MAINNET_MIN_BASE_FEE, MIN_BASE_FEE,
+    SHASTA_INITIAL_BASE_FEE,
 };
-use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec, TAIKO_MAINNET};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 sol! {
@@ -119,6 +119,8 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
                 GotExpected { got: block.ommers_hash(), expected: EMPTY_OMMER_ROOT_HASH }.into(),
             ));
         }
+
+        validate_no_blob_transactions(block.body().transactions())?;
 
         Ok(())
     }
@@ -255,6 +257,18 @@ fn min_base_fee_to_clamp(chain_spec: &TaikoChainSpec) -> u64 {
     }
 }
 
+/// Validates that no blob transactions are included in the block.
+fn validate_no_blob_transactions<Tx: SignedTransaction>(
+    transactions: &[Tx],
+) -> Result<(), ConsensusError> {
+    if transactions.iter().any(|tx| tx.is_eip4844()) {
+        return Err(ConsensusError::Other(
+            "Blob transactions are not allowed".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Context required to validate an anchor transaction.
 pub struct AnchorValidationContext {
     /// Timestamp for hardfork selection.
@@ -369,6 +383,9 @@ mod test {
     use super::validate_input_selector;
     use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
     use alloy_consensus::Header;
+    use alloy_consensus::{Signed, TxEip4844, TxLegacy};
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+    use reth_ethereum::TransactionSigned;
 
     use super::*;
 
@@ -406,7 +423,7 @@ mod test {
     #[test]
     fn test_validate_header_against_parent() {
         use crate::eip4396::{
-            BLOCK_TIME_TARGET, MAX_BASE_FEE, MIN_BASE_FEE, calculate_next_block_eip4396_base_fee,
+            calculate_next_block_eip4396_base_fee, BLOCK_TIME_TARGET, MAX_BASE_FEE, MIN_BASE_FEE,
         };
 
         // Test calculate_next_block_eip4396_base_fee function
@@ -460,5 +477,53 @@ mod test {
             MAINNET_MIN_BASE_FEE,
             "Mainnet clamp should be selected by chain id"
         );
+    }
+
+    #[test]
+    fn test_rejects_blob_transactions() {
+        let transactions = vec![make_blob_tx()];
+
+        let err = validate_no_blob_transactions(&transactions)
+            .expect_err("blob transactions should be rejected");
+        assert!(matches!(err, ConsensusError::Other(_)));
+    }
+
+    #[test]
+    fn test_allows_non_blob_transactions() {
+        let transactions = vec![make_legacy_tx()];
+
+        assert!(validate_no_blob_transactions(&transactions).is_ok());
+    }
+
+    fn make_blob_tx() -> TransactionSigned {
+        let tx = TxEip4844 {
+            chain_id: ChainId::from(1u64),
+            nonce: 0,
+            gas_limit: 21_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 0,
+            to: Address::ZERO,
+            value: U256::ZERO,
+            access_list: Default::default(),
+            blob_versioned_hashes: vec![B256::ZERO],
+            max_fee_per_blob_gas: 1,
+            input: Bytes::default(),
+        };
+        let signature = Signature::new(U256::from(1), U256::from(2), false);
+        Signed::new_unchecked(tx, signature, B256::ZERO).into()
+    }
+
+    fn make_legacy_tx() -> TransactionSigned {
+        let tx = TxLegacy {
+            chain_id: Some(ChainId::from(1u64)),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::default(),
+        };
+        let signature = Signature::new(U256::from(1), U256::from(2), false);
+        Signed::new_unchecked(tx, signature, B256::ZERO).into()
     }
 }

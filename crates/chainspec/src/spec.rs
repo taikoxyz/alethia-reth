@@ -213,6 +213,11 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
     fn is_shasta_active(&self, timestamp: u64) -> bool {
         self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
+
+    /// Checks if the `Uzen` hardfork is active at the given timestamp.
+    fn is_uzen_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Uzen).active_at_timestamp(timestamp)
+    }
 }
 
 #[cfg(test)]

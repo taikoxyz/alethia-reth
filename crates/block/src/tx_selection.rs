@@ -328,6 +328,15 @@ where
 
         // 4. Calculate DA size upfront (needed for limit checks)
         let tx = pool_tx.to_consensus();
+        if tx.is_eip4844() {
+            best_txs.mark_invalid(
+                &pool_tx,
+                &InvalidPoolTransactionError::Consensus(
+                    InvalidTransactionError::TxTypeNotSupported,
+                ),
+            );
+            continue;
+        }
         let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
 
         // 5. Early reject transactions that cannot fit in any list

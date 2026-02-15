@@ -1,13 +1,14 @@
-use alloy_consensus::{Transaction, TxReceipt};
+use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
-    Database, FromRecoveredTx, FromTxWithEncoded, eth::receipt_builder::ReceiptBuilder,
+    Database, FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
+    eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
 use alloy_primitives::{Address, Bytes, Uint};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
-        BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
+        BlockExecutionError, BlockExecutor, BlockValidationError, ExecutableTx,
         InternalBlockExecutionError, StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
@@ -16,10 +17,7 @@ use reth_execution_types::BlockExecutionResult;
 use reth_primitives::Log;
 use reth_revm::{
     State,
-    context::{
-        Block as _,
-        result::{ExecutionResult, ResultAndState},
-    },
+    context::{Block as _, result::ResultAndState},
 };
 use revm_database_interface::DatabaseCommit;
 
@@ -87,6 +85,8 @@ where
     type Receipt = R::Receipt;
     /// EVM used by the executor.
     type Evm = E;
+    /// Result of transaction execution.
+    type Result = EthTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
     /// Applies any necessary changes before executing the block's transactions.
     /// NOTE: Here we use a system call to set the Anchor transact sender account information and
@@ -141,16 +141,14 @@ where
         Ok(())
     }
 
-    /// Executes a single transaction and applies execution result to internal state. Invokes the
-    /// given closure with an internal [`ExecutionResult`] produced by the EVM, and commits the
-    /// transaction to the state on [`CommitChanges::Yes`].
-    ///
-    /// Returns [`None`] if transaction was skipped via [`CommitChanges::No`].
-    fn execute_transaction_with_commit_condition(
+    /// Executes a transaction and returns the resulting state diff without persisting it; the
+    /// caller decides whether to commit.
+    fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
-        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
-    ) -> Result<Option<u64>, BlockExecutionError> {
+    ) -> Result<Self::Result, BlockExecutionError> {
+        let (tx_env, tx) = tx.into_parts();
+
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
         let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
@@ -163,34 +161,22 @@ where
             .into());
         }
 
-        let output = self.execute_transaction_without_commit(&tx)?;
+        let result = self
+            .evm
+            .transact(tx_env)
+            .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
 
-        if !f(&output.result).should_commit() {
-            return Ok(None);
-        }
-
-        let gas_used = self.commit_transaction(output, tx)?;
-        Ok(Some(gas_used))
-    }
-
-    /// Executes a transaction and returns the resulting state diff without persisting it; the
-    /// caller decides whether to commit.
-    fn execute_transaction_without_commit(
-        &mut self,
-        tx: impl ExecutableTx<Self>,
-    ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
-        // Run the transaction but leave state buffered so the caller can decide whether to commit.
-        self.evm.transact(&tx).map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))
+        Ok(EthTxResult {
+            result,
+            blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
+            tx_type: tx.tx().tx_type(),
+        })
     }
 
     /// Commits a previously executed transaction: updates receipts, gas accounting, and writes the
     /// buffered state changes to the database.
-    fn commit_transaction(
-        &mut self,
-        output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
-        tx: impl ExecutableTx<Self>,
-    ) -> Result<u64, BlockExecutionError> {
-        let ResultAndState { result, state } = output;
+    fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
+        let EthTxResult { result: ResultAndState { result, state }, tx_type, .. } = output;
 
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
@@ -201,7 +187,7 @@ where
 
         // Push transaction changeset and calculate header bloom filter for receipt.
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
-            tx: tx.tx(),
+            tx_type,
             evm: &self.evm,
             result,
             state: &state,
@@ -262,12 +248,13 @@ where
 
         for (idx, tx) in transactions.into_iter().enumerate() {
             let is_anchor_transaction = idx == 0;
+            let (tx_env, tx) = tx.into_parts();
             // Check transaction signature at first, if invalid, skip it directly.
             if !is_anchor_transaction && *tx.signer() == Address::ZERO {
                 continue;
             }
             // Execute transaction, if invalid, skip it directly.
-            self.execute_transaction(tx).map(|_| ()).or_else(|err| match err {
+            self.execute_transaction((tx_env, tx)).map(|_| ()).or_else(|err| match err {
                 BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
                 BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },

@@ -79,6 +79,7 @@ where
             tree_config,
             invalid_block_hook,
             changeset_cache,
+            ctx.node.task_executor().clone(),
         ))
     }
 }

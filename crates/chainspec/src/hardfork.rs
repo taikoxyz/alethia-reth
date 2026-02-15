@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use alloy_hardforks::{hardfork, EthereumHardfork, EthereumHardforks, ForkCondition, Hardfork};
+use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition, Hardfork, hardfork};
 use reth_chainspec::ChainHardforks;
 use reth_revm::primitives::U256;
 

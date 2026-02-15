@@ -162,7 +162,7 @@ where
         let has_blob_transactions =
             sealed_block.body().transactions().into_iter().any(|tx| tx.is_eip4844());
         reject_blob_transactions(has_blob_transactions)
-        .map_err(|e| NewPayloadError::Other(e.into()))?;
+            .map_err(|e| NewPayloadError::Other(e.into()))?;
 
         sealed_block.try_recover().map_err(|e| NewPayloadError::Other(e.into()))
     }

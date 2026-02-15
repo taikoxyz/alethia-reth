@@ -16,8 +16,6 @@ use reth_node_builder::{NodeBuilder, WithLaunchContext};
 use reth_tracing::FileWorkerGuard;
 use tracing::info;
 
-use reth::args::RessArgs;
-
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
@@ -34,13 +32,9 @@ pub mod tables;
 
 pub use parser::TaikoChainSpecParser;
 
-/// Additional Taiko CLI arguments layered on top of `RessArgs`.
+/// Additional Taiko CLI arguments layered on top of the base CLI.
 #[derive(Debug, clap::Args)]
 pub struct TaikoCliExtArgs {
-    /// Controls Taiko resource synchronization.
-    #[command(flatten)]
-    pub ress: RessArgs,
-
     /// Override the devnet Shasta hardfork activation timestamp (`0` keeps the embedded value).
     #[arg(
         long = "devnet-shasta-timestamp",
@@ -94,7 +88,7 @@ impl<
     /// before the node is started.
     pub fn run<L, Fut>(self, launcher: L) -> eyre::Result<()>
     where
-        L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,
+        L: FnOnce(WithLaunchContext<NodeBuilder<DatabaseEnv, C::ChainSpec>>, Ext) -> Fut,
         Fut: Future<Output = eyre::Result<()>>,
     {
         self.with_runner(CliRunner::try_default_runtime()?, launcher)
@@ -103,7 +97,7 @@ impl<
     /// Execute the configured cli command with the provided [`CliRunner`].
     pub fn with_runner<L, Fut>(self, runner: CliRunner, launcher: L) -> eyre::Result<()>
     where
-        L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,
+        L: FnOnce(WithLaunchContext<NodeBuilder<DatabaseEnv, C::ChainSpec>>, Ext) -> Fut,
         Fut: Future<Output = eyre::Result<()>>,
     {
         self.with_runner_and_components::<TaikoNode>(runner, async move |builder, ext| {
@@ -117,7 +111,7 @@ impl<
         mut self,
         runner: CliRunner,
         launcher: impl AsyncFnOnce(
-            WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>,
+            WithLaunchContext<NodeBuilder<DatabaseEnv, C::ChainSpec>>,
             Ext,
         ) -> eyre::Result<()>,
     ) -> eyre::Result<()>
@@ -178,7 +172,9 @@ impl<
                 .run_command_until_exit(|ctx| command.execute::<TaikoNode, _>(ctx, components)),
             Commands::P2P(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
             Commands::Config(command) => runner.run_until_ctrl_c(command.execute()),
-            Commands::Prune(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
+            Commands::Prune(command) => {
+                runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
+            }
             Commands::ReExecute(command) => {
                 runner.run_until_ctrl_c(command.execute::<TaikoNode>(components))
             }

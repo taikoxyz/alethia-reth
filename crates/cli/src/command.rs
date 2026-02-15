@@ -95,6 +95,7 @@ where
             engine,
             era,
             static_files,
+            storage,
         } = *self.0;
 
         // set up node config
@@ -115,6 +116,7 @@ where
             engine,
             era,
             static_files,
+            storage,
         };
 
         // Apply Taiko-specific devnet Shasta timestamp override if specified.
@@ -131,10 +133,9 @@ where
 
         // Initialize the database with extra tables for Taiko.
         tracing::info!(target: "reth::taiko::cli", path = ?db_path, "Opening database");
-        let database = Arc::new(
+        let database =
             init_db_for::<PathBuf, TaikoTables>(db_path.clone(), self.0.db.database_args())?
-                .with_metrics(),
-        );
+                .with_metrics();
 
         if with_unused_ports {
             node_config = node_config.with_unused_ports();

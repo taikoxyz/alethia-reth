@@ -590,6 +590,7 @@ mod tests {
                 .with_default_tables()
                 .build()
                 .expect("failed to create test RocksDB provider"),
+            reth::tasks::Runtime::default(),
         )
         .expect("failed to create test provider factory")
     }

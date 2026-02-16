@@ -4,4 +4,5 @@ pub mod evm;
 pub mod execution;
 pub mod factory;
 pub mod handler;
+pub mod precompiles;
 pub mod spec;

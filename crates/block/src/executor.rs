@@ -268,7 +268,10 @@ where
     }
 }
 
-/// Encode anchor system-call data as `(base_fee_share_pctg, caller_nonce)` big-endian bytes.
+/// Encode anchor pre-execution context for the treasury system call.
+///
+/// The payload is a fixed 16-byte big-endian blob (`u64 base_fee_share_pctg || u64 caller_nonce`)
+/// that the EVM-side system-call hook decodes before transaction execution.
 fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {
     let mut buf = [0u8; 16];
     buf[..8].copy_from_slice(&base_fee_share_pctg.to_be_bytes());
@@ -276,7 +279,9 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
     Bytes::copy_from_slice(&buf)
 }
 
-/// Decode post-Ontake extra-data bytes to recover base-fee sharing percentage.
+/// Decode post-Ontake `extra_data` into the configured base-fee sharing percentage.
+///
+/// Ontake+ blocks store the percentage as a `uint256`; only the low 64 bits are consumed here.
 fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0]

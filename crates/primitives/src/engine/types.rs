@@ -101,37 +101,37 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoExecutionPayloadV1 {
-    /// The parent hash of the block.
+    /// Keccak256 hash of the parent header, used to link this payload to the canonical chain.
     pub parent_hash: B256,
-    /// The fee recipient of the block.
+    /// Coinbase account that receives execution-layer priority fees.
     pub fee_recipient: Address,
-    /// The state root of the block.
+    /// Post-state trie root after executing all transactions in this payload.
     pub state_root: B256,
-    /// The receipts root of the block.
+    /// Trie root over all transaction receipts produced by this payload.
     pub receipts_root: B256,
-    /// The logs bloom of the block.
+    /// Bloom filter aggregating receipt logs for fast topic/address matching.
     pub logs_bloom: Bloom,
-    /// The previous randao of the block.
+    /// Beacon RANDAO mix committed into the payload header.
     pub prev_randao: B256,
-    /// The block number.
+    /// L2 block height represented by this payload.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub block_number: u64,
-    /// The gas limit of the block.
+    /// Maximum total gas that can be consumed by transactions in this payload.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub gas_limit: u64,
-    /// The gas used of the block.
+    /// Actual gas consumed by transaction execution.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub gas_used: u64,
-    /// The timestamp of the block.
+    /// Block timestamp (seconds since Unix epoch) chosen for this payload.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub timestamp: u64,
-    /// The extra data of the block.
+    /// Opaque protocol-specific bytes committed in the header.
     pub extra_data: Bytes,
-    /// The base fee per gas of the block.
+    /// Base fee per gas applied to transactions in this payload.
     pub base_fee_per_gas: U256,
-    /// The block hash of the block.
+    /// Header hash asserted by the builder/engine for this payload.
     pub block_hash: B256,
-    /// The transactions of the block.
+    /// RLP-encoded signed transactions; `None` preserves legacy optional-transaction behavior.
     #[serde(default)]
     pub transactions: Option<Vec<Bytes>>,
 }

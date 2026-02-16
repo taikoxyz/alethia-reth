@@ -102,6 +102,29 @@ pub struct TxPoolContentWithMinTipParams {
     pub min_tip: u64,
 }
 
+impl From<TxPoolContentParams> for TxPoolContentWithMinTipParams {
+    /// Converts base tx-pool query parameters into the min-tip variant with `min_tip = 0`.
+    fn from(params: TxPoolContentParams) -> Self {
+        let TxPoolContentParams {
+            beneficiary,
+            base_fee,
+            block_max_gas_limit,
+            max_bytes_per_tx_list,
+            locals,
+            max_transactions_lists,
+        } = params;
+        Self {
+            beneficiary,
+            base_fee,
+            block_max_gas_limit,
+            max_bytes_per_tx_list,
+            locals,
+            max_transactions_lists,
+            min_tip: 0,
+        }
+    }
+}
+
 /// trait interface for a custom auth rpc namespace: `taikoAuth`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
@@ -448,24 +471,7 @@ where
         &self,
         params: TxPoolContentParams,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
-        let TxPoolContentParams {
-            beneficiary,
-            base_fee,
-            block_max_gas_limit,
-            max_bytes_per_tx_list,
-            locals,
-            max_transactions_lists,
-        } = params;
-        self.tx_pool_content_with_min_tip(TxPoolContentWithMinTipParams {
-            beneficiary,
-            base_fee,
-            block_max_gas_limit,
-            max_bytes_per_tx_list,
-            locals,
-            max_transactions_lists,
-            min_tip: 0,
-        })
-        .await
+        self.tx_pool_content_with_min_tip(params.into()).await
     }
 
     /// Retrieves the transaction pool content with the given limits and minimum tip.

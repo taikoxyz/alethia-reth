@@ -1,3 +1,4 @@
+//! Taiko execution payload and sidecar representations.
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV1};
 use alloy_rpc_types_eth::Withdrawal;
@@ -8,8 +9,10 @@ use reth_payload_primitives::ExecutionPayload as ExecutionPayloadTr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TaikoExecutionData {
+    /// Base execution payload fields returned to the engine API.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub execution_payload: TaikoExecutionPayloadV1,
+    /// Taiko-specific sidecar metadata paired with the execution payload.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub taiko_sidecar: TaikoExecutionDataSidecar,
 }
@@ -22,6 +25,7 @@ impl TaikoExecutionData {
 }
 
 impl From<TaikoExecutionData> for ExecutionPayload {
+    /// Converts Taiko execution data into the engine `ExecutionPayload` enum.
     fn from(input: TaikoExecutionData) -> Self {
         input.into_payload()
     }
@@ -33,8 +37,11 @@ impl From<TaikoExecutionData> for ExecutionPayload {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoExecutionDataSidecar {
+    /// Transactions root hash for the payload.
     pub tx_hash: B256,
+    /// Optional withdrawals root hash for the payload.
     pub withdrawals_hash: Option<B256>,
+    /// Marker flag indicating whether this payload is a Taiko block.
     pub taiko_block: Option<bool>,
 }
 
@@ -130,7 +137,7 @@ pub struct TaikoExecutionPayloadV1 {
 }
 
 impl From<ExecutionPayloadV1> for TaikoExecutionPayloadV1 {
-    // Converts an `ExecutionPayloadV1` into a `TaikoExecutionPayloadV1`.
+    /// Converts an `ExecutionPayloadV1` into a `TaikoExecutionPayloadV1`.
     fn from(payload: ExecutionPayloadV1) -> Self {
         Self {
             parent_hash: payload.parent_hash,
@@ -152,7 +159,7 @@ impl From<ExecutionPayloadV1> for TaikoExecutionPayloadV1 {
 }
 
 impl From<TaikoExecutionPayloadV1> for ExecutionPayloadV1 {
-    // Converts a `TaikoExecutionPayloadV1` into an `ExecutionPayloadV1`.
+    /// Converts a `TaikoExecutionPayloadV1` into an `ExecutionPayloadV1`.
     fn from(val: TaikoExecutionPayloadV1) -> Self {
         ExecutionPayloadV1 {
             parent_hash: val.parent_hash,

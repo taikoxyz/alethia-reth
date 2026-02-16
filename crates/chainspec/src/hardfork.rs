@@ -1,3 +1,4 @@
+//! Taiko-specific hardfork identifiers and activation schedules.
 use std::sync::LazyLock;
 
 use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition, Hardfork, hardfork};
@@ -13,8 +14,11 @@ hardfork!(
   /// [`EthereumHardfork`].
   #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
   TaikoHardfork {
+      /// Ontake protocol upgrade.
       Ontake,
+      /// Pacaya protocol upgrade.
       Pacaya,
+      /// Shasta protocol upgrade.
       Shasta,
   }
 );
@@ -91,7 +95,7 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ]))
 });
 
-// Extend the given hardforks with shared common Ethereum hardforks.
+/// Extend Taiko hardfork activation tables with shared Ethereum hardfork definitions.
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
 ) -> Vec<(Box<dyn Hardfork>, ForkCondition)> {

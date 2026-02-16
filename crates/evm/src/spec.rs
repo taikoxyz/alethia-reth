@@ -1,3 +1,4 @@
+//! Taiko hardfork spec identifiers for EVM feature gating.
 use core::str::FromStr;
 use reth_revm::primitives::hardfork::{SpecId, UnknownHardfork};
 
@@ -5,6 +6,7 @@ use reth_revm::primitives::hardfork::{SpecId, UnknownHardfork};
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[allow(non_camel_case_types)]
+/// Taiko network hardfork identifiers ordered by activation.
 pub enum TaikoSpecId {
     /// Genesis chain spec for the Taiko network (pre-Ontake fork)
     GENESIS,
@@ -25,12 +27,14 @@ impl TaikoSpecId {
         }
     }
 
+    /// Return whether `self` is enabled when running under `other`.
     pub const fn is_enabled_in(self, other: TaikoSpecId) -> bool {
         other as u8 <= self as u8
     }
 }
 
 impl From<TaikoSpecId> for SpecId {
+    /// Converts a Taiko hardfork spec id into the corresponding Ethereum spec id.
     fn from(spec: TaikoSpecId) -> Self {
         spec.into_eth_spec()
     }
@@ -51,6 +55,7 @@ impl FromStr for TaikoSpecId {
 }
 
 impl From<TaikoSpecId> for &'static str {
+    /// Converts a Taiko hardfork spec id into its canonical string identifier.
     fn from(spec_id: TaikoSpecId) -> Self {
         match spec_id {
             TaikoSpecId::GENESIS => name::GENESIS,
@@ -63,9 +68,13 @@ impl From<TaikoSpecId> for &'static str {
 
 /// String identifiers for Taiko hardforks
 pub mod name {
+    /// String name for `TaikoSpecId::GENESIS`.
     pub const GENESIS: &str = "Genesis";
+    /// String name for `TaikoSpecId::ONTAKE`.
     pub const ONTAKE: &str = "Ontake";
+    /// String name for `TaikoSpecId::PACAYA`.
     pub const PACAYA: &str = "Pacaya";
+    /// String name for `TaikoSpecId::SHASTA`.
     pub const SHASTA: &str = "Shasta";
 }
 

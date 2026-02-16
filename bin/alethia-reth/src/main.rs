@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
+#![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Rust Taiko node (alethia-reth) binary executable.
 use alethia_reth_cli::{TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs};
 use alethia_reth_node::{
@@ -12,6 +14,7 @@ use reth_rpc::eth::EthApiTypes;
 use tracing::info;
 
 #[global_allocator]
+/// Global allocator used by the node binary.
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {

@@ -1,3 +1,4 @@
+//! Taiko EVM handler logic for fee distribution and anchor-aware validation.
 use std::str::FromStr;
 
 use reth_revm::{
@@ -28,9 +29,11 @@ use crate::evm::TaikoEvmExtraExecutionCtx;
 /// reward for the beneficiary.
 #[derive(Default, Debug, Clone)]
 pub struct TaikoEvmHandler<CTX, ERROR, FRAME> {
+    /// Generic marker for handler type parameters.
     _phantom: core::marker::PhantomData<(CTX, ERROR, FRAME)>,
     // This field might will be `None` when during some execution simulation calls
     // like `eth_call`.
+    /// Optional anchor-derived execution context for L2 block building paths.
     extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 

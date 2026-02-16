@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as _, Transaction as _};
@@ -51,8 +50,11 @@ use alethia_reth_primitives::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct PreBuiltTxList<T> {
+    /// Selected transactions encoded for RPC response delivery.
     pub tx_list: Vec<T>,
+    /// Estimated gas used by all transactions in `tx_list`.
     pub estimated_gas_used: u64,
+    /// Total transaction-list byte length used for DA constraints.
     pub bytes_length: u64,
 }
 
@@ -62,18 +64,60 @@ impl<T> Default for PreBuiltTxList<T> {
     }
 }
 
+/// Request payload for `taikoAuth_txPoolContent`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct TxPoolContentParams {
+    /// Fee-recipient address used while simulating candidate transaction lists.
+    pub beneficiary: Address,
+    /// Base fee applied to candidate transaction-list construction.
+    pub base_fee: u64,
+    /// Maximum gas limit allocated per candidate transaction list.
+    pub block_max_gas_limit: u64,
+    /// Maximum DA bytes allowed per candidate transaction list.
+    pub max_bytes_per_tx_list: u64,
+    /// Optional local addresses to prioritize during tx-pool selection.
+    pub locals: Option<Vec<Address>>,
+    /// Maximum number of candidate transaction lists to return.
+    pub max_transactions_lists: u64,
+}
+
+/// Request payload for `taikoAuth_txPoolContentWithMinTip`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct TxPoolContentWithMinTipParams {
+    /// Fee-recipient address used while simulating candidate transaction lists.
+    pub beneficiary: Address,
+    /// Base fee applied to candidate transaction-list construction.
+    pub base_fee: u64,
+    /// Maximum gas limit allocated per candidate transaction list.
+    pub block_max_gas_limit: u64,
+    /// Maximum DA bytes allowed per candidate transaction list.
+    pub max_bytes_per_tx_list: u64,
+    /// Optional local addresses to prioritize during tx-pool selection.
+    pub locals: Option<Vec<Address>>,
+    /// Maximum number of candidate transaction lists to return.
+    pub max_transactions_lists: u64,
+    /// Minimum transaction tip required for inclusion.
+    pub min_tip: u64,
+}
+
 /// trait interface for a custom auth rpc namespace: `taikoAuth`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "taikoAuth"))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taikoAuth"))]
 pub trait TaikoAuthExtApi<T: RpcObject> {
+    /// Stores the current L1 head origin block id.
     #[method(name = "setHeadL1Origin")]
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256>;
+    /// Upserts the given L1 origin entry.
     #[method(name = "updateL1Origin")]
     async fn update_l1_origin(&self, l1_origin: RpcL1Origin) -> RpcResult<Option<RpcL1Origin>>;
+    /// Stores a signature for an existing L1 origin entry.
     #[method(name = "setL1OriginSignature")]
     async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<RpcL1Origin>;
+    /// Stores an explicit batch-to-last-block mapping.
     #[method(name = "setBatchToLastBlock")]
     async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<u64>;
     /// Returns the last L1 origin for a given batch ID.
@@ -82,36 +126,31 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     /// Returns the last block ID for a given batch ID.
     #[method(name = "lastBlockIDByBatchID")]
     async fn last_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>>;
+    /// Returns candidate transaction lists using a minimum tip threshold.
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
         &self,
-        beneficiary: Address,
-        base_fee: u64,
-        block_max_gas_limit: u64,
-        max_bytes_per_tx_list: u64,
-        locals: Option<Vec<Address>>,
-        max_transactions_lists: u64,
-        min_tip: u64,
+        params: TxPoolContentWithMinTipParams,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 
+    /// Returns candidate transaction lists without enforcing a tip threshold.
     #[method(name = "txPoolContent")]
     async fn tx_pool_content(
         &self,
-        beneficiary: Address,
-        base_fee: u64,
-        block_max_gas_limit: u64,
-        max_bytes_per_tx_list: u64,
-        locals: Option<Vec<Address>>,
-        max_transactions_lists: u64,
+        params: TxPoolContentParams,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 }
 
 /// A concrete implementation of the `TaikoAuthExtApi` trait.
 #[derive(Clone)]
 pub struct TaikoAuthExt<Pool, Eth, Evm, Provider: DatabaseProviderFactory> {
+    /// Provider used for block lookups and database access.
     provider: Provider,
+    /// Transaction pool used during candidate-list selection.
     pool: Pool,
+    /// RPC transaction converter used for pending tx formatting.
     tx_resp_builder: Eth,
+    /// EVM configuration used to construct candidate payload environments.
     evm_config: Evm,
 }
 
@@ -407,36 +446,42 @@ where
     /// Retrieves the transaction pool content with the given limits.
     async fn tx_pool_content(
         &self,
-        beneficiary: Address,
-        base_fee: u64,
-        block_max_gas_limit: u64,
-        max_bytes_per_tx_list: u64,
-        locals: Option<Vec<Address>>,
-        max_transactions_lists: u64,
+        params: TxPoolContentParams,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
-        self.tx_pool_content_with_min_tip(
+        let TxPoolContentParams {
             beneficiary,
             base_fee,
             block_max_gas_limit,
             max_bytes_per_tx_list,
             locals,
             max_transactions_lists,
-            0,
-        )
+        } = params;
+        self.tx_pool_content_with_min_tip(TxPoolContentWithMinTipParams {
+            beneficiary,
+            base_fee,
+            block_max_gas_limit,
+            max_bytes_per_tx_list,
+            locals,
+            max_transactions_lists,
+            min_tip: 0,
+        })
         .await
     }
 
     /// Retrieves the transaction pool content with the given limits and minimum tip.
     async fn tx_pool_content_with_min_tip(
         &self,
-        beneficiary: Address,
-        base_fee: u64,
-        block_max_gas_limit: u64,
-        max_bytes_per_tx_list: u64,
-        locals: Option<Vec<Address>>,
-        max_transactions_lists: u64,
-        min_tip: u64,
+        params: TxPoolContentWithMinTipParams,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
+        let TxPoolContentWithMinTipParams {
+            beneficiary,
+            base_fee,
+            block_max_gas_limit,
+            max_bytes_per_tx_list,
+            locals,
+            max_transactions_lists,
+            min_tip,
+        } = params;
         if max_transactions_lists == 0 {
             return Err(EthApiError::InvalidParams(
                 "`maxTransactionsLists` must not be `0`".to_string(),
@@ -554,6 +599,58 @@ mod tests {
         test_utils::MockNodeTypesWithDB,
     };
     use std::{path::PathBuf, sync::Arc};
+
+    #[test]
+    /// Ensures `txPoolContent` accepts a camelCase object payload.
+    fn tx_pool_content_params_deserialize_from_camel_case() {
+        let value = serde_json::json!({
+            "beneficiary": Address::from([0x11; 20]),
+            "baseFee": 10u64,
+            "blockMaxGasLimit": 15_000_000u64,
+            "maxBytesPerTxList": 120_000u64,
+            "locals": [Address::from([0x22; 20])],
+            "maxTransactionsLists": 4u64
+        });
+
+        let params: TxPoolContentParams =
+            serde_json::from_value(value).expect("txPoolContent params should deserialize");
+        assert_eq!(params.base_fee, 10);
+        assert_eq!(params.block_max_gas_limit, 15_000_000);
+        assert_eq!(params.max_bytes_per_tx_list, 120_000);
+        assert_eq!(params.max_transactions_lists, 4);
+        assert_eq!(
+            params.locals,
+            Some(vec![Address::from([0x22; 20])]),
+            "locals should preserve each address"
+        );
+    }
+
+    #[test]
+    /// Ensures `txPoolContentWithMinTip` accepts a camelCase object payload.
+    fn tx_pool_content_with_min_tip_params_deserialize_from_camel_case() {
+        let value = serde_json::json!({
+            "beneficiary": Address::from([0x33; 20]),
+            "baseFee": 20u64,
+            "blockMaxGasLimit": 20_000_000u64,
+            "maxBytesPerTxList": 240_000u64,
+            "locals": [Address::from([0x44; 20]), Address::from([0x55; 20])],
+            "maxTransactionsLists": 8u64,
+            "minTip": 2u64
+        });
+
+        let params: TxPoolContentWithMinTipParams = serde_json::from_value(value)
+            .expect("txPoolContentWithMinTip params should deserialize");
+        assert_eq!(params.base_fee, 20);
+        assert_eq!(params.block_max_gas_limit, 20_000_000);
+        assert_eq!(params.max_bytes_per_tx_list, 240_000);
+        assert_eq!(params.max_transactions_lists, 8);
+        assert_eq!(params.min_tip, 2);
+        assert_eq!(
+            params.locals,
+            Some(vec![Address::from([0x44; 20]), Address::from([0x55; 20])]),
+            "locals should preserve each address"
+        );
+    }
 
     /// Builds a ProviderFactory wired with both reth and Taiko tables for lookup tests.
     fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {

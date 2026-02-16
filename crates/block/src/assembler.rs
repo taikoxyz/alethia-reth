@@ -1,3 +1,4 @@
+//! Block assembler implementation for Taiko headers and block bodies.
 use std::sync::Arc;
 
 use alloy_consensus::{
@@ -22,6 +23,7 @@ use alethia_reth_chainspec::spec::TaikoChainSpec;
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 #[derive(Clone, Debug)]
 pub struct TaikoBlockAssembler {
+    /// Underlying Ethereum block assembler configured with Taiko chain spec.
     block_assembler: EthBlockAssembler<TaikoChainSpec>,
 }
 

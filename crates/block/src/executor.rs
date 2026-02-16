@@ -1,3 +1,4 @@
+//! Taiko block executor integrating anchor pre-execution and tx filtering.
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
@@ -267,8 +268,7 @@ where
     }
 }
 
-// Encode the anchor system call data for the Anchor contract sender account information
-// and the base fee share percentage.
+/// Encode anchor system-call data as `(base_fee_share_pctg, caller_nonce)` big-endian bytes.
 fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {
     let mut buf = [0u8; 16];
     buf[..8].copy_from_slice(&base_fee_share_pctg.to_be_bytes());
@@ -276,8 +276,7 @@ fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -
     Bytes::copy_from_slice(&buf)
 }
 
-// Decode the extra data from the post Ontake block to extract the base fee share percentage,
-// which is stored in the first 32 bytes of the extra data.
+/// Decode post-Ontake extra-data bytes to recover base-fee sharing percentage.
 fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
     let value = Uint::<256, 4>::from_be_slice(&extradata);
     value.as_limbs()[0]

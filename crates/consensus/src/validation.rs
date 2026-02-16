@@ -1,3 +1,4 @@
+//! Taiko header, block, and anchor transaction validation logic.
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
@@ -34,8 +35,11 @@ sol! {
 
 /// Anchor / system transaction call selectors.
 pub const ANCHOR_V1_SELECTOR: &[u8; 4] = &anchorCall::SELECTOR;
+/// Selector for the Ontake-era `anchorV2` transaction.
 pub const ANCHOR_V2_SELECTOR: &[u8; 4] = &anchorV2Call::SELECTOR;
+/// Selector for the Pacaya-era `anchorV3` transaction.
 pub const ANCHOR_V3_SELECTOR: &[u8; 4] = &anchorV3Call::SELECTOR;
+/// Selector for the Shasta-era `anchorV4` transaction.
 pub const ANCHOR_V4_SELECTOR: &[u8; 4] = &anchorV4Call::SELECTOR;
 
 /// The gas limit for the anchor transactions before Pacaya hardfork.
@@ -54,7 +58,9 @@ pub trait TaikoBlockReader: Send + Sync + Debug {
 /// Provides basic checks as outlined in the execution specs.
 #[derive(Debug, Clone)]
 pub struct TaikoBeaconConsensus {
+    /// Chain spec used for hardfork and chain-id dependent rules.
     chain_spec: Arc<TaikoChainSpec>,
+    /// Block reader used to resolve grandparent timestamps.
     block_reader: Arc<dyn TaikoBlockReader>,
 }
 
@@ -351,7 +357,7 @@ where
     )
 }
 
-// Validates the transaction input data against the expected selector.
+/// Validate that transaction input starts with the expected call selector.
 fn validate_input_selector(
     input: &[u8],
     expected_selector: &[u8; 4],

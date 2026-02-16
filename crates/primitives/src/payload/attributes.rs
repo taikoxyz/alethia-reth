@@ -1,3 +1,4 @@
+//! RPC payload-attribute structures used by Taiko engine and builder flows.
 use alloy_primitives::{Address, B256, Bytes as AlloyBytes, U256};
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 #[cfg(feature = "net")]

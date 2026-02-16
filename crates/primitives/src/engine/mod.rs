@@ -1,3 +1,4 @@
+//! Engine API type adapters for Taiko execution payloads.
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
     ExecutionPayloadEnvelopeV5, ExecutionPayloadEnvelopeV6, ExecutionPayloadV1,
@@ -9,6 +10,7 @@ use reth_primitives::SealedBlock;
 use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
 use crate::payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes};
 
+/// Taiko execution payload and sidecar structures.
 pub mod types;
 
 /// The types used in the Taiko consensus engine.

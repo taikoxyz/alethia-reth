@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as _, Transaction as _};
@@ -153,14 +155,25 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
         &self,
-        params: TxPoolContentWithMinTipParams,
+        beneficiary: Address,
+        base_fee: u64,
+        block_max_gas_limit: u64,
+        max_bytes_per_tx_list: u64,
+        locals: Option<Vec<Address>>,
+        max_transactions_lists: u64,
+        min_tip: u64,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 
     /// Returns candidate transaction lists without enforcing a tip threshold.
     #[method(name = "txPoolContent")]
     async fn tx_pool_content(
         &self,
-        params: TxPoolContentParams,
+        beneficiary: Address,
+        base_fee: u64,
+        block_max_gas_limit: u64,
+        max_bytes_per_tx_list: u64,
+        locals: Option<Vec<Address>>,
+        max_transactions_lists: u64,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 }
 
@@ -469,25 +482,36 @@ where
     /// Retrieves the transaction pool content with the given limits.
     async fn tx_pool_content(
         &self,
-        params: TxPoolContentParams,
+        beneficiary: Address,
+        base_fee: u64,
+        block_max_gas_limit: u64,
+        max_bytes_per_tx_list: u64,
+        locals: Option<Vec<Address>>,
+        max_transactions_lists: u64,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
-        self.tx_pool_content_with_min_tip(params.into()).await
-    }
-
-    /// Retrieves the transaction pool content with the given limits and minimum tip.
-    async fn tx_pool_content_with_min_tip(
-        &self,
-        params: TxPoolContentWithMinTipParams,
-    ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
-        let TxPoolContentWithMinTipParams {
+        self.tx_pool_content_with_min_tip(
             beneficiary,
             base_fee,
             block_max_gas_limit,
             max_bytes_per_tx_list,
             locals,
             max_transactions_lists,
-            min_tip,
-        } = params;
+            0,
+        )
+        .await
+    }
+
+    /// Retrieves the transaction pool content with the given limits and minimum tip.
+    async fn tx_pool_content_with_min_tip(
+        &self,
+        beneficiary: Address,
+        base_fee: u64,
+        block_max_gas_limit: u64,
+        max_bytes_per_tx_list: u64,
+        locals: Option<Vec<Address>>,
+        max_transactions_lists: u64,
+        min_tip: u64,
+    ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         if max_transactions_lists == 0 {
             return Err(EthApiError::InvalidParams(
                 "`maxTransactionsLists` must not be `0`".to_string(),

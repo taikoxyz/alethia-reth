@@ -1,3 +1,4 @@
+//! Taiko node command wrapper and execution entrypoint.
 use std::{ffi::OsString, fmt, path::PathBuf, sync::Arc};
 
 use alloy_hardforks::EthereumHardforks;
@@ -32,8 +33,10 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
     }
 }
 
+/// Wrapper around `reth` `NodeCommand` that injects Taiko DB initialization and overrides.
 #[derive(Debug)]
 pub struct TaikoNodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs>(
+    /// Inner `reth` node command configuration.
     pub Box<NodeCommand<C, Ext>>,
 );
 

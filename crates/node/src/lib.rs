@@ -1,3 +1,6 @@
+#![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
+#![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
+//! Taiko node composition and addon wiring built on top of `reth`.
 pub use alethia_reth_block as block;
 pub use alethia_reth_chainspec as chainspec;
 pub use alethia_reth_consensus as consensus;

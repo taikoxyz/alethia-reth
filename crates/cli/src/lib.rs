@@ -1,3 +1,6 @@
+#![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
+#![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
+//! CLI entrypoints and command wiring for the Alethia Taiko node.
 use std::{fmt, sync::Arc};
 
 use alloy_consensus::Header;
@@ -26,8 +29,11 @@ use reth_storage_api::noop::NoopProvider;
 
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
 
+/// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
+/// Chain-spec parser implementations for Taiko network names and genesis input.
 pub mod parser;
+/// Database table-set registration used by CLI DB initialization.
 pub mod tables;
 
 pub use parser::TaikoChainSpecParser;
@@ -53,6 +59,7 @@ pub struct TaikoCli<
     C: ChainSpecParser = TaikoChainSpecParser,
     Ext: clap::Args + fmt::Debug = NoArgs,
 > {
+    /// Wrapped `reth` CLI structure containing parsed commands and global options.
     pub inner: Cli<C, Ext>,
 }
 

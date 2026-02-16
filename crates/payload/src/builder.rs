@@ -272,7 +272,7 @@ where
     }
 }
 
-// Build a Taiko network payload using the given attributes.
+/// Build a Taiko payload for the given parent/header and job attributes.
 #[inline]
 fn taiko_payload<EvmConfig, Client, Pool>(
     evm_config: &EvmConfig,

@@ -1,3 +1,4 @@
+//! Taiko engine API RPC methods and persistence hooks.
 use std::io;
 
 use alethia_reth_primitives::{
@@ -40,9 +41,11 @@ pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "engine"), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "engine", client_bounds(Engine::PayloadAttributes: jsonrpsee::core::Serialize + Clone), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned)))]
 pub trait TaikoEngineApi<Engine: EngineTypes> {
+    /// Submit a new execution payload and return validation status.
     #[method(name = "newPayloadV2")]
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus>;
 
+    /// Update fork choice and optionally start payload building.
     #[method(name = "forkchoiceUpdatedV2")]
     async fn fork_choice_updated_v2(
         &self,
@@ -50,6 +53,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
         payload_attributes: Option<Engine::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated>;
 
+    /// Fetch a previously built payload by ID.
     #[method(name = "getPayloadV2")]
     async fn get_payload_v2(
         &self,
@@ -59,8 +63,11 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
 
 /// A concrete implementation of the `TaikoEngineApi` trait.
 pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec> {
+    /// Underlying `reth` engine API implementation.
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
+    /// Provider used for DB reads/writes during L1-origin persistence.
     provider: Provider,
+    /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
 }
 

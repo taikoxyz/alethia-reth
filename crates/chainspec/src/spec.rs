@@ -1,3 +1,4 @@
+//! Taiko chain-spec wrapper types and helper traits.
 use std::fmt::Display;
 
 use alloy_chains::Chain;
@@ -23,6 +24,7 @@ use crate::{TAIKO_DEVNET_GENESIS_HASH, hardfork::TaikoHardfork};
 /// - What hardforks are activated, and under which conditions
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaikoChainSpec {
+    /// Wrapped `reth` chain specification instance.
     pub inner: ChainSpec,
 }
 

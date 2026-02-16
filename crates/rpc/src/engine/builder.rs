@@ -1,3 +1,4 @@
+//! Builder wiring for Taiko engine RPC module construction.
 use alloy_rpc_types_engine::ClientVersionV1;
 use reth::payload::PayloadStore;
 use reth_engine_primitives::EngineApiValidator;
@@ -20,6 +21,7 @@ use crate::engine::api::TaikoEngineApi;
 /// output.
 #[derive(Debug, Default)]
 pub struct TaikoEngineApiBuilder<PVB> {
+    /// Builder used to create the payload validator for engine requests.
     payload_validator_builder: PVB,
 }
 

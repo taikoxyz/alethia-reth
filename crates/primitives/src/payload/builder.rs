@@ -1,3 +1,4 @@
+//! Taiko payload-builder attribute normalization and payload-id derivation.
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
@@ -208,7 +209,7 @@ pub fn payload_id_taiko(
     PayloadId::new(id_bytes)
 }
 
-// Decodes the given RLP-encoded bytes into transactions.
+/// Decode RLP-encoded bytes into signed transactions.
 fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
     Vec::<TransactionSigned>::decode(&mut &bytes[..])
 }

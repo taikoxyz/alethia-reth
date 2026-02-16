@@ -1,3 +1,4 @@
+//! Error mapping helpers for Taiko `eth` namespace RPC responses.
 use jsonrpsee_types::error::{ErrorCode, ErrorObjectOwned};
 use reth_rpc_eth_types::EthApiError;
 use tracing::error;
@@ -5,12 +6,15 @@ use tracing::error;
 /// Errors that can occur when interacting with the `taiko_` namespace
 #[derive(Debug, thiserror::Error)]
 pub enum TaikoApiError {
+    /// Requested entry was not found in Taiko storage.
     #[error("not found")]
     GethNotFound,
+    /// Last-block lookup is ambiguous because no newer proposal confirms the head.
     #[error(
         "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed"
     )]
     ProposalLastBlockUncertain,
+    /// Last-block lookup exceeded its backward scan limit.
     #[error(
         "proposal last block lookback exceeded: BatchToLastBlockID missing and lookback limit reached"
     )]

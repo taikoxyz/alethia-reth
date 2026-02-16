@@ -20,6 +20,7 @@ hardfork!(
       Pacaya,
       /// Shasta protocol upgrade.
       Shasta,
+      Uzen,
   }
 );
 
@@ -49,6 +50,11 @@ pub trait TaikoHardforks: EthereumHardforks {
     fn is_shasta_active(&self, timestamp: u64) -> bool {
         self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
+
+    /// Convenience method to check if [`TaikoHardfork::Uzen`] is active at the given timestamp.
+    fn is_uzen_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Uzen).active_at_timestamp(timestamp)
+    }
 }
 
 impl TaikoHardforks for TaikoChainSpec {
@@ -65,6 +71,7 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(538_304)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -74,6 +81,7 @@ pub static TAIKO_HOODI_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_770_296_400)),
+        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -83,6 +91,7 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
+        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -92,6 +101,7 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
+        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
     ]))
 });
 

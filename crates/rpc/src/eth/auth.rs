@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 
 use alloy_consensus::{BlockHeader as _, Transaction as _};

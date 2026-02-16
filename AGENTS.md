@@ -17,7 +17,6 @@
 - Rust defaults: 4-space indentation, `snake_case` items, `CamelCase` types/traits, `SCREAMING_SNAKE_CASE` constants.
 - Prefer module-per-file; public APIs go through `crates/node/src/lib.rs`.
 - Run `just fmt` before committing; clippy must be clean (`just clippy`).
-- Never add `#[allow(clippy::too_many_arguments)]` (including crate/module-level forms). When a function exceeds argument limits, introduce a named params struct and update call sites to pass that struct.
 
 ## Documentation Policy (Mandatory)
 

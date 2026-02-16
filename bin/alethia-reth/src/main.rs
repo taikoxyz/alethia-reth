@@ -7,7 +7,7 @@ use alethia_reth_node::{
         eth::{TaikoExt, TaikoExtApiServer},
     },
 };
-use reth::{api::FullNodeComponents, builder::NodeHandle};
+use reth::api::FullNodeComponents;
 use reth_rpc::eth::EthApiTypes;
 use tracing::info;
 
@@ -23,7 +23,7 @@ fn main() {
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
         async move |builder, _ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
-            let NodeHandle { node_exit_future, .. } = builder
+            let handle = builder
                 .node(TaikoNode)
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
@@ -46,7 +46,7 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            node_exit_future.await
+            handle.wait_for_node_exit().await
         },
     ) {
         eprintln!("Error: {err:?}");

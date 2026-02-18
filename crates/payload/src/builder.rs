@@ -1,42 +1,46 @@
-use std::sync::Arc;
-
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
-use reth::{
-    api::{PayloadBuilderAttributes, PayloadBuilderError},
-    providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{State, cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256},
-};
+use alloy_hardforks::EthereumHardforks;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
+use reth_consensus::ConsensusError;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_errors::RethError;
-use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
-use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
     ConfigureEvm,
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
-use reth_evm_ethereum::RethReceiptBuilder;
+use reth_payload_primitives::{PayloadBuilderAttributes, PayloadBuilderError};
 use reth_primitives::{Header as RethHeader, Recovered};
+use reth_provider::{ChainSpecProvider, StateProviderFactory};
+use reth_revm::{
+    State, cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256,
+};
+use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
+    receipt_builder::TaikoReceiptBuilder,
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
         select_and_execute_pool_transactions,
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::{
-    ANCHOR_V3_V4_GAS_LIMIT, AnchorValidationContext, validate_anchor_transaction,
+use alethia_reth_consensus::{
+    transaction::TaikoTxEnvelope,
+    validation::{ANCHOR_V3_V4_GAS_LIMIT, AnchorValidationContext, validate_anchor_transaction},
 };
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
+use alethia_reth_primitives::{
+    TaikoPrimitives,
+    payload::{builder::TaikoPayloadBuilderAttributes, built_payload::TaikoBuiltPayload},
+};
 
 /// Creates an error for when a transaction's effective tip cannot be calculated.
 fn missing_tip_error(base_fee: u64) -> PayloadBuilderError {
@@ -67,7 +71,7 @@ enum ExecutionOutcome {
 /// Context for executing transactions in new mode (anchor + pool transactions).
 struct PoolExecutionContext<'a> {
     /// Prebuilt anchor transaction for new mode.
-    anchor_tx: &'a Recovered<EthTransactionSigned>,
+    anchor_tx: &'a Recovered<TaikoTxEnvelope>,
     /// The parent block header.
     parent_header: &'a RethHeader,
     /// Timestamp for the new block.
@@ -85,8 +89,8 @@ struct PoolExecutionContext<'a> {
 /// Preserves legacy mode: validation errors are skipped, fatal errors abort
 /// the build, and cancellation short-circuits the loop.
 fn execute_provided_transactions(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
-    transactions: &[Recovered<EthTransactionSigned>],
+    builder: &mut impl BlockBuilder<Primitives = TaikoPrimitives>,
+    transactions: &[Recovered<TaikoTxEnvelope>],
     base_fee: u64,
     cancel: &CancelOnDrop,
 ) -> Result<ExecutionOutcome, PayloadBuilderError> {
@@ -125,7 +129,7 @@ fn execute_provided_transactions(
 /// Executes new-mode transactions: injects the anchor transaction, then pulls
 /// from the mempool until exhaustion or cancellation.
 fn execute_anchor_and_pool_transactions<Client, Pool>(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
+    builder: &mut impl BlockBuilder<Primitives = TaikoPrimitives>,
     pool: &Pool,
     client: &Client,
     ctx: &PoolExecutionContext<'_>,
@@ -136,9 +140,7 @@ where
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
-            Transaction: reth_transaction_pool::PoolTransaction<
-                Consensus = reth_ethereum::TransactionSigned,
-            >,
+            Transaction: reth_transaction_pool::PoolTransaction<Consensus = TaikoTxEnvelope>,
         >,
 {
     debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
@@ -209,10 +211,10 @@ impl<Client, Pool, EvmConfig> TaikoPayloadBuilder<Client, Pool, EvmConfig> {
 impl<Client, Pool, EvmConfig> PayloadBuilder for TaikoPayloadBuilder<Client, Pool, EvmConfig>
 where
     EvmConfig: ConfigureEvm<
-            Primitives = EthPrimitives,
+            Primitives = TaikoPrimitives,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
-                RethReceiptBuilder,
+                TaikoReceiptBuilder,
                 Arc<TaikoChainSpec>,
                 TaikoEvmFactory,
             >,
@@ -224,15 +226,13 @@ where
         + reth_provider::BlockReader
         + Clone,
     Pool: reth_transaction_pool::TransactionPool<
-            Transaction: reth_transaction_pool::PoolTransaction<
-                Consensus = reth_ethereum::TransactionSigned,
-            >,
+            Transaction: reth_transaction_pool::PoolTransaction<Consensus = TaikoTxEnvelope>,
         > + Clone,
 {
     /// The payload attributes type to accept for building.
     type Attributes = TaikoPayloadBuilderAttributes;
     /// /// The type of the built payload.
-    type BuiltPayload = EthBuiltPayload;
+    type BuiltPayload = TaikoBuiltPayload;
 
     /// Tries to build a transaction payload using provided arguments.
     ///
@@ -248,8 +248,8 @@ where
     /// A `Result` indicating the build outcome or an error.
     fn try_build(
         &self,
-        args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
-    ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
+        args: BuildArguments<TaikoPayloadBuilderAttributes, TaikoBuiltPayload>,
+    ) -> Result<BuildOutcome<TaikoBuiltPayload>, PayloadBuilderError> {
         taiko_payload(&self.evm_config, &self.client, &self.pool, args)
     }
 
@@ -267,7 +267,7 @@ where
     fn build_empty_payload(
         &self,
         _config: PayloadConfig<TaikoPayloadBuilderAttributes>,
-    ) -> Result<EthBuiltPayload, PayloadBuilderError> {
+    ) -> Result<TaikoBuiltPayload, PayloadBuilderError> {
         Err(PayloadBuilderError::MissingPayload)
     }
 }
@@ -278,14 +278,14 @@ fn taiko_payload<EvmConfig, Client, Pool>(
     evm_config: &EvmConfig,
     client: &Client,
     pool: &Pool,
-    args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
-) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
+    args: BuildArguments<TaikoPayloadBuilderAttributes, TaikoBuiltPayload>,
+) -> Result<BuildOutcome<TaikoBuiltPayload>, PayloadBuilderError>
 where
     EvmConfig: ConfigureEvm<
-            Primitives = EthPrimitives,
+            Primitives = TaikoPrimitives,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
-                RethReceiptBuilder,
+                TaikoReceiptBuilder,
                 Arc<TaikoChainSpec>,
                 TaikoEvmFactory,
             >,
@@ -296,9 +296,7 @@ where
         + ChainSpecProvider<ChainSpec = TaikoChainSpec>
         + reth_provider::BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
-            Transaction: reth_transaction_pool::PoolTransaction<
-                Consensus = reth_ethereum::TransactionSigned,
-            >,
+            Transaction: reth_transaction_pool::PoolTransaction<Consensus = TaikoTxEnvelope>,
         >,
 {
     let BuildArguments { mut cached_reads, config, cancel, best_payload: _ } = args;
@@ -310,6 +308,10 @@ where
         State::builder().with_database_ref(cached_reads.as_db(state)).with_bundle_update().build();
 
     debug!(target: "payload_builder", id=%attributes.payload_id(), parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
+
+    // Check if Osaka hardfork is active
+    let chain_spec = client.chain_spec();
+    let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp());
 
     // Create block builder using the ConfigureEvm API
     let mut builder = evm_config
@@ -326,6 +328,20 @@ where
             },
         )
         .map_err(PayloadBuilderError::other)?;
+
+    // Osaka: Pre-validate that all mandated transactions will fit within block size limit
+    if is_osaka && let Some(transactions) = &attributes.transactions {
+        let estimated_txs_size: usize =
+            transactions.iter().map(|tx| tx.inner().eip2718_encoded_length()).sum();
+        let estimated_total_size = estimated_txs_size + 1024; // 1KB overhead for block header
+
+        if estimated_total_size > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: estimated_total_size,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
+    }
 
     builder.apply_pre_execution_changes().map_err(PayloadBuilderError::other)?;
 
@@ -373,13 +389,19 @@ where
 
     // Seal the block
     let sealed_block = Arc::new(block.sealed_block().clone());
+
+    // Final Osaka validation: ensure the sealed block doesn't exceed MAX_RLP_BLOCK_SIZE
+    // This is a safety check - the pre-execution validation should have caught this
+    if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
+        return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+            rlp_length: sealed_block.rlp_length(),
+            max_rlp_length: MAX_RLP_BLOCK_SIZE,
+        }));
+    }
+
     debug!(target: "payload_builder", id=%attributes.payload_id(), sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
 
-    // Build the payload
-    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(
-        attributes.payload_id(),
-        sealed_block,
-        total_fees,
-        None,
-    )))
+    let payload = TaikoBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, None);
+
+    Ok(BuildOutcome::Freeze(payload))
 }

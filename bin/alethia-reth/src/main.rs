@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
 #![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Rust Taiko node (alethia-reth) binary executable.
-use alethia_reth_cli::{TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs};
+use alethia_reth_cli::{TaikoCli, TaikoCliExtArgs, parser::TaikoChainSpecParser};
 use alethia_reth_node::{
     TaikoNode,
     rpc::eth::{

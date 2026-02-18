@@ -9,5 +9,7 @@ pub mod config;
 pub mod executor;
 /// Executor factory wiring for Taiko block execution.
 pub mod factory;
+/// Taiko-specific receipt builder for block execution.
+pub mod receipt_builder;
 /// Shared transaction-selection primitives used by block and RPC flows.
 pub mod tx_selection;

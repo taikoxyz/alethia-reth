@@ -4,10 +4,12 @@ use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV1};
 use alloy_rpc_types_eth::Withdrawal;
 use reth_payload_primitives::ExecutionPayload as ExecutionPayloadTr;
 
+/// Static empty withdrawals vector for Taiko (which doesn't use withdrawals)
+static EMPTY_WITHDRAWALS: Vec<Withdrawal> = Vec::new();
+
 /// Represents the execution data for the Taiko network, which includes the execution payload and a
 /// sidecar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TaikoExecutionData {
     /// Base execution payload fields returned to the engine API.
     #[cfg_attr(feature = "serde", serde(flatten))]
@@ -33,9 +35,8 @@ impl From<TaikoExecutionData> for ExecutionPayload {
 
 /// Represents the sidecar data for the Taiko execution payload, which includes the transaction
 /// hash, optional withdrawals hash, and a boolean indicating if the block is a Taiko block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaikoExecutionDataSidecar {
     /// Transactions root hash for the payload.
     pub tx_hash: B256,
@@ -63,7 +64,7 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 
     /// Returns the withdrawals associated with the block, if any.
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
-        None
+        Some(&EMPTY_WITHDRAWALS)
     }
 
     /// Returns the access list associated with the block, if any.
@@ -97,9 +98,8 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 /// See also: <https://github.com/ethereum/execution-apis/blob/6709c2a795b707202e93c4f2867fa0bf2640a84f/src/engine/paris.md#executionpayloadv1>
 /// NOTE: we change `transactions` to `Option<Vec<Bytes>>` to ensure backward compatibility with the
 /// taiko-client driver behavior.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaikoExecutionPayloadV1 {
     /// Keccak256 hash of the parent header, used to link this payload to the canonical chain.
     pub parent_hash: B256,

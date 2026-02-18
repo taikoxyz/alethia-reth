@@ -3,28 +3,27 @@
 //! CLI entrypoints and command wiring for the Alethia Taiko node.
 use std::{fmt, sync::Arc};
 
+use alethia_reth_block::config::TaikoEvmConfig;
 use alloy_consensus::Header;
 use clap::Parser;
-use reth::{
-    CliRunner,
-    cli::{Cli, Commands},
-    prometheus_exporter::install_prometheus_recorder,
-};
+use eyre::Ok;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{common::CliNodeTypes, launcher::FnLauncher, node::NoArgs};
+use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
+use reth_ethereum::EthPrimitives;
+use reth_ethereum_cli::{Cli, interface::Commands};
 use reth_ethereum_forks::Hardforks;
 use reth_node_api::{NodePrimitives, NodeTypes};
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
+use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_tracing::FileWorkerGuard;
 use tracing::info;
 
-use alethia_reth_block::config::TaikoEvmConfig;
-use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
-    TaikoNode, consensus::validation::TaikoBeaconConsensus, node_builder::ProviderTaikoBlockReader,
+    TaikoNode, chainspec::spec::TaikoChainSpec, consensus::validation::TaikoBeaconConsensus,
+    node_builder::ProviderTaikoBlockReader,
 };
-use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
 
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};

@@ -15,9 +15,12 @@ default = []
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
-reth = { workspace = true }
+reth-revm = { workspace = true }
 reth-codecs = { workspace = true }
 reth-db = { workspace = true }
 reth-db-api = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["rand"] }

@@ -9,12 +9,11 @@ use alloy_primitives::{Address, Bytes, Uint};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
-        BlockExecutionError, BlockExecutor, BlockValidationError, ExecutableTx,
-        InternalBlockExecutionError, StateChangeSource, SystemCaller,
+        BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
+        ExecutableTx, InternalBlockExecutionError, StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
-use reth_execution_types::BlockExecutionResult;
 use reth_primitives::Log;
 use reth_revm::{
     State,
@@ -99,8 +98,6 @@ where
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
 
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
-        self.system_caller
-            .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
         // Initialize the golden touch address nonce if it is not already set.
         if !self.evm_extra_execution_ctx_initialized {

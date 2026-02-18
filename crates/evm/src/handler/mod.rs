@@ -5,24 +5,28 @@ use reth_revm::{
     Database, Inspector,
     context::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{HaltReason, InvalidTransaction},
+        result::{HaltReason, InvalidHeader, InvalidTransaction},
     },
     context_interface::journaled_state::account::JournaledAccountTr,
     handler::{
         EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler, PrecompileProvider,
         instructions::InstructionProvider,
         pre_execution::validate_account_nonce_and_code_with_components,
+        validation::validate_tx_env,
     },
     inspector::{InspectorEvmTr, InspectorHandler},
     interpreter::{
         Gas, InterpreterResult, interpreter::EthInterpreter, interpreter_action::FrameInit,
     },
-    primitives::{Address, U256},
+    primitives::{Address, U256, hardfork::SpecId},
     state::EvmState,
 };
 use tracing::debug;
 
 use crate::evm::TaikoEvmExtraExecutionCtx;
+
+/// Taiko-customised instruction table that replaces blob-related opcodes.
+pub mod instructions;
 
 /// Handler for Taiko EVM, it implements the `Handler` trait
 /// and provides methods to handle the execution of transactions and the
@@ -104,6 +108,17 @@ where
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
         validate_against_state_and_deduct_caller(evm.ctx(), self.extra_execution_ctx.clone())
+    }
+
+    /// Validates block, transaction and configuration fields.
+    ///
+    /// Performs all validation checks that can be done without loading state.
+    /// For example, verifies transaction gas limit is below block gas limit.
+    ///
+    /// Note: In Taiko blob_excess_gas_and_price is ignored.
+    #[inline]
+    fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        validate_env(evm.ctx())
     }
 }
 
@@ -317,6 +332,21 @@ pub fn reimburse_caller<CTX: ContextTr>(
     )?;
 
     Ok(())
+}
+
+/// Validates the execution environment including block and transaction parameters.
+pub fn validate_env<CTX: ContextTr, ERROR: From<InvalidHeader> + From<InvalidTransaction>>(
+    context: CTX,
+) -> Result<(), ERROR> {
+    let spec = context.cfg().spec().into();
+    // `prevrandao` is required for the merge
+    if spec.is_enabled_in(SpecId::MERGE) && context.block().prevrandao().is_none() {
+        return Err(InvalidHeader::PrevrandaoNotSet.into());
+    }
+
+    // Note: `excess_blob_gas` is ignored in Taiko
+
+    validate_tx_env::<CTX>(context, spec).map_err(Into::into)
 }
 
 /// Generates the network treasury address based on the chain ID.

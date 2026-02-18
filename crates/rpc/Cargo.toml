@@ -19,11 +19,16 @@ alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-consensus = { path = "../consensus" }
 alethia-reth-db = { path = "../db" }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
+alethia-reth-primitives = { path = "../primitives", features = [
+    "serde",
+    "reth-codec",
+    "serde-bincode-compat",
+] }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-json-rpc = { workspace = true }
+alloy-network = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rpc-types-engine = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
@@ -33,7 +38,11 @@ jsonrpsee = { workspace = true, features = ["macros", "server", "client"] }
 jsonrpsee-core = { workspace = true }
 jsonrpsee-types = { workspace = true }
 op-alloy-flz = { workspace = true }
-reth = { workspace = true }
+
+reth-chainspec = { workspace = true }
+reth-primitives = { workspace = true }
+reth-transaction-pool = { workspace = true }
+reth-tasks = { workspace = true }
 reth-db = { workspace = true }
 reth-db-api = { workspace = true }
 reth-engine-primitives = { workspace = true }
@@ -47,10 +56,13 @@ reth-node-builder = { workspace = true }
 reth-node-core = { workspace = true }
 reth-node-ethereum = { workspace = true }
 reth-payload-primitives = { workspace = true }
+reth-payload-builder = { workspace = true }
 reth-primitives-traits = { workspace = true }
 reth-provider = { workspace = true }
 reth-revm = { workspace = true }
 reth-rpc = { workspace = true }
+reth-rpc-api = { workspace = true }
+reth-rpc-convert = { workspace = true }
 reth-rpc-engine-api = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
 reth-rpc-eth-types = { workspace = true }

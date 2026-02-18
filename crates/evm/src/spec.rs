@@ -92,7 +92,8 @@ mod tests {
                 (SpecId::MERGE, true),
                 (SpecId::SHANGHAI, true),
                 (SpecId::CANCUN, false),
-                (SpecId::default(), false),
+                (SpecId::PRAGUE, false),
+                (SpecId::OSAKA, false),
             ],
             vec![
                 (TaikoSpecId::GENESIS, true),

@@ -2,21 +2,23 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
+    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, TxReceipt,
+    constants::{EMPTY_WITHDRAWALS, MAXIMUM_EXTRA_DATA_SIZE},
+    proofs::calculate_receipt_root,
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_eips::{Encodable2718, eip7685::Requests};
+use alloy_hardforks::EthereumHardforks;
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_sol_types::{SolCall, sol};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
-    validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
-    validate_header_extra_data, validate_header_gas,
+    MAX_RLP_BLOCK_SIZE, validate_against_parent_hash_number, validate_body_against_header,
+    validate_header_base_fee, validate_header_extra_data, validate_header_gas,
 };
-use reth_ethereum_consensus::validate_block_post_execution;
-use reth_execution_types::BlockExecutionResult;
-use reth_primitives::SealedBlock;
+use reth_evm::block::BlockExecutionResult;
 use reth_primitives_traits::{
-    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
-    SignedTransaction,
+    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, Receipt, RecoveredBlock,
+    SealedBlock, SealedHeader, SignedTransaction, receipt::gas_spent_by_transactions,
 };
 
 use crate::eip4396::{
@@ -53,6 +55,16 @@ pub trait TaikoBlockReader: Send + Sync + Debug {
     fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64>;
 }
 
+#[derive(Debug, Clone, Default)]
+/// Noop Taiko block reader implementation that returns `None` for all queries.
+pub struct NoopTaikoBlockReader;
+
+impl TaikoBlockReader for NoopTaikoBlockReader {
+    fn block_timestamp_by_hash(&self, _hash: B256) -> Option<u64> {
+        None
+    }
+}
+
 /// Taiko consensus implementation.
 ///
 /// Provides basic checks as outlined in the execution specs.
@@ -69,6 +81,11 @@ impl TaikoBeaconConsensus {
     pub fn new(chain_spec: Arc<TaikoChainSpec>, block_reader: Arc<dyn TaikoBlockReader>) -> Self {
         Self { chain_spec, block_reader }
     }
+
+    /// Create a new instance of [`TaikoBeaconConsensus`] with a noop block reader.
+    pub fn new_with_noop_block_reader(chain_spec: Arc<TaikoChainSpec>) -> Self {
+        Self { chain_spec, block_reader: Arc::new(NoopTaikoBlockReader) }
+    }
 }
 
 impl<N> FullConsensus<N> for TaikoBeaconConsensus
@@ -83,15 +100,9 @@ where
         &self,
         block: &RecoveredBlock<N::Block>,
         result: &BlockExecutionResult<N::Receipt>,
-        receipt_root_bloom: Option<ReceiptRootBloom>,
+        _receipt_root_bloom: Option<ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
-        validate_block_post_execution(
-            block,
-            &self.chain_spec,
-            &result.receipts,
-            &result.requests,
-            receipt_root_bloom,
-        )?;
+        validate_block_post_execution(block, &self.chain_spec, &result.receipts, &result.requests)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,
             &self.chain_spec,
@@ -126,6 +137,26 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             ));
         }
 
+        // In Taiko network, withdrawals root is always empty.
+        if let Some(withdrawals_root) = block.withdrawals_root() {
+            if withdrawals_root != EMPTY_WITHDRAWALS {
+                return Err(ConsensusError::BodyWithdrawalsRootDiff(
+                    GotExpected { got: withdrawals_root, expected: EMPTY_WITHDRAWALS }.into(),
+                ));
+            }
+        } else {
+            return Err(ConsensusError::WithdrawalsRootMissing);
+        }
+
+        if self.chain_spec.is_osaka_active_at_timestamp(block.timestamp()) &&
+            block.rlp_length() > MAX_RLP_BLOCK_SIZE
+        {
+            return Err(ConsensusError::BlockTooLarge {
+                rlp_length: block.rlp_length(),
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            })
+        }
+
         Ok(())
     }
 }
@@ -154,7 +185,18 @@ where
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
         validate_header_gas(header)?;
-        validate_header_base_fee(header, &self.chain_spec)
+        validate_header_base_fee(header, &self.chain_spec)?;
+
+        // Ensures that Cancun related fields are still not set in Taiko
+        if header.blob_gas_used().is_some() {
+            return Err(ConsensusError::BlobGasUsedUnexpected);
+        } else if header.excess_blob_gas().is_some() {
+            return Err(ConsensusError::ExcessBlobGasUnexpected);
+        } else if header.parent_beacon_block_root().is_some() {
+            return Err(ConsensusError::ParentBeaconBlockRootUnexpected);
+        }
+
+        Ok(())
     }
 
     /// Validate that the header information regarding parent are correct.
@@ -367,6 +409,102 @@ fn validate_input_selector(
             "Anchor transaction input data does not match the expected selector: {expected_selector:?}"
         )));
     }
+    Ok(())
+}
+
+/// Validate a block with regard to execution results:
+///
+/// - Compares the receipts root in the block header to the block body
+/// - Compares the gas used in the block header to the actual gas usage after execution
+///
+/// Note: Taiko does not use requests hash validation, so that part is omitted.
+pub fn validate_block_post_execution<B, R, ChainSpec>(
+    block: &RecoveredBlock<B>,
+    chain_spec: &ChainSpec,
+    receipts: &[R],
+    _requests: &Requests,
+) -> Result<(), ConsensusError>
+where
+    B: Block,
+    R: Receipt,
+    ChainSpec: EthereumHardforks,
+{
+    // Check if gas used matches the value set in header.
+    let cumulative_gas_used =
+        receipts.last().map(|receipt| receipt.cumulative_gas_used()).unwrap_or(0);
+    if block.header().gas_used() != cumulative_gas_used {
+        return Err(ConsensusError::BlockGasUsed {
+            gas: GotExpected { got: cumulative_gas_used, expected: block.header().gas_used() },
+            gas_spent_by_tx: gas_spent_by_transactions(receipts),
+        })
+    }
+
+    // Before Byzantium, receipts contained state root that would mean that expensive
+    // operation as hashing that is required for state root got calculated in every
+    // transaction This was replaced with is_success flag.
+    // See more about EIP here: https://eips.ethereum.org/EIPS/eip-658
+    if chain_spec.is_byzantium_active_at_block(block.header().number()) &&
+        let Err(error) = verify_receipts(
+            block.header().receipts_root(),
+            block.header().logs_bloom(),
+            receipts,
+        )
+    {
+        let receipts = receipts
+            .iter()
+            .map(|r| Bytes::from(r.with_bloom_ref().encoded_2718()))
+            .collect::<Vec<_>>();
+        tracing::debug!(%error, ?receipts, "receipts verification failed");
+        return Err(error)
+    }
+
+    Ok(())
+}
+
+/// Calculate the receipts root, and compare it against the expected receipts root and logs
+/// bloom.
+fn verify_receipts<R: Receipt>(
+    expected_receipts_root: B256,
+    expected_logs_bloom: Bloom,
+    receipts: &[R],
+) -> Result<(), ConsensusError> {
+    // Calculate receipts root.
+    let receipts_with_bloom = receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>();
+    let receipts_root = calculate_receipt_root(&receipts_with_bloom);
+
+    // Calculate header logs bloom.
+    let logs_bloom = receipts_with_bloom.iter().fold(Bloom::ZERO, |bloom, r| bloom | r.bloom_ref());
+
+    compare_receipts_root_and_logs_bloom(
+        receipts_root,
+        logs_bloom,
+        expected_receipts_root,
+        expected_logs_bloom,
+    )?;
+
+    Ok(())
+}
+
+/// Compare the calculated receipts root with the expected receipts root, also compare
+/// the calculated logs bloom with the expected logs bloom.
+fn compare_receipts_root_and_logs_bloom(
+    calculated_receipts_root: B256,
+    calculated_logs_bloom: Bloom,
+    expected_receipts_root: B256,
+    expected_logs_bloom: Bloom,
+) -> Result<(), ConsensusError> {
+    if calculated_receipts_root != expected_receipts_root {
+        return Err(ConsensusError::BodyReceiptRootDiff(
+            GotExpected { got: calculated_receipts_root, expected: expected_receipts_root }.into(),
+        ))
+    }
+
+    if calculated_logs_bloom != expected_logs_bloom {
+        return Err(ConsensusError::BodyBloomLogDiff(
+            GotExpected { got: calculated_logs_bloom, expected: expected_logs_bloom }.into(),
+        ))
+    }
+
     Ok(())
 }
 

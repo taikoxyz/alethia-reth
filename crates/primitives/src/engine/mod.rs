@@ -1,14 +1,14 @@
-//! Engine API type adapters for Taiko execution payloads.
-use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
-    ExecutionPayloadEnvelopeV5, ExecutionPayloadEnvelopeV6, ExecutionPayloadV1,
-};
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{BuiltPayload, EngineTypes, NodePrimitives, PayloadTypes};
+use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadV1};
+use reth_engine_primitives::EngineTypes;
+use reth_payload_primitives::{BuiltPayload, PayloadTypes};
 use reth_primitives::SealedBlock;
+use reth_primitives_traits::NodePrimitives;
 
 use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
-use crate::payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes};
+use crate::payload::{
+    attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes,
+    built_payload::TaikoBuiltPayload,
+};
 
 /// Taiko execution payload and sidecar structures.
 pub mod types;
@@ -22,7 +22,7 @@ impl PayloadTypes for TaikoEngineTypes {
     /// The execution payload type provided as input.
     type ExecutionData = TaikoExecutionData;
     /// The built payload type.
-    type BuiltPayload = EthBuiltPayload;
+    type BuiltPayload = TaikoBuiltPayload;
     /// The RPC payload attributes type the CL node emits via the engine API.
     type PayloadAttributes = TaikoPayloadAttributes;
     /// The payload attributes type that contains information about a running payload job.
@@ -56,11 +56,11 @@ impl EngineTypes for TaikoEngineTypes {
     /// Execution Payload V2 envelope type.
     type ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2;
     /// Execution Payload V3 envelope type.
-    type ExecutionPayloadEnvelopeV3 = ExecutionPayloadEnvelopeV3;
+    type ExecutionPayloadEnvelopeV3 = ExecutionPayloadEnvelopeV2;
     /// Execution Payload V4 envelope type.
-    type ExecutionPayloadEnvelopeV4 = ExecutionPayloadEnvelopeV4;
+    type ExecutionPayloadEnvelopeV4 = ExecutionPayloadEnvelopeV2;
     /// Execution Payload V5 envelope type.
-    type ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5;
+    type ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV2;
     /// Execution Payload V6 envelope type.
-    type ExecutionPayloadEnvelopeV6 = ExecutionPayloadEnvelopeV6;
+    type ExecutionPayloadEnvelopeV6 = ExecutionPayloadEnvelopeV2;
 }

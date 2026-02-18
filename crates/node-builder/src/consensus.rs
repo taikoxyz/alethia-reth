@@ -2,9 +2,8 @@ use std::{fmt::Debug, sync::Arc};
 
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{TaikoBeaconConsensus, TaikoBlockReader};
-use alethia_reth_primitives::engine::TaikoEngineTypes;
+use alethia_reth_primitives::{TaikoPrimitives, engine::TaikoEngineTypes};
 use alloy_primitives::B256;
-use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::ConsensusBuilder};
 use reth_primitives_traits::{AlloyBlockHeader, Block};
@@ -32,7 +31,7 @@ impl<Node> ConsensusBuilder<Node> for TaikoConsensusBuilder
 where
     Node: FullNodeTypes<
         Types: NodeTypes<
-            Primitives = EthPrimitives,
+            Primitives = TaikoPrimitives,
             ChainSpec = TaikoChainSpec,
             Payload = TaikoEngineTypes,
         >,

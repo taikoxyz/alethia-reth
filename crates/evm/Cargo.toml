@@ -20,3 +20,6 @@ reth-revm = { workspace = true }
 revm-database-interface = { workspace = true }
 serde = { workspace = true, optional = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["rand", "std"] }

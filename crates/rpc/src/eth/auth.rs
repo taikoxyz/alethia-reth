@@ -8,23 +8,16 @@ use alloy_json_rpc::RpcObject;
 use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth::{
-    revm::primitives::Address,
-    transaction_pool::{PoolConsensusTx, PoolTransaction, TransactionPool},
-};
-use reth_db_api::{
-    DatabaseError,
-    transaction::{DbTx, DbTxMut},
-};
-use reth_ethereum::{EthPrimitives, TransactionSigned};
+use reth_db::transaction::DbTx;
+use reth_db_api::{DatabaseError, transaction::DbTxMut};
 use reth_evm::ConfigureEngineEvm;
-use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
 use reth_primitives_traits::BlockBody as _;
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
-use reth_revm::{State, database::StateProviderDatabase};
+use reth_revm::{State, database::StateProviderDatabase, primitives::Address};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
+use reth_transaction_pool::{PoolConsensusTx, PoolTransaction, TransactionPool};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -33,19 +26,21 @@ use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::TaikoNextBlockEnvAttributes,
     factory::TaikoBlockExecutorFactory,
+    receipt_builder::TaikoReceiptBuilder,
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
         select_and_execute_pool_transactions,
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
+use alethia_reth_consensus::{transaction::TaikoTxEnvelope, validation::ANCHOR_V4_SELECTOR};
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::{
-    decode_shasta_proposal_id, engine::types::TaikoExecutionData, payload::attributes::RpcL1Origin,
+    TaikoPrimitives, decode_shasta_proposal_id, engine::types::TaikoExecutionData,
+    payload::attributes::RpcL1Origin,
 };
 
 /// A pre-built transaction list that contains the mempool content.
@@ -395,7 +390,7 @@ where
 impl<Pool, Eth, Evm, Provider> TaikoAuthExtApiServer<RpcTransaction<Eth::Network>>
     for TaikoAuthExt<Pool, Eth, Evm, Provider>
 where
-    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>> + 'static,
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TaikoTxEnvelope>> + 'static,
     Eth: RpcConvert<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
     Provider: DatabaseProviderFactory
         + BlockReaderIdExt<Header = alloy_consensus::Header>
@@ -403,10 +398,10 @@ where
         + 'static,
     Evm: ConfigureEngineEvm<
             TaikoExecutionData,
-            Primitives = EthPrimitives,
+            Primitives = TaikoPrimitives,
             NextBlockEnvCtx = TaikoNextBlockEnvAttributes,
             BlockExecutorFactory = TaikoBlockExecutorFactory<
-                RethReceiptBuilder,
+                TaikoReceiptBuilder,
                 Arc<TaikoChainSpec>,
                 TaikoEvmFactory,
             >,
@@ -631,6 +626,7 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     #[test]
+    #[cfg(feature = "serde")]
     /// Ensures `txPoolContent` accepts a camelCase object payload.
     fn tx_pool_content_params_deserialize_from_camel_case() {
         let value = serde_json::json!({
@@ -656,6 +652,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "serde")]
     /// Ensures `txPoolContentWithMinTip` accepts a camelCase object payload.
     fn tx_pool_content_with_min_tip_params_deserialize_from_camel_case() {
         let value = serde_json::json!({
@@ -717,7 +714,7 @@ mod tests {
                 .with_default_tables()
                 .build()
                 .expect("failed to create test RocksDB provider"),
-            reth::tasks::Runtime::default(),
+            reth_tasks::Runtime::default(),
         )
         .expect("failed to create test provider factory")
     }

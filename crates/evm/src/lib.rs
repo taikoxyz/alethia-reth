@@ -3,6 +3,8 @@
 //! Taiko EVM extensions, handlers, and fork-spec adapters.
 /// Alloy-facing EVM wrapper and helpers.
 pub mod alloy;
+/// Taiko EVM context types and builder traits.
+pub mod context;
 #[allow(clippy::module_inception)]
 /// Core Taiko EVM type extensions over `reth-revm`.
 pub mod evm;

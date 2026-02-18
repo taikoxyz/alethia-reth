@@ -10,19 +10,70 @@ path = "src/lib.rs"
 
 [features]
 default = []
+serde = [
+    "dep:serde",
+    "alloy-primitives/serde",
+    "alloy-consensus/serde",
+    "alloy-eips/serde",
+]
+arbitrary = [
+    "dep:arbitrary",
+    "alloy-consensus/arbitrary",
+    "alloy-eips/arbitrary",
+    "alloy-primitives/rand",
+    "alloy-primitives/arbitrary",
+]
+alloy-compat = [
+    "dep:serde",
+    "dep:alloy-network",
+    "dep:alloy-rpc-types-eth",
+    "dep:reth-rpc-convert",
+    "dep:reth-rpc-eth-api",
+]
+k256 = ["alloy-primitives/k256", "alloy-consensus/k256"]
+serde-bincode-compat = [
+    "serde",
+    "dep:serde",
+    "dep:serde_with",
+    "alloy-consensus/serde-bincode-compat",
+    "reth-primitives-traits/serde-bincode-compat",
+    "reth-ethereum-primitives/serde-bincode-compat",
+]
+reth-codec = ["dep:reth-codecs", "dep:reth-db-api"]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-evm = { path = "../evm" }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-network = { workspace = true, optional = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
-reth-chainspec = { workspace = true }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+arbitrary = { workspace = true, features = ["derive"], optional = true }
+eyre = { workspace = true }
+parity-scale-codec = { workspace = true }
+rand = { workspace = true }
 reth-consensus = { workspace = true }
 reth-consensus-common = { workspace = true }
-reth-ethereum = { workspace = true }
+reth-codecs = { workspace = true, features = ["alloy"], optional = true }
+reth-chainspec = { workspace = true }
+reth-db-api = { workspace = true, optional = true }
 reth-ethereum-consensus = { workspace = true }
-reth-execution-types = { workspace = true }
-reth-primitives = { workspace = true }
+reth-ethereum-primitives = { workspace = true }
+reth-evm = { workspace = true }
 reth-primitives-traits = { workspace = true }
+reth-rpc-convert = { workspace = true, optional = true }
+reth-rpc-eth-api = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true, features = ["serde", "std"] }
+alloy-primitives = { workspace = true, features = ["rand", "std"] }
+alloy-consensus = { workspace = true, features = ["arbitrary"] }
+serde_json = { workspace = true }
+arbitrary = { workspace = true, features = ["derive"] }

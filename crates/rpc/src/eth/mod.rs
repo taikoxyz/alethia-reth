@@ -1,9 +1,6 @@
 //! Taiko `eth` and `taikoAuth` namespace RPC extensions.
 /// Authenticated Taiko RPC methods and tx-pool helpers.
 pub mod auth;
-/// Builder for Taiko `eth` API integration.
-pub mod builder;
-/// Error types and helpers for Taiko `eth` RPC methods.
 pub mod error;
 #[allow(clippy::module_inception)]
 /// Public Taiko `eth` namespace methods.

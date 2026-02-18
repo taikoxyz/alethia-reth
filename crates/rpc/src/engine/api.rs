@@ -2,7 +2,8 @@
 use std::io;
 
 use alethia_reth_primitives::{
-    engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
+    engine::types::TaikoExecutionData,
+    payload::{attributes::TaikoPayloadAttributes, built_payload::TaikoBuiltPayload},
 };
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
@@ -11,20 +12,18 @@ use async_trait::async_trait;
 use jsonrpsee::{RpcModule, proc_macros::rpc};
 use jsonrpsee_core::RpcResult;
 use jsonrpsee_types::ErrorObjectOwned;
-use reth::{
-    payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, transaction_pool::TransactionPool,
-};
 use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_engine_primitives::EngineApiValidator;
-use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
-use reth_payload_primitives::PayloadKind;
+use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadKind, PayloadTypes};
+use reth_payload_builder::PayloadStore;
 use reth_provider::{
     BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
 };
 use reth_rpc::EngineApi;
+use reth_rpc_api::IntoEngineApiRpcModule;
 use reth_rpc_engine_api::EngineApiError;
+use reth_transaction_pool::TransactionPool;
 
 use alethia_reth_db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
@@ -102,7 +101,7 @@ where
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
-            BuiltPayload = EthBuiltPayload,
+            BuiltPayload = TaikoBuiltPayload,
         >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
@@ -163,7 +162,7 @@ where
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
-            BuiltPayload = EthBuiltPayload,
+            BuiltPayload = TaikoBuiltPayload,
         >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,

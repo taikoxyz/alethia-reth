@@ -5,3 +5,6 @@
 pub mod engine;
 /// Taiko `eth` namespace extensions and custom RPC methods.
 pub mod eth;
+
+/// Taiko RPC type conversions
+pub mod converter;

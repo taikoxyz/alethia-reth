@@ -9,7 +9,8 @@ use alloy_rlp::{encode_list, list_length};
 use core::fmt;
 use flate2::{Compression, write::ZlibEncoder};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
-use reth_ethereum::{EthPrimitives, TransactionSigned};
+use alethia_reth_consensus::transaction::TaikoTxEnvelope;
+use alethia_reth_primitives::TaikoPrimitives;
 use reth_evm::{
     block::{BlockExecutionError, BlockValidationError, InternalBlockExecutionError},
     execute::BlockBuilder,
@@ -52,7 +53,7 @@ pub struct TxSelectionConfig {
 #[derive(Debug, Clone)]
 pub struct ExecutedTx {
     /// The executed transaction.
-    pub tx: Recovered<TransactionSigned>,
+    pub tx: Recovered<TaikoTxEnvelope>,
     /// Gas used by the transaction.
     pub gas_used: u64,
     /// Estimated DA size (compressed).
@@ -193,14 +194,14 @@ fn adjusted_estimate(estimated_after: u64, state: &DaRatioState) -> u64 {
 }
 
 /// Returns the zlib-compressed byte size for the list plus the candidate.
-fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<TransactionSigned>) -> u64 {
-    let mut txs: Vec<&TransactionSigned> = Vec::with_capacity(list.transactions.len() + 1);
+fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<TaikoTxEnvelope>) -> u64 {
+    let mut txs: Vec<&TaikoTxEnvelope> = Vec::with_capacity(list.transactions.len() + 1);
     txs.extend(list.transactions.iter().map(|etx| etx.tx.inner()));
     txs.push(candidate.inner());
 
     let mut rlp_bytes =
-        Vec::with_capacity(list_length::<&TransactionSigned, TransactionSigned>(&txs));
-    encode_list::<&TransactionSigned, TransactionSigned>(&txs, &mut rlp_bytes);
+        Vec::with_capacity(list_length::<&TaikoTxEnvelope, TaikoTxEnvelope>(&txs));
+    encode_list::<&TaikoTxEnvelope, TaikoTxEnvelope>(&txs, &mut rlp_bytes);
 
     let mut encoder = ZlibEncoder::new(Vec::new(), zlib_compression());
     if encoder.write_all(&rlp_bytes).is_err() {
@@ -216,7 +217,7 @@ fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<Transact
 /// Returns the DA size that exceeded the limit, if any (estimated or actual).
 fn exceeds_da_limit(
     list: &ExecutedTxList,
-    tx: &Recovered<TransactionSigned>,
+    tx: &Recovered<TaikoTxEnvelope>,
     tx_da_estimated: u64,
     state: &mut DaRatioState,
     config: &TxSelectionConfig,
@@ -252,7 +253,7 @@ fn exceeds_da_limit(
 /// Returns whether the list exceeds gas and the DA limit (if exceeded).
 fn exceeds_list_limits(
     list: &ExecutedTxList,
-    tx: &Recovered<TransactionSigned>,
+    tx: &Recovered<TaikoTxEnvelope>,
     tx_gas_limit: u64,
     tx_da_estimated: u64,
     state: &mut DaRatioState,
@@ -293,8 +294,8 @@ pub fn select_and_execute_pool_transactions<B, Pool>(
     is_cancelled: impl Fn() -> bool,
 ) -> Result<SelectionOutcome, BlockExecutionError>
 where
-    B: BlockBuilder<Primitives = EthPrimitives>,
-    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>,
+    B: BlockBuilder<Primitives = TaikoPrimitives>,
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TaikoTxEnvelope>>,
 {
     let mut best_txs = pool
         .best_transactions_with_attributes(BestTransactionsAttributes::new(config.base_fee, None));
@@ -454,7 +455,7 @@ mod tests {
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
 
-    fn make_signed_legacy_tx(input: Bytes) -> TransactionSigned {
+    fn make_signed_legacy_tx(input: Bytes) -> TaikoTxEnvelope {
         let tx = TxLegacy {
             chain_id: Some(ChainId::from(1u64)),
             nonce: 0,

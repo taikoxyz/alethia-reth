@@ -10,14 +10,14 @@ use reth_engine_local::LocalPayloadAttributesBuilder;
 #[cfg(feature = "net")]
 use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
 #[cfg(feature = "net")]
-use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
+use reth_primitives_traits::SealedHeader;
 #[cfg(feature = "serde")]
 use serde_with::{As, Bytes, base64::Base64};
 
 /// Taiko Payload Attributes
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaikoPayloadAttributes {
     /// The ETH payload attributes
     #[cfg_attr(feature = "serde", serde(flatten))]
@@ -110,9 +110,9 @@ impl RpcL1Origin {
     }
 }
 
-/// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder`,
+/// Implement `PayloadAttributesBuilder` for `LocalPayloadAttributesBuilder<TaikoChainSpec>`,
 /// to build `TaikoPayloadAttributes` from the local payload attributes builder.
-#[cfg(feature = "net")]
+#[cfg(any(feature = "net", feature = "local-payload-builder"))]
 impl<C> PayloadAttributesBuilder<TaikoPayloadAttributes, C::Header>
     for LocalPayloadAttributesBuilder<C>
 where
@@ -121,6 +121,8 @@ where
     /// Return a new payload attribute from the builder.
     fn build(&self, parent: &SealedHeader<C::Header>) -> TaikoPayloadAttributes {
         // Delegate to the underlying ETH payload builder to avoid self-recursion.
+
+        use alloy_primitives::Address;
         let eth_payload_attributes = <Self as PayloadAttributesBuilder<
             EthPayloadAttributes,
             C::Header,
@@ -133,7 +135,7 @@ where
             block_metadata: TaikoBlockMetadata {
                 beneficiary: Address::random(),
                 timestamp: U256::from(timestamp),
-                gas_limit: MAXIMUM_GAS_LIMIT_BLOCK,
+                gas_limit: reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK,
                 mix_hash: B256::random(),
                 tx_list: Some(AlloyBytes::new()),
                 extra_data: AlloyBytes::new(),
@@ -154,10 +156,14 @@ where
 
 #[cfg(feature = "net")]
 #[cfg(test)]
+#[cfg(feature = "local-payload-builder")]
 mod tests {
     use super::*;
     use alloy_consensus::Header;
     use reth_chainspec::ChainSpec;
+    use reth_engine_local::LocalPayloadAttributesBuilder;
+    use reth_payload_primitives::PayloadAttributesBuilder;
+    use reth_primitives_traits::constants::MAXIMUM_GAS_LIMIT_BLOCK;
     use std::sync::Arc;
 
     #[test]

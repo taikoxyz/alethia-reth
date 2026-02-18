@@ -3,3 +3,4 @@
 pub mod attributes;
 /// Payload builder attributes and payload-id derivation helpers.
 pub mod builder;
+pub mod built_payload;

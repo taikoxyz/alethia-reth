@@ -1,7 +1,7 @@
 use alloy_evm::{Database, EvmEnv, EvmFactory};
 use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
-    Context, Inspector, MainBuilder, MainContext,
+    Inspector,
     context::{
         BlockEnv, TxEnv,
         result::{EVMError, HaltReason},
@@ -12,8 +12,8 @@ use reth_revm::{
 };
 
 use crate::{
-    alloy::{TaikoEvmContext, TaikoEvmWrapper},
-    evm::TaikoEvm,
+    alloy::TaikoEvmWrapper,
+    context::{TaikoContext, TaikoEvmBuilder, TaikoEvmContext},
     spec::TaikoSpecId,
 };
 
@@ -47,16 +47,16 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
-        let evm = Context::mainnet()
+        let evm = TaikoEvmContext::taiko_mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
+            .build_taiko_mainnet_with_inspector(NoOpInspector {})
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
+        TaikoEvmWrapper::new(evm, false)
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -67,16 +67,16 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
-        let evm = Context::mainnet()
+        let evm = TaikoEvmContext::taiko_mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
+            .build_taiko_mainnet_with_inspector(NoOpInspector {})
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )))
             .with_inspector(inspector);
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
+        TaikoEvmWrapper::new(evm, true)
     }
 }

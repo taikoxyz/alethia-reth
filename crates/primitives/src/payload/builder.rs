@@ -1,9 +1,9 @@
 //! Taiko payload-builder attribute normalization and payload-id derivation.
+use alethia_reth_consensus::transaction::TaikoTxEnvelope;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawals;
-use reth_ethereum::TransactionSigned;
 use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
 use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives::Recovered;
@@ -36,11 +36,11 @@ pub struct TaikoPayloadBuilderAttributes {
     ///
     /// - `None`: Transactions should be selected from the mempool (new mode).
     /// - `Some(vec)`: Use the provided transaction list (legacy mode).
-    pub transactions: Option<Vec<Recovered<TransactionSigned>>>,
+    pub transactions: Option<Vec<Recovered<TaikoTxEnvelope>>>,
     /// The extra data for the L2 block.
     pub extra_data: Bytes,
     /// Prebuilt anchor transaction for new mode, decoded and recovered.
-    pub anchor_transaction: Option<Recovered<TransactionSigned>>,
+    pub anchor_transaction: Option<Recovered<TaikoTxEnvelope>>,
 }
 
 impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
@@ -112,7 +112,7 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             .anchor_transaction
             .as_ref()
             .map(|bytes| {
-                TransactionSigned::decode(&mut &bytes[..])
+                TaikoTxEnvelope::decode(&mut &bytes[..])
                     .map_err(|_| alloy_rlp::Error::Custom("invalid anchor_transaction"))?
                     .try_into_recovered()
                     .map_err(|_| alloy_rlp::Error::Custom("anchor tx not recoverable"))
@@ -210,8 +210,8 @@ pub fn payload_id_taiko(
 }
 
 /// Decode RLP-encoded bytes into signed transactions.
-fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
-    Vec::<TransactionSigned>::decode(&mut &bytes[..])
+fn decode_transactions(bytes: &[u8]) -> Result<Vec<TaikoTxEnvelope>, alloy_rlp::Error> {
+    Vec::<TaikoTxEnvelope>::decode(&mut &bytes[..])
 }
 
 #[cfg(all(test, feature = "net"))]

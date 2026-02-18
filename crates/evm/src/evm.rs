@@ -2,13 +2,12 @@
 use alloy_primitives::Address;
 use reth_revm::{
     context::{ContextError, ContextTr, Evm as RevmEvm, FrameStack},
-    handler::{
-        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider,
-        instructions::EthInstructions,
-    },
+    handler::{EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
 };
 use revm_database_interface::Database;
+
+use crate::handler::instructions::TaikoInstructions;
 
 /// Custom EVM for Taiko, we extend the RevmEvm with
 /// [`TaikoEvmExtraContext`] to provide additional context
@@ -16,7 +15,7 @@ use revm_database_interface::Database;
 pub struct TaikoEvm<CTX, INSP, P> {
     /// Inner revm engine with Taiko instruction wiring.
     pub inner:
-        RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, P, EthFrame<EthInterpreter>>,
+        RevmEvm<CTX, INSP, TaikoInstructions<EthInterpreter, CTX>, P, EthFrame<EthInterpreter>>,
     /// Optional per-block context captured from pre-executed anchor system calls.
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
@@ -27,7 +26,7 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
         inner: RevmEvm<
             CTX,
             INSP,
-            EthInstructions<EthInterpreter, CTX>,
+            TaikoInstructions<EthInterpreter, CTX>,
             P,
             EthFrame<EthInterpreter>,
         >,
@@ -49,6 +48,27 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             anchor_caller_nonce,
         });
     }
+
+    /// Consumed self and returns new Evm type with given Inspector.
+    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TaikoEvm<CTX, OINSP, P> {
+        TaikoEvm {
+            inner: self.inner.with_inspector(inspector),
+            extra_execution_ctx: self.extra_execution_ctx,
+        }
+    }
+
+    /// Consumes self and returns new Evm type with given Precompiles.
+    pub fn with_precompiles<OP>(self, precompiles: OP) -> TaikoEvm<CTX, INSP, OP> {
+        TaikoEvm {
+            inner: self.inner.with_precompiles(precompiles),
+            extra_execution_ctx: self.extra_execution_ctx,
+        }
+    }
+
+    /// Consumes self and returns inner Inspector.
+    pub fn into_inspector(self) -> INSP {
+        self.inner.into_inspector()
+    }
 }
 
 /// A trait that integrates context, instruction set, and precompiles to create an EVM struct,
@@ -61,7 +81,7 @@ where
     /// The context type that implements ContextTr to provide access to execution state
     type Context = CTX;
     /// The instruction set type that implements InstructionProvider to define available operations
-    type Instructions = EthInstructions<EthInterpreter, CTX>;
+    type Instructions = TaikoInstructions<EthInterpreter, CTX>;
     /// The type containing the available precompiled contracts
     type Precompiles = P;
     type Frame = EthFrame<EthInterpreter>;
@@ -192,12 +212,12 @@ impl TaikoEvmExtraExecutionCtx {
 #[cfg(test)]
 mod test {
     use alloy_primitives::{U64, U256};
-    use reth_revm::{
-        Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, db::InMemoryDB,
-        state::AccountInfo,
-    };
+    use reth_revm::{Context, ExecuteEvm, context::TxEnv, db::InMemoryDB, state::AccountInfo};
 
-    use crate::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
+    use crate::{
+        alloy::TAIKO_GOLDEN_TOUCH_ADDRESS,
+        context::{TaikoContext, TaikoEvmBuilder},
+    };
 
     use super::*;
 
@@ -211,7 +231,7 @@ mod test {
             AccountInfo { nonce, balance: U256::from(0), ..Default::default() },
         );
 
-        let mut taiko_evm = TaikoEvm::new(Context::mainnet().with_db(db).build_mainnet());
+        let mut taiko_evm = Context::taiko_mainnet().with_db(db).build_taiko_mainnet();
 
         let mut state = taiko_evm.transact_one(
             TxEnv::builder()

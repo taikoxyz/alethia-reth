@@ -3,11 +3,13 @@ use std::{ffi::OsString, fmt, path::PathBuf, sync::Arc};
 
 use alloy_hardforks::EthereumHardforks;
 use clap::Parser;
-use reth::{CliContext, chainspec::EthChainSpec, core::version};
+use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{NodeCommand, launcher::Launcher, node::NoArgs};
+use reth_cli_runner::CliContext;
 use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
+use reth_node_core::version;
 
 use alethia_reth_node::chainspec::spec::TaikoDevnetConfigExt;
 

@@ -12,22 +12,27 @@ path = "src/lib.rs"
 default = ["net"]
 prover = []
 net = [
-    "dep:alethia-reth-primitives",
-    "alethia-reth-primitives?/net",
     "dep:reth-payload-primitives",
     "dep:reth-rpc-eth-api",
+    "alethia-reth-primitives/net",
+    "reth-codec",
 ]
-serde = ["dep:alethia-reth-primitives", "alethia-reth-primitives?/serde"]
+serde = ["alethia-reth-primitives/serde"]
+reth-codec = ["alethia-reth-primitives/reth-codec"]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
+alethia-reth-consensus = { path = "../consensus", default-features = false }
 alethia-reth-evm = { path = "../evm" }
-alethia-reth-primitives = { path = "../primitives", default-features = false, optional = true }
+alethia-reth-primitives = { path = "../primitives", default-features = false, features = [
+    "serde",
+    "serde-bincode-compat",
+] }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-evm = { workspace = true }
 alloy-hardforks = { workspace = true }
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-rlp = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 flate2 = { workspace = true }
@@ -37,13 +42,12 @@ reth-ethereum = { workspace = true }
 reth-ethereum-forks = { workspace = true }
 reth-evm = { workspace = true }
 reth-evm-ethereum = { workspace = true }
-reth-execution-types = { workspace = true }
 reth-payload-primitives = { workspace = true, optional = true }
 reth-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }
-reth-revm = { workspace = true }
 reth-rpc-eth-api = { workspace = true, optional = true }
 reth-storage-errors = { workspace = true }
 reth-transaction-pool = { workspace = true }
+reth-revm = { workspace = true }
 revm-database-interface = { workspace = true }
 tracing = { workspace = true }

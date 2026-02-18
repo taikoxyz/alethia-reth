@@ -9,7 +9,7 @@ use alloy_primitives::hex;
 use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
-        BlockEnv, CfgEnv, TxEnv,
+        BlockEnv, TxEnv,
         result::{EVMError, ExecutionResult, HaltReason, Output, ResultAndState, SuccessReason},
     },
     handler::PrecompileProvider,
@@ -18,7 +18,9 @@ use reth_revm::{
 };
 use tracing::debug;
 
-use crate::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};
+use crate::{
+    context::TaikoEvmContext, evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId,
+};
 
 /// System caller address used for Taiko anchor system-call pre-execution.
 pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
@@ -68,9 +70,6 @@ impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
         self.ctx_mut()
     }
 }
-
-/// Canonical Taiko EVM context type used by the Alloy adapter.
-pub type TaikoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
 
 /// An instance of an ethereum virtual machine.
 ///

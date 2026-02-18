@@ -12,11 +12,10 @@ use reth_consensus_common::validation::{
     validate_header_extra_data, validate_header_gas,
 };
 use reth_ethereum_consensus::validate_block_post_execution;
-use reth_execution_types::BlockExecutionResult;
-use reth_primitives::SealedBlock;
+use reth_evm::block::BlockExecutionResult;
 use reth_primitives_traits::{
-    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
-    SignedTransaction,
+    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedBlock,
+    SealedHeader, SignedTransaction,
 };
 
 use crate::eip4396::{
@@ -53,6 +52,16 @@ pub trait TaikoBlockReader: Send + Sync + Debug {
     fn block_timestamp_by_hash(&self, hash: B256) -> Option<u64>;
 }
 
+#[derive(Debug, Clone, Default)]
+/// Noop Taiko block reader implementation that returns `None` for all queries.
+pub struct NoopTaikoBlockReader;
+
+impl TaikoBlockReader for NoopTaikoBlockReader {
+    fn block_timestamp_by_hash(&self, _hash: B256) -> Option<u64> {
+        None
+    }
+}
+
 /// Taiko consensus implementation.
 ///
 /// Provides basic checks as outlined in the execution specs.
@@ -68,6 +77,11 @@ impl TaikoBeaconConsensus {
     /// Create a new instance of [`TaikoBeaconConsensus`]
     pub fn new(chain_spec: Arc<TaikoChainSpec>, block_reader: Arc<dyn TaikoBlockReader>) -> Self {
         Self { chain_spec, block_reader }
+    }
+
+    /// Create a new instance of [`TaikoBeaconConsensus`] with a noop block reader.
+    pub fn new_with_noop_block_reader(chain_spec: Arc<TaikoChainSpec>) -> Self {
+        Self { chain_spec, block_reader: Arc::new(NoopTaikoBlockReader) }
     }
 }
 
@@ -154,7 +168,18 @@ where
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
         validate_header_gas(header)?;
-        validate_header_base_fee(header, &self.chain_spec)
+        validate_header_base_fee(header, &self.chain_spec)?;
+
+        // Ensures that Cancun related fields are still not set in Taiko
+        if header.blob_gas_used().is_some() {
+            return Err(ConsensusError::BlobGasUsedUnexpected);
+        } else if header.excess_blob_gas().is_some() {
+            return Err(ConsensusError::ExcessBlobGasUnexpected);
+        } else if header.parent_beacon_block_root().is_some() {
+            return Err(ConsensusError::ParentBeaconBlockRootUnexpected);
+        }
+
+        Ok(())
     }
 
     /// Validate that the header information regarding parent are correct.

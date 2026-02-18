@@ -47,7 +47,7 @@ where
     type Context = Self;
 
     fn build_taiko_mainnet(self) -> TaikoEvm<Self::Context, (), EthPrecompiles> {
-        let spec = self.cfg.spec().clone();
+        let spec = self.cfg.spec().to_owned();
         TaikoEvm::new(Evm {
             ctx: self,
             inspector: (),
@@ -61,7 +61,7 @@ where
         self,
         inspector: INSP,
     ) -> TaikoEvm<Self::Context, INSP, EthPrecompiles> {
-        let spec = self.cfg.spec().clone();
+        let spec = self.cfg.spec().to_owned();
         TaikoEvm::new(Evm {
             ctx: self,
             inspector,

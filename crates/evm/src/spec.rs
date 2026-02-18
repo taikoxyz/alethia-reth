@@ -23,7 +23,7 @@ impl TaikoSpecId {
     /// Converts the [`TaikoSpecId`] into a [`SpecId`].
     pub const fn into_eth_spec(self) -> SpecId {
         match self {
-            Self::GENESIS | Self::ONTAKE | Self::PACAYA | Self::SHASTA => SpecId::PRAGUE,
+            Self::GENESIS | Self::ONTAKE | Self::PACAYA | Self::SHASTA => SpecId::SHANGHAI,
         }
     }
 
@@ -91,8 +91,9 @@ mod tests {
             vec![
                 (SpecId::MERGE, true),
                 (SpecId::SHANGHAI, true),
-                (SpecId::CANCUN, true),
-                (SpecId::PRAGUE, true),
+                (SpecId::CANCUN, false),
+                (SpecId::PRAGUE, false),
+                (SpecId::OSAKA, false),
             ],
             vec![
                 (TaikoSpecId::GENESIS, true),

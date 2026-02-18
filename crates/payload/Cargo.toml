@@ -31,6 +31,8 @@ reth-provider = { workspace = true }
 reth-payload-primitives = { workspace = true }
 op-alloy-flz = { workspace = true }
 reth-basic-payload-builder = { workspace = true }
+reth-consensus = { workspace = true }
+reth-consensus-common = { workspace = true }
 reth-chainspec = { workspace = true }
 reth-engine-local = { workspace = true }
 reth-errors = { workspace = true }

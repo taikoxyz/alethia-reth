@@ -4,6 +4,7 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::{BlockHeader, Header};
 #[cfg(feature = "net")]
 use alloy_eips::Decodable2718;
+use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
@@ -115,9 +116,13 @@ impl ConfigureEvm for TaikoEvmConfig {
 
     /// Creates a new [`EvmEnv`] for the given header.
     fn evm_env(&self, header: &Header) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg_env = CfgEnv::new()
+        let mut cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec_and_mainnet_gas_params(taiko_revm_spec(&self.chain_spec().inner, header));
+
+        if self.chain_spec().is_osaka_active_at_timestamp(header.timestamp()) {
+            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let basefee: u64 = header
             .base_fee_per_gas()
@@ -146,13 +151,17 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg = CfgEnv::new()
+        let mut cfg = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec_and_mainnet_gas_params(taiko_spec_by_timestamp_and_block_number(
                 &self.chain_spec().inner,
                 attributes.timestamp,
                 parent.number + 1,
             ));
+
+        if self.chain_spec().is_osaka_active_at_timestamp(attributes.timestamp) {
+            cfg.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let block_env: BlockEnv = BlockEnv {
             number: U256::from(parent.number + 1),
@@ -215,7 +224,6 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         let timestamp = payload.timestamp();
         let block_number = payload.block_number();
 
-        let blob_params = self.chain_spec().blob_params_at_timestamp(timestamp);
         let spec =
             taiko_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
 
@@ -224,13 +232,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             .with_chain_id(self.chain_spec().chain().id())
             .with_spec_and_mainnet_gas_params(spec);
 
-        if let Some(blob_params) = &blob_params {
-            cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
-        }
-
         if self.chain_spec().is_osaka_active_at_timestamp(timestamp) {
             cfg_env.tx_gas_limit_cap =
-                Some(reth_primitives_traits::constants::MAX_TX_GAS_LIMIT_OSAKA);
+                Some(MAX_TX_GAS_LIMIT_OSAKA);
         }
 
         let block_env = BlockEnv {

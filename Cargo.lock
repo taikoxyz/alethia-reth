@@ -309,6 +309,8 @@ dependencies = [
  "op-alloy-flz",
  "reth-basic-payload-builder",
  "reth-chainspec",
+ "reth-consensus",
+ "reth-consensus-common",
  "reth-engine-local",
  "reth-errors",
  "reth-ethereum",

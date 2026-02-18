@@ -1,8 +1,11 @@
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
+use alloy_hardforks::EthereumHardforks;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
+use reth_consensus::ConsensusError;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_errors::RethError;
 use reth_evm::{
     ConfigureEvm,
@@ -306,6 +309,10 @@ where
 
     debug!(target: "payload_builder", id=%attributes.payload_id(), parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
+    // Check if Osaka hardfork is active
+    let chain_spec = client.chain_spec();
+    let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp());
+
     // Create block builder using the ConfigureEvm API
     let mut builder = evm_config
         .builder_for_next_block(
@@ -321,6 +328,20 @@ where
             },
         )
         .map_err(PayloadBuilderError::other)?;
+
+    // Osaka: Pre-validate that all mandated transactions will fit within block size limit
+    if is_osaka && let Some(transactions) = &attributes.transactions {
+        let estimated_txs_size: usize =
+            transactions.iter().map(|tx| tx.inner().eip2718_encoded_length()).sum();
+        let estimated_total_size = estimated_txs_size + 1024; // 1KB overhead for block header
+
+        if estimated_total_size > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: estimated_total_size,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
+    }
 
     builder.apply_pre_execution_changes().map_err(PayloadBuilderError::other)?;
 
@@ -368,6 +389,16 @@ where
 
     // Seal the block
     let sealed_block = Arc::new(block.sealed_block().clone());
+
+    // Final Osaka validation: ensure the sealed block doesn't exceed MAX_RLP_BLOCK_SIZE
+    // This is a safety check - the pre-execution validation should have caught this
+    if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
+        return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+            rlp_length: sealed_block.rlp_length(),
+            max_rlp_length: MAX_RLP_BLOCK_SIZE,
+        }));
+    }
+
     debug!(target: "payload_builder", id=%attributes.payload_id(), sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
 
     let payload = TaikoBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, None);

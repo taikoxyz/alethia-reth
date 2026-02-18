@@ -3,7 +3,8 @@ use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
     BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, TxReceipt,
-    constants::MAXIMUM_EXTRA_DATA_SIZE, proofs::calculate_receipt_root,
+    constants::{EMPTY_WITHDRAWALS, MAXIMUM_EXTRA_DATA_SIZE},
+    proofs::calculate_receipt_root,
 };
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_hardforks::EthereumHardforks;
@@ -11,8 +12,8 @@ use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_sol_types::{SolCall, sol};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
-    validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
-    validate_header_extra_data, validate_header_gas,
+    MAX_RLP_BLOCK_SIZE, validate_against_parent_hash_number, validate_body_against_header,
+    validate_header_base_fee, validate_header_extra_data, validate_header_gas,
 };
 use reth_evm::block::BlockExecutionResult;
 use reth_primitives_traits::{
@@ -134,6 +135,26 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             return Err(ConsensusError::BodyOmmersHashDiff(
                 GotExpected { got: block.ommers_hash(), expected: EMPTY_OMMER_ROOT_HASH }.into(),
             ));
+        }
+
+        // In Taiko network, withdrawals root is always empty.
+        if let Some(withdrawals_root) = block.withdrawals_root() {
+            if withdrawals_root != EMPTY_WITHDRAWALS {
+                return Err(ConsensusError::BodyWithdrawalsRootDiff(
+                    GotExpected { got: withdrawals_root, expected: EMPTY_WITHDRAWALS }.into(),
+                ));
+            }
+        } else {
+            return Err(ConsensusError::WithdrawalsRootMissing);
+        }
+
+        if self.chain_spec.is_osaka_active_at_timestamp(block.timestamp()) &&
+            block.rlp_length() > MAX_RLP_BLOCK_SIZE
+        {
+            return Err(ConsensusError::BlockTooLarge {
+                rlp_length: block.rlp_length(),
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            })
         }
 
         Ok(())

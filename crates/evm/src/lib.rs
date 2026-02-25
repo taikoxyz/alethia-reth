@@ -14,5 +14,7 @@ pub mod execution;
 pub mod factory;
 /// Taiko-specific handler behavior for fee sharing and anchor processing.
 pub mod handler;
+/// L1SLOAD and other Taiko-specific precompiled contracts.
+pub mod precompiles;
 /// Taiko hardfork spec identifiers and conversions.
 pub mod spec;

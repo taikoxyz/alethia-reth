@@ -225,6 +225,7 @@ dependencies = [
  "reth-revm",
  "revm-database-interface",
  "serde",
+ "serial_test",
  "tracing",
 ]
 
@@ -772,7 +773,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "auto_impl",
- "dashmap",
+ "dashmap 6.1.0",
  "either",
  "futures",
  "futures-utils-wasm",
@@ -2659,6 +2660,19 @@ dependencies = [
  "darling_core 0.23.0",
  "quote",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -6889,7 +6903,7 @@ version = "1.11.0"
 source = "git+https://github.com/paradigmxyz/reth?tag=v1.11.0#564ffa586845fa4a8bb066f0c7b015ff36b26c08"
 dependencies = [
  "alloy-primitives",
- "dashmap",
+ "dashmap 6.1.0",
  "data-encoding",
  "enr",
  "hickory-resolver",
@@ -7561,7 +7575,7 @@ source = "git+https://github.com/paradigmxyz/reth?tag=v1.11.0#564ffa586845fa4a8b
 dependencies = [
  "bitflags 2.11.0",
  "byteorder",
- "dashmap",
+ "dashmap 6.1.0",
  "derive_more",
  "parking_lot",
  "reth-mdbx-sys",
@@ -8127,7 +8141,7 @@ dependencies = [
  "auto_impl",
  "byteorder",
  "bytes",
- "dashmap",
+ "dashmap 6.1.0",
  "derive_more",
  "modular-bitfield",
  "once_cell",
@@ -9754,6 +9768,31 @@ checksum = "a84f14a19e9a014bb9f4512488d9829a68e04ecabffb0f9904cd1ace94598177"
 dependencies = [
  "base16ct",
  "serde",
+]
+
+[[package]]
+name = "serial_test"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e56dd856803e253c8f298af3f4d7eb0ae5e23a737252cd90bb4f3b435033b2d"
+dependencies = [
+ "dashmap 5.5.3",
+ "futures",
+ "lazy_static",
+ "log",
+ "parking_lot",
+ "serial_test_derive",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91d129178576168c589c9ec973feedf7d3126c01ac2bf08795109aa35b69fb8f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.116",
 ]
 
 [[package]]

@@ -25,3 +25,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["rand", "std"] }
+serial_test = "2"

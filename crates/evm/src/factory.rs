@@ -9,12 +9,12 @@ use reth_revm::{
     },
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
-    precompile::{PrecompileSpecId, Precompiles},
 };
 
 use crate::{
     alloy::TaikoEvmWrapper,
     context::{TaikoContext, TaikoEvmBuilder, TaikoEvmContext},
+    precompiles::taiko_precompiles_map,
     spec::TaikoSpecId,
 };
 
@@ -58,14 +58,15 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
+        let precompiles = taiko_precompiles_map(
+            reth_revm::precompile::PrecompileSpecId::from_spec_id(spec_id.into()),
+        );
         let taiko_evm = TaikoEvmContext::taiko_mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
             .build_taiko_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )));
+            .with_precompiles(precompiles);
 
         TaikoEvmWrapper::new(taiko_evm, false).with_treasury_address(self.treasury_address)
     }
@@ -78,14 +79,15 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
+        let precompiles = taiko_precompiles_map(
+            reth_revm::precompile::PrecompileSpecId::from_spec_id(spec_id.into()),
+        );
         let taiko_evm = TaikoEvmContext::taiko_mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
             .build_taiko_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )))
+            .with_precompiles(precompiles)
             .with_inspector(inspector);
 
         TaikoEvmWrapper::new(taiko_evm, true).with_treasury_address(self.treasury_address)

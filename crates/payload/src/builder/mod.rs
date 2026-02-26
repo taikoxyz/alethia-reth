@@ -1,51 +1,41 @@
 use std::sync::Arc;
 
-use alloy_consensus::Transaction;
-use alloy_eips::eip4844::BYTES_PER_BLOB;
 use reth::{
     api::{PayloadBuilderAttributes, PayloadBuilderError},
     providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{State, cancelled::CancelOnDrop, database::StateProviderDatabase, primitives::U256},
+    revm::{State, database::StateProviderDatabase},
 };
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
-use reth_errors::RethError;
-use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
+use reth_ethereum::EthPrimitives;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
     ConfigureEvm,
-    block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_primitives::{Header as RethHeader, Recovered};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
-    tx_selection::{
-        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
-        select_and_execute_pool_transactions,
-    },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::{
-    ANCHOR_V3_V4_GAS_LIMIT, AnchorValidationContext, validate_anchor_transaction,
-};
+use alethia_reth_consensus::validation::ANCHOR_V3_V4_GAS_LIMIT;
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
 
-/// Creates an error for when a transaction's effective tip cannot be calculated.
-fn missing_tip_error(base_fee: u64) -> PayloadBuilderError {
-    PayloadBuilderError::Internal(RethError::msg(format!(
-        "effective tip missing for executed transaction (base_fee={base_fee})"
-    )))
-}
+use self::execution::{
+    ExecutionOutcome, PoolExecutionContext, execute_anchor_and_pool_transactions,
+    execute_provided_transactions,
+};
 
-/// Taiko payload builder
+/// Transaction-phase execution helpers for legacy/new-mode payload construction.
+mod execution;
+
+/// Taiko payload builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaikoPayloadBuilder<Client, Pool, EvmConfig = TaikoEvmConfig> {
     /// Client providing access to node state.
@@ -54,149 +44,6 @@ pub struct TaikoPayloadBuilder<Client, Pool, EvmConfig = TaikoEvmConfig> {
     pool: Pool,
     /// EVM configuration for payload building.
     evm_config: EvmConfig,
-}
-
-/// Outcome of executing the transaction phase for a payload build.
-enum ExecutionOutcome {
-    /// Execution was cancelled before completion.
-    Cancelled,
-    /// Execution completed successfully with accumulated fees.
-    Completed(U256),
-}
-
-/// Context for executing transactions in new mode (anchor + pool transactions).
-struct PoolExecutionContext<'a> {
-    /// Prebuilt anchor transaction for new mode.
-    anchor_tx: &'a Recovered<EthTransactionSigned>,
-    /// The parent block header.
-    parent_header: &'a RethHeader,
-    /// Timestamp for the new block.
-    block_timestamp: u64,
-    /// Payload identifier for logging.
-    payload_id: String,
-    /// Base fee per gas for transaction selection.
-    base_fee: u64,
-    /// Block gas limit.
-    gas_limit: u64,
-}
-
-/// Executes the provided transaction list in legacy mode.
-///
-/// Preserves legacy mode: validation errors are skipped, fatal errors abort
-/// the build, and cancellation short-circuits the loop.
-fn execute_provided_transactions(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
-    transactions: &[Recovered<EthTransactionSigned>],
-    base_fee: u64,
-    cancel: &CancelOnDrop,
-) -> Result<ExecutionOutcome, PayloadBuilderError> {
-    let mut total_fees = U256::ZERO;
-
-    for tx in transactions {
-        if cancel.is_cancelled() {
-            return Ok(ExecutionOutcome::Cancelled);
-        }
-
-        let gas_used = match builder.execute_transaction(tx.clone()) {
-            Ok(gas_used) => gas_used,
-            Err(BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
-            )) => {
-                trace!(target: "payload_builder", ?tx, "skipping invalid transaction in legacy mode");
-                continue;
-            }
-            // Fatal errors should still fail the build
-            Err(err) => {
-                warn!(target: "payload_builder", ?tx, %err, "fatal error executing transaction");
-                return Err(PayloadBuilderError::evm(err));
-            }
-        };
-
-        // Add transaction fees to total
-        let miner_fee =
-            tx.effective_tip_per_gas(base_fee).ok_or_else(|| missing_tip_error(base_fee))?;
-        total_fees += U256::from(miner_fee) * U256::from(gas_used);
-    }
-
-    Ok(ExecutionOutcome::Completed(total_fees))
-}
-
-/// Executes new-mode transactions: injects the anchor transaction, then pulls
-/// from the mempool until exhaustion or cancellation.
-fn execute_anchor_and_pool_transactions<Client, Pool>(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
-    pool: &Pool,
-    client: &Client,
-    ctx: &PoolExecutionContext<'_>,
-    cancel: &CancelOnDrop,
-) -> Result<ExecutionOutcome, PayloadBuilderError>
-where
-    Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TaikoChainSpec>
-        + reth_provider::BlockReader,
-    Pool: reth_transaction_pool::TransactionPool<
-            Transaction: reth_transaction_pool::PoolTransaction<
-                Consensus = reth_ethereum::TransactionSigned,
-            >,
-        >,
-{
-    debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
-
-    let chain_spec = client.chain_spec();
-    validate_anchor_transaction(
-        ctx.anchor_tx.inner(),
-        chain_spec.as_ref(),
-        AnchorValidationContext {
-            timestamp: ctx.block_timestamp,
-            block_number: ctx.parent_header.number + 1,
-            base_fee_per_gas: ctx.base_fee,
-        },
-    )
-    .map_err(PayloadBuilderError::other)?;
-
-    // Execute the anchor transaction as the first transaction in the block
-    // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
-    match builder.execute_transaction(ctx.anchor_tx.clone()) {
-        Ok(gas_used) => {
-            // Note: Anchor transaction has zero priority fee (tip), so no fees to add
-            debug!(target: "payload_builder", id=%ctx.payload_id, gas_used, "anchor transaction executed successfully");
-        }
-        Err(err) => {
-            warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
-            return Err(PayloadBuilderError::evm(err));
-        }
-    }
-
-    // Use the shared transaction selection logic for pool transactions
-    let config = TxSelectionConfig {
-        base_fee: ctx.base_fee,
-        gas_limit_per_list: ctx.gas_limit,
-        max_da_bytes_per_list: BYTES_PER_BLOB as u64,
-        da_size_zlib_guard_bytes: DEFAULT_DA_ZLIB_GUARD_BYTES,
-        max_lists: 1,
-        min_tip: 0,
-        locals: vec![],
-    };
-
-    match select_and_execute_pool_transactions(builder, pool, &config, || cancel.is_cancelled()) {
-        Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
-        Ok(SelectionOutcome::Completed(lists)) => {
-            // Calculate total fees from the executed transactions
-            let total_fees = match lists.first() {
-                Some(list) => list.transactions.iter().try_fold(U256::ZERO, |acc, etx| {
-                    let tip = etx
-                        .tx
-                        .effective_tip_per_gas(ctx.base_fee)
-                        .ok_or_else(|| missing_tip_error(ctx.base_fee))?;
-                    Ok::<_, PayloadBuilderError>(acc + U256::from(tip) * U256::from(etx.gas_used))
-                })?,
-                None => U256::ZERO,
-            };
-            Ok(ExecutionOutcome::Completed(total_fees))
-        }
-        Err(err) => Err(PayloadBuilderError::evm(err)),
-    }
 }
 
 impl<Client, Pool, EvmConfig> TaikoPayloadBuilder<Client, Pool, EvmConfig> {
@@ -382,19 +229,4 @@ where
         total_fees,
         None,
     )))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_tip_error_includes_base_fee_context() {
-        let err = missing_tip_error(1234);
-        let message = err.to_string();
-        assert!(
-            message.contains("base_fee=1234"),
-            "expected error message to include base fee context, got: {message}"
-        );
-    }
 }

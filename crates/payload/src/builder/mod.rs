@@ -78,7 +78,7 @@ where
 {
     /// The payload attributes type to accept for building.
     type Attributes = TaikoPayloadBuilderAttributes;
-    /// /// The type of the built payload.
+    /// The type of the built payload.
     type BuiltPayload = EthBuiltPayload;
 
     /// Tries to build a transaction payload using provided arguments.

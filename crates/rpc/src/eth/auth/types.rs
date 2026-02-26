@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// A pre-built transaction list that contains the mempool content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct PreBuiltTxList<T> {
     /// Selected transactions encoded for RPC response delivery.
     pub tx_list: Vec<T>,
@@ -24,7 +24,7 @@ impl<T> Default for PreBuiltTxList<T> {
 
 /// Request payload for `taikoAuth_txPoolContent`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct TxPoolContentParams {
     /// Fee-recipient address used while simulating candidate transaction lists.
     pub beneficiary: Address,
@@ -42,7 +42,7 @@ pub struct TxPoolContentParams {
 
 /// Request payload for `taikoAuth_txPoolContentWithMinTip`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct TxPoolContentWithMinTipParams {
     /// Fee-recipient address used while simulating candidate transaction lists.
     pub beneficiary: Address,

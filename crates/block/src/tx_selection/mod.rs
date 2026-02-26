@@ -24,6 +24,25 @@ use self::limits::{DaRatioState, da_limit_error, exceeds_list_limits, lists_empt
 /// DA-limit checking and adaptive zlib sizing helpers.
 mod limits;
 
+/// Returns the appropriate pool error for the exceeded limit.
+fn limit_exceeded_error(
+    gas_limit: u64,
+    exceeds_gas: bool,
+    exceeds_da: Option<u64>,
+    config: &TxSelectionConfig,
+) -> InvalidPoolTransactionError {
+    if exceeds_gas {
+        InvalidPoolTransactionError::ExceedsGasLimit(gas_limit, config.gas_limit_per_list)
+    } else if let Some(size) = exceeds_da {
+        da_limit_error(size, config.max_da_bytes_per_list)
+    } else {
+        // Caller only invokes this when at least one limit is exceeded;
+        // catch logic bugs in dev but avoid crashing in production.
+        debug_assert!(false, "called limit_exceeded_error without an exceeded limit");
+        InvalidPoolTransactionError::ExceedsGasLimit(gas_limit, config.gas_limit_per_list)
+    }
+}
+
 /// Configuration for transaction selection.
 #[derive(Debug, Clone)]
 pub struct TxSelectionConfig {
@@ -171,27 +190,17 @@ where
 
         if exceeds_gas || exceeds_da.is_some() {
             if lists.len() >= config.max_lists {
-                // Can't fit in any list
-                if exceeds_gas {
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        &InvalidPoolTransactionError::ExceedsGasLimit(
-                            pool_tx.gas_limit(),
-                            config.gas_limit_per_list,
-                        ),
-                    );
-                } else if let Some(size) = exceeds_da {
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        &da_limit_error(size, config.max_da_bytes_per_list),
-                    );
-                }
+                let err =
+                    limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
+                best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }
             // Start a new list
             lists.push(ExecutedTxList::default());
             da_guard_states.push(DaRatioState::default());
 
+            // Re-check against the fresh empty list (needed for the zlib guard edge case
+            // where a single tx's actual compressed size exceeds the limit).
             let current_index = lists.len().saturating_sub(1);
             let current = lists.get(current_index).ok_or_else(lists_empty_error)?;
             let (exceeds_gas, exceeds_da) = exceeds_list_limits(
@@ -203,20 +212,9 @@ where
                 config,
             );
             if exceeds_gas || exceeds_da.is_some() {
-                if exceeds_gas {
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        &InvalidPoolTransactionError::ExceedsGasLimit(
-                            pool_tx.gas_limit(),
-                            config.gas_limit_per_list,
-                        ),
-                    );
-                } else if let Some(size) = exceeds_da {
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        &da_limit_error(size, config.max_da_bytes_per_list),
-                    );
-                }
+                let err =
+                    limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
+                best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }
         }

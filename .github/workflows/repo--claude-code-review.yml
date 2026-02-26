@@ -55,12 +55,11 @@ jobs:
 
           # Add specific tools for running tests or linting
           allowed_tools: |
-            Bash(pnpm install)
-            Bash(pnpm test:*)
-            Bash(pnpm fmt:sol)
-            Bash(pnpm snapshot:*)
-            Bash(pnpm compile:*)
-            Bash(pnpm layout:*)
+            Bash(cargo check --workspace --all-features)
+            Bash(cargo test --workspace --all-features)
+            Bash(just fmt-check)
+            Bash(just clippy)
+            Bash(just test)
             Bash(cat *)
             Bash(find *)
             Bash(grep *)

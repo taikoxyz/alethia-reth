@@ -20,3 +20,6 @@ reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
 reth-primitives-traits = { workspace = true }
 reth-provider = { workspace = true }
+
+[dev-dependencies]
+reth-storage-api = { workspace = true }

@@ -383,3 +383,18 @@ where
         None,
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_tip_error_includes_base_fee_context() {
+        let err = missing_tip_error(1234);
+        let message = err.to_string();
+        assert!(
+            message.contains("base_fee=1234"),
+            "expected error message to include base fee context, got: {message}"
+        );
+    }
+}

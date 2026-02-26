@@ -36,8 +36,10 @@ fn limit_exceeded_error(
     } else if let Some(size) = exceeds_da {
         da_limit_error(size, config.max_da_bytes_per_list)
     } else {
-        // Caller only invokes this when at least one limit is exceeded.
-        unreachable!("called limit_exceeded_error without an exceeded limit")
+        // Caller only invokes this when at least one limit is exceeded;
+        // catch logic bugs in dev but avoid crashing in production.
+        debug_assert!(false, "called limit_exceeded_error without an exceeded limit");
+        InvalidPoolTransactionError::ExceedsGasLimit(gas_limit, config.gas_limit_per_list)
     }
 }
 

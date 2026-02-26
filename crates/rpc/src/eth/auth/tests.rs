@@ -44,10 +44,7 @@ fn build_test_anchor_tx(input: &Bytes) -> TransactionSigned {
         input: input.clone(),
     };
 
-    TransactionSigned::new_unhashed(
-        tx.into(),
-        Signature::new(U256::from(1), U256::from(2), false),
-    )
+    TransactionSigned::new_unhashed(tx.into(), Signature::new(U256::from(1), U256::from(2), false))
 }
 
 /// Standard anchor calldata with the V4 selector prefix.
@@ -101,7 +98,10 @@ fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> 
 /// The caller must commit the provider when done writing.
 fn create_taiko_test_provider_factory_with_genesis() -> (
     ProviderFactory<MockNodeTypesWithDB>,
-    reth_provider::DatabaseProviderRW<Arc<TempDatabase<reth_db::mdbx::DatabaseEnv>>, MockNodeTypesWithDB>,
+    reth_provider::DatabaseProviderRW<
+        Arc<TempDatabase<reth_db::mdbx::DatabaseEnv>>,
+        MockNodeTypesWithDB,
+    >,
 ) {
     let factory = create_taiko_test_provider_factory();
     let provider_rw = factory.provider_rw().expect("provider rw");
@@ -430,8 +430,7 @@ fn returns_invalid_params_when_extra_data_too_short() {
         extra_data: vec![0x2a].into(),
         ..Default::default()
     };
-    let body =
-        BlockBody { transactions: vec![build_test_anchor_tx(&input)], ..Default::default() };
+    let body = BlockBody { transactions: vec![build_test_anchor_tx(&input)], ..Default::default() };
     let block = header.clone().into_block(body);
     let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
     provider_rw.insert_block(&recovered).expect("insert block");

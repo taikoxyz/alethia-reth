@@ -188,7 +188,8 @@ where
 
         if exceeds_gas || exceeds_da.is_some() {
             if lists.len() >= config.max_lists {
-                let err = limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
+                let err =
+                    limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
                 best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }
@@ -209,7 +210,8 @@ where
                 config,
             );
             if exceeds_gas || exceeds_da.is_some() {
-                let err = limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
+                let err =
+                    limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
                 best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }

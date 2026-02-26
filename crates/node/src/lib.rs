@@ -193,3 +193,14 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
         LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taiko_node_implements_expected_core_traits() {
+        fn assert_traits<T: Clone + Default + core::fmt::Debug>() {}
+        assert_traits::<TaikoNode>();
+    }
+}

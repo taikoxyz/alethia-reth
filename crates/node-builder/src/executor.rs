@@ -31,3 +31,13 @@ where
         future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taiko_executor_builder_is_zero_sized() {
+        assert_eq!(std::mem::size_of::<TaikoExecutorBuilder>(), 0);
+    }
+}

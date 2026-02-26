@@ -42,3 +42,13 @@ where
         Ok(handle)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taiko_network_builder_is_zero_sized() {
+        assert_eq!(std::mem::size_of::<TaikoNetworkBuilder>(), 0);
+    }
+}

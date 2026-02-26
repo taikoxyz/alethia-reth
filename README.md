@@ -65,7 +65,25 @@ _(Note: You might need to map ports (`-p`), mount volumes (`-v`) for data persis
 
 ## Configuration
 
-_(Details about specific configuration files, environment variables, or command-line arguments required for typical operation will be added here as the project evolves. For now, please refer to the `--help` output of the binary.)_
+Alethia-reth uses reth-compatible CLI options plus Taiko chain presets.
+
+### Chain Selection
+
+Use `--chain` with one of the supported presets:
+
+- `mainnet`
+- `taiko-hoodi`
+- `devnet`
+- `masaya`
+
+### Common Runtime Flags
+
+- `--datadir <path>` to set node data location.
+- `--http` / `--ws` to enable RPC transports.
+- `--authrpc.addr <ip>` and `--authrpc.port <port>` for Engine API auth RPC.
+- `--metrics <addr:port>` to expose Prometheus metrics.
+
+Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
 ## License
 

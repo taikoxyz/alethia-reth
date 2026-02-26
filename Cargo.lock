@@ -260,6 +260,7 @@ dependencies = [
  "reth-node-builder",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-storage-api",
 ]
 
 [[package]]

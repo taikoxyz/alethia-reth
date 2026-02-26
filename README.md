@@ -70,7 +70,6 @@ Alethia-reth uses reth-compatible CLI options plus Taiko chain presets.
 ### Chain Selection
 
 Use `--chain` with one of the supported presets:
-
 - `mainnet`
 - `taiko-hoodi`
 - `devnet`

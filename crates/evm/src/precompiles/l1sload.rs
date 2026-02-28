@@ -7,6 +7,7 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use reth_revm::precompile::{
     Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult, u64_to_address,
 };
+use tracing::trace;
 
 /// The L1SLOAD precompile instance registered at address `0x10001`.
 pub const L1SLOAD: Precompile = Precompile::new(
@@ -93,25 +94,25 @@ fn get_l1_storage_value(
 /// L1SLOAD precompile - read storage values from L1 contracts (RIP-7728).
 ///
 /// The input to the L1SLOAD precompile consists of:
-/// - [0: 19]  (20 bytes)  - address: The L1 contract address
-/// - [20: 51] (32 bytes)  - storageKey: The storage key to read
-/// - [52: 83] (32 bytes)  - blockNumber: The L1 block number to read from
+/// - [0..20]  (20 bytes)  - address: The L1 contract address
+/// - [20..52] (32 bytes)  - storageKey: The storage key to read
+/// - [52..84] (32 bytes)  - blockNumber: The L1 block number to read from
 ///
 /// Output: Storage value (32 bytes)
 ///
 /// The requested block number must be at or before the anchor block and within
 /// `L1SLOAD_MAX_BLOCK_LOOKBACK` blocks of the anchor.
 pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
-    eprintln!("[jmadibekov] alethia-reth L1SLOAD precompile called, input_len={}", input.len());
+    trace!("[jmadibekov] alethia-reth L1SLOAD precompile called, input_len={}", input.len());
 
     let gas_used = L1SLOAD_FIXED_GAS + L1SLOAD_PER_LOAD_GAS;
     if gas_used > gas_limit {
-        eprintln!("[jmadibekov] alethia-reth L1SLOAD: out of gas (need={}, have={})", gas_used, gas_limit);
+        trace!("[jmadibekov] alethia-reth L1SLOAD: out of gas (need={}, have={})", gas_used, gas_limit);
         return Err(PrecompileError::OutOfGas);
     }
 
     if input.len() != EXPECTED_INPUT_LENGTH {
-        eprintln!("[jmadibekov] alethia-reth L1SLOAD: invalid input length {}", input.len());
+        trace!("[jmadibekov] alethia-reth L1SLOAD: invalid input length {}", input.len());
         return Err(PrecompileError::Other("Invalid input length".into()));
     }
 
@@ -119,12 +120,12 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     let storage_key = B256::from_slice(&input[20..52]);
     let block_number = B256::from_slice(&input[52..84]);
 
-    eprintln!("[jmadibekov] alethia-reth L1SLOAD request: contract={:?}, key={:?}, block={:?}", contract_address, storage_key, block_number);
+    trace!("[jmadibekov] alethia-reth L1SLOAD request: contract={:?}, key={:?}, block={:?}", contract_address, storage_key, block_number);
 
     let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
         None => {
-            eprintln!("[jmadibekov] alethia-reth L1SLOAD ERROR: anchor block ID not set");
+            trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: anchor block ID not set");
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
@@ -135,14 +136,14 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
     if requested_block > anchor_block_id {
-        eprintln!("[jmadibekov] alethia-reth L1SLOAD ERROR: block {} > anchor {}", requested_block, anchor_block_id);
+        trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: block {} > anchor {}", requested_block, anchor_block_id);
         return Err(PrecompileError::Other(
             "Requested block number is after the anchor block".into(),
         ));
     }
 
     if anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
-        eprintln!("[jmadibekov] alethia-reth L1SLOAD ERROR: block {} too old, anchor={}", requested_block, anchor_block_id);
+        trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: block {} too old, anchor={}", requested_block, anchor_block_id);
         return Err(PrecompileError::Other(
             "Requested block number exceeds max lookback from anchor".into(),
         ));
@@ -152,13 +153,13 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
 
     match storage_value {
         Some(value) => {
-            eprintln!("[jmadibekov] alethia-reth L1SLOAD SUCCESS: value={:?}", value);
+            trace!("[jmadibekov] alethia-reth L1SLOAD SUCCESS: value={:?}", value);
             let mut output = [0u8; 32];
             output.copy_from_slice(value.as_slice());
             Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
         }
         None => {
-            eprintln!("[jmadibekov] alethia-reth L1SLOAD ERROR: value not found in cache");
+            trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: value not found in cache");
             Err(PrecompileError::Other("L1 storage value not found in cache".into()))
         }
     }

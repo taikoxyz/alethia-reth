@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{LazyLock, Mutex},
 };
 
@@ -7,7 +7,7 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use reth_revm::precompile::{
     Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult, u64_to_address,
 };
-use tracing::trace;
+use tracing::{trace, warn};
 
 /// The L1SLOAD precompile instance registered at address `0x10001`.
 pub const L1SLOAD: Precompile = Precompile::new(
@@ -39,23 +39,36 @@ static L1_STORAGE_CACHE: LazyLock<Mutex<L1StorageCache>> =
 /// Current anchor block ID context for L1SLOAD operations (stored as u64 for range checking)
 static CURRENT_ANCHOR_BLOCK_ID: LazyLock<Mutex<Option<u64>>> = LazyLock::new(|| Mutex::new(None));
 
+/// Callback function type for fetching L1 storage values via RPC.
+/// Set by surge-raiko during preflight (has network access), None during ZK proving.
+/// Arguments: (contract_address, storage_key, block_number_u64) -> storage_value
+type L1StorageFetcher = Box<dyn Fn(Address, B256, u64) -> Result<B256, String> + Send + Sync>;
+
+/// Live L1 RPC fetcher for handling cache misses on indirect L1SLOAD calls.
+static L1_RPC_FETCHER: LazyLock<Mutex<Option<L1StorageFetcher>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Tracks L1SLOAD calls served via the live RPC fetcher (not from pre-fetched cache).
+/// surge-raiko reads this after execution to fetch Merkle proofs for ZK prover.
+/// Key: (contract_address, storage_key, block_number as B256)
+static L1_RPC_SERVED_CALLS: LazyLock<Mutex<HashSet<(Address, B256, B256)>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
 /// Set the current anchor block ID context
 pub fn set_anchor_block_id(anchor_block_id: u64) {
-    if let Ok(mut ctx) = CURRENT_ANCHOR_BLOCK_ID.lock() {
-        *ctx = Some(anchor_block_id);
-    }
+    let mut ctx = CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned");
+    *ctx = Some(anchor_block_id);
 }
 
 /// Clear the anchor block ID context
 pub fn clear_anchor_block_id() {
-    if let Ok(mut ctx) = CURRENT_ANCHOR_BLOCK_ID.lock() {
-        *ctx = None;
-    }
+    let mut ctx = CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned");
+    *ctx = None;
 }
 
 /// Get the current anchor block ID
 fn get_anchor_block_id() -> Option<u64> {
-    if let Ok(ctx) = CURRENT_ANCHOR_BLOCK_ID.lock() { *ctx } else { None }
+    *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned")
 }
 
 /// Set a value in the L1 storage cache (keyed by address, storage key, and block number)
@@ -65,17 +78,41 @@ pub fn set_l1_storage_value(
     block_number: B256,
     value: B256,
 ) {
-    if let Ok(mut cache) = L1_STORAGE_CACHE.lock() {
-        cache.insert((contract_address, storage_key, block_number), value);
-    }
+    let mut cache = L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned");
+    cache.insert((contract_address, storage_key, block_number), value);
 }
 
 /// Clear L1 storage cache and anchor block ID context
 pub fn clear_l1_storage() {
-    if let Ok(mut cache) = L1_STORAGE_CACHE.lock() {
-        cache.clear();
-    }
+    L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned").clear();
     clear_anchor_block_id();
+}
+
+/// Set the L1 RPC fetcher callback for live storage value fetching on cache miss.
+/// Called by surge-raiko during preflight when network access is available.
+pub fn set_l1_rpc_fetcher(
+    fetcher: impl Fn(Address, B256, u64) -> Result<B256, String> + Send + Sync + 'static,
+) {
+    *L1_RPC_FETCHER
+        .lock()
+        .expect("L1_RPC_FETCHER mutex poisoned") = Some(Box::new(fetcher));
+}
+
+/// Clear the L1 RPC fetcher (disables live RPC fallback).
+pub fn clear_l1_rpc_fetcher() {
+    *L1_RPC_FETCHER
+        .lock()
+        .expect("L1_RPC_FETCHER mutex poisoned") = None;
+}
+
+/// Get all L1SLOAD calls that were served via live RPC (not from cache).
+/// Used by surge-raiko after execution to fetch Merkle proofs for these calls.
+pub fn take_l1_rpc_served_calls() -> HashSet<(Address, B256, B256)> {
+    std::mem::take(
+        &mut *L1_RPC_SERVED_CALLS
+            .lock()
+            .expect("L1_RPC_SERVED_CALLS mutex poisoned"),
+    )
 }
 
 /// Get a value from the L1 storage cache
@@ -84,11 +121,9 @@ fn get_l1_storage_value(
     storage_key: B256,
     block_number: B256,
 ) -> Option<B256> {
-    if let Ok(cache) = L1_STORAGE_CACHE.lock() {
-        cache.get(&(contract_address, storage_key, block_number)).copied()
-    } else {
-        None
-    }
+    L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned")
+        .get(&(contract_address, storage_key, block_number))
+        .copied()
 }
 
 /// L1SLOAD precompile - read storage values from L1 contracts (RIP-7728).
@@ -103,16 +138,16 @@ fn get_l1_storage_value(
 /// The requested block number must be at or before the anchor block and within
 /// `L1SLOAD_MAX_BLOCK_LOOKBACK` blocks of the anchor.
 pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
-    trace!("[jmadibekov] alethia-reth L1SLOAD precompile called, input_len={}", input.len());
+    trace!("L1SLOAD: precompile called, input_len={}", input.len());
 
     let gas_used = L1SLOAD_FIXED_GAS + L1SLOAD_PER_LOAD_GAS;
     if gas_used > gas_limit {
-        trace!("[jmadibekov] alethia-reth L1SLOAD: out of gas (need={}, have={})", gas_used, gas_limit);
+        trace!("L1SLOAD: out of gas (need={}, have={})", gas_used, gas_limit);
         return Err(PrecompileError::OutOfGas);
     }
 
     if input.len() != EXPECTED_INPUT_LENGTH {
-        trace!("[jmadibekov] alethia-reth L1SLOAD: invalid input length {}", input.len());
+        trace!("L1SLOAD: invalid input length {}", input.len());
         return Err(PrecompileError::Other("Invalid input length".into()));
     }
 
@@ -120,12 +155,12 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     let storage_key = B256::from_slice(&input[20..52]);
     let block_number = B256::from_slice(&input[52..84]);
 
-    trace!("[jmadibekov] alethia-reth L1SLOAD request: contract={:?}, key={:?}, block={:?}", contract_address, storage_key, block_number);
+    trace!("L1SLOAD: request contract={:?}, key={:?}, block={:?}", contract_address, storage_key, block_number);
 
     let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
         None => {
-            trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: anchor block ID not set");
+            warn!("L1SLOAD: anchor block ID not set");
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
@@ -136,14 +171,14 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
     if requested_block > anchor_block_id {
-        trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: block {} > anchor {}", requested_block, anchor_block_id);
+        warn!("L1SLOAD: requested block {} > anchor {}", requested_block, anchor_block_id);
         return Err(PrecompileError::Other(
             "Requested block number is after the anchor block".into(),
         ));
     }
 
     if anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
-        trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: block {} too old, anchor={}", requested_block, anchor_block_id);
+        warn!("L1SLOAD: block {} too old (anchor={})", requested_block, anchor_block_id);
         return Err(PrecompileError::Other(
             "Requested block number exceeds max lookback from anchor".into(),
         ));
@@ -153,14 +188,44 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
 
     match storage_value {
         Some(value) => {
-            trace!("[jmadibekov] alethia-reth L1SLOAD SUCCESS: value={:?}", value);
+            trace!("L1SLOAD: cache hit, value={:?}", value);
             let mut output = [0u8; 32];
             output.copy_from_slice(value.as_slice());
             Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
         }
         None => {
-            trace!("[jmadibekov] alethia-reth L1SLOAD ERROR: value not found in cache");
-            Err(PrecompileError::Other("L1 storage value not found in cache".into()))
+            // Cache miss — try live L1 RPC fallback (only available during preflight)
+            let fetcher_guard = L1_RPC_FETCHER
+                .lock()
+                .expect("L1_RPC_FETCHER mutex poisoned");
+            if let Some(ref fetcher) = *fetcher_guard {
+                let value = fetcher(contract_address, storage_key, requested_block)
+                    .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
+                drop(fetcher_guard);
+
+                // Cache the fetched value for subsequent calls to the same slot
+                set_l1_storage_value(contract_address, storage_key, block_number, value);
+
+                // Record this call so surge-raiko can fetch its Merkle proof later
+                L1_RPC_SERVED_CALLS
+                    .lock()
+                    .expect("L1_RPC_SERVED_CALLS mutex poisoned")
+                    .insert((contract_address, storage_key, block_number));
+
+                trace!("L1SLOAD: RPC fallback hit, value={:?}", value);
+                let mut output = [0u8; 32];
+                output.copy_from_slice(value.as_slice());
+                Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
+            } else {
+                // No RPC available (ZK proving mode) — error
+                warn!(
+                    "L1SLOAD: cache miss for contract={:?}, key={:?}, block={:?}",
+                    contract_address, storage_key, block_number
+                );
+                Err(PrecompileError::Other(
+                    "L1 storage value not found in cache".into(),
+                ))
+            }
         }
     }
 }

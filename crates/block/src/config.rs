@@ -1,3 +1,4 @@
+//! Taiko block and EVM configuration used by node and payload services.
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
@@ -51,8 +52,11 @@ impl std::error::Error for MissingBaseFee {}
 /// A complete configuration of EVM for Taiko network.
 #[derive(Debug, Clone)]
 pub struct TaikoEvmConfig {
+    /// Block executor factory configured for Taiko execution rules.
     pub executor_factory: TaikoBlockExecutorFactory,
+    /// Block assembler used to construct finalized block objects.
     pub block_assembler: TaikoBlockAssembler,
+    /// EVM factory used to instantiate Taiko EVM instances.
     pub evm_factory: TaikoEvmFactory,
 }
 

@@ -18,6 +18,17 @@
 - Prefer module-per-file; public APIs go through `crates/node/src/lib.rs`.
 - Run `just fmt` before committing; clippy must be clean (`just clippy`).
 
+## Documentation Policy (Mandatory)
+
+- Every non-test production Rust symbol must be documented with Rust doc comments (`//!` or `///`), including modules, structs/enums/traits, fields, constants/statics, type aliases, functions/methods, and associated items in `impl` blocks.
+- Trait-implementation methods must also be documented (for example `Display::fmt`, `From::from`, `Default::default`, and `TryFrom::try_from`), even when rustdoc/clippy does not enforce them automatically.
+- Comments must explain purpose and contract, not restate identifiers. Include units/invariants for fields and side effects or error semantics where relevant.
+- Exclusions:
+  - files under `tests/**`
+  - `#[cfg(test)]` items and test-only helpers
+  - examples
+- The docs gate is required before completion: run `just clippy`.
+
 ## Testing Guidelines
 - Unit tests reside in `#[cfg(test)]` modules next to code; broader flows can use `tests/` or crate-level fixtures.
 - Use deterministic data; leverage `chainspec` fixtures in `crates/chainspec/src/genesis/` when possible.

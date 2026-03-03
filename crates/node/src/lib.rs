@@ -1,3 +1,6 @@
+#![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
+#![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
+//! Taiko node composition and addon wiring built on top of `reth`.
 pub use alethia_reth_block as block;
 pub use alethia_reth_chainspec as chainspec;
 pub use alethia_reth_consensus as consensus;
@@ -188,5 +191,16 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
         <<Self as reth_node_api::NodeTypes>::Payload as PayloadTypes>::PayloadAttributes,
     > {
         LocalPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taiko_node_implements_expected_core_traits() {
+        fn assert_traits<T: Clone + Default + core::fmt::Debug>() {}
+        assert_traits::<TaikoNode>();
     }
 }

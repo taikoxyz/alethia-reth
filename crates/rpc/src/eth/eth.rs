@@ -1,3 +1,4 @@
+//! Taiko `eth` namespace RPC methods backed by Taiko DB tables.
 use crate::eth::error::{TaikoApiError, internal_eth_error};
 use alethia_reth_db::model::{
     STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
@@ -14,8 +15,10 @@ use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "taiko"))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "taiko"))]
 pub trait TaikoExtApi {
+    /// Return the stored L1 origin by L2 block id.
     #[method(name = "l1OriginByID")]
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>>;
+    /// Return the latest non-preconfirmation L1 origin pointer.
     #[method(name = "headL1Origin")]
     fn head_l1_origin(&self) -> RpcResult<Option<RpcL1Origin>>;
 }
@@ -25,6 +28,7 @@ pub struct TaikoExt<Provider>
 where
     Provider: DatabaseProviderFactory + BlockReaderIdExt,
 {
+    /// Provider used for read-only DB access.
     provider: Provider,
 }
 

@@ -1,3 +1,4 @@
+//! Taiko-specific EVM wrapper and extra execution context.
 use alloy_primitives::Address;
 use reth_revm::{
     context::{ContextError, ContextTr, Evm as RevmEvm, FrameStack},
@@ -13,8 +14,10 @@ use revm_database_interface::Database;
 /// [`TaikoEvmExtraContext`] to provide additional context
 /// for Anchor transaction pre-execution checks and base fee sharing.
 pub struct TaikoEvm<CTX, INSP, P> {
+    /// Inner revm engine with Taiko instruction wiring.
     pub inner:
         RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, P, EthFrame<EthInterpreter>>,
+    /// Optional per-block context captured from pre-executed anchor system calls.
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
 }
 
@@ -33,6 +36,7 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
     }
 
     #[inline]
+    /// Set extra execution context derived from the anchor system call.
     pub fn with_extra_execution_context(
         &mut self,
         base_fee_share_pctg: u64,
@@ -148,8 +152,11 @@ where
 /// context for Anchor transaction pre-execution checks and base fee sharing.
 #[derive(Debug, Clone, Default)]
 pub struct TaikoEvmExtraExecutionCtx {
+    /// Base-fee share percentage paid to coinbase.
     base_fee_share_pctg: u64,
+    /// Anchor caller address used to detect anchor transactions.
     anchor_caller_address: Address,
+    /// Anchor caller nonce used to detect anchor transactions.
     anchor_caller_nonce: u64,
 }
 

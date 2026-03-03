@@ -1,3 +1,6 @@
+#![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
+#![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
+//! Taiko network builder wiring for `reth` node composition.
 use reth::{
     network::{EthNetworkPrimitives, NetworkHandle, PeersInfo},
     transaction_pool::{PoolTransaction, TransactionPool},
@@ -37,5 +40,15 @@ where
         let handle = ctx.start_network(network, pool);
         info!(target: "reth::taiko::cli", enode=%handle.local_node_record(), "P2P networking initialized");
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taiko_network_builder_is_zero_sized() {
+        assert_eq!(std::mem::size_of::<TaikoNetworkBuilder>(), 0);
     }
 }

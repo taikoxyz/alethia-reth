@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
+#![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Rust Taiko node (alethia-reth) binary executable.
 use alethia_reth_cli::{TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs};
 use alethia_reth_node::{
@@ -7,11 +9,12 @@ use alethia_reth_node::{
         eth::{TaikoExt, TaikoExtApiServer},
     },
 };
-use reth::{api::FullNodeComponents, builder::NodeHandle, ress::install_ress_subprotocol};
+use reth::api::FullNodeComponents;
 use reth_rpc::eth::EthApiTypes;
 use tracing::info;
 
 #[global_allocator]
+/// Global allocator used by the node binary.
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
@@ -21,10 +24,9 @@ fn main() {
     }
 
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
-        async move |builder, ext_args| {
-            let TaikoCliExtArgs { ress, .. } = ext_args;
+        async move |builder, _ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
-            let NodeHandle { node, node_exit_future } = builder
+            let handle = builder
                 .node(TaikoNode)
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
@@ -47,19 +49,7 @@ fn main() {
                 .launch_with_debug_capabilities()
                 .await?;
 
-            // Install ress subprotocol.
-            if ress.enabled {
-                install_ress_subprotocol(
-                    ress,
-                    node.provider,
-                    node.evm_config,
-                    node.network,
-                    node.task_executor,
-                    node.add_ons_handle.engine_events.new_listener(),
-                )?;
-            }
-
-            node_exit_future.await
+            handle.wait_for_node_exit().await
         },
     ) {
         eprintln!("Error: {err:?}");

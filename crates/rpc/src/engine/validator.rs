@@ -1,3 +1,4 @@
+//! Engine payload validator implementation for Taiko execution payloads.
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::{
@@ -87,6 +88,7 @@ where
             tree_config,
             invalid_block_hook,
             changeset_cache,
+            ctx.node.task_executor().clone(),
         ))
     }
 }
@@ -94,6 +96,7 @@ where
 /// Validator for the Taiko engine API.
 #[derive(Debug, Clone)]
 pub struct TaikoEngineValidator {
+    /// Chain spec used for payload and attribute validation rules.
     pub chain_spec: Arc<TaikoChainSpec>,
 }
 

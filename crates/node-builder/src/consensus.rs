@@ -47,3 +47,17 @@ where
         Ok(Arc::new(TaikoBeaconConsensus::new(ctx.chain_spec(), block_reader)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alethia_reth_chainspec::TAIKO_MAINNET;
+    use reth_storage_api::noop::NoopProvider;
+
+    #[test]
+    fn provider_reader_returns_none_for_missing_block_hash() {
+        let provider = NoopProvider::<TaikoChainSpec, EthPrimitives>::new(TAIKO_MAINNET.clone());
+        let reader = ProviderTaikoBlockReader(provider);
+        assert_eq!(reader.block_timestamp_by_hash(B256::ZERO), None);
+    }
+}

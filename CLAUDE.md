@@ -9,7 +9,7 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 ## Key Technologies
 
 - Language: Rust (stable 1.88+ recommended)
-- Framework: Reth 1.7.0 APIs (`reth_node_builder`, `reth_rpc`, etc.)
+- Framework: Reth 1.11.1 APIs (`reth_node_builder`, `reth_rpc`, etc.)
 - Target protocol: Taiko rollup networks
 - Build & dependency manager: Cargo + `just`
 

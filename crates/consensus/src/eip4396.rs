@@ -1,3 +1,4 @@
+//! EIP-4396 base-fee calculation helpers for Taiko networks.
 use std::cmp::min;
 
 use reth_primitives_traits::BlockHeader;
@@ -7,8 +8,11 @@ pub const SHASTA_INITIAL_BASE_FEE: u64 = 25_000_000;
 
 /// EIP-4396 calculation constants.
 pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u128 = 8;
+/// Maximum gas-target percentage used by the adjusted target formula.
 pub const MAX_GAS_TARGET_PERCENT: u64 = 95;
+/// Elasticity multiplier used to derive base gas target from gas limit.
 pub const ELASTICITY_MULTIPLIER: u64 = 2;
+/// Target block time in seconds for fee-adjustment calculations.
 pub const BLOCK_TIME_TARGET: u64 = 2;
 
 /// The minimum base fee (inclusive) after the Shasta fork.
@@ -82,7 +86,7 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     clamp_shasta_base_fee(base_fee, min_base_fee_to_clamp)
 }
 
-/// Clamp the base fee to be within the defined minimum and maximum limits for the Shasta blocks.
+/// Clamp the base fee to the configured minimum and maximum limits for Shasta blocks.
 fn clamp_shasta_base_fee(base_fee: u64, min_base_fee_to_clamp: u64) -> u64 {
     base_fee.clamp(min_base_fee_to_clamp, MAX_BASE_FEE)
 }

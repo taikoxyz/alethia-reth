@@ -1,3 +1,4 @@
+//! Taiko node command wrapper and execution entrypoint.
 use std::{ffi::OsString, fmt, path::PathBuf, sync::Arc};
 
 use alloy_hardforks::EthereumHardforks;
@@ -32,8 +33,10 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
     }
 }
 
+/// Wrapper around `reth` `NodeCommand` that injects Taiko DB initialization and overrides.
 #[derive(Debug)]
 pub struct TaikoNodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs>(
+    /// Inner `reth` node command configuration.
     pub Box<NodeCommand<C, Ext>>,
 );
 
@@ -95,6 +98,7 @@ where
             engine,
             era,
             static_files,
+            storage,
         } = *self.0;
 
         // set up node config
@@ -115,6 +119,7 @@ where
             engine,
             era,
             static_files,
+            storage,
         };
 
         // Apply Taiko-specific devnet Shasta timestamp override if specified.
@@ -131,10 +136,9 @@ where
 
         // Initialize the database with extra tables for Taiko.
         tracing::info!(target: "reth::taiko::cli", path = ?db_path, "Opening database");
-        let database = Arc::new(
+        let database =
             init_db_for::<PathBuf, TaikoTables>(db_path.clone(), self.0.db.database_args())?
-                .with_metrics(),
-        );
+                .with_metrics();
 
         if with_unused_ports {
             node_config = node_config.with_unused_ports();

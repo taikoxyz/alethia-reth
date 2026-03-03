@@ -7,7 +7,7 @@ use alloy_primitives::{Address, Bytes, B256, U256};
 use reth_revm::precompile::{
     u64_to_address, Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult,
 };
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 /// The L1SLOAD precompile instance registered at address `0x10001`.
 pub const L1SLOAD: Precompile = Precompile::new(
@@ -164,16 +164,16 @@ fn get_l1_storage_value(
 /// - not older than `L1SLOAD_MAX_BLOCK_LOOKBACK` relative to the anchor for backward reads
 ///   (`requested < anchor => anchor - requested <= max`)
 pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
-    trace!("L1SLOAD: precompile called, input_len={}", input.len());
+    info!("[jmadibekov] L1SLOAD (alethia-reth): precompile CALLED, input_len={}", input.len());
 
     let gas_used = L1SLOAD_FIXED_GAS + L1SLOAD_PER_LOAD_GAS;
     if gas_used > gas_limit {
-        trace!("L1SLOAD: out of gas (need={}, have={})", gas_used, gas_limit);
+        warn!("[jmadibekov] L1SLOAD (alethia-reth): OUT OF GAS (need={}, have={})", gas_used, gas_limit);
         return Err(PrecompileError::OutOfGas);
     }
 
     if input.len() != EXPECTED_INPUT_LENGTH {
-        trace!("L1SLOAD: invalid input length {}", input.len());
+        warn!("[jmadibekov] L1SLOAD (alethia-reth): INVALID input length {} (expected {})", input.len(), EXPECTED_INPUT_LENGTH);
         return Err(PrecompileError::Other("Invalid input length".into()));
     }
 
@@ -181,26 +181,30 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     let storage_key = B256::from_slice(&input[20..52]);
     let block_number = B256::from_slice(&input[52..84]);
 
-    trace!(
-        "L1SLOAD: request contract={:?}, key={:?}, block={:?}",
+    info!(
+        "[jmadibekov] L1SLOAD (alethia-reth): request contract={:?}, key={:?}, block={:?}",
         contract_address,
         storage_key,
         block_number
     );
 
     let anchor_block_id = match get_anchor_block_id() {
-        Some(id) => id,
+        Some(id) => {
+            info!("[jmadibekov] L1SLOAD (alethia-reth): anchor_block_id={}", id);
+            id
+        },
         None => {
-            warn!("L1SLOAD: anchor block ID not set");
+            warn!("[jmadibekov] L1SLOAD (alethia-reth): anchor block ID NOT SET");
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
     // Backward compatibility: if origin is unset, fall back to anchor-only mode.
     let l1_origin_block_id = get_l1_origin_block_id().unwrap_or(anchor_block_id);
+    info!("[jmadibekov] L1SLOAD (alethia-reth): l1_origin_block_id={}", l1_origin_block_id);
 
     if l1_origin_block_id < anchor_block_id {
         warn!(
-            "L1SLOAD: invalid context l1origin {} < anchor {}",
+            "[jmadibekov] L1SLOAD (alethia-reth): INVALID context l1origin {} < anchor {}",
             l1_origin_block_id, anchor_block_id
         );
         return Err(PrecompileError::Other("Invalid L1SLOAD context: l1origin < anchor".into()));
@@ -211,9 +215,11 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .try_into()
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
+    info!("[jmadibekov] L1SLOAD (alethia-reth): range check — requested_block={}, anchor={}, l1origin={}", requested_block, anchor_block_id, l1_origin_block_id);
+
     if requested_block > l1_origin_block_id {
         warn!(
-            "L1SLOAD: requested block {} > l1origin {} (anchor={})",
+            "[jmadibekov] L1SLOAD (alethia-reth): REJECTED block {} > l1origin {} (anchor={})",
             requested_block, l1_origin_block_id, anchor_block_id
         );
         return Err(PrecompileError::Other(
@@ -224,7 +230,7 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     if requested_block < anchor_block_id
         && anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK
     {
-        warn!("L1SLOAD: block {} too old (anchor={})", requested_block, anchor_block_id);
+        warn!("[jmadibekov] L1SLOAD (alethia-reth): REJECTED block {} too old (anchor={}, lookback={})", requested_block, anchor_block_id, L1SLOAD_MAX_BLOCK_LOOKBACK);
         return Err(PrecompileError::Other(
             "Requested block number exceeds max lookback from anchor".into(),
         ));
@@ -234,15 +240,17 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
 
     match storage_value {
         Some(value) => {
-            trace!("L1SLOAD: cache hit, value={:?}", value);
+            info!("[jmadibekov] L1SLOAD (alethia-reth): CACHE HIT — contract={:?}, key={:?}, block={}, value={:?}", contract_address, storage_key, requested_block, value);
             let mut output = [0u8; 32];
             output.copy_from_slice(value.as_slice());
             Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
         }
         None => {
+            info!("[jmadibekov] L1SLOAD (alethia-reth): CACHE MISS — contract={:?}, key={:?}, block={}", contract_address, storage_key, requested_block);
             // Cache miss — try live L1 RPC fallback (only available during preflight)
             let fetcher_guard = L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned");
             if let Some(ref fetcher) = *fetcher_guard {
+                info!("[jmadibekov] L1SLOAD (alethia-reth): RPC fetcher available, calling L1...");
                 let value = fetcher(contract_address, storage_key, requested_block)
                     .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
                 drop(fetcher_guard);
@@ -257,14 +265,14 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                     block_number,
                 ));
 
-                trace!("L1SLOAD: RPC fallback hit, value={:?}", value);
+                info!("[jmadibekov] L1SLOAD (alethia-reth): RPC FALLBACK SUCCESS — value={:?}", value);
                 let mut output = [0u8; 32];
                 output.copy_from_slice(value.as_slice());
                 Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
             } else {
                 // No RPC available (ZK proving mode) — error
                 warn!(
-                    "L1SLOAD: cache miss for contract={:?}, key={:?}, block={:?}",
+                    "[jmadibekov] L1SLOAD (alethia-reth): CACHE MISS + NO RPC — contract={:?}, key={:?}, block={:?}. This means the value was not pre-populated!",
                     contract_address, storage_key, block_number
                 );
                 Err(PrecompileError::Other("L1 storage value not found in cache".into()))

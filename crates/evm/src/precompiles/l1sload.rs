@@ -3,9 +3,9 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, Bytes, B256, U256};
 use reth_revm::precompile::{
-    Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult, u64_to_address,
+    u64_to_address, Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult,
 };
 use tracing::{trace, warn};
 
@@ -38,6 +38,9 @@ static L1_STORAGE_CACHE: LazyLock<Mutex<L1StorageCache>> =
 
 /// Current anchor block ID context for L1SLOAD operations (stored as u64 for range checking)
 static CURRENT_ANCHOR_BLOCK_ID: LazyLock<Mutex<Option<u64>>> = LazyLock::new(|| Mutex::new(None));
+/// Current L1 origin block ID context for L1SLOAD operations (upper bound for forward reads).
+static CURRENT_L1_ORIGIN_BLOCK_ID: LazyLock<Mutex<Option<u64>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 /// Callback function type for fetching L1 storage values via RPC.
 /// Set by surge-raiko during preflight (has network access), None during ZK proving.
@@ -71,6 +74,25 @@ fn get_anchor_block_id() -> Option<u64> {
     *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned")
 }
 
+/// Set the current L1 origin block ID context.
+pub fn set_l1_origin_block_id(l1_origin_block_id: u64) {
+    let mut ctx =
+        CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned");
+    *ctx = Some(l1_origin_block_id);
+}
+
+/// Clear the L1 origin block ID context.
+pub fn clear_l1_origin_block_id() {
+    let mut ctx =
+        CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned");
+    *ctx = None;
+}
+
+/// Get the current L1 origin block ID.
+fn get_l1_origin_block_id() -> Option<u64> {
+    *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned")
+}
+
 /// Set a value in the L1 storage cache (keyed by address, storage key, and block number)
 pub fn set_l1_storage_value(
     contract_address: Address,
@@ -86,6 +108,9 @@ pub fn set_l1_storage_value(
 pub fn clear_l1_storage() {
     L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned").clear();
     clear_anchor_block_id();
+    clear_l1_origin_block_id();
+    clear_l1_rpc_fetcher();
+    clear_l1_rpc_served_calls();
 }
 
 /// Set the L1 RPC fetcher callback for live storage value fetching on cache miss.
@@ -93,26 +118,23 @@ pub fn clear_l1_storage() {
 pub fn set_l1_rpc_fetcher(
     fetcher: impl Fn(Address, B256, u64) -> Result<B256, String> + Send + Sync + 'static,
 ) {
-    *L1_RPC_FETCHER
-        .lock()
-        .expect("L1_RPC_FETCHER mutex poisoned") = Some(Box::new(fetcher));
+    *L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned") = Some(Box::new(fetcher));
 }
 
 /// Clear the L1 RPC fetcher (disables live RPC fallback).
 pub fn clear_l1_rpc_fetcher() {
-    *L1_RPC_FETCHER
-        .lock()
-        .expect("L1_RPC_FETCHER mutex poisoned") = None;
+    *L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned") = None;
 }
 
 /// Get all L1SLOAD calls that were served via live RPC (not from cache).
 /// Used by surge-raiko after execution to fetch Merkle proofs for these calls.
 pub fn take_l1_rpc_served_calls() -> HashSet<(Address, B256, B256)> {
-    std::mem::take(
-        &mut *L1_RPC_SERVED_CALLS
-            .lock()
-            .expect("L1_RPC_SERVED_CALLS mutex poisoned"),
-    )
+    std::mem::take(&mut *L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned"))
+}
+
+/// Clear tracked calls served via live L1 RPC.
+pub fn clear_l1_rpc_served_calls() {
+    L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").clear();
 }
 
 /// Get a value from the L1 storage cache
@@ -121,7 +143,9 @@ fn get_l1_storage_value(
     storage_key: B256,
     block_number: B256,
 ) -> Option<B256> {
-    L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned")
+    L1_STORAGE_CACHE
+        .lock()
+        .expect("L1_STORAGE_CACHE mutex poisoned")
         .get(&(contract_address, storage_key, block_number))
         .copied()
 }
@@ -135,8 +159,10 @@ fn get_l1_storage_value(
 ///
 /// Output: Storage value (32 bytes)
 ///
-/// The requested block number must be at or before the anchor block and within
-/// `L1SLOAD_MAX_BLOCK_LOOKBACK` blocks of the anchor.
+/// The requested block number must be:
+/// - at or before the L1 origin block (`requested <= l1origin`)
+/// - not older than `L1SLOAD_MAX_BLOCK_LOOKBACK` relative to the anchor for backward reads
+///   (`requested < anchor => anchor - requested <= max`)
 pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     trace!("L1SLOAD: precompile called, input_len={}", input.len());
 
@@ -155,7 +181,12 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     let storage_key = B256::from_slice(&input[20..52]);
     let block_number = B256::from_slice(&input[52..84]);
 
-    trace!("L1SLOAD: request contract={:?}, key={:?}, block={:?}", contract_address, storage_key, block_number);
+    trace!(
+        "L1SLOAD: request contract={:?}, key={:?}, block={:?}",
+        contract_address,
+        storage_key,
+        block_number
+    );
 
     let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
@@ -164,20 +195,35 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
+    // Backward compatibility: if origin is unset, fall back to anchor-only mode.
+    let l1_origin_block_id = get_l1_origin_block_id().unwrap_or(anchor_block_id);
+
+    if l1_origin_block_id < anchor_block_id {
+        warn!(
+            "L1SLOAD: invalid context l1origin {} < anchor {}",
+            l1_origin_block_id, anchor_block_id
+        );
+        return Err(PrecompileError::Other("Invalid L1SLOAD context: l1origin < anchor".into()));
+    }
 
     let block_number_u256 = U256::from_be_bytes(block_number.0);
     let requested_block: u64 = block_number_u256
         .try_into()
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
-    if requested_block > anchor_block_id {
-        warn!("L1SLOAD: requested block {} > anchor {}", requested_block, anchor_block_id);
+    if requested_block > l1_origin_block_id {
+        warn!(
+            "L1SLOAD: requested block {} > l1origin {} (anchor={})",
+            requested_block, l1_origin_block_id, anchor_block_id
+        );
         return Err(PrecompileError::Other(
-            "Requested block number is after the anchor block".into(),
+            "Requested block number is after the L1 origin block".into(),
         ));
     }
 
-    if anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
+    if requested_block < anchor_block_id
+        && anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK
+    {
         warn!("L1SLOAD: block {} too old (anchor={})", requested_block, anchor_block_id);
         return Err(PrecompileError::Other(
             "Requested block number exceeds max lookback from anchor".into(),
@@ -195,9 +241,7 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         }
         None => {
             // Cache miss — try live L1 RPC fallback (only available during preflight)
-            let fetcher_guard = L1_RPC_FETCHER
-                .lock()
-                .expect("L1_RPC_FETCHER mutex poisoned");
+            let fetcher_guard = L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned");
             if let Some(ref fetcher) = *fetcher_guard {
                 let value = fetcher(contract_address, storage_key, requested_block)
                     .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
@@ -207,10 +251,11 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                 set_l1_storage_value(contract_address, storage_key, block_number, value);
 
                 // Record this call so surge-raiko can fetch its Merkle proof later
-                L1_RPC_SERVED_CALLS
-                    .lock()
-                    .expect("L1_RPC_SERVED_CALLS mutex poisoned")
-                    .insert((contract_address, storage_key, block_number));
+                L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").insert((
+                    contract_address,
+                    storage_key,
+                    block_number,
+                ));
 
                 trace!("L1SLOAD: RPC fallback hit, value={:?}", value);
                 let mut output = [0u8; 32];
@@ -222,9 +267,7 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                     "L1SLOAD: cache miss for contract={:?}, key={:?}, block={:?}",
                     contract_address, storage_key, block_number
                 );
-                Err(PrecompileError::Other(
-                    "L1 storage value not found in cache".into(),
-                ))
+                Err(PrecompileError::Other("L1 storage value not found in cache".into()))
             }
         }
     }
@@ -257,13 +300,14 @@ mod tests {
     }
 
     /// Helper function to setup storage cache with test data
-    fn setup_test_storage(anchor: u64, block: u64) -> (Address, B256, B256, B256) {
+    fn setup_test_storage(anchor: u64, l1_origin: u64, block: u64) -> (Address, B256, B256, B256) {
         let address = Address::from(TEST_ADDRESS);
         let key = B256::from(TEST_STORAGE_KEY);
         let block_num = block_number_b256(block);
         let value = B256::from(TEST_STORAGE_VALUE);
 
         set_anchor_block_id(anchor);
+        set_l1_origin_block_id(l1_origin);
         set_l1_storage_value(address, key, block_num, value);
         (address, key, block_num, value)
     }
@@ -273,6 +317,7 @@ mod tests {
     fn test_l1sload_rejects_invalid_input_lengths() {
         clear_l1_storage();
         set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
 
         // Test input too short (52 bytes - old format)
         let short_input = Bytes::from(vec![0u8; 52]);
@@ -301,6 +346,7 @@ mod tests {
     fn test_l1sload_fails_without_cached_storage() {
         clear_l1_storage();
         set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
 
         let input = create_test_input(100);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -314,8 +360,9 @@ mod tests {
         clear_l1_storage();
 
         let anchor = 100u64;
+        let l1_origin = 100u64;
         let block = 100u64;
-        let (_, _, _, expected_value) = setup_test_storage(anchor, block);
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -347,6 +394,7 @@ mod tests {
     fn test_l1sload_fails_with_insufficient_gas() {
         clear_l1_storage();
         set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
 
         let input = Bytes::from(create_test_input(100));
         let result = l1sload_run(&input, INSUFFICIENT_GAS);
@@ -356,14 +404,31 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1sload_rejects_block_after_anchor() {
+    fn test_l1sload_rejects_block_after_l1_origin() {
         clear_l1_storage();
         set_anchor_block_id(100);
+        set_l1_origin_block_id(110);
 
-        // Request block 101 which is after anchor block 100
-        let input = create_test_input(101);
+        // Request block 111 which is after l1origin block 110
+        let input = create_test_input(111);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_err(), "Should reject block number after anchor");
+        assert!(result.is_err(), "Should reject block number after l1origin");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_accepts_block_between_anchor_and_l1origin() {
+        clear_l1_storage();
+
+        let anchor = 100u64;
+        let l1_origin = 120u64;
+        let block = 115u64;
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let input = create_test_input(block);
+
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "Should accept forward block up to l1origin");
+        assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
     }
 
     #[test]
@@ -371,6 +436,7 @@ mod tests {
     fn test_l1sload_rejects_block_beyond_lookback() {
         clear_l1_storage();
         set_anchor_block_id(1000);
+        set_l1_origin_block_id(1000);
 
         // Request block 1000 - 257 = 743, which exceeds L1SLOAD_MAX_BLOCK_LOOKBACK (256)
         let input = create_test_input(1000 - L1SLOAD_MAX_BLOCK_LOOKBACK - 1);
@@ -384,8 +450,9 @@ mod tests {
         clear_l1_storage();
 
         let anchor = 200u64;
+        let l1_origin = 250u64;
         let block = 150u64; // 50 blocks before anchor, within 256 lookback
-        let (_, _, _, expected_value) = setup_test_storage(anchor, block);
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -428,15 +495,25 @@ mod tests {
     #[serial]
     fn test_anchor_block_id_context() {
         clear_anchor_block_id();
+        clear_l1_origin_block_id();
 
         // Verify context is initially empty
         assert!(get_anchor_block_id().is_none(), "Context should be empty initially");
+        assert!(get_l1_origin_block_id().is_none(), "L1 origin context should be empty initially");
 
         set_anchor_block_id(42);
+        set_l1_origin_block_id(50);
         assert_eq!(get_anchor_block_id(), Some(42), "Should retrieve the set anchor block ID");
+        assert_eq!(
+            get_l1_origin_block_id(),
+            Some(50),
+            "Should retrieve the set l1 origin block ID"
+        );
 
         clear_anchor_block_id();
+        clear_l1_origin_block_id();
         assert!(get_anchor_block_id().is_none(), "Context should be cleared");
+        assert!(get_l1_origin_block_id().is_none(), "L1 origin context should be cleared");
     }
 
     #[test]
@@ -464,5 +541,69 @@ mod tests {
         assert!(get_l1_storage_value(address1, key2, block1).is_none());
         assert!(get_l1_storage_value(address2, key1, block2).is_none());
         assert!(get_l1_storage_value(address1, key1, block2).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_rpc_fallback_records_served_calls() {
+        clear_l1_storage();
+        clear_l1_rpc_served_calls();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        let address = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        let input = Bytes::from(create_test_input(100));
+        let fallback_value = B256::from([9u8; 32]);
+
+        set_l1_rpc_fetcher(move |requested_addr, requested_key, requested_block| {
+            if requested_addr != address || requested_key != key || requested_block != 100 {
+                return Err("unexpected fallback request".to_string());
+            }
+            Ok(fallback_value)
+        });
+
+        let first = l1sload_run(&input, SUFFICIENT_GAS).expect("RPC fallback should succeed");
+        assert_eq!(first.bytes.as_ref(), fallback_value.as_slice());
+
+        let served = take_l1_rpc_served_calls();
+        assert_eq!(served.len(), 1, "Expected exactly one served call");
+        assert!(served.contains(&(address, key, block_number_b256(100))));
+
+        // Second call should be served from cache even if fallback is disabled.
+        clear_l1_rpc_fetcher();
+        let second = l1sload_run(&input, SUFFICIENT_GAS).expect("Cache hit should still succeed");
+        assert_eq!(second.bytes.as_ref(), fallback_value.as_slice());
+    }
+
+    #[test]
+    #[serial]
+    fn test_clear_l1_storage_clears_rpc_fallback_state() {
+        clear_l1_storage();
+        clear_l1_rpc_served_calls();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        let input = Bytes::from(create_test_input(100));
+        let fallback_value = B256::from([11u8; 32]);
+        set_l1_rpc_fetcher(move |_, _, _| Ok(fallback_value));
+
+        let _ = l1sload_run(&input, SUFFICIENT_GAS).expect("Fallback should serve first request");
+        assert_eq!(take_l1_rpc_served_calls().len(), 1, "Served call must be tracked");
+
+        clear_l1_storage();
+
+        // Served-call tracker should be cleared after storage reset.
+        assert!(
+            take_l1_rpc_served_calls().is_empty(),
+            "Served calls must be empty after clear_l1_storage"
+        );
+
+        // Context should be cleared, so call must fail before any fetcher usage.
+        let err = l1sload_run(&input, SUFFICIENT_GAS).expect_err("Context should be cleared");
+        assert!(
+            format!("{err:?}").contains("Anchor block ID not set"),
+            "Expected missing-anchor context error, got {err:?}"
+        );
     }
 }

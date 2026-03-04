@@ -4,29 +4,20 @@ use std::{
 };
 
 use alloy_primitives::{Address, Bytes, B256, U256};
-use reth_revm::precompile::{
-    u64_to_address, Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult,
-};
-use tracing::{info, trace, warn};
-
-/// The L1SLOAD precompile instance registered at address `0x10001`.
-pub const L1SLOAD: Precompile = Precompile::new(
-    PrecompileId::Custom(std::borrow::Cow::Borrowed("L1SLOAD")),
-    u64_to_address(0x10001),
-    l1sload_run,
-);
+use reth_revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use tracing::{debug, trace, warn};
 
 /// Fixed gas cost for an L1SLOAD precompile call.
-pub const L1SLOAD_FIXED_GAS: u64 = 2000;
+const L1SLOAD_FIXED_GAS: u64 = 2000;
 /// Per-load gas cost for each storage slot read.
-pub const L1SLOAD_PER_LOAD_GAS: u64 = 2000;
+const L1SLOAD_PER_LOAD_GAS: u64 = 2000;
 
 /// Expected input length: 20 bytes (address) + 32 bytes (storage key) + 32 bytes (block number),
 /// total 84 bytes
-pub const EXPECTED_INPUT_LENGTH: usize = 84;
+const EXPECTED_INPUT_LENGTH: usize = 84;
 
 /// Maximum number of L1 blocks to look back from the anchor block
-pub const L1SLOAD_MAX_BLOCK_LOOKBACK: u64 = 256;
+const L1SLOAD_MAX_BLOCK_LOOKBACK: u64 = 256;
 
 /// Type alias for the L1 storage cache map.
 type L1StorageCache = HashMap<(Address, B256, B256), B256>;
@@ -63,12 +54,6 @@ pub fn set_anchor_block_id(anchor_block_id: u64) {
     *ctx = Some(anchor_block_id);
 }
 
-/// Clear the anchor block ID context.
-pub fn clear_anchor_block_id() {
-    let mut ctx = CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned");
-    *ctx = None;
-}
-
 fn get_anchor_block_id() -> Option<u64> {
     *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned")
 }
@@ -78,13 +63,6 @@ pub fn set_l1_origin_block_id(l1_origin_block_id: u64) {
     let mut ctx =
         CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned");
     *ctx = Some(l1_origin_block_id);
-}
-
-/// Clear the L1 origin block ID context.
-pub fn clear_l1_origin_block_id() {
-    let mut ctx =
-        CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned");
-    *ctx = None;
 }
 
 fn get_l1_origin_block_id() -> Option<u64> {
@@ -105,8 +83,8 @@ pub fn set_l1_storage_value(
 /// Clear all L1SLOAD state (cache, context, RPC fetcher, tracked calls).
 pub fn clear_l1_storage() {
     L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned").clear();
-    clear_anchor_block_id();
-    clear_l1_origin_block_id();
+    *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned") = None;
+    *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned") = None;
     clear_l1_rpc_fetcher();
     clear_l1_rpc_served_calls();
 }
@@ -203,49 +181,46 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         ));
     }
 
-    let storage_value = get_l1_storage_value(contract_address, storage_key, block_number);
-
-    match storage_value {
-        Some(value) => {
-            trace!(
-                "L1SLOAD: cache hit contract={:?} key={:?} block={}",
+    let value = if let Some(cached) =
+        get_l1_storage_value(contract_address, storage_key, block_number)
+    {
+        trace!(
+            "L1SLOAD: cache hit contract={:?} key={:?} block={}",
+            contract_address, storage_key, requested_block
+        );
+        cached
+    } else {
+        let fetcher_guard = L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned");
+        if let Some(ref fetcher) = *fetcher_guard {
+            debug!(
+                "L1SLOAD: RPC fallback contract={:?} key={:?} block={}",
                 contract_address, storage_key, requested_block
             );
-            let mut output = [0u8; 32];
-            output.copy_from_slice(value.as_slice());
-            Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
+            let fetched = fetcher(contract_address, storage_key, requested_block)
+                .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
+            drop(fetcher_guard);
+
+            set_l1_storage_value(contract_address, storage_key, block_number, fetched);
+
+            L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").insert((
+                contract_address,
+                storage_key,
+                block_number,
+            ));
+
+            fetched
+        } else {
+            warn!(
+                "L1SLOAD: cache miss + no RPC — contract={:?} key={:?} block={:?}",
+                contract_address, storage_key, block_number
+            );
+            return Err(PrecompileError::Other("L1 storage value not found in cache".into()));
         }
-        None => {
-            let fetcher_guard = L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned");
-            if let Some(ref fetcher) = *fetcher_guard {
-                info!(
-                    "L1SLOAD: RPC fallback contract={:?} key={:?} block={}",
-                    contract_address, storage_key, requested_block
-                );
-                let value = fetcher(contract_address, storage_key, requested_block)
-                    .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
-                drop(fetcher_guard);
+    };
 
-                set_l1_storage_value(contract_address, storage_key, block_number, value);
-
-                L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").insert((
-                    contract_address,
-                    storage_key,
-                    block_number,
-                ));
-
-                let mut output = [0u8; 32];
-                output.copy_from_slice(value.as_slice());
-                Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
-            } else {
-                warn!(
-                    "L1SLOAD: cache miss + no RPC — contract={:?} key={:?} block={:?}",
-                    contract_address, storage_key, block_number
-                );
-                Err(PrecompileError::Other("L1 storage value not found in cache".into()))
-            }
-        }
-    }
+    let mut output = [0u8; 32];
+    output.copy_from_slice(value.as_slice());
+    Ok(PrecompileOutput::new(gas_used, Bytes::from(output)))
 }
 
 #[cfg(test)]
@@ -469,8 +444,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_anchor_block_id_context() {
-        clear_anchor_block_id();
-        clear_l1_origin_block_id();
+        clear_l1_storage();
 
         // Verify context is initially empty
         assert!(get_anchor_block_id().is_none(), "Context should be empty initially");
@@ -485,8 +459,7 @@ mod tests {
             "Should retrieve the set l1 origin block ID"
         );
 
-        clear_anchor_block_id();
-        clear_l1_origin_block_id();
+        clear_l1_storage();
         assert!(get_anchor_block_id().is_none(), "Context should be cleared");
         assert!(get_l1_origin_block_id().is_none(), "L1 origin context should be cleared");
     }
@@ -522,7 +495,6 @@ mod tests {
     #[serial]
     fn test_l1sload_rpc_fallback_records_served_calls() {
         clear_l1_storage();
-        clear_l1_rpc_served_calls();
         set_anchor_block_id(100);
         set_l1_origin_block_id(100);
 
@@ -555,7 +527,6 @@ mod tests {
     #[serial]
     fn test_clear_l1_storage_clears_rpc_fallback_state() {
         clear_l1_storage();
-        clear_l1_rpc_served_calls();
         set_anchor_block_id(100);
         set_l1_origin_block_id(100);
 

@@ -16,7 +16,7 @@ const L1SLOAD_PER_LOAD_GAS: u64 = 2000;
 /// total 84 bytes
 const EXPECTED_INPUT_LENGTH: usize = 84;
 
-/// Maximum number of L1 blocks to look back from the anchor block
+/// Maximum number of L1 blocks to look back from L1 origin
 const L1SLOAD_MAX_BLOCK_LOOKBACK: u64 = 256;
 
 /// Type alias for the L1 storage cache map.
@@ -169,15 +169,13 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         ));
     }
 
-    if requested_block < anchor_block_id
-        && anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK
-    {
+    if l1_origin_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
         warn!(
-            "L1SLOAD: rejected block {} too old (anchor={}, lookback={})",
-            requested_block, anchor_block_id, L1SLOAD_MAX_BLOCK_LOOKBACK
+            "L1SLOAD: rejected block {} too old (l1origin={}, lookback={})",
+            requested_block, l1_origin_block_id, L1SLOAD_MAX_BLOCK_LOOKBACK
         );
         return Err(PrecompileError::Other(
-            "Requested block number exceeds max lookback from anchor".into(),
+            "Requested block number exceeds max lookback from L1 origin".into(),
         ));
     }
 
@@ -385,13 +383,13 @@ mod tests {
     #[serial]
     fn test_l1sload_rejects_block_beyond_lookback() {
         clear_l1_storage();
-        set_anchor_block_id(1000);
+        set_anchor_block_id(900);
         set_l1_origin_block_id(1000);
 
-        // Request block 1000 - 257 = 743, which exceeds L1SLOAD_MAX_BLOCK_LOOKBACK (256)
+        // Request block 1000 - 257 = 743. Distance from l1origin: 257 > 256
         let input = create_test_input(1000 - L1SLOAD_MAX_BLOCK_LOOKBACK - 1);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_err(), "Should reject block beyond max lookback");
+        assert!(result.is_err(), "Should reject block beyond max lookback from l1origin");
     }
 
     #[test]
@@ -401,13 +399,37 @@ mod tests {
 
         let anchor = 200u64;
         let l1_origin = 250u64;
-        let block = 150u64; // 50 blocks before anchor, within 256 lookback
+        let block = 150u64; // 100 blocks before l1origin, within 256 lookback
         let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_ok(), "Should succeed for block within lookback range");
+        assert!(result.is_ok(), "Should succeed for block within lookback range from l1origin");
         assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_rejects_block_near_anchor_but_far_from_l1origin() {
+        clear_l1_storage();
+
+        // anchor=100, l1origin=500. Block 100 is at anchor but 400 blocks from l1origin.
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(500);
+        let block_num = block_number_b256(100);
+        set_l1_storage_value(
+            Address::from(TEST_ADDRESS),
+            B256::from(TEST_STORAGE_KEY),
+            block_num,
+            B256::from(TEST_STORAGE_VALUE),
+        );
+
+        let input = create_test_input(100);
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(
+            result.is_err(),
+            "Block at anchor should be rejected when too far from l1origin"
+        );
     }
 
     #[test]

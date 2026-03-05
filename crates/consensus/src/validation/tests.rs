@@ -30,7 +30,7 @@ fn test_validate_input_selector() {
 
 #[test]
 fn test_anchor_v4_selector_matches_protocol() {
-    assert_eq!(ANCHOR_V4_SELECTOR, &[0x52, 0x3e, 0x68, 0x54]);
+    assert_eq!(ANCHOR_V4_SELECTOR, &[0x0b, 0x69, 0x66, 0x60]);
 }
 
 #[test]

@@ -12,7 +12,7 @@ use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
 #[cfg(feature = "net")]
 use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
 #[cfg(feature = "serde")]
-use serde_with::{As, Bytes, base64::Base64};
+use serde_with::{As, base64::Base64};
 
 /// Taiko Payload Attributes
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,7 +99,7 @@ pub struct RpcL1Origin {
     /// Indicates if the L2 block was included as a forced inclusion.
     pub is_forced_inclusion: bool,
     /// The signature of the L2 block payload.
-    #[cfg_attr(feature = "serde", serde(with = "As::<Bytes>"))]
+    #[cfg_attr(feature = "serde", serde(with = "hex_bytes"))]
     pub signature: [u8; 65],
 }
 
@@ -179,5 +179,27 @@ mod tests {
         // L1 origin defaults remain zeroed and stable.
         assert_eq!(first.l1_origin.block_id, U256::ZERO);
         assert_eq!(first.l1_origin, second.l1_origin);
+    }
+}
+
+
+/// Serde helper that encodes `[u8; 65]` as a `0x`-prefixed hex string,
+/// matching Go hexutil.Bytes JSON format.
+#[cfg(feature = "serde")]
+mod hex_bytes {
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8; 65], serializer: S) -> Result<S::Ok, S::Error> {
+        let hex_string = format!("0x{}", alloy_primitives::hex::encode(bytes));
+        serializer.serialize_str(&hex_string)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 65], D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let s = s.strip_prefix("0x").unwrap_or(&s);
+        let bytes = alloy_primitives::hex::decode(s).map_err(de::Error::custom)?;
+        bytes.try_into().map_err(|v: Vec<u8>| {
+            de::Error::custom(format!("expected 65 bytes, got {}", v.len()))
+        })
     }
 }

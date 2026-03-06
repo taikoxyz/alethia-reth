@@ -182,7 +182,6 @@ mod tests {
     }
 }
 
-
 /// Serde helper that encodes `[u8; 65]` as a `0x`-prefixed hex string,
 /// matching Go hexutil.Bytes JSON format.
 #[cfg(feature = "serde")]
@@ -198,8 +197,64 @@ mod hex_bytes {
         let s = String::deserialize(deserializer)?;
         let s = s.strip_prefix("0x").unwrap_or(&s);
         let bytes = alloy_primitives::hex::decode(s).map_err(de::Error::custom)?;
-        bytes.try_into().map_err(|v: Vec<u8>| {
-            de::Error::custom(format!("expected 65 bytes, got {}", v.len()))
-        })
+        bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| de::Error::custom(format!("expected 65 bytes, got {}", v.len())))
+    }
+}
+
+#[cfg(feature = "serde")]
+#[cfg(test)]
+mod hex_bytes_tests {
+    use serde::{Deserialize, Serialize};
+
+    /// Wrapper so we can test the `hex_bytes` serde helper via JSON.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Wrapper {
+        #[serde(with = "super::hex_bytes")]
+        sig: [u8; 65],
+    }
+
+    #[test]
+    fn round_trip() {
+        let mut sig = [0u8; 65];
+        sig[0] = 0xAB;
+        sig[64] = 0xCD;
+        let w = Wrapper { sig };
+
+        let json = serde_json::to_string(&w).unwrap();
+        let decoded: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, decoded);
+    }
+
+    #[test]
+    fn serialize_produces_0x_prefix() {
+        let w = Wrapper { sig: [0xFF; 65] };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains("\"0x"));
+    }
+
+    #[test]
+    fn deserialize_without_0x_prefix() {
+        let hex = alloy_primitives::hex::encode([0x42u8; 65]);
+        let json = format!(r#"{{"sig":"{}"}}"#, hex);
+        let decoded: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.sig, [0x42u8; 65]);
+    }
+
+    #[test]
+    fn deserialize_wrong_length_fails() {
+        // 32 bytes instead of 65
+        let hex = format!("0x{}", alloy_primitives::hex::encode([0u8; 32]));
+        let json = format!(r#"{{"sig":"{}"}}"#, hex);
+        let res = serde_json::from_str::<Wrapper>(&json);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("expected 65 bytes"));
+    }
+
+    #[test]
+    fn deserialize_invalid_hex_fails() {
+        let json = r#"{"sig":"0xZZZZ"}"#;
+        assert!(serde_json::from_str::<Wrapper>(json).is_err());
     }
 }

@@ -38,3 +38,6 @@ serde = { workspace = true, optional = true }
 serde_with = { workspace = true, features = ["base64"] }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

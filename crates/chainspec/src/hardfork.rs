@@ -71,7 +71,7 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
     ChainHardforks::new(extend_with_shared_hardforks(vec![
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(538_304)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
-        (TaikoHardfork::Shasta.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_775_135_700)),
         (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
     ]))
 });
@@ -182,6 +182,13 @@ mod test {
         let shasta = TAIKO_DEVNET_HARDFORKS.fork(TaikoHardfork::Shasta);
         assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
         assert_eq!(shasta, ForkCondition::Timestamp(0));
+    }
+
+    #[test]
+    fn test_mainnet_shasta_timestamp() {
+        let shasta = TAIKO_MAINNET_HARDFORKS.fork(TaikoHardfork::Shasta);
+        assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
+        assert_eq!(shasta, ForkCondition::Timestamp(1_775_135_700));
     }
 
     #[test]

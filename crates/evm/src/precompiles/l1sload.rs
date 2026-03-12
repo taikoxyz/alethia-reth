@@ -574,4 +574,188 @@ mod tests {
             "Expected missing-anchor context error, got {err:?}"
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_exact_lookback_boundary() {
+        clear_l1_storage();
+
+        // Block exactly at lookback limit: l1origin - 256
+        let anchor = 700u64;
+        let l1_origin = 1000u64;
+        let block = l1_origin - L1SLOAD_MAX_BLOCK_LOOKBACK; // 744
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let input = create_test_input(block);
+
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "Block at exact lookback boundary should succeed");
+        assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_exact_l1_origin() {
+        clear_l1_storage();
+
+        // Request exactly at l1_origin — should succeed
+        let anchor = 100u64;
+        let l1_origin = 200u64;
+        let block = 200u64;
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let input = create_test_input(block);
+
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "Block at exact l1origin should succeed");
+        assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_exact_gas_boundary() {
+        clear_l1_storage();
+        setup_test_storage(100, 100, 100);
+        let input = create_test_input(100);
+
+        // Exactly enough gas
+        let result = l1sload_run(&Bytes::from(input.clone()), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "Exact gas amount should succeed");
+
+        // One less gas
+        let result = l1sload_run(&Bytes::from(input.clone()), SUFFICIENT_GAS - 1);
+        assert!(result.is_err(), "One gas below should fail");
+
+        // Zero gas
+        let result = l1sload_run(&Bytes::from(input), 0);
+        assert!(result.is_err(), "Zero gas should fail");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_zero_block_number() {
+        clear_l1_storage();
+
+        // Block 0 with l1origin at 100 — distance is 100, within 256 lookback
+        let anchor = 0u64;
+        let l1_origin = 100u64;
+        let block = 0u64;
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let input = create_test_input(block);
+
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "Block 0 within lookback range should succeed");
+        assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_same_key_different_blocks() {
+        clear_l1_storage();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(110);
+
+        let address = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        let value_at_105 = B256::from([0xAAu8; 32]);
+        let value_at_110 = B256::from([0xBBu8; 32]);
+
+        set_l1_storage_value(address, key, block_number_b256(105), value_at_105);
+        set_l1_storage_value(address, key, block_number_b256(110), value_at_110);
+
+        let result_105 = l1sload_run(&Bytes::from(create_test_input(105)), SUFFICIENT_GAS).unwrap();
+        let result_110 = l1sload_run(&Bytes::from(create_test_input(110)), SUFFICIENT_GAS).unwrap();
+
+        assert_eq!(result_105.bytes.as_ref(), value_at_105.as_slice());
+        assert_eq!(result_110.bytes.as_ref(), value_at_110.as_slice());
+        assert_ne!(result_105.bytes, result_110.bytes, "Different blocks should return different values");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_zero_storage_value() {
+        clear_l1_storage();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        // Store B256::ZERO explicitly — should return zeros, not error
+        let address = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        set_l1_storage_value(address, key, block_number_b256(100), B256::ZERO);
+
+        let input = create_test_input(100);
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "Zero storage value should succeed");
+        assert_eq!(result.unwrap().bytes.as_ref(), B256::ZERO.as_slice());
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_rpc_fallback_error_propagates() {
+        clear_l1_storage();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        set_l1_rpc_fetcher(|_, _, _| Err("L1 node unavailable".to_string()));
+
+        let input = create_test_input(100);
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_err(), "RPC error should propagate");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("L1 node unavailable"), "Error message should contain RPC error: {err_msg}");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_anchor_equals_l1origin() {
+        clear_l1_storage();
+
+        // anchor == l1origin is the simplest valid case
+        let block = 100u64;
+        let (_, _, _, expected_value) = setup_test_storage(block, block, block);
+        let input = create_test_input(block);
+
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_ok(), "anchor == l1origin == requested should succeed");
+        assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_l1origin_less_than_anchor_rejected() {
+        clear_l1_storage();
+        set_anchor_block_id(200);
+        set_l1_origin_block_id(100); // l1origin < anchor — invalid
+
+        let input = create_test_input(100);
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+        assert!(result.is_err(), "l1origin < anchor should be rejected");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("l1origin < anchor"), "Expected context error: {err_msg}");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_multiple_rpc_calls_tracked() {
+        clear_l1_storage();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(110);
+
+        let val1 = B256::from([0x11u8; 32]);
+        let val2 = B256::from([0x22u8; 32]);
+
+        set_l1_rpc_fetcher(move |_, _, block| {
+            if block == 105 {
+                Ok(val1)
+            } else if block == 110 {
+                Ok(val2)
+            } else {
+                Err("unexpected block".to_string())
+            }
+        });
+
+        let _ = l1sload_run(&Bytes::from(create_test_input(105)), SUFFICIENT_GAS).unwrap();
+        let _ = l1sload_run(&Bytes::from(create_test_input(110)), SUFFICIENT_GAS).unwrap();
+
+        let served = take_l1_rpc_served_calls();
+        assert_eq!(served.len(), 2, "Should track both RPC-served calls");
+    }
 }

@@ -4,12 +4,12 @@
 #[cfg(feature = "net")]
 /// Engine API payload and type definitions.
 pub mod engine;
-/// Taiko network constants and address utilities.
-pub mod taiko;
 /// Helpers for decoding Taiko extra-data fields.
 pub mod extra_data;
 /// Payload-attribute and builder primitive types.
 pub mod payload;
+/// Taiko network constants and address utilities.
+pub mod taiko;
 
 pub use extra_data::{
     SHASTA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg, decode_shasta_proposal_id,

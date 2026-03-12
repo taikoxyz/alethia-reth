@@ -9,5 +9,5 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-alloy-primitives = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }

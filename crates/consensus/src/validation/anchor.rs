@@ -2,33 +2,16 @@
 
 use alloy_consensus::BlockHeader as AlloyBlockHeader;
 use alloy_primitives::{Address, U256};
-use alloy_sol_types::{SolCall, sol};
 use reth_consensus::ConsensusError;
 use reth_primitives_traits::{Block, BlockBody, RecoveredBlock, SignedTransaction};
 
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
-sol! {
-    function anchor(bytes32, bytes32, uint64, uint32) external;
-    function anchorV2(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32)) external;
-    function anchorV3(uint64, bytes32, uint32, (uint8, uint8, uint32, uint64, uint32), bytes32[]) external;
-    function anchorV4((uint48, bytes32, bytes32)) external;
-}
-
-/// Anchor / system transaction call selectors.
-pub const ANCHOR_V1_SELECTOR: &[u8; 4] = &anchorCall::SELECTOR;
-/// Selector for the Ontake-era `anchorV2` transaction.
-pub const ANCHOR_V2_SELECTOR: &[u8; 4] = &anchorV2Call::SELECTOR;
-/// Selector for the Pacaya-era `anchorV3` transaction.
-pub const ANCHOR_V3_SELECTOR: &[u8; 4] = &anchorV3Call::SELECTOR;
-/// Selector for the Shasta-era `anchorV4` transaction.
-pub const ANCHOR_V4_SELECTOR: &[u8; 4] = &anchorV4Call::SELECTOR;
-
-/// The gas limit for the anchor transactions before Pacaya hardfork.
-pub const ANCHOR_V1_V2_GAS_LIMIT: u64 = 250_000;
-/// The gas limit for the anchor transactions in Pacaya and Shasta hardfork blocks.
-pub const ANCHOR_V3_V4_GAS_LIMIT: u64 = 1_000_000;
+pub use crate::anchor_constants::{
+    ANCHOR_V1_SELECTOR, ANCHOR_V1_V2_GAS_LIMIT, ANCHOR_V2_SELECTOR, ANCHOR_V3_SELECTOR,
+    ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR,
+};
 
 /// Context required to validate an anchor transaction.
 pub struct AnchorValidationContext {

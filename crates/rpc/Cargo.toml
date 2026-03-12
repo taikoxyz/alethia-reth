@@ -15,6 +15,7 @@ serde = []
 
 [dependencies]
 alethia-reth-block = { path = "../block" }
+alethia-reth-rpc-types = { path = "../rpc-types" }
 alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-consensus = { path = "../consensus" }
 alethia-reth-db = { path = "../db" }

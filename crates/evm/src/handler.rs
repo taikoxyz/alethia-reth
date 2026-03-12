@@ -1,6 +1,4 @@
 //! Taiko EVM handler logic for fee distribution and anchor-aware validation.
-use std::str::FromStr;
-
 use reth_revm::{
     Database, Inspector,
     context::{
@@ -319,32 +317,5 @@ pub fn reimburse_caller<CTX: ContextTr>(
     Ok(())
 }
 
-/// Generates the network treasury address based on the chain ID.
-#[inline]
-pub fn get_treasury_address(chain_id: u64) -> Address {
-    let prefix = chain_id.to_string();
-    let suffix = "10001";
-
-    let total_len = 40;
-    let padding_len = total_len - prefix.len() - suffix.len();
-    let padding = "0".repeat(padding_len);
-
-    let hex_str = format!("0x{prefix}{padding}{suffix}");
-
-    Address::from_str(&hex_str)
-        .expect("treasury address generation should always produce valid address")
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_get_treasury_address() {
-        let treasury = get_treasury_address(167000);
-        assert_eq!(
-            treasury,
-            Address::from_str("0x1670000000000000000000000000000000010001").unwrap()
-        );
-    }
-}
+// Re-export from primitives so downstream consumers can use the lighter crate.
+pub use alethia_reth_primitives::taiko::get_treasury_address;

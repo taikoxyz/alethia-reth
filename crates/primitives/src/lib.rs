@@ -4,6 +4,8 @@
 #[cfg(feature = "net")]
 /// Engine API payload and type definitions.
 pub mod engine;
+/// Taiko network constants and address utilities.
+pub mod taiko;
 /// Helpers for decoding Taiko extra-data fields.
 pub mod extra_data;
 /// Payload-attribute and builder primitive types.

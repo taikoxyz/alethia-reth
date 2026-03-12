@@ -13,6 +13,7 @@ members = [
     "crates/payload",
     "crates/primitives",
     "crates/rpc",
+    "crates/rpc-types",
 ]
 resolver = "2"
 

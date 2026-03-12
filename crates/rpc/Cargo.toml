@@ -20,6 +20,7 @@ alethia-reth-consensus = { path = "../consensus" }
 alethia-reth-db = { path = "../db" }
 alethia-reth-evm = { path = "../evm" }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
+alethia-reth-rpc-types = { path = "../rpc-types" }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-hardforks = { workspace = true }

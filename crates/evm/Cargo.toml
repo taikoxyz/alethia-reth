@@ -13,6 +13,7 @@ default = []
 serde = ["dep:serde"]
 
 [dependencies]
+alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-evm = { workspace = true }
 alloy-primitives = { workspace = true }
 reth-evm = { workspace = true }

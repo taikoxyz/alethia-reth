@@ -195,6 +195,7 @@ dependencies = [
 name = "alethia-reth-evm"
 version = "0.6.0"
 dependencies = [
+ "alethia-reth-primitives",
  "alloy-evm",
  "alloy-primitives",
  "reth-evm",
@@ -333,6 +334,7 @@ dependencies = [
  "alethia-reth-db",
  "alethia-reth-evm",
  "alethia-reth-primitives",
+ "alethia-reth-rpc-types",
  "alloy-consensus",
  "alloy-eips",
  "alloy-hardforks",
@@ -372,6 +374,14 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "alethia-reth-rpc-types"
+version = "0.6.0"
+dependencies = [
+ "alloy-primitives",
+ "serde",
 ]
 
 [[package]]

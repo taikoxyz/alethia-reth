@@ -13,7 +13,7 @@ pub mod eip4396;
 pub mod validation;
 
 #[cfg(not(feature = "full"))]
-/// Block and anchor transaction validation for Taiko consensus.
+/// Fallback `validation` module that only re-exports anchor-related constants.
 pub mod validation {
     pub use super::anchor_constants::*;
 }

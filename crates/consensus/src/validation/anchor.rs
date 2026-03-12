@@ -1,5 +1,6 @@
 //! Anchor transaction selectors and validation helpers.
 
+use alloy_consensus::BlockHeader as AlloyBlockHeader;
 use alloy_primitives::{Address, U256};
 use reth_consensus::ConsensusError;
 use reth_primitives_traits::{Block, BlockBody, RecoveredBlock, SignedTransaction};

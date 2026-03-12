@@ -34,8 +34,7 @@
       "Bash(cargo expand:*)",
       "mcp__ide__getDiagnostics",
       "Bash(just clippy:*)",
-      "Bash(just test:*)",
-      "mcp__acp__Bash"
+      "Bash(just test:*)"
     ],
     "deny": []
   }

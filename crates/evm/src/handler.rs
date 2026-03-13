@@ -318,4 +318,4 @@ pub fn reimburse_caller<CTX: ContextTr>(
 }
 
 // Re-export from primitives so downstream consumers can use the lighter crate.
-pub use alethia_reth_primitives::taiko::get_treasury_address;
+pub use alethia_reth_primitives::addresses::get_treasury_address;

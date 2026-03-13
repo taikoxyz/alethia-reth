@@ -1,4 +1,4 @@
-//! Taiko network constants and address utilities.
+//! Taiko-specific addresses and address derivation helpers.
 
 use std::str::FromStr;
 

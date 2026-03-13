@@ -6,7 +6,7 @@ use std::{
 
 use alloy_evm::{Database, Evm, EvmEnv};
 // Re-export from primitives so downstream consumers can use the lighter crate.
-pub use alethia_reth_primitives::taiko::TAIKO_GOLDEN_TOUCH_ADDRESS;
+pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{

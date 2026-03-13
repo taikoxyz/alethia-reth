@@ -1,23 +1,28 @@
-toolchain := "nightly-2025-09-27"
+toolchain := "1.93.1"
+fmt_toolchain := "nightly"
 
 fmt:
-  rustup toolchain install {{toolchain}} && \
-  cargo +{{toolchain}} fmt && \
+  rustup toolchain install {{fmt_toolchain}} && \
+  cargo +{{fmt_toolchain}} fmt && \
   cargo sort --workspace --grouped
 
 fmt-check:
-  rustup toolchain install {{toolchain}} && \
-  cargo +{{toolchain}} fmt --check
+  rustup toolchain install {{fmt_toolchain}} && \
+  cargo +{{fmt_toolchain}} fmt --check
 
 clippy:
-  cargo clippy --workspace --all-features --no-deps -- -D warnings -D missing_docs -D clippy::missing_docs_in_private_items
+  rustup toolchain install {{toolchain}} && \
+  cargo +{{toolchain}} clippy --workspace --all-features --no-deps -- -D warnings -D missing_docs -D clippy::missing_docs_in_private_items
 
 clippy-fix:
-  cargo clippy --fix --workspace --all-features --no-deps --allow-dirty --allow-staged -- -D warnings
+  rustup toolchain install {{toolchain}} && \
+  cargo +{{toolchain}} clippy --fix --workspace --all-features --no-deps --allow-dirty --allow-staged -- -D warnings
 
 udeps:
-  cargo +{{toolchain}} udeps --all-targets
+  rustup toolchain install nightly && \
+  cargo +nightly udeps --all-targets
 
 test:
-  cargo nextest -v run \
+  rustup toolchain install {{toolchain}} && \
+  cargo +{{toolchain}} nextest -v run \
     --workspace --all-features

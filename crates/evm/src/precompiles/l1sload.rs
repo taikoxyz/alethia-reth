@@ -3,7 +3,7 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use reth_revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tracing::{debug, trace, warn};
 
@@ -54,6 +54,7 @@ pub fn set_anchor_block_id(anchor_block_id: u64) {
     *ctx = Some(anchor_block_id);
 }
 
+/// Reads the current anchor block ID from global context.
 fn get_anchor_block_id() -> Option<u64> {
     *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned")
 }
@@ -65,6 +66,7 @@ pub fn set_l1_origin_block_id(l1_origin_block_id: u64) {
     *ctx = Some(l1_origin_block_id);
 }
 
+/// Reads the current L1 origin block ID from global context.
 fn get_l1_origin_block_id() -> Option<u64> {
     *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned")
 }
@@ -113,6 +115,7 @@ pub fn clear_l1_rpc_served_calls() {
     L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").clear();
 }
 
+/// Looks up a cached L1 storage value by address, key, and block number.
 fn get_l1_storage_value(
     contract_address: Address,
     storage_key: B256,
@@ -148,7 +151,13 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
-    let l1_origin_block_id = get_l1_origin_block_id().unwrap_or(anchor_block_id);
+    let l1_origin_block_id = match get_l1_origin_block_id() {
+        Some(id) => id,
+        None => {
+            warn!("L1SLOAD: L1 origin block ID not set");
+            return Err(PrecompileError::Other("L1 origin block ID not set".into()));
+        }
+    };
 
     if l1_origin_block_id < anchor_block_id {
         return Err(PrecompileError::Other("Invalid L1SLOAD context: l1origin < anchor".into()));
@@ -179,42 +188,41 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         ));
     }
 
-    let value = if let Some(cached) =
-        get_l1_storage_value(contract_address, storage_key, block_number)
-    {
-        trace!(
-            "L1SLOAD: cache hit contract={:?} key={:?} block={}",
-            contract_address, storage_key, requested_block
-        );
-        cached
-    } else {
-        let fetcher_guard = L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned");
-        if let Some(ref fetcher) = *fetcher_guard {
-            debug!(
-                "L1SLOAD: RPC fallback contract={:?} key={:?} block={}",
+    let value =
+        if let Some(cached) = get_l1_storage_value(contract_address, storage_key, block_number) {
+            trace!(
+                "L1SLOAD: cache hit contract={:?} key={:?} block={}",
                 contract_address, storage_key, requested_block
             );
-            let fetched = fetcher(contract_address, storage_key, requested_block)
-                .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
-            drop(fetcher_guard);
-
-            set_l1_storage_value(contract_address, storage_key, block_number, fetched);
-
-            L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").insert((
-                contract_address,
-                storage_key,
-                block_number,
-            ));
-
-            fetched
+            cached
         } else {
-            warn!(
-                "L1SLOAD: cache miss + no RPC — contract={:?} key={:?} block={:?}",
-                contract_address, storage_key, block_number
-            );
-            return Err(PrecompileError::Other("L1 storage value not found in cache".into()));
-        }
-    };
+            let fetcher_guard = L1_RPC_FETCHER.lock().expect("L1_RPC_FETCHER mutex poisoned");
+            if let Some(ref fetcher) = *fetcher_guard {
+                debug!(
+                    "L1SLOAD: RPC fallback contract={:?} key={:?} block={}",
+                    contract_address, storage_key, requested_block
+                );
+                let fetched = fetcher(contract_address, storage_key, requested_block)
+                    .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
+                drop(fetcher_guard);
+
+                set_l1_storage_value(contract_address, storage_key, block_number, fetched);
+
+                L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").insert((
+                    contract_address,
+                    storage_key,
+                    block_number,
+                ));
+
+                fetched
+            } else {
+                warn!(
+                    "L1SLOAD: cache miss + no RPC — contract={:?} key={:?} block={:?}",
+                    contract_address, storage_key, block_number
+                );
+                return Err(PrecompileError::Other("L1 storage value not found in cache".into()));
+            }
+        };
 
     let mut output = [0u8; 32];
     output.copy_from_slice(value.as_slice());
@@ -426,10 +434,7 @@ mod tests {
 
         let input = create_test_input(100);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(
-            result.is_err(),
-            "Block at anchor should be rejected when too far from l1origin"
-        );
+        assert!(result.is_err(), "Block at anchor should be rejected when too far from l1origin");
     }
 
     #[test]
@@ -666,7 +671,10 @@ mod tests {
 
         assert_eq!(result_105.bytes.as_ref(), value_at_105.as_slice());
         assert_eq!(result_110.bytes.as_ref(), value_at_110.as_slice());
-        assert_ne!(result_105.bytes, result_110.bytes, "Different blocks should return different values");
+        assert_ne!(
+            result_105.bytes, result_110.bytes,
+            "Different blocks should return different values"
+        );
     }
 
     #[test]
@@ -700,7 +708,10 @@ mod tests {
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
         assert!(result.is_err(), "RPC error should propagate");
         let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(err_msg.contains("L1 node unavailable"), "Error message should contain RPC error: {err_msg}");
+        assert!(
+            err_msg.contains("L1 node unavailable"),
+            "Error message should contain RPC error: {err_msg}"
+        );
     }
 
     #[test]
@@ -730,6 +741,24 @@ mod tests {
         assert!(result.is_err(), "l1origin < anchor should be rejected");
         let err_msg = format!("{:?}", result.unwrap_err());
         assert!(err_msg.contains("l1origin < anchor"), "Expected context error: {err_msg}");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_fails_without_l1_origin_block_id() {
+        clear_l1_storage();
+        set_anchor_block_id(100);
+        // Deliberately do NOT set l1_origin_block_id
+
+        let input = create_test_input(100);
+        let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
+
+        assert!(result.is_err(), "Should fail when L1 origin block ID is not set");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("L1 origin block ID not set"),
+            "Expected missing l1_origin error: {err_msg}"
+        );
     }
 
     #[test]

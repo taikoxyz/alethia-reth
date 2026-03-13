@@ -2,7 +2,7 @@
 pub mod l1sload;
 
 use reth_evm::precompiles::{DynPrecompile, PrecompilesMap};
-use reth_revm::precompile::{u64_to_address, PrecompileSpecId, Precompiles};
+use reth_revm::precompile::{PrecompileSpecId, Precompiles, u64_to_address};
 
 /// Builds a [`PrecompilesMap`] that includes the standard Ethereum precompiles
 /// plus the Taiko L1SLOAD precompile at address `0x10001`.

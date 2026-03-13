@@ -2,12 +2,12 @@ toolchain := "1.93.1"
 fmt_toolchain := "nightly"
 
 fmt:
-  rustup toolchain install {{fmt_toolchain}} && \
+  rustup toolchain install {{fmt_toolchain}} --component rustfmt && \
   cargo +{{fmt_toolchain}} fmt && \
   cargo sort --workspace --grouped
 
 fmt-check:
-  rustup toolchain install {{fmt_toolchain}} && \
+  rustup toolchain install {{fmt_toolchain}} --component rustfmt && \
   cargo +{{fmt_toolchain}} fmt --check
 
 clippy:

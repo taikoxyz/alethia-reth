@@ -1,6 +1,8 @@
 use super::{anchor::validate_input_selector, *};
 use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
-use alloy_consensus::Header;
+use alloy_consensus::{Header, Signed, TxEip4844, TxLegacy};
+use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+use reth_ethereum::TransactionSigned;
 
 #[test]
 fn test_validate_against_parent_eip4396_base_fee() {
@@ -99,4 +101,52 @@ fn test_min_base_fee_to_clamp_defaults_for_non_mainnet() {
         MIN_BASE_FEE,
         "Non-mainnet chains should use the non-mainnet clamp"
     );
+}
+
+#[test]
+fn test_rejects_blob_transactions() {
+    let transactions = vec![make_blob_tx()];
+
+    let err =
+        validate_no_blob_transactions(&transactions).expect_err("blob transactions should fail");
+    assert!(matches!(err, ConsensusError::Other(_)));
+}
+
+#[test]
+fn test_allows_non_blob_transactions() {
+    let transactions = vec![make_legacy_tx()];
+
+    assert!(validate_no_blob_transactions(&transactions).is_ok());
+}
+
+fn make_blob_tx() -> TransactionSigned {
+    let tx = TxEip4844 {
+        chain_id: ChainId::from(1u64),
+        nonce: 0,
+        gas_limit: 21_000,
+        max_fee_per_gas: 1,
+        max_priority_fee_per_gas: 0,
+        to: Address::ZERO,
+        value: U256::ZERO,
+        access_list: Default::default(),
+        blob_versioned_hashes: vec![B256::ZERO],
+        max_fee_per_blob_gas: 1,
+        input: Bytes::default(),
+    };
+    let signature = Signature::new(U256::from(1), U256::from(2), false);
+    Signed::new_unchecked(tx, signature, B256::ZERO).into()
+}
+
+fn make_legacy_tx() -> TransactionSigned {
+    let tx = TxLegacy {
+        chain_id: Some(ChainId::from(1u64)),
+        nonce: 0,
+        gas_price: 1,
+        gas_limit: 21_000,
+        to: TxKind::Call(Address::ZERO),
+        value: U256::ZERO,
+        input: Bytes::default(),
+    };
+    let signature = Signature::new(U256::from(1), U256::from(2), false);
+    Signed::new_unchecked(tx, signature, B256::ZERO).into()
 }

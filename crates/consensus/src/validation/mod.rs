@@ -14,7 +14,8 @@ use reth_ethereum_consensus::validate_block_post_execution;
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives::SealedBlock;
 use reth_primitives_traits::{
-    Block, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
+    Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
+    SignedTransaction,
 };
 
 use crate::eip4396::{
@@ -113,6 +114,8 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
                 GotExpected { got: block.ommers_hash(), expected: EMPTY_OMMER_ROOT_HASH }.into(),
             ));
         }
+
+        validate_no_blob_transactions(block.body().transactions())?;
 
         Ok(())
     }
@@ -247,4 +250,14 @@ fn min_base_fee_to_clamp(chain_spec: &TaikoChainSpec) -> u64 {
     } else {
         MIN_BASE_FEE
     }
+}
+
+/// Validates that no blob transactions are included in the block.
+fn validate_no_blob_transactions<Tx: SignedTransaction>(
+    transactions: &[Tx],
+) -> Result<(), ConsensusError> {
+    if transactions.iter().any(|tx| tx.is_eip4844()) {
+        return Err(ConsensusError::Other("Blob transactions are not allowed".into()));
+    }
+    Ok(())
 }

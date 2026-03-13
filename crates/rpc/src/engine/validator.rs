@@ -27,6 +27,14 @@ use reth_payload_primitives::{
 use reth_primitives_traits::{Block as BlockTrait, SealedBlock};
 use std::sync::Arc;
 
+/// Rejects payloads that contain blob transactions.
+fn reject_blob_transactions(has_blob_transactions: bool) -> Result<(), PayloadError> {
+    if has_blob_transactions {
+        return Err(PayloadError::PreCancunBlockWithBlobTransactions);
+    }
+    Ok(())
+}
+
 /// Builder for [`TaikoEngineValidator`].
 #[derive(Debug, Default, Clone)]
 pub struct TaikoEngineValidatorBuilder;
@@ -153,6 +161,12 @@ where
     ) -> Result<RecoveredBlock<Self::Block>, NewPayloadError> {
         let sealed_block =
             <Self as PayloadValidator<Types>>::convert_payload_to_block(self, payload)?;
+
+        let has_blob_transactions =
+            sealed_block.body().transactions().into_iter().any(|tx| tx.is_eip4844());
+        reject_blob_transactions(has_blob_transactions)
+            .map_err(|e| NewPayloadError::Other(e.into()))?;
+
         sealed_block.try_recover().map_err(|e| NewPayloadError::Other(e.into()))
     }
 
@@ -195,5 +209,21 @@ where
     ) -> Result<(), EngineObjectValidationError> {
         // Attributes are well-formed if they pass the basic validation
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_blob_transactions() {
+        let err = reject_blob_transactions(true).unwrap_err();
+        assert!(matches!(err, PayloadError::PreCancunBlockWithBlobTransactions));
+    }
+
+    #[test]
+    fn allows_non_blob_transactions() {
+        assert!(reject_blob_transactions(false).is_ok());
     }
 }

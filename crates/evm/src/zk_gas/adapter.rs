@@ -131,7 +131,9 @@ where
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
         let outcome = self.inner.call(context, inputs);
-        if outcome.is_none() && let Some(metering) = &mut self.metering {
+        if outcome.is_none() &&
+            let Some(metering) = &mut self.metering
+        {
             metering.mark_call_spawn(context.journal().depth());
         }
         outcome
@@ -175,7 +177,9 @@ where
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
         let outcome = self.inner.create(context, inputs);
-        if outcome.is_none() && let Some(metering) = &mut self.metering {
+        if outcome.is_none() &&
+            let Some(metering) = &mut self.metering
+        {
             metering.mark_create_spawn(context.journal().depth());
         }
         outcome

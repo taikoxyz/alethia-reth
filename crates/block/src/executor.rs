@@ -431,25 +431,21 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use alloy_consensus::{Signed, TxLegacy};
-    use alloy_evm::{EvmEnv, EvmFactory};
-    use alloy_hardforks::ForkCondition;
-    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
+    use alloy_evm::EvmFactory;
+    use alloy_primitives::{Bytes, U64, U256};
     use reth_evm::block::BlockExecutor;
     use reth_evm_ethereum::RethReceiptBuilder;
-    use reth_revm::{
-        State,
-        db::InMemoryDB,
-        state::{AccountInfo, Bytecode, bytecode::opcode},
-    };
+    use reth_revm::State;
 
-    use alethia_reth_evm::{
-        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
-    };
+    use alethia_reth_evm::{alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory};
 
     use super::*;
-    use crate::factory::TaikoBlockExecutionCtx;
-    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork, spec::TaikoChainSpec};
+    use crate::testutil::{
+        BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx, uzen_chain_spec,
+        uzen_evm_env, uzen_execution_ctx,
+    };
+
+    const BENCH_CALLER: Address = Address::with_last_byte(0x30);
 
     #[test]
     fn test_encode_anchor_system_call_data() {
@@ -482,23 +478,13 @@ mod test {
     fn executor_discards_limit_exceeded_tx_and_stops_after_it() {
         let chain_spec = Arc::new(uzen_chain_spec());
         let mut state = State::builder()
-            .with_database(db_with_contracts())
+            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         assert_eq!(evm.block_zk_gas_used(), Some(0));
-        let ctx = TaikoBlockExecutionCtx {
-            parent_hash: B256::ZERO,
-            parent_beacon_block_root: None,
-            ommers: &[],
-            withdrawals: None,
-            basefee_per_gas: 0,
-            extra_data: Bytes::default(),
-            is_uzen: true,
-            expected_difficulty: None,
-            finalized_block_zk_gas: Default::default(),
-        };
+        let ctx = uzen_execution_ctx();
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx.clone(),
@@ -506,19 +492,20 @@ mod test {
             RethReceiptBuilder::default(),
         );
 
-        let gas_used =
-            executor.execute_transaction(success_tx(0)).expect("first transaction should commit");
+        let gas_used = executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
+            .expect("first transaction should commit");
         let finalized_after_first = ctx.finalized_block_zk_gas();
         assert!(finalized_after_first > 0);
 
         let err = executor
-            .execute_transaction(limit_exceeded_tx(1))
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 1, 1))
             .expect_err("second transaction should be discarded");
         assert!(is_uzen_zk_gas_limit_exceeded(&err));
         assert_eq!(ctx.finalized_block_zk_gas(), finalized_after_first);
 
         let repeated_err = executor
-            .execute_transaction(success_tx(1))
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1))
             .expect_err("later transactions should not execute after zk gas exhaustion");
         assert!(is_uzen_zk_gas_limit_exceeded(&repeated_err));
 
@@ -531,27 +518,18 @@ mod test {
     fn executor_rejects_imported_uzen_block_when_difficulty_mismatches_finalized_zk_gas() {
         let chain_spec = Arc::new(uzen_chain_spec());
         let mut state = State::builder()
-            .with_database(db_with_contracts())
+            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
-        let ctx = TaikoBlockExecutionCtx {
-            parent_hash: B256::ZERO,
-            parent_beacon_block_root: None,
-            ommers: &[],
-            withdrawals: None,
-            basefee_per_gas: 0,
-            extra_data: Bytes::default(),
-            is_uzen: true,
-            expected_difficulty: Some(U256::ZERO),
-            finalized_block_zk_gas: Default::default(),
-        };
+        let mut ctx = uzen_execution_ctx();
+        ctx.expected_difficulty = Some(U256::ZERO);
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx, chain_spec, RethReceiptBuilder::default());
 
         executor
-            .execute_transaction(success_tx(0))
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
             .expect("transaction should execute successfully");
 
         let err = match executor.finish() {
@@ -560,103 +538,4 @@ mod test {
         };
         assert!(err.to_string().contains("difficulty"));
     }
-
-    fn uzen_chain_spec() -> TaikoChainSpec {
-        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
-        chain_spec
-    }
-
-    fn uzen_evm_env() -> EvmEnv<TaikoSpecId> {
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
-        env.cfg_env.spec = TaikoSpecId::UZEN;
-        env.cfg_env.chain_id = 167;
-        env.block_env.number = U256::from(1_u64);
-        env.block_env.timestamp = U256::from(1_u64);
-        env.block_env.gas_limit = 30_000_000;
-        env
-    }
-
-    fn success_tx(nonce: u64) -> reth_primitives::Recovered<reth_ethereum::TransactionSigned> {
-        recovered_tx(BENCH_SUCCESS_TARGET, nonce)
-    }
-
-    fn limit_exceeded_tx(
-        nonce: u64,
-    ) -> reth_primitives::Recovered<reth_ethereum::TransactionSigned> {
-        recovered_tx(BENCH_LIMIT_TARGET, nonce)
-    }
-
-    fn recovered_tx(
-        to: Address,
-        nonce: u64,
-    ) -> reth_primitives::Recovered<reth_ethereum::TransactionSigned> {
-        let tx = TxLegacy {
-            chain_id: Some(ChainId::from(167_u64)),
-            nonce,
-            gas_price: 1,
-            gas_limit: 5_000_000,
-            to: TxKind::Call(to),
-            value: U256::ZERO,
-            input: Bytes::default(),
-        };
-        let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
-        reth_primitives::Recovered::new_unchecked(
-            Signed::new_unchecked(tx, signature, B256::ZERO).into(),
-            BENCH_CALLER,
-        )
-    }
-
-    fn db_with_contracts() -> InMemoryDB {
-        let mut db = InMemoryDB::default();
-        insert_contract(&mut db, BENCH_SUCCESS_TARGET, arithmetic_bytecode());
-        insert_contract(&mut db, BENCH_LIMIT_TARGET, limit_exceeding_keccak_bytecode());
-        db.insert_account_info(
-            BENCH_CALLER,
-            AccountInfo { nonce: 0, balance: U256::from(10_000_000_000_u64), ..Default::default() },
-        );
-        db
-    }
-
-    fn insert_contract(db: &mut InMemoryDB, address: Address, bytecode: Bytecode) {
-        let code_hash = bytecode.hash_slow();
-        db.insert_account_info(
-            address,
-            AccountInfo {
-                nonce: 1,
-                balance: U256::ZERO,
-                code_hash,
-                code: Some(bytecode),
-                ..Default::default()
-            },
-        );
-    }
-
-    fn arithmetic_bytecode() -> Bytecode {
-        Bytecode::new_raw(Bytes::from(vec![
-            opcode::PUSH1,
-            0x01,
-            opcode::PUSH1,
-            0x02,
-            opcode::ADD,
-            opcode::STOP,
-        ]))
-    }
-
-    fn limit_exceeding_keccak_bytecode() -> Bytecode {
-        Bytecode::new_raw(Bytes::from(vec![
-            opcode::PUSH1,
-            0x20,
-            opcode::PUSH3,
-            0x10,
-            0x00,
-            0x00,
-            opcode::KECCAK256,
-            opcode::STOP,
-        ]))
-    }
-
-    const BENCH_CALLER: Address = Address::with_last_byte(0x30);
-    const BENCH_SUCCESS_TARGET: Address = Address::with_last_byte(0x21);
-    const BENCH_LIMIT_TARGET: Address = Address::with_last_byte(0x22);
 }

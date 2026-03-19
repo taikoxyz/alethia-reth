@@ -24,7 +24,7 @@ use crate::{
     handler::get_treasury_address,
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::{SharedUzenZkGasMeter, UzenZkGasInspector},
+        adapter::{SharedUzenZkGasMeter, UzenZkGasInspector, lock_meter},
         meter::ZkGasOutcome,
     },
 };
@@ -106,13 +106,6 @@ where
     fn block_zk_gas_used(&self) -> Option<u64> {
         self.shared_meter().map(|meter| lock_meter(&meter).block_zk_gas_used())
     }
-}
-
-/// Locks the shared Uzen meter while recovering cleanly from poison.
-fn lock_meter(
-    meter: &SharedUzenZkGasMeter,
-) -> std::sync::MutexGuard<'_, crate::zk_gas::meter::UzenZkGasMeter<'static>> {
-    meter.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {

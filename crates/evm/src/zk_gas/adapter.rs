@@ -370,6 +370,6 @@ fn set_custom_error<CTX: ContextTr>(context: &mut CTX) {
 }
 
 /// Locks the shared meter while recovering cleanly from poison.
-fn lock_meter(meter: &SharedUzenZkGasMeter) -> MutexGuard<'_, UzenZkGasMeter<'static>> {
+pub(crate) fn lock_meter(meter: &SharedUzenZkGasMeter) -> MutexGuard<'_, UzenZkGasMeter<'static>> {
     meter.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

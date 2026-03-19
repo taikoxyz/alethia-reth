@@ -44,4 +44,5 @@ reth-transaction-pool = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+alethia-reth-block = { path = "../block", features = ["test-utils"] }
 reth-storage-api = { workspace = true }

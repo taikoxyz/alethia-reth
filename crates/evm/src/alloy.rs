@@ -24,7 +24,7 @@ use crate::{
     handler::get_treasury_address,
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::{SharedUzenZkGasMeter, UzenZkGasInspector, lock_meter},
+        adapter::{SharedZkGasMeter, ZkGasInspector, lock_meter},
         meter::ZkGasOutcome,
     },
 };
@@ -32,7 +32,7 @@ use crate::{
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// Wrapped Taiko EVM instance implementing execution behavior.
-    inner: TaikoEvm<TaikoEvmContext<DB>, UzenZkGasInspector<I>, P>,
+    inner: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
 }
@@ -40,14 +40,14 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(
-        evm: TaikoEvm<TaikoEvmContext<DB>, UzenZkGasInspector<I>, P>,
+        evm: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
         inspect: bool,
     ) -> Self {
         Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
-    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, UzenZkGasInspector<I>, P> {
+    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P> {
         self.inner
     }
 
@@ -61,13 +61,13 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
         &mut self.inner.inner.ctx
     }
 
-    /// Returns the shared Uzen zk gas meter when this wrapper has metering enabled.
-    pub fn shared_meter(&self) -> Option<SharedUzenZkGasMeter> {
+    /// Returns the shared zk gas meter when this wrapper has metering enabled.
+    pub fn shared_meter(&self) -> Option<SharedZkGasMeter> {
         self.inner.inner.inspector.shared_meter()
     }
 }
 
-/// EVM extension trait for reading and mutating shared Uzen zk gas meter state.
+/// EVM extension trait for reading and mutating shared zk gas meter state.
 pub trait TaikoZkGasEvm {
     /// Discards any in-flight zk gas recorded for the current transaction.
     fn reset_transaction_zk_gas(&self);

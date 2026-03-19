@@ -18,8 +18,8 @@ use revm_database_interface::{
 use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 use super::{
-    adapter::UZEN_ZK_GAS_LIMIT_ERR,
-    meter::{UzenZkGasMeter, ZkGasOutcome},
+    adapter::ZK_GAS_LIMIT_ERR,
+    meter::{ZkGasMeter, ZkGasOutcome},
     schedule::schedule_for,
 };
 
@@ -65,7 +65,7 @@ fn uzen_schedule_uses_spec_spawn_estimates() {
 #[test]
 fn meter_promotes_committed_tx_usage_into_block_usage() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 3).expect("charge");
     meter.commit_transaction().expect("commit");
@@ -76,7 +76,7 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
 #[test]
 fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.opcode_multipliers[0x01])) + 1;
 
     assert!(matches!(meter.charge_opcode(0x01, raw_gas), Err(ZkGasOutcome::LimitExceeded)));
@@ -85,7 +85,7 @@ fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
 #[test]
 fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.precompile_multipliers[0x01])) + 1;
 
     assert!(matches!(meter.charge_precompile(0x01, raw_gas), Err(ZkGasOutcome::LimitExceeded)));
@@ -94,7 +94,7 @@ fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
 #[test]
 fn meter_resets_transaction_usage_without_affecting_block_usage() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 2).expect("charge");
     meter.reset_transaction();
@@ -106,7 +106,7 @@ fn meter_resets_transaction_usage_without_affecting_block_usage() {
 #[test]
 fn meter_allows_exactly_remaining_block_budget() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
     meter.commit_transaction().expect("commit");
@@ -122,7 +122,7 @@ fn meter_allows_exactly_remaining_block_budget() {
 #[test]
 fn meter_rejects_block_budget_plus_one() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
     meter.commit_transaction().expect("commit");
@@ -133,7 +133,7 @@ fn meter_rejects_block_budget_plus_one() {
 #[test]
 fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
     let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
-    let mut meter = UzenZkGasMeter::new(schedule);
+    let mut meter = ZkGasMeter::new(schedule);
 
     assert!(matches!(
         meter.charge_precompile(0x01, schedule.block_limit),
@@ -223,7 +223,7 @@ fn uzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
     assert!(matches!(
         err,
         reth_revm::context::result::EVMError::Custom(message)
-            if message == UZEN_ZK_GAS_LIMIT_ERR
+            if message == ZK_GAS_LIMIT_ERR
     ));
     assert!(evm.shared_meter().is_some());
 }

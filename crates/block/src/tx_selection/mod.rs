@@ -21,7 +21,7 @@ use reth_transaction_pool::{
 use tracing::trace;
 
 use self::limits::{DaRatioState, da_limit_error, exceeds_list_limits, lists_empty_error};
-use crate::executor::is_uzen_zk_gas_limit_exceeded;
+use crate::executor::is_zk_gas_limit_exceeded;
 
 /// DA-limit checking and adaptive zlib sizing helpers.
 mod limits;
@@ -233,7 +233,7 @@ where
         // 7. Execute transaction
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
-            Err(err) if is_uzen_zk_gas_limit_exceeded(&err) => {
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
                 trace!(target: "tx_selection", ?tx, "stopping selection after Uzen zk gas exhaustion");
                 break;
             }
@@ -299,7 +299,7 @@ mod tests {
     const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x33);
 
     #[test]
-    fn tx_selection_breaks_on_uzen_zk_gas_error_but_keeps_skipping_invalid_txs() {
+    fn tx_selection_breaks_on_zk_gas_error_but_keeps_skipping_invalid_txs() {
         let chain_spec = Arc::new(uzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[

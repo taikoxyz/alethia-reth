@@ -1,4 +1,4 @@
-//! Inspector-side Uzen zk gas metering for opcode execution.
+//! Inspector-side zk gas metering for opcode execution.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -14,33 +14,33 @@ use reth_revm::{
 use crate::{alloy::TaikoEvmContext, spec::TaikoSpecId};
 
 use super::{
-    meter::{UzenZkGasMeter, ZkGasOutcome},
+    meter::{ZkGasMeter, ZkGasOutcome},
     schedule::{ZkGasSchedule, schedule_for},
 };
 
-/// Dedicated custom error string emitted when Uzen zk gas accounting exceeds the block limit.
-pub const UZEN_ZK_GAS_LIMIT_ERR: &str = "uzen zk gas limit exceeded";
+/// Dedicated custom error string emitted when zk gas accounting exceeds the block limit.
+pub const ZK_GAS_LIMIT_ERR: &str = "zk gas limit exceeded";
 
-/// Shared Uzen zk gas meter handle used by both the inspector and wrapped precompiles.
-pub type SharedUzenZkGasMeter = Arc<Mutex<UzenZkGasMeter<'static>>>;
+/// Shared zk gas meter handle used by both the inspector and wrapped precompiles.
+pub type SharedZkGasMeter = Arc<Mutex<ZkGasMeter<'static>>>;
 
 /// Returns a freshly initialized shared meter handle for the requested spec when metering is
 /// active.
-pub fn shared_meter_for_spec(spec: TaikoSpecId) -> Option<SharedUzenZkGasMeter> {
-    schedule_for(spec).map(|schedule| Arc::new(Mutex::new(UzenZkGasMeter::new(schedule))))
+pub fn shared_meter_for_spec(spec: TaikoSpecId) -> Option<SharedZkGasMeter> {
+    schedule_for(spec).map(|schedule| Arc::new(Mutex::new(ZkGasMeter::new(schedule))))
 }
 
-/// Composite inspector that meters Uzen opcode execution before delegating to an inner inspector.
-pub struct UzenZkGasInspector<I> {
+/// Composite inspector that meters zk gas before delegating to an inner inspector.
+pub struct ZkGasInspector<I> {
     /// User-provided or factory-provided inner inspector.
     inner: I,
-    /// Optional Uzen metering state. `None` keeps all non-Uzen execution on the pass-through path.
+    /// Optional metering state. `None` keeps all non-metered execution on the pass-through path.
     metering: Option<UzenMeteringState>,
 }
 
-impl<I> UzenZkGasInspector<I> {
+impl<I> ZkGasInspector<I> {
     /// Creates a new composite inspector around `inner` and the optional shared meter handle.
-    pub fn new(inner: I, meter: Option<SharedUzenZkGasMeter>) -> Self {
+    pub fn new(inner: I, meter: Option<SharedZkGasMeter>) -> Self {
         let metering = meter.map(UzenMeteringState::new);
         Self { inner, metering }
     }
@@ -55,13 +55,13 @@ impl<I> UzenZkGasInspector<I> {
         &mut self.inner
     }
 
-    /// Returns the shared meter handle when Uzen metering is active for this inspector.
-    pub fn shared_meter(&self) -> Option<SharedUzenZkGasMeter> {
+    /// Returns the shared meter handle when zk gas metering is active for this inspector.
+    pub fn shared_meter(&self) -> Option<SharedZkGasMeter> {
         self.metering.as_ref().map(|state| Arc::clone(&state.meter))
     }
 }
 
-impl<DB, I> Inspector<TaikoEvmContext<DB>, EthInterpreter> for UzenZkGasInspector<I>
+impl<DB, I> Inspector<TaikoEvmContext<DB>, EthInterpreter> for ZkGasInspector<I>
 where
     DB: reth_revm::Database,
     I: Inspector<TaikoEvmContext<DB>, EthInterpreter>,
@@ -202,10 +202,10 @@ where
     }
 }
 
-/// Per-inspector Uzen metering state shared across opcode callbacks.
+/// Per-inspector metering state shared across opcode callbacks.
 struct UzenMeteringState {
     /// Shared checked meter that owns the schedule and accumulated usage.
-    meter: SharedUzenZkGasMeter,
+    meter: SharedZkGasMeter,
     /// Per-frame in-flight opcode step state keyed by journal depth.
     pending_steps: Vec<Option<PendingStep>>,
     /// Completed CALL/CREATE-family steps waiting for spawn information before charging.
@@ -214,7 +214,7 @@ struct UzenMeteringState {
 
 impl UzenMeteringState {
     /// Creates new per-inspector state around the provided shared meter.
-    fn new(meter: SharedUzenZkGasMeter) -> Self {
+    fn new(meter: SharedZkGasMeter) -> Self {
         Self { meter, pending_steps: Vec::new(), deferred_steps: Vec::new() }
     }
 
@@ -347,13 +347,13 @@ fn spawn_estimate(schedule: &'static ZkGasSchedule, opcode: u8) -> u64 {
 }
 
 /// Returns the schedule backing a shared meter handle.
-fn meter_schedule(_meter: &SharedUzenZkGasMeter) -> &'static ZkGasSchedule {
+fn meter_schedule(_meter: &SharedZkGasMeter) -> &'static ZkGasSchedule {
     schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule is available")
 }
 
 /// Charges a completed opcode step against the shared meter.
 fn charge_finished_step(
-    meter: &SharedUzenZkGasMeter,
+    meter: &SharedZkGasMeter,
     step: FinishedStep,
 ) -> Result<(), ZkGasOutcome> {
     let raw_gas =
@@ -361,15 +361,15 @@ fn charge_finished_step(
     lock_meter(meter).charge_opcode(step.opcode, raw_gas)
 }
 
-/// Sets the dedicated custom Uzen limit error on the EVM context when none is present yet.
+/// Sets the dedicated custom zk gas limit error on the EVM context when none is present yet.
 fn set_custom_error<CTX: ContextTr>(context: &mut CTX) {
     let err_slot = context.error();
     if err_slot.is_ok() {
-        *err_slot = Err(ContextError::Custom(UZEN_ZK_GAS_LIMIT_ERR.to_string()));
+        *err_slot = Err(ContextError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
     }
 }
 
 /// Locks the shared meter while recovering cleanly from poison.
-pub(crate) fn lock_meter(meter: &SharedUzenZkGasMeter) -> MutexGuard<'_, UzenZkGasMeter<'static>> {
+pub(crate) fn lock_meter(meter: &SharedZkGasMeter) -> MutexGuard<'_, ZkGasMeter<'static>> {
     meter.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

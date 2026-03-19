@@ -17,7 +17,7 @@ use reth_primitives::{Header as RethHeader, Recovered};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
-    executor::is_uzen_zk_gas_limit_exceeded,
+    executor::is_zk_gas_limit_exceeded,
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
         select_and_execute_pool_transactions,
@@ -82,7 +82,7 @@ pub(super) fn execute_provided_transactions(
 
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
-            Err(err) if is_uzen_zk_gas_limit_exceeded(&err) => {
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
                 debug!(
                     target: "payload_builder",
                     ?tx,
@@ -153,7 +153,7 @@ where
             // Note: Anchor transaction has zero priority fee (tip), so no fees to add
             debug!(target: "payload_builder", id=%ctx.payload_id, gas_used, "anchor transaction executed successfully");
         }
-        Err(err) if is_uzen_zk_gas_limit_exceeded(&err) => {
+        Err(err) if is_zk_gas_limit_exceeded(&err) => {
             debug!(
                 target: "payload_builder",
                 id=%ctx.payload_id,
@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_provided_transactions_stops_on_uzen_zk_gas_error() {
+    fn execute_provided_transactions_stops_on_zk_gas_error() {
         let chain_spec = Arc::new(uzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[

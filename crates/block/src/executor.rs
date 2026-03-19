@@ -30,46 +30,46 @@ use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
     handler::get_treasury_address,
-    zk_gas::{adapter::UZEN_ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
+    zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
 
-/// Dedicated block-execution error raised when a Uzen block hits the zk gas limit.
+/// Dedicated block-execution error raised when a block hits the zk gas limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UzenZkGasLimitExceeded;
+pub struct ZkGasLimitExceeded;
 
-impl std::fmt::Display for UzenZkGasLimitExceeded {
-    /// Formats the dedicated Uzen zk gas limit error message.
+impl std::fmt::Display for ZkGasLimitExceeded {
+    /// Formats the dedicated zk gas limit error message.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(UZEN_ZK_GAS_LIMIT_ERR)
+        f.write_str(ZK_GAS_LIMIT_ERR)
     }
 }
 
-impl std::error::Error for UzenZkGasLimitExceeded {}
+impl std::error::Error for ZkGasLimitExceeded {}
 
-/// Dedicated block-execution error raised when imported Uzen `header.difficulty` does not match
+/// Dedicated block-execution error raised when imported `header.difficulty` does not match
 /// the recomputed finalized block zk gas.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UzenZkGasDifficultyMismatch {
-    /// Difficulty carried by the imported Uzen block header.
+pub struct ZkGasDifficultyMismatch {
+    /// Difficulty carried by the imported block header.
     pub expected: U256,
     /// Finalized block zk gas recomputed during execution.
     pub got: U256,
 }
 
-impl std::fmt::Display for UzenZkGasDifficultyMismatch {
-    /// Formats the dedicated Uzen zk gas difficulty mismatch message.
+impl std::fmt::Display for ZkGasDifficultyMismatch {
+    /// Formats the dedicated zk gas difficulty mismatch message.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Uzen header difficulty mismatch: expected {}, got {}", self.expected, self.got)
+        write!(f, "zk gas header difficulty mismatch: expected {}, got {}", self.expected, self.got)
     }
 }
 
-impl std::error::Error for UzenZkGasDifficultyMismatch {}
+impl std::error::Error for ZkGasDifficultyMismatch {}
 
-/// Returns `true` when `error` represents the dedicated Uzen zk gas truncation condition.
-pub fn is_uzen_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
+/// Returns `true` when `error` represents the dedicated zk gas truncation condition.
+pub fn is_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
     match error {
-        BlockExecutionError::Internal(err) => err.is_other::<UzenZkGasLimitExceeded>(),
+        BlockExecutionError::Internal(err) => err.is_other::<ZkGasLimitExceeded>(),
         _ => false,
     }
 }
@@ -92,8 +92,8 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
-    /// Flag indicating that Uzen zk gas exhausted the block and later transactions must not run.
-    uzen_zk_gas_exhausted: bool,
+    /// Flag indicating that zk gas exhausted the block and later transactions must not run.
+    zk_gas_exhausted: bool,
     /// Flag indicating whether the executor has been initialized with the anchor transaction info
     /// in `apply_pre_execution_changes`.
     evm_extra_execution_ctx_initialized: bool,
@@ -111,7 +111,7 @@ where
             ctx,
             receipts: Vec::new(),
             gas_used: 0,
-            uzen_zk_gas_exhausted: false,
+            zk_gas_exhausted: false,
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
@@ -119,12 +119,12 @@ where
         }
     }
 
-    /// Returns the dedicated truncation error used when Uzen zk gas exhausts the block.
-    fn uzen_zk_gas_limit_error() -> BlockExecutionError {
-        BlockExecutionError::other(UzenZkGasLimitExceeded)
+    /// Returns the dedicated truncation error used when zk gas exhausts the block.
+    fn zk_gas_limit_error() -> BlockExecutionError {
+        BlockExecutionError::other(ZkGasLimitExceeded)
     }
 
-    /// Synchronizes the finalized Uzen zk gas total from the shared EVM meter into the execution
+    /// Synchronizes the finalized zk gas total from the shared EVM meter into the execution
     /// context that the assembler later reads.
     fn sync_finalized_block_zk_gas(&self)
     where
@@ -157,23 +157,23 @@ where
             }
             Ok(None) => Ok(()),
             Err(ZkGasOutcome::LimitExceeded) => {
-                self.uzen_zk_gas_exhausted = true;
+                self.zk_gas_exhausted = true;
                 self.reset_current_transaction_zk_gas();
-                Err(Self::uzen_zk_gas_limit_error())
+                Err(Self::zk_gas_limit_error())
             }
         }
     }
 
-    /// Validates the imported Uzen header difficulty, when present, against the finalized block
+    /// Validates the imported header difficulty, when present, against the finalized block
     /// zk gas recomputed by execution.
-    fn validate_expected_uzen_difficulty(&self) -> Result<(), BlockExecutionError> {
+    fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError> {
         let Some(expected) = self.ctx.expected_difficulty() else { return Ok(()) };
         let got = U256::from(self.ctx.finalized_block_zk_gas());
         if got == expected {
             return Ok(());
         }
 
-        Err(BlockExecutionError::other(UzenZkGasDifficultyMismatch { expected, got }))
+        Err(BlockExecutionError::other(ZkGasDifficultyMismatch { expected, got }))
     }
 }
 
@@ -272,8 +272,8 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        if self.uzen_zk_gas_exhausted {
-            return Err(Self::uzen_zk_gas_limit_error());
+        if self.zk_gas_exhausted {
+            return Err(Self::zk_gas_limit_error());
         }
 
         let (tx_env, tx) = tx.into_parts();
@@ -293,10 +293,10 @@ where
         self.reset_current_transaction_zk_gas();
         let result = match self.evm.transact(tx_env) {
             Ok(result) => result,
-            Err(err) if err.to_string() == UZEN_ZK_GAS_LIMIT_ERR => {
-                self.uzen_zk_gas_exhausted = true;
+            Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
+                self.zk_gas_exhausted = true;
                 self.reset_current_transaction_zk_gas();
-                return Err(Self::uzen_zk_gas_limit_error());
+                return Err(Self::zk_gas_limit_error());
             }
             Err(err) => {
                 self.reset_current_transaction_zk_gas();
@@ -343,7 +343,7 @@ where
     /// and returns the underlying EVM along with execution result.
     fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         self.sync_finalized_block_zk_gas();
-        self.validate_expected_uzen_difficulty()?;
+        self.validate_expected_zk_gas_difficulty()?;
         Ok((
             self.evm,
             BlockExecutionResult {
@@ -501,13 +501,13 @@ mod test {
         let err = executor
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 1, 1))
             .expect_err("second transaction should be discarded");
-        assert!(is_uzen_zk_gas_limit_exceeded(&err));
+        assert!(is_zk_gas_limit_exceeded(&err));
         assert_eq!(ctx.finalized_block_zk_gas(), finalized_after_first);
 
         let repeated_err = executor
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1))
             .expect_err("later transactions should not execute after zk gas exhaustion");
-        assert!(is_uzen_zk_gas_limit_exceeded(&repeated_err));
+        assert!(is_zk_gas_limit_exceeded(&repeated_err));
 
         let (_, result) = executor.finish().expect("executor should finish after truncation");
         assert_eq!(result.receipts.len(), 1);

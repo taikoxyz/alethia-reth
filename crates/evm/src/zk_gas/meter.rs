@@ -1,16 +1,16 @@
-//! Checked zk gas accounting for a single Uzen block execution.
+//! Checked zk gas accounting for a single metered block execution.
 
 use super::schedule::ZkGasSchedule;
 
-/// Outcome used when zk gas charging exceeds the Uzen block budget.
+/// Outcome used when zk gas charging exceeds the active block budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZkGasOutcome {
     /// Charging this operation would exceed the zk gas limit or overflow `u64` arithmetic.
     LimitExceeded,
 }
 
-/// Checked zk gas accounting for a single Uzen block execution.
-pub struct UzenZkGasMeter<'a> {
+/// Checked zk gas accounting for a single metered block execution.
+pub struct ZkGasMeter<'a> {
     /// Consensus-owned schedule that defines multipliers and the block limit.
     schedule: &'a ZkGasSchedule,
     /// Finalized zk gas accumulated from fully committed transactions.
@@ -19,7 +19,7 @@ pub struct UzenZkGasMeter<'a> {
     tx_zk_gas_used: u64,
 }
 
-impl<'a> UzenZkGasMeter<'a> {
+impl<'a> ZkGasMeter<'a> {
     /// Creates a new meter for the provided consensus schedule.
     pub const fn new(schedule: &'a ZkGasSchedule) -> Self {
         Self { schedule, block_zk_gas_used: 0, tx_zk_gas_used: 0 }

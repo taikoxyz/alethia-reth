@@ -234,7 +234,7 @@ where
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
-                trace!(target: "tx_selection", ?tx, "stopping selection after Uzen zk gas exhaustion");
+                trace!(target: "tx_selection", ?tx, "stopping selection after zk gas exhaustion");
                 break;
             }
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -357,7 +357,7 @@ mod tests {
             },
             || false,
         )
-        .expect("Uzen zk gas exhaustion should stop selection cleanly");
+        .expect("zk gas exhaustion should stop selection cleanly");
 
         let SelectionOutcome::Completed(lists) = outcome else {
             panic!("selection should not cancel")

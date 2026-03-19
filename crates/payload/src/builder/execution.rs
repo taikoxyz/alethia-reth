@@ -86,7 +86,7 @@ pub(super) fn execute_provided_transactions(
                 debug!(
                     target: "payload_builder",
                     ?tx,
-                    "stopping legacy-mode payload after Uzen zk gas exhaustion"
+                    "stopping legacy-mode payload after zk gas exhaustion"
                 );
                 break;
             }
@@ -157,7 +157,7 @@ where
             debug!(
                 target: "payload_builder",
                 id=%ctx.payload_id,
-                "stopping new-mode payload after anchor hit the Uzen zk gas limit"
+                "stopping new-mode payload after anchor hit the zk gas limit"
             );
             return Ok(ExecutionOutcome::Completed(U256::ZERO));
         }
@@ -265,7 +265,7 @@ mod tests {
         ];
 
         let outcome = execute_provided_transactions(&mut builder, &transactions, 0, &cancel)
-            .expect("Uzen zk gas exhaustion should stop cleanly");
+            .expect("zk gas exhaustion should stop cleanly");
 
         match outcome {
             ExecutionOutcome::Completed(total_fees) => {

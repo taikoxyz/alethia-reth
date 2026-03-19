@@ -38,7 +38,7 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub extra_data: Bytes,
     /// Whether Uzen-or-later zk gas rules are active for this block.
     pub is_uzen_active: bool,
-    /// Imported-header difficulty expected after recomputing finalized Uzen zk gas.
+    /// Imported-header difficulty expected after recomputing finalized block zk gas.
     pub expected_difficulty: Option<U256>,
     /// Finalized block zk gas accumulated from fully committed Uzen transactions.
     pub finalized_block_zk_gas: Arc<AtomicU64>,

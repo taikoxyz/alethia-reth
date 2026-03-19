@@ -1,4 +1,4 @@
-//! Shared test utilities for Uzen zk gas integration tests.
+//! Shared test utilities for zk gas integration tests.
 //!
 //! These helpers are used by `crate::executor`, `crate::tx_selection`, and
 //! `alethia_reth_payload::builder::execution` tests to avoid duplicating EVM
@@ -128,7 +128,7 @@ pub fn arithmetic_bytecode() -> Bytecode {
     ]))
 }
 
-/// KECCAK256 bytecode that exceeds the Uzen zk gas block limit.
+/// KECCAK256 bytecode that exceeds the zk gas block limit.
 pub fn limit_exceeding_keccak_bytecode() -> Bytecode {
     Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,

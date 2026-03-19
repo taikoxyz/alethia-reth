@@ -4,6 +4,7 @@ use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::{
     engine::{TaikoEngineTypes, types::TaikoExecutionData},
     payload::attributes::TaikoPayloadAttributes,
+    transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
@@ -162,7 +163,7 @@ where
         let sealed_block =
             <Self as PayloadValidator<Types>>::convert_payload_to_block(self, payload)?;
 
-        if sealed_block.body().transactions().into_iter().any(|tx| tx.is_eip4844()) {
+        if sealed_block.body().transactions().into_iter().any(|tx| !is_allowed_tx_type(tx)) {
             return Err(NewPayloadError::other(
                 TaikoPayloadValidationError::BlobTransactionsUnsupported,
             ));

@@ -3,6 +3,7 @@
 //! This module provides a unified interface for selecting and executing transactions
 //! from the mempool, used by both the payload builder and the RPC pre-building endpoint.
 
+use alethia_reth_primitives::transaction::is_allowed_tx_type;
 use alloy_eips::Encodable2718;
 use alloy_primitives::Address;
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
@@ -158,7 +159,7 @@ where
 
         // 4. Calculate DA size upfront (needed for limit checks)
         let tx = pool_tx.to_consensus();
-        if tx.is_eip4844() {
+        if !is_allowed_tx_type(tx.inner()) {
             best_txs.mark_invalid(
                 &pool_tx,
                 &InvalidPoolTransactionError::Consensus(

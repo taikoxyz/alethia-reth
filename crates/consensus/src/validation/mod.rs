@@ -23,6 +23,7 @@ use crate::eip4396::{
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
+use alethia_reth_primitives::transaction::is_allowed_tx_type;
 
 /// Anchor transaction selectors, gas rules, and validation functions.
 mod anchor;
@@ -256,7 +257,7 @@ fn min_base_fee_to_clamp(chain_spec: &TaikoChainSpec) -> u64 {
 fn validate_no_blob_transactions<Tx: SignedTransaction>(
     transactions: &[Tx],
 ) -> Result<(), ConsensusError> {
-    if transactions.iter().any(|tx| tx.is_eip4844()) {
+    if transactions.iter().any(|tx| !is_allowed_tx_type(tx)) {
         return Err(ConsensusError::Other("Blob transactions are not allowed".into()));
     }
     Ok(())

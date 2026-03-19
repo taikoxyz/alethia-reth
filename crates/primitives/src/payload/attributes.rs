@@ -156,6 +156,15 @@ pub struct RpcL1Origin {
     pub signature: [u8; 65],
 }
 
+/// RPC transport wrapper for [`RpcL1Origin`] with Taiko engine-compatible serde behavior.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct EngineRpcL1Origin(
+    /// The wrapped L1 origin value encoded with the engine RPC wire format.
+    #[cfg_attr(feature = "serde", serde(with = "rpc_l1_origin_serde"))] pub RpcL1Origin,
+);
+
 impl RpcL1Origin {
     /// Checks if the L1 origin's L2 block is a preconfirmation block.
     pub fn is_preconf_block(&self) -> bool {

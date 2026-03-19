@@ -165,6 +165,20 @@ pub struct EngineRpcL1Origin(
     #[cfg_attr(feature = "serde", serde(with = "rpc_l1_origin_serde"))] pub RpcL1Origin,
 );
 
+impl From<RpcL1Origin> for EngineRpcL1Origin {
+    /// Wraps an RPC L1 origin for engine RPC transport serialization.
+    fn from(origin: RpcL1Origin) -> Self {
+        Self(origin)
+    }
+}
+
+impl From<EngineRpcL1Origin> for RpcL1Origin {
+    /// Unwraps an engine RPC transport L1 origin into the shared value type.
+    fn from(origin: EngineRpcL1Origin) -> Self {
+        origin.0
+    }
+}
+
 impl RpcL1Origin {
     /// Checks if the L1 origin's L2 block is a preconfirmation block.
     pub fn is_preconf_block(&self) -> bool {

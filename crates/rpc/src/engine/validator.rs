@@ -27,12 +27,12 @@ use reth_payload_primitives::{
 use reth_primitives_traits::{Block as BlockTrait, SealedBlock};
 use std::sync::Arc;
 
-/// Rejects payloads that contain blob transactions.
-fn reject_blob_transactions(has_blob_transactions: bool) -> Result<(), PayloadError> {
-    if has_blob_transactions {
-        return Err(PayloadError::PreCancunBlockWithBlobTransactions);
-    }
-    Ok(())
+/// Taiko-specific payload validation errors that do not map to an upstream Ethereum fork rule.
+#[derive(Debug, thiserror::Error)]
+enum TaikoPayloadValidationError {
+    /// The payload contains blob transactions, which Taiko network never accepts.
+    #[error("blob transactions are unsupported")]
+    BlobTransactionsUnsupported,
 }
 
 /// Builder for [`TaikoEngineValidator`].
@@ -162,10 +162,11 @@ where
         let sealed_block =
             <Self as PayloadValidator<Types>>::convert_payload_to_block(self, payload)?;
 
-        let has_blob_transactions =
-            sealed_block.body().transactions().into_iter().any(|tx| tx.is_eip4844());
-        reject_blob_transactions(has_blob_transactions)
-            .map_err(|e| NewPayloadError::Other(e.into()))?;
+        if sealed_block.body().transactions().into_iter().any(|tx| tx.is_eip4844()) {
+            return Err(NewPayloadError::other(
+                TaikoPayloadValidationError::BlobTransactionsUnsupported,
+            ));
+        }
 
         sealed_block.try_recover().map_err(|e| NewPayloadError::Other(e.into()))
     }
@@ -217,13 +218,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_blob_transactions() {
-        let err = reject_blob_transactions(true).unwrap_err();
-        assert!(matches!(err, PayloadError::PreCancunBlockWithBlobTransactions));
-    }
-
-    #[test]
-    fn allows_non_blob_transactions() {
-        assert!(reject_blob_transactions(false).is_ok());
+    fn formats_blob_transactions_unsupported_error() {
+        assert_eq!(
+            TaikoPayloadValidationError::BlobTransactionsUnsupported.to_string(),
+            "blob transactions are unsupported"
+        );
     }
 }

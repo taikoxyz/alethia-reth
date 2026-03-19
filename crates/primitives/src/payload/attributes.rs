@@ -15,6 +15,7 @@ use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
 use serde_with::{As, base64::Base64};
 
 #[cfg(feature = "serde")]
+/// Serde helpers for taiko-geth-compatible fixed-size signature hex encoding.
 mod signature_hex_serde {
     use alloy_primitives::hex;
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
@@ -33,6 +34,10 @@ mod signature_hex_serde {
         D: Deserializer<'de>,
     {
         let encoded = <&str>::deserialize(deserializer)?;
+        let encoded = encoded
+            .strip_prefix("0x")
+            .or_else(|| encoded.strip_prefix("0X"))
+            .ok_or_else(|| D::Error::custom("signature must be 0x-prefixed hex"))?;
         let mut signature = [0u8; 65];
         hex::decode_to_slice(encoded, &mut signature).map_err(D::Error::custom)?;
         Ok(signature)
@@ -258,5 +263,41 @@ mod tests {
             .expect("signature should serialize as a JSON string");
 
         assert_eq!(signature_value, hex::encode_prefixed(signature));
+    }
+
+    #[test]
+    fn rpc_l1_origin_rejects_unprefixed_signature_hex() {
+        let payload = r#"{
+            "blockID":"0x17bf4c",
+            "l2BlockHash":"0x754e5fe7d5c6d12169ceaef73fefb0257c10efd1bf49550067395d20a12ccb04",
+            "l1BlockHeight":"0x254e6f",
+            "l1BlockHash":"0xd7118c07340eee1dd8c245e6c522a55a522976f527a45834316bcd5d35da83a4",
+            "buildPayloadArgsID":[2,26,15,36,163,174,107,181],
+            "isForcedInclusion":false,
+            "signature":"b22f2e64332653233d25c0385f40c8c9f0dcc9f21425cbeb5154fe60a0b36b031749d3802fff205220c79b0821cb252067130301c16a9a22c05f05bffa90fa2901"
+        }"#;
+
+        let err = serde_json::from_str::<RpcL1Origin>(payload)
+            .expect_err("unprefixed signature hex should be rejected");
+
+        assert!(err.to_string().contains("0x-prefixed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rpc_l1_origin_accepts_uppercase_prefix_signature_hex() {
+        let payload = r#"{
+            "blockID":"0x17bf4c",
+            "l2BlockHash":"0x754e5fe7d5c6d12169ceaef73fefb0257c10efd1bf49550067395d20a12ccb04",
+            "l1BlockHeight":"0x254e6f",
+            "l1BlockHash":"0xd7118c07340eee1dd8c245e6c522a55a522976f527a45834316bcd5d35da83a4",
+            "buildPayloadArgsID":[2,26,15,36,163,174,107,181],
+            "isForcedInclusion":false,
+            "signature":"0Xb22f2e64332653233d25c0385f40c8c9f0dcc9f21425cbeb5154fe60a0b36b031749d3802fff205220c79b0821cb252067130301c16a9a22c05f05bffa90fa2901"
+        }"#;
+
+        let origin: RpcL1Origin = serde_json::from_str(payload)
+            .expect("uppercase-prefixed signature hex should deserialize");
+
+        assert_eq!(origin.block_id, U256::from(0x17bf4cu64));
     }
 }

@@ -1,4 +1,4 @@
-FROM rust:1.88 AS build
+FROM rust:1.93.1-bookworm AS build
 
 WORKDIR /app
 
@@ -11,10 +11,10 @@ COPY ./ .
 
 RUN cargo build --release
 
-FROM ubuntu:22.04
+FROM debian:bookworm-slim
 
 RUN apt-get update && \
-  apt-get install -y jq curl && \
+  apt-get install -y jq curl ca-certificates && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

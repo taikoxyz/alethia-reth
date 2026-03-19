@@ -1,6 +1,8 @@
 #![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
 #![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Shared primitive types used across Alethia Reth crates.
+/// Taiko-specific addresses and address derivation helpers.
+pub mod addresses;
 #[cfg(feature = "net")]
 /// Engine API payload and type definitions.
 pub mod engine;

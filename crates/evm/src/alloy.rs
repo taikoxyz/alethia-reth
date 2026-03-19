@@ -5,7 +5,8 @@ use std::{
 };
 
 use alloy_evm::{Database, Evm, EvmEnv};
-use alloy_primitives::hex;
+// Re-export from primitives so downstream consumers can use the lighter crate.
+pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
@@ -19,9 +20,6 @@ use reth_revm::{
 use tracing::debug;
 
 use crate::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};
-
-/// System caller address used for Taiko anchor system-call pre-execution.
-pub const TAIKO_GOLDEN_TOUCH_ADDRESS: [u8; 20] = hex!("0x0000777735367b36bc9b61c50022d9d0700db4ec");
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, INSP, P> {

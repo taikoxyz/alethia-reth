@@ -6,8 +6,7 @@ use reth_revm::{
     context::TxEnv,
     db::InMemoryDB,
     interpreter::{
-        CallInputs, CallOutcome, Interpreter, interpreter::EthInterpreter,
-        interpreter_types::Jumps,
+        CallInputs, CallOutcome, Interpreter, interpreter::EthInterpreter, interpreter_types::Jumps,
     },
     primitives::{Bytes, TxKind},
     state::{AccountInfo, Bytecode, bytecode::opcode},
@@ -16,12 +15,13 @@ use revm_database_interface::{
     BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BENCH_TARGET_BALANCE,
 };
 
-use crate::factory::TaikoEvmFactory;
-use crate::spec::TaikoSpecId;
+use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 
-use super::adapter::UZEN_ZK_GAS_LIMIT_ERR;
-use super::meter::{UzenZkGasMeter, ZkGasOutcome};
-use super::schedule::schedule_for;
+use super::{
+    adapter::UZEN_ZK_GAS_LIMIT_ERR,
+    meter::{UzenZkGasMeter, ZkGasOutcome},
+    schedule::schedule_for,
+};
 
 #[test]
 fn uzen_schedule_is_selected_only_for_uzen() {
@@ -88,10 +88,7 @@ fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
     let mut meter = UzenZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.precompile_multipliers[0x01])) + 1;
 
-    assert!(matches!(
-        meter.charge_precompile(0x01, raw_gas),
-        Err(ZkGasOutcome::LimitExceeded)
-    ));
+    assert!(matches!(meter.charge_precompile(0x01, raw_gas), Err(ZkGasOutcome::LimitExceeded)));
 }
 
 #[test]
@@ -250,8 +247,7 @@ fn non_uzen_default_create_evm_path_keeps_metering_disabled() {
     );
 
     assert!(evm.shared_meter().is_none());
-    evm.transact(tx_env(5_000_000))
-        .expect("non-Uzen tx should stay on the legacy path");
+    evm.transact(tx_env(5_000_000)).expect("non-Uzen tx should stay on the legacy path");
 }
 
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {
@@ -287,11 +283,7 @@ fn db_with_contract(bytecode: Bytecode) -> InMemoryDB {
     );
     db.insert_account_info(
         BENCH_CALLER,
-        AccountInfo {
-            nonce: 0,
-            balance: BENCH_CALLER_BALANCE,
-            ..Default::default()
-        },
+        AccountInfo { nonce: 0, balance: BENCH_CALLER_BALANCE, ..Default::default() },
     );
     db
 }

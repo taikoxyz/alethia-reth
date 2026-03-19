@@ -5,7 +5,7 @@ use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
 use alloy_eips::merge::BEACON_NONCE;
-use alloy_primitives::logs_bloom;
+use alloy_primitives::{U256, logs_bloom};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum::{Receipt, TransactionSigned};
 use reth_evm::{
@@ -74,6 +74,11 @@ where
 
         let withdrawals = Some(Withdrawals::default());
         let withdrawals_root = Some(EMPTY_WITHDRAWALS);
+        let difficulty = if ctx.is_uzen {
+            U256::from(ctx.finalized_block_zk_gas())
+        } else {
+            block_env.difficulty()
+        };
 
         let header = Header {
             parent_hash: ctx.parent_hash,
@@ -90,7 +95,7 @@ where
             base_fee_per_gas: Some(block_env.basefee()),
             number: block_env.number().to(),
             gas_limit: block_env.gas_limit(),
-            difficulty: block_env.difficulty(),
+            difficulty,
             gas_used: *gas_used,
             extra_data: ctx.extra_data,
             parent_beacon_block_root: ctx.parent_beacon_block_root,
@@ -108,7 +113,21 @@ where
 
 #[cfg(test)]
 mod test {
+    use alloy_consensus::{Header, Signed, TxLegacy};
+    use alloy_eips::eip7685::Requests;
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+    use reth_evm::{
+        EvmEnv,
+        execute::{BlockAssembler, BlockAssemblerInput},
+    };
+    use reth_execution_types::BlockExecutionResult;
+    use reth_primitives::SealedHeader;
+    use reth_revm::db::states::BundleState;
+    use reth_storage_api::noop::NoopProvider;
+
     use super::*;
+    use crate::factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory};
+    use alethia_reth_evm::spec::TaikoSpecId;
 
     #[test]
     fn test_get_chain_spec() {
@@ -116,5 +135,68 @@ mod test {
         let assembler = TaikoBlockAssembler::new(chain_spec.clone());
 
         assert_eq!(assembler.chain_spec(), chain_spec);
+    }
+
+    #[test]
+    fn assembled_uzen_block_uses_final_zk_gas_as_difficulty() {
+        let assembler = TaikoBlockAssembler::new(Arc::new(TaikoChainSpec::default()));
+        let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        evm_env.cfg_env.spec = TaikoSpecId::UZEN;
+        evm_env.block_env.number = U256::from(1);
+        evm_env.block_env.timestamp = U256::from(1);
+        evm_env.block_env.gas_limit = 30_000_000;
+        evm_env.block_env.difficulty = U256::from(999_u64);
+
+        let ctx = TaikoBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            basefee_per_gas: 0,
+            extra_data: Bytes::default(),
+            is_uzen: true,
+            expected_difficulty: None,
+            finalized_block_zk_gas: Default::default(),
+        };
+        ctx.set_finalized_block_zk_gas(42);
+
+        let parent = SealedHeader::seal_slow(Header::default());
+        let output: BlockExecutionResult<Receipt> = BlockExecutionResult {
+            receipts: Vec::new(),
+            requests: Requests::default(),
+            gas_used: 0,
+            blob_gas_used: 0,
+        };
+        let bundle_state = BundleState::default();
+        let state_provider = NoopProvider::default();
+
+        let block = assembler
+            .assemble_block(BlockAssemblerInput::<TaikoBlockExecutorFactory>::new(
+                evm_env,
+                ctx,
+                &parent,
+                vec![sample_transaction()],
+                &output,
+                &bundle_state,
+                &state_provider,
+                B256::ZERO,
+            ))
+            .expect("Uzen block should assemble");
+
+        assert_eq!(block.header.difficulty, U256::from(42_u64));
+    }
+
+    fn sample_transaction() -> TransactionSigned {
+        let tx = TxLegacy {
+            chain_id: Some(ChainId::from(167_u64)),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::default(),
+        };
+        let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
+        Signed::new_unchecked(tx, signature, B256::ZERO).into()
     }
 }

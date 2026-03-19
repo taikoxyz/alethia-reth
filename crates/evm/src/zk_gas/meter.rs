@@ -32,8 +32,10 @@ impl<'a> UzenZkGasMeter<'a> {
 
     /// Promotes the current transaction's zk gas into the finalized block total.
     pub fn commit_transaction(&mut self) -> Result<(), ZkGasOutcome> {
-        self.block_zk_gas_used =
-            self.block_zk_gas_used.checked_add(self.tx_zk_gas_used).ok_or(ZkGasOutcome::LimitExceeded)?;
+        self.block_zk_gas_used = self
+            .block_zk_gas_used
+            .checked_add(self.tx_zk_gas_used)
+            .ok_or(ZkGasOutcome::LimitExceeded)?;
         self.tx_zk_gas_used = 0;
         Ok(())
     }

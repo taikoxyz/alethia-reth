@@ -15,10 +15,7 @@ use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
     spec::TaikoSpecId,
-    zk_gas::{
-        adapter::{UzenZkGasInspector, shared_meter_for_spec},
-        precompiles::UzenZkGasPrecompiles,
-    },
+    zk_gas::adapter::{UzenZkGasInspector, shared_meter_for_spec},
 };
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
@@ -42,7 +39,7 @@ impl EvmFactory for TaikoEvmFactory {
     /// Block environment used by the EVM.
     type BlockEnv = BlockEnv;
     /// Precompiles used by the EVM.
-    type Precompiles = UzenZkGasPrecompiles<PrecompilesMap>;
+    type Precompiles = PrecompilesMap;
 
     /// Creates a new instance of an EVM.
     fn create_evm<DB: Database>(
@@ -57,12 +54,9 @@ impl EvmFactory for TaikoEvmFactory {
             .with_block(input.block_env)
             .with_db(db)
             .build_mainnet_with_inspector(UzenZkGasInspector::new(NoOpInspector {}, meter.clone()))
-            .with_precompiles(UzenZkGasPrecompiles::new(
-                PrecompilesMap::from_static(Precompiles::new(
-                    PrecompileSpecId::from_spec_id(spec_id.into()),
-                )),
-                meter,
-            ));
+            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
+                PrecompileSpecId::from_spec_id(spec_id.into()),
+            )));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), matches!(spec_id, TaikoSpecId::UZEN))
     }
@@ -81,12 +75,9 @@ impl EvmFactory for TaikoEvmFactory {
             .with_block(input.block_env)
             .with_db(db)
             .build_mainnet_with_inspector(UzenZkGasInspector::new(inspector, meter.clone()))
-            .with_precompiles(UzenZkGasPrecompiles::new(
-                PrecompilesMap::from_static(Precompiles::new(
-                    PrecompileSpecId::from_spec_id(spec_id.into()),
-                )),
-                meter,
-            ));
+            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
+                PrecompileSpecId::from_spec_id(spec_id.into()),
+            )));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }

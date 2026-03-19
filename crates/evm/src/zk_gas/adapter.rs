@@ -7,8 +7,7 @@ use reth_revm::{
     context::{ContextError, ContextTr, JournalTr},
     interpreter::{
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
-        interpreter::EthInterpreter,
-        interpreter_types::Jumps,
+        interpreter::EthInterpreter, interpreter_types::Jumps,
     },
 };
 
@@ -25,7 +24,8 @@ pub const UZEN_ZK_GAS_LIMIT_ERR: &str = "uzen zk gas limit exceeded";
 /// Shared Uzen zk gas meter handle used by both the inspector and wrapped precompiles.
 pub type SharedUzenZkGasMeter = Arc<Mutex<UzenZkGasMeter<'static>>>;
 
-/// Returns a freshly initialized shared meter handle for the requested spec when metering is active.
+/// Returns a freshly initialized shared meter handle for the requested spec when metering is
+/// active.
 pub fn shared_meter_for_spec(spec: TaikoSpecId) -> Option<SharedUzenZkGasMeter> {
     schedule_for(spec).map(|schedule| Arc::new(Mutex::new(UzenZkGasMeter::new(schedule))))
 }
@@ -76,19 +76,28 @@ where
     }
 
     /// Flushes any deferred spawn-opcode charge before starting the next opcode.
-    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut TaikoEvmContext<DB>) {
+    fn step(
+        &mut self,
+        interp: &mut Interpreter<EthInterpreter>,
+        context: &mut TaikoEvmContext<DB>,
+    ) {
         if let Some(metering) = &mut self.metering {
             if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
                 set_custom_error(context);
                 interp.halt_fatal();
                 return;
             }
-            metering.begin_step(context.journal().depth(), interp.bytecode.opcode(), interp.gas.remaining());
+            metering.begin_step(
+                context.journal().depth(),
+                interp.bytecode.opcode(),
+                interp.gas.remaining(),
+            );
         }
         self.inner.step(interp, context);
     }
 
-    /// Charges ordinary opcodes immediately and defers CALL/CREATE-family charging until dispatch resolves.
+    /// Charges ordinary opcodes immediately and defers CALL/CREATE-family charging until dispatch
+    /// resolves.
     fn step_end(
         &mut self,
         interp: &mut Interpreter<EthInterpreter>,
@@ -122,15 +131,14 @@ where
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
         let outcome = self.inner.call(context, inputs);
-        if outcome.is_none() {
-            if let Some(metering) = &mut self.metering {
-                metering.mark_call_spawn(context.journal().depth());
-            }
+        if outcome.is_none() && let Some(metering) = &mut self.metering {
+            metering.mark_call_spawn(context.journal().depth());
         }
         outcome
     }
 
-    /// Marks precompile dispatches and flushes deferred CALL-family charges once the call outcome is known.
+    /// Marks precompile dispatches and flushes deferred CALL-family charges once the call outcome
+    /// is known.
     fn call_end(
         &mut self,
         context: &mut TaikoEvmContext<DB>,
@@ -146,6 +154,16 @@ where
             }
             if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
                 set_custom_error(context);
+                return;
+            }
+            if was_precompile_called {
+                let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
+                let address_low_byte = inputs.bytecode_address.as_slice()[19];
+                if let Err(ZkGasOutcome::LimitExceeded) =
+                    lock_meter(&metering.meter).charge_precompile(address_low_byte, gas_used)
+                {
+                    set_custom_error(context);
+                }
             }
         }
     }
@@ -157,10 +175,8 @@ where
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
         let outcome = self.inner.create(context, inputs);
-        if outcome.is_none() {
-            if let Some(metering) = &mut self.metering {
-                metering.mark_create_spawn(context.journal().depth());
-            }
+        if outcome.is_none() && let Some(metering) = &mut self.metering {
+            metering.mark_create_spawn(context.journal().depth());
         }
         outcome
     }
@@ -174,10 +190,10 @@ where
     ) {
         self.inner.create_end(context, inputs, outcome);
 
-        if let Some(metering) = &mut self.metering {
-            if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
-                set_custom_error(context);
-            }
+        if let Some(metering) = &mut self.metering &&
+            let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps()
+        {
+            set_custom_error(context);
         }
     }
 }
@@ -227,7 +243,8 @@ impl UzenMeteringState {
         })
     }
 
-    /// Stores a finished spawn opcode until frame-resolution hooks can determine its raw gas source.
+    /// Stores a finished spawn opcode until frame-resolution hooks can determine its raw gas
+    /// source.
     fn defer_step(&mut self, depth: usize, step: FinishedStep) {
         self.ensure_depth(depth);
         self.deferred_steps[depth] = Some(step);
@@ -255,15 +272,15 @@ impl UzenMeteringState {
 
     /// Marks pending or deferred spawn steps when the opcode matches the expected family.
     fn mark_spawn(&mut self, depth: usize, predicate: fn(u8) -> bool) {
-        if let Some(Some(pending)) = self.pending_steps.get_mut(depth) {
-            if predicate(pending.opcode) {
-                pending.spawned = true;
-            }
+        if let Some(Some(pending)) = self.pending_steps.get_mut(depth) &&
+            predicate(pending.opcode)
+        {
+            pending.spawned = true;
         }
-        if let Some(Some(deferred)) = self.deferred_steps.get_mut(depth) {
-            if predicate(deferred.opcode) {
-                deferred.spawned = true;
-            }
+        if let Some(Some(deferred)) = self.deferred_steps.get_mut(depth) &&
+            predicate(deferred.opcode)
+        {
+            deferred.spawned = true;
         }
     }
 }
@@ -335,11 +352,8 @@ fn charge_finished_step(
     meter: &SharedUzenZkGasMeter,
     step: FinishedStep,
 ) -> Result<(), ZkGasOutcome> {
-    let raw_gas = if step.spawned {
-        spawn_estimate(step.schedule, step.opcode)
-    } else {
-        step.step_gas
-    };
+    let raw_gas =
+        if step.spawned { spawn_estimate(step.schedule, step.opcode) } else { step.step_gas };
     lock_meter(meter).charge_opcode(step.opcode, raw_gas)
 }
 

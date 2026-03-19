@@ -5,11 +5,11 @@ use alloy_evm::{
     Database, FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
     eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
-use alloy_primitives::{Address, Bytes, Uint};
+use alloy_primitives::{Address, Bytes, U256, Uint};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
-        BlockExecutionError, BlockExecutor, BlockValidationError, ExecutableTx,
+        BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
         InternalBlockExecutionError, StateChangeSource, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
@@ -18,14 +18,61 @@ use reth_execution_types::BlockExecutionResult;
 use reth_primitives::Log;
 use reth_revm::{
     State,
-    context::{Block as _, result::ResultAndState},
+    context::{
+        Block as _,
+        result::{ExecutionResult, ResultAndState},
+    },
 };
 use revm_database_interface::DatabaseCommit;
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
-use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
+use alethia_reth_evm::{
+    alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
+    handler::get_treasury_address,
+    zk_gas::{adapter::UZEN_ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
+};
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
+
+/// Dedicated block-execution error raised when a Uzen block hits the zk gas limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UzenZkGasLimitExceeded;
+
+impl std::fmt::Display for UzenZkGasLimitExceeded {
+    /// Formats the dedicated Uzen zk gas limit error message.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(UZEN_ZK_GAS_LIMIT_ERR)
+    }
+}
+
+impl std::error::Error for UzenZkGasLimitExceeded {}
+
+/// Dedicated block-execution error raised when imported Uzen `header.difficulty` does not match
+/// the recomputed finalized block zk gas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UzenZkGasDifficultyMismatch {
+    /// Difficulty carried by the imported Uzen block header.
+    pub expected: U256,
+    /// Finalized block zk gas recomputed during execution.
+    pub got: U256,
+}
+
+impl std::fmt::Display for UzenZkGasDifficultyMismatch {
+    /// Formats the dedicated Uzen zk gas difficulty mismatch message.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Uzen header difficulty mismatch: expected {}, got {}", self.expected, self.got)
+    }
+}
+
+impl std::error::Error for UzenZkGasDifficultyMismatch {}
+
+/// Returns `true` when `error` represents the dedicated Uzen zk gas truncation condition.
+pub fn is_uzen_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
+    match error {
+        BlockExecutionError::Internal(err) => err.is_other::<UzenZkGasLimitExceeded>(),
+        _ => false,
+    }
+}
 
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
@@ -45,6 +92,8 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     receipts: Vec<R::Receipt>,
     /// Total gas used by transactions in this block.
     gas_used: u64,
+    /// Flag indicating that Uzen zk gas exhausted the block and later transactions must not run.
+    uzen_zk_gas_exhausted: bool,
     /// Flag indicating whether the executor has been initialized with the anchor transaction info
     /// in `apply_pre_execution_changes`.
     evm_extra_execution_ctx_initialized: bool,
@@ -62,11 +111,69 @@ where
             ctx,
             receipts: Vec::new(),
             gas_used: 0,
+            uzen_zk_gas_exhausted: false,
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
             evm_extra_execution_ctx_initialized: false,
         }
+    }
+
+    /// Returns the dedicated truncation error used when Uzen zk gas exhausts the block.
+    fn uzen_zk_gas_limit_error() -> BlockExecutionError {
+        BlockExecutionError::other(UzenZkGasLimitExceeded)
+    }
+
+    /// Synchronizes the finalized Uzen zk gas total from the shared EVM meter into the execution
+    /// context that the assembler later reads.
+    fn sync_finalized_block_zk_gas(&self)
+    where
+        Evm: TaikoZkGasEvm,
+    {
+        if let Some(zk_gas) = self.evm.block_zk_gas_used() {
+            self.ctx.set_finalized_block_zk_gas(zk_gas);
+        }
+    }
+
+    /// Discards any in-flight zk gas for the current transaction while preserving the committed
+    /// block total.
+    fn reset_current_transaction_zk_gas(&self)
+    where
+        Evm: TaikoZkGasEvm,
+    {
+        self.evm.reset_transaction_zk_gas();
+        self.sync_finalized_block_zk_gas();
+    }
+
+    /// Commits the current transaction's zk gas and publishes the updated block total.
+    fn commit_current_transaction_zk_gas(&mut self) -> Result<(), BlockExecutionError>
+    where
+        Evm: TaikoZkGasEvm,
+    {
+        match self.evm.commit_transaction_zk_gas() {
+            Ok(Some(zk_gas)) => {
+                self.ctx.set_finalized_block_zk_gas(zk_gas);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(ZkGasOutcome::LimitExceeded) => {
+                self.uzen_zk_gas_exhausted = true;
+                self.reset_current_transaction_zk_gas();
+                Err(Self::uzen_zk_gas_limit_error())
+            }
+        }
+    }
+
+    /// Validates the imported Uzen header difficulty, when present, against the finalized block
+    /// zk gas recomputed by execution.
+    fn validate_expected_uzen_difficulty(&self) -> Result<(), BlockExecutionError> {
+        let Some(expected) = self.ctx.expected_difficulty() else { return Ok(()) };
+        let got = U256::from(self.ctx.finalized_block_zk_gas());
+        if got == expected {
+            return Ok(());
+        }
+
+        Err(BlockExecutionError::other(UzenZkGasDifficultyMismatch { expected, got }))
     }
 }
 
@@ -76,8 +183,8 @@ where
     E: Evm<
             DB = &'db mut State<DB>,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-        >,
-    Spec: TaikoExecutorSpec,
+        > + TaikoZkGasEvm,
+    Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
     /// Input transaction type.
@@ -144,10 +251,31 @@ where
 
     /// Executes a transaction and returns the resulting state diff without persisting it; the
     /// caller decides whether to commit.
+    fn execute_transaction_with_commit_condition(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
+    ) -> Result<Option<u64>, BlockExecutionError> {
+        let output = self.execute_transaction_without_commit(tx)?;
+
+        if !f(&output.result.result).should_commit() {
+            self.reset_current_transaction_zk_gas();
+            return Ok(None);
+        }
+
+        self.commit_transaction(output).map(Some)
+    }
+
+    /// Executes a transaction and returns the resulting state diff without persisting it; the
+    /// caller decides whether to commit.
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
+        if self.uzen_zk_gas_exhausted {
+            return Err(Self::uzen_zk_gas_limit_error());
+        }
+
         let (tx_env, tx) = tx.into_parts();
 
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
@@ -162,10 +290,19 @@ where
             .into());
         }
 
-        let result = self
-            .evm
-            .transact(tx_env)
-            .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
+        self.reset_current_transaction_zk_gas();
+        let result = match self.evm.transact(tx_env) {
+            Ok(result) => result,
+            Err(err) if err.to_string() == UZEN_ZK_GAS_LIMIT_ERR => {
+                self.uzen_zk_gas_exhausted = true;
+                self.reset_current_transaction_zk_gas();
+                return Err(Self::uzen_zk_gas_limit_error());
+            }
+            Err(err) => {
+                self.reset_current_transaction_zk_gas();
+                return Err(BlockExecutionError::evm(err, tx.tx().trie_hash()));
+            }
+        };
 
         Ok(EthTxResult {
             result,
@@ -182,6 +319,7 @@ where
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
         let gas_used = result.gas_used();
+        self.commit_current_transaction_zk_gas()?;
 
         // append gas used
         self.gas_used += gas_used;
@@ -204,6 +342,8 @@ where
     /// Applies any necessary changes after executing the block's transactions, completes execution
     /// and returns the underlying EVM along with execution result.
     fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
+        self.sync_finalized_block_zk_gas();
+        self.validate_expected_uzen_difficulty()?;
         Ok((
             self.evm,
             BlockExecutionResult {
@@ -289,11 +429,27 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{U64, U256};
+    use std::sync::Arc;
 
-    use alethia_reth_evm::alloy::decode_anchor_system_call_data;
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_evm::{EvmEnv, EvmFactory};
+    use alloy_hardforks::ForkCondition;
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
+    use reth_evm::block::BlockExecutor;
+    use reth_evm_ethereum::RethReceiptBuilder;
+    use reth_revm::{
+        State,
+        db::InMemoryDB,
+        state::{AccountInfo, Bytecode, bytecode::opcode},
+    };
+
+    use alethia_reth_evm::{
+        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
+    };
 
     use super::*;
+    use crate::factory::TaikoBlockExecutionCtx;
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork, spec::TaikoChainSpec};
 
     #[test]
     fn test_encode_anchor_system_call_data() {
@@ -321,4 +477,186 @@ mod test {
             base_fee_share_pctg
         );
     }
+
+    #[test]
+    fn executor_discards_limit_exceeded_tx_and_stops_after_it() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts())
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        assert_eq!(evm.block_zk_gas_used(), Some(0));
+        let ctx = TaikoBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            basefee_per_gas: 0,
+            extra_data: Bytes::default(),
+            is_uzen: true,
+            expected_difficulty: None,
+            finalized_block_zk_gas: Default::default(),
+        };
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx.clone(),
+            chain_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+
+        let gas_used =
+            executor.execute_transaction(success_tx(0)).expect("first transaction should commit");
+        let finalized_after_first = ctx.finalized_block_zk_gas();
+        assert!(finalized_after_first > 0);
+
+        let err = executor
+            .execute_transaction(limit_exceeded_tx(1))
+            .expect_err("second transaction should be discarded");
+        assert!(is_uzen_zk_gas_limit_exceeded(&err));
+        assert_eq!(ctx.finalized_block_zk_gas(), finalized_after_first);
+
+        let repeated_err = executor
+            .execute_transaction(success_tx(1))
+            .expect_err("later transactions should not execute after zk gas exhaustion");
+        assert!(is_uzen_zk_gas_limit_exceeded(&repeated_err));
+
+        let (_, result) = executor.finish().expect("executor should finish after truncation");
+        assert_eq!(result.receipts.len(), 1);
+        assert_eq!(result.gas_used, gas_used);
+    }
+
+    #[test]
+    fn executor_rejects_imported_uzen_block_when_difficulty_mismatches_finalized_zk_gas() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts())
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let ctx = TaikoBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            basefee_per_gas: 0,
+            extra_data: Bytes::default(),
+            is_uzen: true,
+            expected_difficulty: Some(U256::ZERO),
+            finalized_block_zk_gas: Default::default(),
+        };
+        let mut executor =
+            TaikoBlockExecutor::new(evm, ctx, chain_spec, RethReceiptBuilder::default());
+
+        executor
+            .execute_transaction(success_tx(0))
+            .expect("transaction should execute successfully");
+
+        let err = match executor.finish() {
+            Ok(_) => panic!("imported Uzen blocks must reject difficulty mismatches"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("difficulty"));
+    }
+
+    fn uzen_chain_spec() -> TaikoChainSpec {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec
+    }
+
+    fn uzen_evm_env() -> EvmEnv<TaikoSpecId> {
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.spec = TaikoSpecId::UZEN;
+        env.cfg_env.chain_id = 167;
+        env.block_env.number = U256::from(1_u64);
+        env.block_env.timestamp = U256::from(1_u64);
+        env.block_env.gas_limit = 30_000_000;
+        env
+    }
+
+    fn success_tx(nonce: u64) -> reth_primitives::Recovered<reth_ethereum::TransactionSigned> {
+        recovered_tx(BENCH_SUCCESS_TARGET, nonce)
+    }
+
+    fn limit_exceeded_tx(
+        nonce: u64,
+    ) -> reth_primitives::Recovered<reth_ethereum::TransactionSigned> {
+        recovered_tx(BENCH_LIMIT_TARGET, nonce)
+    }
+
+    fn recovered_tx(
+        to: Address,
+        nonce: u64,
+    ) -> reth_primitives::Recovered<reth_ethereum::TransactionSigned> {
+        let tx = TxLegacy {
+            chain_id: Some(ChainId::from(167_u64)),
+            nonce,
+            gas_price: 1,
+            gas_limit: 5_000_000,
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: Bytes::default(),
+        };
+        let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
+        reth_primitives::Recovered::new_unchecked(
+            Signed::new_unchecked(tx, signature, B256::ZERO).into(),
+            BENCH_CALLER,
+        )
+    }
+
+    fn db_with_contracts() -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        insert_contract(&mut db, BENCH_SUCCESS_TARGET, arithmetic_bytecode());
+        insert_contract(&mut db, BENCH_LIMIT_TARGET, limit_exceeding_keccak_bytecode());
+        db.insert_account_info(
+            BENCH_CALLER,
+            AccountInfo { nonce: 0, balance: U256::from(10_000_000_000_u64), ..Default::default() },
+        );
+        db
+    }
+
+    fn insert_contract(db: &mut InMemoryDB, address: Address, bytecode: Bytecode) {
+        let code_hash = bytecode.hash_slow();
+        db.insert_account_info(
+            address,
+            AccountInfo {
+                nonce: 1,
+                balance: U256::ZERO,
+                code_hash,
+                code: Some(bytecode),
+                ..Default::default()
+            },
+        );
+    }
+
+    fn arithmetic_bytecode() -> Bytecode {
+        Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH1,
+            0x01,
+            opcode::PUSH1,
+            0x02,
+            opcode::ADD,
+            opcode::STOP,
+        ]))
+    }
+
+    fn limit_exceeding_keccak_bytecode() -> Bytecode {
+        Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH1,
+            0x20,
+            opcode::PUSH3,
+            0x10,
+            0x00,
+            0x00,
+            opcode::KECCAK256,
+            opcode::STOP,
+        ]))
+    }
+
+    const BENCH_CALLER: Address = Address::with_last_byte(0x30);
+    const BENCH_SUCCESS_TARGET: Address = Address::with_last_byte(0x21);
+    const BENCH_LIMIT_TARGET: Address = Address::with_last_byte(0x22);
 }

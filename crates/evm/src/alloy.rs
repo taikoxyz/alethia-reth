@@ -23,7 +23,10 @@ use crate::{
     evm::TaikoEvm,
     handler::get_treasury_address,
     spec::TaikoSpecId,
-    zk_gas::adapter::{SharedUzenZkGasMeter, UzenZkGasInspector},
+    zk_gas::{
+        adapter::{SharedUzenZkGasMeter, UzenZkGasInspector},
+        meter::ZkGasOutcome,
+    },
 };
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
@@ -62,6 +65,54 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     pub fn shared_meter(&self) -> Option<SharedUzenZkGasMeter> {
         self.inner.inner.inspector.shared_meter()
     }
+}
+
+/// EVM extension trait for reading and mutating shared Uzen zk gas meter state.
+pub trait TaikoZkGasEvm {
+    /// Discards any in-flight zk gas recorded for the current transaction.
+    fn reset_transaction_zk_gas(&self);
+
+    /// Commits the current transaction's zk gas into the block total and returns the new total.
+    fn commit_transaction_zk_gas(&self) -> Result<Option<u64>, ZkGasOutcome>;
+
+    /// Returns the finalized block zk gas that has already been committed.
+    fn block_zk_gas_used(&self) -> Option<u64>;
+}
+
+impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
+where
+    DB: Database,
+    I: Inspector<TaikoEvmContext<DB>>,
+    P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
+{
+    /// Discards any in-flight zk gas recorded for the current transaction.
+    fn reset_transaction_zk_gas(&self) {
+        if let Some(meter) = self.shared_meter() {
+            lock_meter(&meter).reset_transaction();
+        }
+    }
+
+    /// Commits the current transaction's zk gas into the block total and returns the new total.
+    fn commit_transaction_zk_gas(&self) -> Result<Option<u64>, ZkGasOutcome> {
+        let Some(meter) = self.shared_meter() else {
+            return Ok(None);
+        };
+        let mut meter = lock_meter(&meter);
+        meter.commit_transaction()?;
+        Ok(Some(meter.block_zk_gas_used()))
+    }
+
+    /// Returns the finalized block zk gas that has already been committed.
+    fn block_zk_gas_used(&self) -> Option<u64> {
+        self.shared_meter().map(|meter| lock_meter(&meter).block_zk_gas_used())
+    }
+}
+
+/// Locks the shared Uzen meter while recovering cleanly from poison.
+fn lock_meter(
+    meter: &SharedUzenZkGasMeter,
+) -> std::sync::MutexGuard<'_, crate::zk_gas::meter::UzenZkGasMeter<'static>> {
+    meter.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
@@ -167,8 +218,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
-            && contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+            contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;

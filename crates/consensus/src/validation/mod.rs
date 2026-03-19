@@ -82,7 +82,7 @@ where
             &result.requests,
             receipt_root_bloom,
         )?;
-        validate_uzen_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
+        validate_zk_gas_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,
             &self.chain_spec,
@@ -216,9 +216,9 @@ where
     }
 }
 
-/// Validates Uzen-specific post-execution rules that depend on both the canonical body and the
+/// Validates zk-gas-specific post-execution rules that depend on both the canonical body and the
 /// committed execution result.
-fn validate_uzen_post_execution<B, R>(
+fn validate_zk_gas_post_execution<B, R>(
     block: &RecoveredBlock<B>,
     chain_spec: &TaikoChainSpec,
     receipts: &[R],
@@ -232,6 +232,9 @@ where
 
     let body_transaction_count = block.body().transactions().len();
     let committed_receipt_count = receipts.len();
+    // Imported Uzen-or-later blocks are only valid when the canonical body ends exactly at the
+    // last transaction that execution committed. If zk gas truncated execution earlier, the
+    // offending transaction and all later transactions must be absent from the body as well.
     if body_transaction_count == committed_receipt_count {
         return Ok(());
     }

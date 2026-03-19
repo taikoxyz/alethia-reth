@@ -72,9 +72,9 @@ impl<'a> ZkGasMeter<'a> {
     /// Applies a checked zk gas charge against the current transaction and block budget.
     fn charge_amount(&mut self, charge: u64) -> Result<(), ZkGasOutcome> {
         let next_tx = self.tx_zk_gas_used.checked_add(charge).ok_or(ZkGasOutcome::LimitExceeded)?;
-        let next_block =
+        let projected_block_zk_gas_used =
             self.block_zk_gas_used.checked_add(next_tx).ok_or(ZkGasOutcome::LimitExceeded)?;
-        if next_block > self.schedule.block_limit {
+        if projected_block_zk_gas_used > self.schedule.block_limit {
             return Err(ZkGasOutcome::LimitExceeded);
         }
         self.tx_zk_gas_used = next_tx;

@@ -15,6 +15,10 @@ use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
     spec::TaikoSpecId,
+    zk_gas::{
+        adapter::{UzenZkGasInspector, shared_meter_for_spec},
+        precompiles::UzenZkGasPrecompiles,
+    },
 };
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
@@ -38,7 +42,7 @@ impl EvmFactory for TaikoEvmFactory {
     /// Block environment used by the EVM.
     type BlockEnv = BlockEnv;
     /// Precompiles used by the EVM.
-    type Precompiles = PrecompilesMap;
+    type Precompiles = UzenZkGasPrecompiles<PrecompilesMap>;
 
     /// Creates a new instance of an EVM.
     fn create_evm<DB: Database>(
@@ -47,16 +51,20 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
+        let meter = shared_meter_for_spec(spec_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )));
+            .build_mainnet_with_inspector(UzenZkGasInspector::new(NoOpInspector {}, meter.clone()))
+            .with_precompiles(UzenZkGasPrecompiles::new(
+                PrecompilesMap::from_static(Precompiles::new(
+                    PrecompileSpecId::from_spec_id(spec_id.into()),
+                )),
+                meter,
+            ));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), matches!(spec_id, TaikoSpecId::UZEN))
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -67,15 +75,18 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
+        let meter = shared_meter_for_spec(spec_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )))
-            .with_inspector(inspector);
+            .build_mainnet_with_inspector(UzenZkGasInspector::new(inspector, meter.clone()))
+            .with_precompiles(UzenZkGasPrecompiles::new(
+                PrecompilesMap::from_static(Precompiles::new(
+                    PrecompileSpecId::from_spec_id(spec_id.into()),
+                )),
+                meter,
+            ));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }

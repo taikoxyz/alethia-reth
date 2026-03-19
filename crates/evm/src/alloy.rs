@@ -19,24 +19,32 @@ use reth_revm::{
 };
 use tracing::debug;
 
-use crate::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};
+use crate::{
+    evm::TaikoEvm,
+    handler::get_treasury_address,
+    spec::TaikoSpecId,
+    zk_gas::adapter::{SharedUzenZkGasMeter, UzenZkGasInspector},
+};
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
-pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
+pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// Wrapped Taiko EVM instance implementing execution behavior.
-    inner: TaikoEvm<TaikoEvmContext<DB>, INSP, P>,
+    inner: TaikoEvm<TaikoEvmContext<DB>, UzenZkGasInspector<I>, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
 }
 
-impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
+impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
-    pub const fn new(evm: TaikoEvm<TaikoEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
+    pub const fn new(
+        evm: TaikoEvm<TaikoEvmContext<DB>, UzenZkGasInspector<I>, P>,
+        inspect: bool,
+    ) -> Self {
         Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
-    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, INSP, P> {
+    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, UzenZkGasInspector<I>, P> {
         self.inner
     }
 
@@ -48,6 +56,11 @@ impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TaikoEvmContext<DB> {
         &mut self.inner.inner.ctx
+    }
+
+    /// Returns the shared Uzen zk gas meter when this wrapper has metering enabled.
+    pub fn shared_meter(&self) -> Option<SharedUzenZkGasMeter> {
+        self.inner.inner.inspector.shared_meter()
     }
 }
 
@@ -117,7 +130,7 @@ where
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
         (
             &self.inner.inner.ctx.journaled_state.database,
-            &self.inner.inner.inspector,
+            self.inner.inner.inspector.inner(),
             &self.inner.inner.precompiles,
         )
     }
@@ -126,7 +139,7 @@ where
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
         (
             &mut self.inner.inner.ctx.journaled_state.database,
-            &mut self.inner.inner.inspector,
+            self.inner.inner.inspector.inner_mut(),
             &mut self.inner.inner.precompiles,
         )
     }
@@ -154,8 +167,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
-            contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
+            && contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
@@ -268,12 +281,12 @@ where
 
     /// Getter of inspector.
     fn inspector(&self) -> &Self::Inspector {
-        &self.inner.inner.inspector
+        self.inner.inner.inspector.inner()
     }
 
     /// Mutable getter of inspector.
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
-        &mut self.inner.inner.inspector
+        self.inner.inner.inspector.inner_mut()
     }
 }
 

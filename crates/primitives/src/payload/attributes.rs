@@ -162,7 +162,8 @@ pub struct RpcL1Origin {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct EngineRpcL1Origin(
     /// The wrapped L1 origin value encoded with the engine RPC wire format.
-    #[cfg_attr(feature = "serde", serde(with = "rpc_l1_origin_serde"))] pub RpcL1Origin,
+    #[cfg_attr(feature = "serde", serde(with = "rpc_l1_origin_serde"))]
+    pub RpcL1Origin,
 );
 
 impl From<RpcL1Origin> for EngineRpcL1Origin {

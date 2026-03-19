@@ -340,7 +340,7 @@ where
 /// Apply Uzen-specific tx gas limit cap to the given EVM configuration environment if Uzen is
 /// active at the given timestamp.
 fn apply_uzen_tx_gas_cap<Spec>(spec: TaikoSpecId, cfg_env: &mut CfgEnv<Spec>) {
-    if spec == TaikoSpecId::UZEN {
+    if spec >= TaikoSpecId::UZEN {
         cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
     }
 }

@@ -191,7 +191,7 @@ impl TaikoEvmExtraExecutionCtx {
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{U64, U256};
+    use alloy_primitives::U256;
     use reth_revm::{
         Context, ExecuteEvm, MainBuilder, MainContext, context::TxEnv, db::InMemoryDB,
         state::AccountInfo,
@@ -204,7 +204,7 @@ mod test {
     #[test]
     fn test_transact_one_with_extra_execution_context() {
         let golden_touch_address = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
-        let nonce = U64::random().to::<u64>();
+        let nonce = 1_u64;
         let mut db = InMemoryDB::default();
         db.insert_account_info(
             golden_touch_address,

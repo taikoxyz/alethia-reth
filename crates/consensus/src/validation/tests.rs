@@ -137,8 +137,7 @@ impl TaikoBlockReader for NullBlockReader {
 #[test]
 fn pre_uzen_header_still_rejects_nonzero_difficulty() {
     let consensus = test_consensus(devnet_chain_spec());
-    let mut header = Header::default();
-    header.difficulty = U256::from(1_u64);
+    let header = Header { difficulty: U256::from(1_u64), ..Default::default() };
 
     let err = consensus
         .validate_header(&SealedHeader::new_unhashed(header))
@@ -149,11 +148,13 @@ fn pre_uzen_header_still_rejects_nonzero_difficulty() {
 #[test]
 fn uzen_header_allows_nonzero_difficulty() {
     let consensus = test_consensus(uzen_chain_spec());
-    let mut header = Header::default();
-    header.timestamp = 1;
-    header.difficulty = U256::from(7_u64);
-    header.base_fee_per_gas = Some(1);
-    header.gas_limit = 30_000_000;
+    let header = Header {
+        timestamp: 1,
+        difficulty: U256::from(7_u64),
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        ..Default::default()
+    };
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(header))
@@ -163,12 +164,14 @@ fn uzen_header_allows_nonzero_difficulty() {
 #[test]
 fn uzen_post_execution_rejects_body_past_truncation_point() {
     let consensus = test_consensus(uzen_chain_spec());
-    let mut header = Header::default();
-    header.timestamp = 1;
-    header.base_fee_per_gas = Some(1);
-    header.gas_limit = 30_000_000;
-    header.gas_used = 0;
-    header.receipts_root = EMPTY_ROOT_HASH;
+    let header = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        gas_used: 0,
+        receipts_root: EMPTY_ROOT_HASH,
+        ..Default::default()
+    };
     let block = reth_ethereum::Block {
         header,
         body: BlockBody { transactions: vec![make_legacy_tx()], ommers: vec![], withdrawals: None },

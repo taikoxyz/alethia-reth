@@ -16,7 +16,7 @@ use serde_with::{As, base64::Base64};
 
 #[cfg(feature = "serde")]
 /// Serde helpers for taiko-geth-compatible fixed-size signature hex encoding.
-mod signature_hex_serde {
+pub mod signature_hex_serde {
     use alloy_primitives::hex;
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
@@ -33,7 +33,7 @@ mod signature_hex_serde {
     where
         D: Deserializer<'de>,
     {
-        let encoded = <&str>::deserialize(deserializer)?;
+        let encoded = String::deserialize(deserializer)?;
         let encoded = encoded
             .strip_prefix("0x")
             .or_else(|| encoded.strip_prefix("0X"))
@@ -41,6 +41,29 @@ mod signature_hex_serde {
         let mut signature = [0u8; 65];
         hex::decode_to_slice(encoded, &mut signature).map_err(D::Error::custom)?;
         Ok(signature)
+    }
+}
+
+#[cfg(feature = "serde")]
+/// Serde helpers for applying [`RpcL1Origin`] serialization to nested fields.
+pub mod rpc_l1_origin_serde {
+    use super::RpcL1Origin;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Serializes an [`RpcL1Origin`] using the type's existing JSON representation.
+    pub fn serialize<S>(origin: &RpcL1Origin, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        <RpcL1Origin as Serialize>::serialize(origin, serializer)
+    }
+
+    /// Deserializes an [`RpcL1Origin`] using the type's existing JSON representation.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<RpcL1Origin, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        <RpcL1Origin as Deserialize>::deserialize(deserializer)
     }
 }
 

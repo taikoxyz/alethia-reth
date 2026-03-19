@@ -120,7 +120,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec_and_mainnet_gas_params(spec);
 
-        apply_uzen_tx_gas_cap(spec, &mut cfg_env);
+        if self.chain_spec().inner.is_osaka_active_at_timestamp(header.timestamp()) {
+            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let basefee: u64 = header
             .base_fee_per_gas()
@@ -158,7 +160,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             .with_chain_id(self.chain_spec().inner.chain().id())
             .with_spec_and_mainnet_gas_params(spec);
 
-        apply_uzen_tx_gas_cap(spec, &mut cfg);
+        if self.chain_spec().inner.is_osaka_active_at_timestamp(attributes.timestamp) {
+            cfg.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let block_env: BlockEnv = BlockEnv {
             number: U256::from(parent.number + 1),
@@ -234,7 +238,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
         }
 
-        apply_uzen_tx_gas_cap(spec, &mut cfg_env);
+        if self.chain_spec().is_osaka_active_at_timestamp(timestamp) {
+            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let block_env = BlockEnv {
             number: U256::from(block_number),
@@ -333,15 +339,6 @@ where
         TaikoSpecId::ONTAKE
     } else {
         TaikoSpecId::GENESIS
-    }
-}
-
-#[inline]
-/// Apply Uzen-specific tx gas limit cap to the given EVM configuration environment if Uzen is
-/// active at the given timestamp.
-fn apply_uzen_tx_gas_cap<Spec>(spec: TaikoSpecId, cfg_env: &mut CfgEnv<Spec>) {
-    if spec >= TaikoSpecId::UZEN {
-        cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
     }
 }
 

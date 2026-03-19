@@ -115,9 +115,14 @@ impl ConfigureEvm for TaikoEvmConfig {
 
     /// Creates a new [`EvmEnv`] for the given header.
     fn evm_env(&self, header: &Header) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg_env = CfgEnv::new()
+        let spec = taiko_revm_spec(&self.chain_spec().inner, header);
+        let mut cfg_env = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
-            .with_spec_and_mainnet_gas_params(taiko_revm_spec(&self.chain_spec().inner, header));
+            .with_spec_and_mainnet_gas_params(spec);
+
+        if self.chain_spec().inner.is_osaka_active_at_timestamp(header.timestamp()) {
+            cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let basefee: u64 = header
             .base_fee_per_gas()
@@ -146,13 +151,18 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &Header,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        let cfg = CfgEnv::new()
+        let spec = taiko_spec_by_timestamp_and_block_number(
+            &self.chain_spec().inner,
+            attributes.timestamp,
+            parent.number + 1,
+        );
+        let mut cfg = CfgEnv::new()
             .with_chain_id(self.chain_spec().inner.chain().id())
-            .with_spec_and_mainnet_gas_params(taiko_spec_by_timestamp_and_block_number(
-                &self.chain_spec().inner,
-                attributes.timestamp,
-                parent.number + 1,
-            ));
+            .with_spec_and_mainnet_gas_params(spec);
+
+        if self.chain_spec().inner.is_osaka_active_at_timestamp(attributes.timestamp) {
+            cfg.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
 
         let block_env: BlockEnv = BlockEnv {
             number: U256::from(parent.number + 1),
@@ -312,7 +322,9 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) {
+    if chain_spec.fork(TaikoHardfork::Uzen).active_at_timestamp(timestamp) {
+        TaikoSpecId::UZEN
+    } else if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) {
         // London is on from genesis for Taiko, so Shasta reduces to the timestamp activation.
         TaikoSpecId::SHASTA
     } else if chain_spec
@@ -342,5 +354,32 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
             extra_data: parent.extra_data.clone(),
             base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
+    use alloy_hardforks::ForkCondition;
+
+    #[test]
+    fn uzen_takes_precedence_over_shasta() {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+
+        let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
+        assert_eq!(selected, TaikoSpecId::UZEN);
+    }
+
+    #[test]
+    fn shasta_remains_active_before_uzen_timestamp() {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(10));
+
+        let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
+        assert_eq!(selected, TaikoSpecId::SHASTA);
     }
 }

@@ -74,7 +74,7 @@ where
 
         let withdrawals = Some(Withdrawals::default());
         let withdrawals_root = Some(EMPTY_WITHDRAWALS);
-        let difficulty = if ctx.is_uzen {
+        let difficulty = if ctx.is_uzen_active {
             U256::from(ctx.finalized_block_zk_gas())
         } else {
             block_env.difficulty()
@@ -154,7 +154,7 @@ mod test {
             withdrawals: None,
             basefee_per_gas: 0,
             extra_data: Bytes::default(),
-            is_uzen: true,
+            is_uzen_active: true,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         };

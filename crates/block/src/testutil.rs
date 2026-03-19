@@ -58,7 +58,7 @@ pub fn uzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
         withdrawals: None,
         basefee_per_gas: 0,
         extra_data: Bytes::default(),
-        is_uzen: true,
+        is_uzen_active: true,
         expected_difficulty: None,
         finalized_block_zk_gas: Default::default(),
     }

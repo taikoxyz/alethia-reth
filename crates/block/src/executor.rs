@@ -396,12 +396,18 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction((tx_env, tx)).map(|_| ()).or_else(|err| match err {
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
-                BlockExecutionError::Validation(
+                // We don't allow anchor transaction to be discarded even if it exceeds the zk gas limit, this
+                // should never happen in practice.
+                err if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(()),
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
+                | BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
             })?;
+            if self.zk_gas_exhausted {
+                break;
+            }
         }
 
         self.apply_post_execution_changes()
@@ -512,6 +518,32 @@ mod test {
         let (_, result) = executor.finish().expect("executor should finish after truncation");
         assert_eq!(result.receipts.len(), 1);
         assert_eq!(result.gas_used, gas_used);
+    }
+
+    #[cfg(feature = "prover")]
+    #[test]
+    fn execute_block_stops_after_non_anchor_zk_gas_exhaustion() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let ctx = uzen_execution_ctx();
+        let executor =
+            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
+
+        let result = executor.execute_block(vec![
+            recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
+            recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 1, 1),
+            recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 2, 1),
+        ]);
+
+        let result = result.expect("prover execute_block should truncate instead of erroring");
+        assert_eq!(result.receipts.len(), 1);
+        assert!(result.gas_used > 0);
+        assert!(ctx.finalized_block_zk_gas() > 0);
     }
 
     #[test]

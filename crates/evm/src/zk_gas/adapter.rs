@@ -3,8 +3,8 @@
 //! High-level flow:
 //! 1. Capture the opcode and pre-step gas in `step`.
 //! 2. Resolve the step into a `FinishedStep` in `step_end`.
-//! 3. Either charge immediately, or defer charging until `call_end` / `create_end` confirms
-//!    whether a spawn opcode actually opened child work.
+//! 3. Either charge immediately, or defer charging until `call_end` / `create_end` confirms whether
+//!    a spawn opcode actually opened child work.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -387,10 +387,7 @@ fn meter_schedule(_meter: &SharedZkGasMeter) -> &'static ZkGasSchedule {
 }
 
 /// Charges a completed opcode step against the shared meter.
-fn charge_finished_step(
-    meter: &SharedZkGasMeter,
-    step: FinishedStep,
-) -> Result<(), ZkGasOutcome> {
+fn charge_finished_step(meter: &SharedZkGasMeter, step: FinishedStep) -> Result<(), ZkGasOutcome> {
     // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
     // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
     let raw_gas =

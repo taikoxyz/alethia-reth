@@ -396,11 +396,11 @@ where
             }
             // Execute transaction, if invalid, skip it directly.
             self.execute_transaction((tx_env, tx)).map(|_| ()).or_else(|err| match err {
-                // We don't allow anchor transaction to be discarded even if it exceeds the zk gas limit, this
-                // should never happen in practice.
+                // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
+                // limit, this should never happen in practice.
                 err if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(()),
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
+                BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),

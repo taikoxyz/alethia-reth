@@ -127,12 +127,24 @@ The test should:
   transaction,
 - call `execute_anchor_and_pool_transactions`,
 - assert that the function now returns an error,
-- assert that the error message or typed source corresponds to the new dedicated
-  payload-layer error,
+- assert that the returned `PayloadBuilderError` uses the dedicated
+  `Other(...)` path,
+- assert that the boxed source downcasts to the new
+  `AnchorZkGasLimitExceeded` type,
+- treat any message assertion as optional secondary validation only,
 - avoid changing the existing legacy-mode zk gas regression.
 
 Keep the current legacy-mode clean-stop test intact so the scope boundary stays
 visible in tests.
+
+Add a second focused regression for scope preservation.
+
+That test should:
+
+- force a non-zk-gas anchor execution failure in the same new-mode helper,
+- assert that the result still maps to `PayloadBuilderError::evm(err)`,
+- assert that this failure is not remapped into the new
+  `AnchorZkGasLimitExceeded` type.
 
 ## Risks
 
@@ -143,6 +155,8 @@ visible in tests.
 ## Verification Plan
 
 - Run the new focused payload test for anchor zk gas exhaustion.
+- Run the focused payload test for ordinary non-zk-gas anchor execution
+  failure.
 - Re-run the existing payload legacy-mode zk gas test.
 - Run the relevant payload crate tests.
 - Run `just clippy` before completion.

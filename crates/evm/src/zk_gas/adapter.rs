@@ -1,4 +1,10 @@
 //! Inspector-side zk gas metering for opcode execution.
+//!
+//! High-level flow:
+//! 1. Capture the opcode and pre-step gas in `step`.
+//! 2. Resolve the step into a `FinishedStep` in `step_end`.
+//! 3. Either charge immediately, or defer charging until `call_end` / `create_end` confirms
+//!    whether a spawn opcode actually opened child work.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -27,6 +33,7 @@ pub type SharedZkGasMeter = Arc<Mutex<ZkGasMeter<'static>>>;
 /// Returns a freshly initialized shared meter handle for the requested spec when metering is
 /// active.
 pub fn shared_meter_for_spec(spec: TaikoSpecId) -> Option<SharedZkGasMeter> {
+    // Returning `None` keeps the inspector on its zero-overhead pass-through path.
     schedule_for(spec).map(|schedule| Arc::new(Mutex::new(ZkGasMeter::new(schedule))))
 }
 
@@ -35,13 +42,13 @@ pub struct ZkGasInspector<I> {
     /// User-provided or factory-provided inner inspector.
     inner: I,
     /// Optional metering state. `None` keeps all non-metered execution on the pass-through path.
-    metering: Option<UzenMeteringState>,
+    metering: Option<ZkGasMeteringState>,
 }
 
 impl<I> ZkGasInspector<I> {
     /// Creates a new composite inspector around `inner` and the optional shared meter handle.
     pub fn new(inner: I, meter: Option<SharedZkGasMeter>) -> Self {
-        let metering = meter.map(UzenMeteringState::new);
+        let metering = meter.map(ZkGasMeteringState::new);
         Self { inner, metering }
     }
 
@@ -82,11 +89,14 @@ where
         context: &mut TaikoEvmContext<DB>,
     ) {
         if let Some(metering) = &mut self.metering {
+            // Spawn opcodes are charged one callback later, once the runtime tells us whether
+            // they actually opened a child frame or hit a precompile.
             if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
                 set_custom_error(context);
                 interp.halt_fatal();
                 return;
             }
+            // Snapshot the opcode and remaining gas before the interpreter mutates frame state.
             metering.begin_step(
                 context.journal().depth(),
                 interp.bytecode.opcode(),
@@ -109,15 +119,20 @@ where
             return;
         };
         let depth = context.journal().depth();
+        // Pair the pre-step snapshot captured in `step` with the post-step gas remaining.
         let Some(step) = metering.finish_step(depth, interp.gas.remaining()) else {
             return;
         };
 
         if is_spawn_opcode(step.opcode) {
+            // CALL/CREATE-family opcodes need one more callback to learn whether they really
+            // spawned child work. Until then we cannot choose between measured gas and the fixed
+            // spawn estimate from the consensus schedule.
             metering.defer_step(depth, step);
             return;
         }
 
+        // Ordinary opcodes can be charged immediately from their measured interpreter gas cost.
         if let Err(ZkGasOutcome::LimitExceeded) = charge_finished_step(&metering.meter, step) {
             set_custom_error(context);
             interp.halt_fatal();
@@ -134,6 +149,8 @@ where
         if outcome.is_none() &&
             let Some(metering) = &mut self.metering
         {
+            // `None` means REVM continues into a child frame, so this CALL-family opcode should
+            // use the fixed spawn estimate instead of its measured interpreter-only gas delta.
             metering.mark_call_spawn(context.journal().depth());
         }
         outcome
@@ -152,13 +169,18 @@ where
 
         if let Some(metering) = &mut self.metering {
             if was_precompile_called {
+                // Precompile dispatch is also treated as spawned child work for CALL-family steps.
                 metering.mark_call_spawn(context.journal().depth());
             }
+            // At this point the call outcome is known, so any deferred CALL-family opcode can be
+            // charged using the correct raw-gas source.
             if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
                 set_custom_error(context);
                 return;
             }
             if was_precompile_called {
+                // Precompile usage is charged separately from the CALL opcode itself using the
+                // low-byte address lookup in the precompile multiplier table.
                 let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
                 let address_low_byte = inputs.bytecode_address.as_slice()[19];
                 if let Err(ZkGasOutcome::LimitExceeded) =
@@ -180,6 +202,7 @@ where
         if outcome.is_none() &&
             let Some(metering) = &mut self.metering
         {
+            // CREATE-family opcodes use the same deferred pattern as CALL-family opcodes.
             metering.mark_create_spawn(context.journal().depth());
         }
         outcome
@@ -195,6 +218,7 @@ where
         self.inner.create_end(context, inputs, outcome);
 
         if let Some(metering) = &mut self.metering &&
+            // CREATE-family opcodes can finally be charged once the create outcome is resolved.
             let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps()
         {
             set_custom_error(context);
@@ -203,7 +227,7 @@ where
 }
 
 /// Per-inspector metering state shared across opcode callbacks.
-struct UzenMeteringState {
+struct ZkGasMeteringState {
     /// Shared checked meter that owns the schedule and accumulated usage.
     meter: SharedZkGasMeter,
     /// Per-frame in-flight opcode step state keyed by journal depth.
@@ -212,7 +236,7 @@ struct UzenMeteringState {
     deferred_steps: Vec<Option<FinishedStep>>,
 }
 
-impl UzenMeteringState {
+impl ZkGasMeteringState {
     /// Creates new per-inspector state around the provided shared meter.
     fn new(meter: SharedZkGasMeter) -> Self {
         Self { meter, pending_steps: Vec::new(), deferred_steps: Vec::new() }
@@ -221,17 +245,21 @@ impl UzenMeteringState {
     /// Records the opcode and gas snapshot for the current frame depth.
     fn begin_step(&mut self, depth: usize, opcode: u8, gas_remaining: u64) {
         self.ensure_depth(depth);
+        // Any previous pending step at this depth must already have been consumed by `step_end`.
         self.pending_steps[depth] = Some(PendingStep { opcode, gas_remaining, spawned: false });
     }
 
     /// Marks that the current CALL-family opcode actually dispatched child work.
     fn mark_call_spawn(&mut self, depth: usize) {
+        // REVM can report the spawn signal from either the current frame or the parent frame
+        // depending on callback timing, so mark both locations defensively.
         self.mark_spawn(depth, is_call_opcode);
         self.mark_spawn(parent_step_depth(depth), is_call_opcode);
     }
 
     /// Marks that the current CREATE-family opcode actually dispatched child work.
     fn mark_create_spawn(&mut self, depth: usize) {
+        // Same defensive marking strategy as CALL-family opcodes.
         self.mark_spawn(depth, is_create_opcode);
         self.mark_spawn(parent_step_depth(depth), is_create_opcode);
     }
@@ -240,6 +268,8 @@ impl UzenMeteringState {
     fn finish_step(&mut self, depth: usize, gas_remaining: u64) -> Option<FinishedStep> {
         let pending = self.pending_steps.get_mut(depth)?.take()?;
         Some(FinishedStep {
+            // The schedule is stored on the finished record so later deferred charging does not
+            // have to rediscover it from surrounding callback context.
             schedule: meter_schedule(&self.meter),
             opcode: pending.opcode,
             step_gas: pending.gas_remaining.saturating_sub(gas_remaining),
@@ -251,6 +281,7 @@ impl UzenMeteringState {
     /// source.
     fn defer_step(&mut self, depth: usize, step: FinishedStep) {
         self.ensure_depth(depth);
+        // There should be at most one unresolved spawn step per frame depth at a time.
         self.deferred_steps[depth] = Some(step);
     }
 
@@ -258,6 +289,8 @@ impl UzenMeteringState {
     fn flush_deferred_steps(&mut self) -> Result<(), ZkGasOutcome> {
         for deferred in &mut self.deferred_steps {
             if let Some(step) = deferred.take() {
+                // `take()` clears the slot first so partial progress is preserved if charging
+                // returns `LimitExceeded`.
                 charge_finished_step(&self.meter, step)?;
             }
         }
@@ -315,11 +348,13 @@ struct FinishedStep {
 
 /// Returns `true` when `opcode` is a CALL-family spawn opcode.
 fn is_call_opcode(opcode: u8) -> bool {
+    // 0xf1 = CALL, 0xf2 = CALLCODE, 0xf4 = DELEGATECALL, 0xfa = STATICCALL.
     matches!(opcode, 0xf1 | 0xf2 | 0xf4 | 0xfa)
 }
 
 /// Returns `true` when `opcode` is a CREATE-family spawn opcode.
 fn is_create_opcode(opcode: u8) -> bool {
+    // 0xf0 = CREATE, 0xf5 = CREATE2.
     matches!(opcode, 0xf0 | 0xf5)
 }
 
@@ -356,6 +391,8 @@ fn charge_finished_step(
     meter: &SharedZkGasMeter,
     step: FinishedStep,
 ) -> Result<(), ZkGasOutcome> {
+    // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
+    // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
     let raw_gas =
         if step.spawned { spawn_estimate(step.schedule, step.opcode) } else { step.step_gas };
     lock_meter(meter).charge_opcode(step.opcode, raw_gas)

@@ -136,7 +136,7 @@ impl TaikoBlockReader for NullBlockReader {
 
 #[test]
 fn pre_uzen_header_still_rejects_nonzero_difficulty() {
-    let consensus = test_consensus(devnet_chain_spec());
+    let consensus = test_consensus(pre_uzen_chain_spec());
     let header = Header { difficulty: U256::from(1_u64), ..Default::default() };
 
     let err = consensus
@@ -228,6 +228,12 @@ fn test_consensus(chain_spec: TaikoChainSpec) -> TaikoBeaconConsensus {
 
 fn devnet_chain_spec() -> TaikoChainSpec {
     (*TAIKO_DEVNET).as_ref().clone()
+}
+
+fn pre_uzen_chain_spec() -> TaikoChainSpec {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Never);
+    chain_spec
 }
 
 fn uzen_chain_spec() -> TaikoChainSpec {

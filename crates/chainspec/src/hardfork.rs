@@ -92,7 +92,7 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Uzen.boxed(), ForkCondition::Timestamp(0)),
     ]))
 });
 

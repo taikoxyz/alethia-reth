@@ -16,9 +16,12 @@ use reth_evm::{
 use reth_primitives::{Header as RethHeader, Recovered};
 use tracing::{debug, trace, warn};
 
-use alethia_reth_block::tx_selection::{
-    DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
-    select_and_execute_pool_transactions,
+use alethia_reth_block::{
+    executor::is_zk_gas_limit_exceeded,
+    tx_selection::{
+        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
+        select_and_execute_pool_transactions,
+    },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
@@ -79,6 +82,14 @@ pub(super) fn execute_provided_transactions(
 
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
+                debug!(
+                    target: "payload_builder",
+                    ?tx,
+                    "stopping legacy-mode payload after zk gas exhaustion"
+                );
+                break;
+            }
             Err(BlockExecutionError::Validation(
                 BlockValidationError::InvalidTx { .. } |
                 BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
@@ -142,6 +153,14 @@ where
             // Note: Anchor transaction has zero priority fee (tip), so no fees to add
             debug!(target: "payload_builder", id=%ctx.payload_id, gas_used, "anchor transaction executed successfully");
         }
+        Err(err) if is_zk_gas_limit_exceeded(&err) => {
+            debug!(
+                target: "payload_builder",
+                id=%ctx.payload_id,
+                "stopping new-mode payload after anchor hit the zk gas limit"
+            );
+            return Err(PayloadBuilderError::evm(err));
+        }
         Err(err) => {
             warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
             return Err(PayloadBuilderError::evm(err));
@@ -181,7 +200,127 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use alloy_consensus::{
+        SignableTransaction, Signed, TxEip1559,
+        transaction::{SignerRecoverable, TxHashable},
+    };
+    use alloy_primitives::{Address, Bytes};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use reth::revm::{State, context::result::ExecutionResult};
+    use reth_evm::{
+        EvmFactory,
+        block::{BlockExecutionError, BlockExecutor, CommitChanges},
+        execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
+    };
+    use reth_evm_ethereum::RethReceiptBuilder;
+    use reth_primitives_traits::Recovered;
+    use reth_provider::test_utils::MockEthProvider;
+    use reth_storage_api::StateProvider;
+    use reth_transaction_pool::noop::NoopTransactionPool;
+
+    use alethia_reth_block::{
+        executor::{TaikoBlockExecutor, ZkGasLimitExceeded},
+        testutil::{
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
+            recovered_tx, uzen_chain_spec, uzen_evm_env, uzen_execution_ctx,
+        },
+    };
+    use alethia_reth_chainspec::spec::TaikoChainSpec;
+    use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR};
+    use alethia_reth_evm::factory::TaikoEvmFactory;
+    use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
+
+    const BENCH_SUCCESS_CALLER: Address = Address::with_last_byte(0x30);
+    const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x31);
+    const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x32);
+    const GOLDEN_TOUCH_PRIVATE_KEY: &str =
+        "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
+
+    fn test_anchor_transaction() -> Recovered<EthTransactionSigned> {
+        let signer: PrivateKeySigner =
+            GOLDEN_TOUCH_PRIVATE_KEY.parse().expect("golden touch private key should parse");
+        let tx = TxEip1559 {
+            chain_id: 167,
+            nonce: 0,
+            gas_limit: ANCHOR_V3_V4_GAS_LIMIT,
+            max_fee_per_gas: 0,
+            max_priority_fee_per_gas: 0,
+            to: BENCH_LIMIT_TARGET.into(),
+            value: U256::ZERO,
+            access_list: Default::default(),
+            input: Bytes::copy_from_slice(ANCHOR_V4_SELECTOR),
+        };
+        let sig_hash = tx.signature_hash();
+        let signature = signer.sign_hash_sync(&sig_hash).expect("anchor tx should sign");
+        let tx_hash = tx.tx_hash(&signature);
+        let signed: EthTransactionSigned = Signed::new_unchecked(tx, signature, tx_hash).into();
+
+        signed.try_into_recovered().expect("fixture anchor transaction should be recoverable")
+    }
+
+    fn test_client(chain_spec: TaikoChainSpec) -> MockEthProvider<EthPrimitives, TaikoChainSpec> {
+        MockEthProvider::default().with_chain_spec(chain_spec)
+    }
+
+    struct FirstTxZkGasErrorBuilder<E> {
+        inner: ExecutorBackedBuilder<E>,
+        fail_next_execution: bool,
+    }
+
+    impl<E> BlockBuilder for FirstTxZkGasErrorBuilder<E>
+    where
+        E: BlockExecutor<
+                Transaction = reth_ethereum::TransactionSigned,
+                Receipt = reth_ethereum::Receipt,
+            >,
+    {
+        type Primitives = EthPrimitives;
+        type Executor = E;
+
+        fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
+            self.inner.apply_pre_execution_changes()
+        }
+
+        fn execute_transaction_with_commit_condition(
+            &mut self,
+            tx: impl ExecutorTx<Self::Executor>,
+            f: impl FnOnce(
+                &ExecutionResult<
+                    <<Self::Executor as BlockExecutor>::Evm as reth_evm::Evm>::HaltReason,
+                >,
+            ) -> CommitChanges,
+        ) -> Result<Option<u64>, BlockExecutionError> {
+            if self.fail_next_execution {
+                self.fail_next_execution = false;
+                return Err(BlockExecutionError::other(ZkGasLimitExceeded));
+            }
+
+            self.inner.execute_transaction_with_commit_condition(tx, f)
+        }
+
+        fn finish(
+            self,
+            state_provider: impl StateProvider,
+        ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError> {
+            self.inner.finish(state_provider)
+        }
+
+        fn executor_mut(&mut self) -> &mut Self::Executor {
+            self.inner.executor_mut()
+        }
+
+        fn executor(&self) -> &Self::Executor {
+            self.inner.executor()
+        }
+
+        fn into_executor(self) -> Self::Executor {
+            self.inner.into_executor()
+        }
+    }
 
     #[test]
     fn missing_tip_error_includes_base_fee_context() {
@@ -197,5 +336,101 @@ mod tests {
     fn missing_tip_error_mentions_effective_tip() {
         let err = missing_tip_error(1);
         assert!(err.to_string().contains("effective tip missing"));
+    }
+
+    #[test]
+    fn execute_provided_transactions_stops_on_zk_gas_error() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[
+                (BENCH_SUCCESS_CALLER, 0),
+                (BENCH_LIMIT_CALLER, 0),
+                (BENCH_LATE_CALLER, 0),
+            ]))
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            uzen_execution_ctx(),
+            chain_spec,
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let cancel = CancelOnDrop::default();
+        let transactions = vec![
+            recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
+            recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 1),
+            recovered_tx(BENCH_LATE_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
+        ];
+
+        let outcome = execute_provided_transactions(&mut builder, &transactions, 0, &cancel)
+            .expect("zk gas exhaustion should stop cleanly");
+
+        match outcome {
+            ExecutionOutcome::Completed(total_fees) => {
+                assert!(total_fees > U256::ZERO, "fees from the committed prefix should remain");
+            }
+            ExecutionOutcome::Cancelled => panic!("selection should not cancel"),
+        }
+        assert_eq!(builder.executor.receipts().len(), 1);
+    }
+
+    #[test]
+    fn execute_anchor_and_pool_transactions_errors_when_anchor_hits_zk_gas_limit() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            uzen_execution_ctx(),
+            chain_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = FirstTxZkGasErrorBuilder {
+            inner: ExecutorBackedBuilder { executor },
+            fail_next_execution: true,
+        };
+        let anchor_tx = test_anchor_transaction();
+        let client = test_client((*chain_spec).clone());
+        let pool = NoopTransactionPool::default();
+        let cancel = CancelOnDrop::default();
+        let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
+
+        let result = execute_anchor_and_pool_transactions(
+            &mut builder,
+            &pool,
+            &client,
+            &PoolExecutionContext {
+                anchor_tx: &anchor_tx,
+                parent_header: &parent_header,
+                block_timestamp: 1,
+                payload_id: "anchor-zk-gas".to_string(),
+                base_fee: 0,
+                gas_limit: 30_000_000,
+            },
+            &cancel,
+        );
+
+        let err = match result {
+            Ok(ExecutionOutcome::Cancelled) => panic!("anchor execution should not cancel"),
+            Ok(ExecutionOutcome::Completed(_)) => {
+                panic!("anchor zk gas exhaustion should fail payload building")
+            }
+            Err(err) => err,
+        };
+
+        let PayloadBuilderError::EvmExecutionError(inner) = err else {
+            panic!("anchor zk gas exhaustion should surface as an evm execution error");
+        };
+        let execution_err = inner
+            .downcast_ref::<BlockExecutionError>()
+            .expect("payload evm error should retain the block execution error");
+        assert!(is_zk_gas_limit_exceeded(execution_err));
     }
 }

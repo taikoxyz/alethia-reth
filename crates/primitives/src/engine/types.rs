@@ -41,6 +41,8 @@ pub struct TaikoExecutionDataSidecar {
     pub tx_hash: B256,
     /// Optional withdrawals root hash for the payload.
     pub withdrawals_hash: Option<B256>,
+    /// Optional hash-relevant header difficulty restored from the original built block.
+    pub header_difficulty: Option<U256>,
     /// Marker flag indicating whether this payload is a Taiko block.
     pub taiko_block: Option<bool>,
 }

@@ -15,6 +15,7 @@ use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
     spec::TaikoSpecId,
+    zk_gas::adapter::{ZkGasInspector, shared_meter_for_spec},
 };
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
@@ -47,16 +48,17 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
+        let meter = shared_meter_for_spec(spec_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
+            .build_mainnet_with_inspector(ZkGasInspector::new(NoOpInspector {}, meter.clone()))
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), false)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm), meter.is_some())
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -67,15 +69,15 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
+        let meter = shared_meter_for_spec(spec_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(NoOpInspector {})
+            .build_mainnet_with_inspector(ZkGasInspector::new(inspector, meter.clone()))
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
-            )))
-            .with_inspector(inspector);
+            )));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }

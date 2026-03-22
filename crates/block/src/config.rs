@@ -30,7 +30,10 @@ use crate::{
     assembler::TaikoBlockAssembler,
     factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory},
 };
-use alethia_reth_chainspec::{hardfork::TaikoHardfork, spec::TaikoChainSpec};
+use alethia_reth_chainspec::{
+    hardfork::{TaikoHardfork, TaikoHardforks},
+    spec::TaikoChainSpec,
+};
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
@@ -139,7 +142,11 @@ impl ConfigureEvm for TaikoEvmConfig {
             number: U256::from(header.number()),
             beneficiary: header.beneficiary(),
             timestamp: U256::from(header.timestamp()),
-            difficulty: U256::ZERO,
+            difficulty: if self.chain_spec().is_uzen_active(header.timestamp()) {
+                header.difficulty()
+            } else {
+                U256::ZERO
+            },
             prevrandao: header.mix_hash(),
             gas_limit: header.gas_limit(),
             basefee,
@@ -191,6 +198,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
     ) -> Result<reth_evm::ExecutionCtxFor<'a, Self>, Self::Error> {
+        let is_uzen_active = self.chain_spec().is_uzen_active(block.header().timestamp);
         let basefee_per_gas = block
             .header()
             .base_fee_per_gas
@@ -202,6 +210,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas,
             extra_data: block.header().extra_data.clone(),
+            is_uzen_active,
+            expected_difficulty: is_uzen_active.then_some(block.header().difficulty),
+            finalized_block_zk_gas: Default::default(),
         })
     }
 
@@ -219,6 +230,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
+            is_uzen_active: self.chain_spec().is_uzen_active(ctx.timestamp),
+            expected_difficulty: None,
+            finalized_block_zk_gas: Default::default(),
         })
     }
 }
@@ -276,6 +290,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
+            is_uzen_active: self.chain_spec().is_uzen_active(payload.timestamp()),
+            expected_difficulty: None,
+            finalized_block_zk_gas: Default::default(),
         })
     }
 

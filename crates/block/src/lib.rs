@@ -9,5 +9,8 @@ pub mod config;
 pub mod executor;
 /// Executor factory wiring for Taiko block execution.
 pub mod factory;
+/// Shared test utilities for zk gas integration tests.
+#[cfg(any(test, feature = "test-utils"))]
+pub mod testutil;
 /// Shared transaction-selection primitives used by block and RPC flows.
 pub mod tx_selection;

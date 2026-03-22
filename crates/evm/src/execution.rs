@@ -32,6 +32,8 @@ where
     type Block = <CTX as ContextTr>::Block;
     /// Output of transaction execution.
     type ExecutionResult = ExecutionResult<HaltReason>;
+    /// Error type for transaction execution, encapsulating both database errors and invalid
+    /// transaction errors.
     type Error = EVMError<<CTX::Db as Database>::Error, InvalidTransaction>;
 
     /// Set the block.

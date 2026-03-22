@@ -1,8 +1,14 @@
 use super::{anchor::validate_input_selector, *};
-use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
-use alloy_consensus::{Header, Signed, TxEip4844, TxLegacy};
+use std::sync::Arc;
+
+use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork};
+use alloy_consensus::{BlockBody, Header, Signed, TxEip4844, TxLegacy, constants::EMPTY_ROOT_HASH};
+use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
-use reth_ethereum::TransactionSigned;
+use reth_consensus::{FullConsensus, HeaderValidator};
+use reth_ethereum::{Receipt, TransactionSigned};
+use reth_execution_types::BlockExecutionResult;
+use reth_primitives_traits::{RecoveredBlock, SealedHeader};
 
 #[test]
 fn test_validate_against_parent_eip4396_base_fee() {
@@ -119,6 +125,71 @@ fn test_allows_non_blob_transactions() {
     assert!(validate_no_blob_transactions(&transactions).is_ok());
 }
 
+#[derive(Debug)]
+struct NullBlockReader;
+
+impl TaikoBlockReader for NullBlockReader {
+    fn block_timestamp_by_hash(&self, _hash: B256) -> Option<u64> {
+        None
+    }
+}
+
+#[test]
+fn pre_uzen_header_still_rejects_nonzero_difficulty() {
+    let consensus = test_consensus(devnet_chain_spec());
+    let header = Header { difficulty: U256::from(1_u64), ..Default::default() };
+
+    let err = consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect_err("pre-Uzen headers must still reject nonzero difficulty");
+    assert!(matches!(err, ConsensusError::TheMergeDifficultyIsNotZero));
+}
+
+#[test]
+fn uzen_header_allows_nonzero_difficulty() {
+    let consensus = test_consensus(uzen_chain_spec());
+    let header = Header {
+        timestamp: 1,
+        difficulty: U256::from(7_u64),
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        ..Default::default()
+    };
+
+    consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect("Uzen headers should allow nonzero difficulty");
+}
+
+#[test]
+fn uzen_post_execution_rejects_body_past_truncation_point() {
+    let consensus = test_consensus(uzen_chain_spec());
+    let header = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        gas_used: 0,
+        receipts_root: EMPTY_ROOT_HASH,
+        ..Default::default()
+    };
+    let block = reth_ethereum::Block {
+        header,
+        body: BlockBody { transactions: vec![make_legacy_tx()], ommers: vec![], withdrawals: None },
+    };
+    let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+    let result = BlockExecutionResult::<Receipt>::default();
+
+    let err = <TaikoBeaconConsensus as FullConsensus<reth_ethereum::EthPrimitives>>::validate_block_post_execution(
+        &consensus,
+        &recovered,
+        &result,
+        None,
+    )
+    .expect_err("Uzen blocks must reject bodies that extend past the truncation point");
+    assert!(matches!(err, ConsensusError::Other(_)));
+    assert!(err.to_string().contains("truncation"));
+}
+
 fn make_blob_tx() -> TransactionSigned {
     let tx = TxEip4844 {
         chain_id: ChainId::from(1u64),
@@ -149,4 +220,18 @@ fn make_legacy_tx() -> TransactionSigned {
     };
     let signature = Signature::new(U256::from(1), U256::from(2), false);
     Signed::new_unchecked(tx, signature, B256::ZERO).into()
+}
+
+fn test_consensus(chain_spec: TaikoChainSpec) -> TaikoBeaconConsensus {
+    TaikoBeaconConsensus::new(Arc::new(chain_spec), Arc::new(NullBlockReader))
+}
+
+fn devnet_chain_spec() -> TaikoChainSpec {
+    (*TAIKO_DEVNET).as_ref().clone()
+}
+
+fn uzen_chain_spec() -> TaikoChainSpec {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+    chain_spec
 }

@@ -19,7 +19,8 @@ use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
 use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
-    primitives::{Address, B256, U256},
+    context_interface::block::BlobExcessGasAndPrice,
+    primitives::{Address, B256, U256, hardfork::SpecId},
 };
 #[cfg(feature = "net")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
@@ -88,6 +89,13 @@ impl TaikoEvmConfig {
     }
 }
 
+/// Returns the zero blob-gas environment used for Cancun-or-later RPC execution.
+fn taiko_blob_excess_gas_and_price(spec: TaikoSpecId) -> Option<BlobExcessGasAndPrice> {
+    spec.into_eth_spec()
+        .is_enabled_in(SpecId::CANCUN)
+        .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 })
+}
+
 impl ConfigureEvm for TaikoEvmConfig {
     /// The primitives type used by the EVM.
     type Primitives = EthPrimitives;
@@ -135,7 +143,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             prevrandao: header.mix_hash(),
             gas_limit: header.gas_limit(),
             basefee,
-            blob_excess_gas_and_price: None,
+            blob_excess_gas_and_price: taiko_blob_excess_gas_and_price(spec),
         };
 
         Ok(EvmEnv { cfg_env, block_env })
@@ -172,7 +180,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             prevrandao: Some(attributes.prev_randao),
             gas_limit: attributes.gas_limit,
             basefee: attributes.base_fee_per_gas,
-            blob_excess_gas_and_price: None,
+            blob_excess_gas_and_price: taiko_blob_excess_gas_and_price(spec),
         };
 
         Ok((cfg, block_env).into())
@@ -250,7 +258,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             prevrandao: Some(payload.execution_payload.prev_randao),
             gas_limit: payload.execution_payload.gas_limit,
             basefee: payload.execution_payload.base_fee_per_gas.saturating_to(),
-            blob_excess_gas_and_price: None,
+            blob_excess_gas_and_price: taiko_blob_excess_gas_and_price(spec),
         };
 
         Ok((cfg_env, block_env).into())
@@ -362,6 +370,7 @@ mod tests {
     use super::*;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_hardforks::ForkCondition;
+    use std::sync::Arc;
 
     #[test]
     fn uzen_takes_precedence_over_shasta() {
@@ -381,5 +390,25 @@ mod tests {
 
         let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
         assert_eq!(selected, TaikoSpecId::SHASTA);
+    }
+
+    #[test]
+    fn uzen_evm_env_sets_zero_blob_excess_gas_and_price() {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+
+        let config = TaikoEvmConfig::new(Arc::new(chain_spec));
+        let header =
+            Header { number: 1, timestamp: 0, base_fee_per_gas: Some(1), ..Header::default() };
+
+        let env = config.evm_env(&header).expect("uzen env should build");
+        let blob_env = env
+            .block_env
+            .blob_excess_gas_and_price
+            .expect("uzen historical env should define blob gas pricing");
+
+        assert_eq!(blob_env.excess_blob_gas, 0);
+        assert_eq!(blob_env.blob_gasprice, 1);
     }
 }

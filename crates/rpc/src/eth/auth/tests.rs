@@ -427,7 +427,7 @@ fn returns_none_for_last_certain_block_without_mapping() {
 
     let api = create_test_api(factory, genesis_header);
 
-    let resolved = api.last_certain_block_id_by_batch_id(batch_id).unwrap();
+    let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
     assert_eq!(resolved, None);
 }
 
@@ -447,7 +447,7 @@ fn returns_last_certain_block_from_mapping() {
 
     let api = create_test_api(factory, genesis_header);
 
-    let resolved = api.last_certain_block_id_by_batch_id(batch_id).unwrap();
+    let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
     assert_eq!(resolved, Some(block_id));
 }
 
@@ -484,7 +484,7 @@ fn last_certain_block_does_not_fallback_to_scanning() {
 
     let api = create_test_api(factory, header);
 
-    let resolved = api.last_certain_block_id_by_batch_id(proposal_id).unwrap();
+    let resolved = api.read_cached_last_block_number_by_batch_id(proposal_id).unwrap();
     assert_eq!(resolved, None);
     let fallback_resolved = api.resolve_last_block_number_by_batch_id(proposal_id).unwrap();
     assert_eq!(fallback_resolved, U256::from(1u64));

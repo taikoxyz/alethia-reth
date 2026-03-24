@@ -52,6 +52,25 @@ impl<Pool, Eth, Evm, Provider> TaikoAuthExt<Pool, Eth, Evm, Provider>
 where
     Provider: DatabaseProviderFactory + BlockReaderIdExt,
 {
+    /// Reads the cached last block number for a batch ID from the database mapping only.
+    pub(super) fn read_cached_last_block_number_by_batch_id(
+        &self,
+        batch_id: U256,
+    ) -> RpcResult<Option<U256>> {
+        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
+        let batch_lookup = provider.into_tx().get::<BatchToLastBlock>(batch_id.to());
+        if let Ok(Some(block_number)) = batch_lookup {
+            return Ok(Some(U256::from(block_number)));
+        }
+        if let Err(error) = batch_lookup &&
+            !Self::is_missing_table_error(&error)
+        {
+            return Err(internal_eth_error(error).into());
+        }
+
+        Ok(None)
+    }
+
     /// Checks if a database error indicates a missing table or key.
     fn is_missing_table_error(error: &DatabaseError) -> bool {
         match error {
@@ -177,15 +196,8 @@ where
 
     /// Resolves the last block number, preferring the DB cache before scanning.
     pub(super) fn resolve_last_block_number_by_batch_id(&self, batch_id: U256) -> RpcResult<U256> {
-        let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
-        let batch_lookup = provider.into_tx().get::<BatchToLastBlock>(batch_id.to());
-        if let Ok(Some(block_number)) = batch_lookup {
-            return Ok(U256::from(block_number));
-        }
-        if let Err(error) = batch_lookup &&
-            !Self::is_missing_table_error(&error)
-        {
-            return Err(internal_eth_error(error).into());
+        if let Some(block_number) = self.read_cached_last_block_number_by_batch_id(batch_id)? {
+            return Ok(block_number);
         }
 
         match self.find_last_block_number_by_batch_id(batch_id)? {

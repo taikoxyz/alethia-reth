@@ -76,6 +76,9 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     /// Returns the last block ID for a given batch ID.
     #[method(name = "lastBlockIDByBatchID")]
     async fn last_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>>;
+    /// Returns the cached last block ID for a given batch ID without scanning the chain.
+    #[method(name = "lastCertainBlockIDByBatchID")]
+    async fn last_certain_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>>;
     /// Returns candidate transaction lists using a minimum tip threshold.
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
@@ -208,6 +211,11 @@ where
     /// Retrieves the last block ID for the given batch ID.
     async fn last_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>> {
         Ok(Some(self.resolve_last_block_number_by_batch_id(batch_id)?))
+    }
+
+    /// Retrieves the cached last block ID for the given batch ID without fallback scanning.
+    async fn last_certain_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>> {
+        self.read_cached_last_block_number_by_batch_id(batch_id)
     }
 
     /// Retrieves the transaction pool content with the given limits.

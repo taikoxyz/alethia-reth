@@ -27,6 +27,7 @@ use reth_provider::{
     test_utils::MockNodeTypesWithDB,
 };
 use std::{path::PathBuf, sync::Arc};
+use tokio::runtime::Builder;
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -449,6 +450,62 @@ fn returns_last_certain_block_from_mapping() {
 
     let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
     assert_eq!(resolved, Some(block_id));
+}
+
+#[test]
+/// Returns `None` when the cached batch mapping for the L1 origin is absent.
+fn returns_none_for_last_certain_l1_origin_without_mapping() {
+    let batch_id = U256::from(1u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let (factory, provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+    let runtime = Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+
+    let resolved = runtime
+        .block_on(api.last_certain_l1_origin_by_batch_id(batch_id))
+        .expect("resolve last certain l1 origin");
+    assert_eq!(resolved, None);
+}
+
+#[test]
+/// Returns the cached L1 origin when both the mapping and origin row exist.
+fn returns_last_certain_l1_origin_from_mapping() {
+    let batch_id = U256::from(1u64);
+    let block_id = U256::from(7u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let (factory, mut provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    {
+        let tx = provider_rw.tx_mut();
+        tx.put::<BatchToLastBlock>(batch_id.to(), block_id.to()).expect("insert batch mapping");
+        tx.put::<StoredL1OriginTable>(
+            block_id.to(),
+            StoredL1Origin {
+                block_id,
+                l2_block_hash: Default::default(),
+                l1_block_height: U256::from(3u64),
+                l1_block_hash: Default::default(),
+                build_payload_args_id: [0u8; 8],
+                is_forced_inclusion: false,
+                signature: [0u8; 65],
+            },
+        )
+        .expect("insert l1 origin");
+    }
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+    let runtime = Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+
+    let resolved = runtime
+        .block_on(api.last_certain_l1_origin_by_batch_id(batch_id))
+        .expect("resolve last certain l1 origin")
+        .expect("l1 origin should exist");
+    assert_eq!(resolved.block_id, block_id);
+    assert_eq!(resolved.l1_block_height, U256::from(3u64));
 }
 
 #[test]

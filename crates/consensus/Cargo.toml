@@ -25,6 +25,7 @@ full = [
 
 [dependencies]
 # Always available
+alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }

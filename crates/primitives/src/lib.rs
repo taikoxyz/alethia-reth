@@ -10,6 +10,8 @@ pub mod engine;
 pub mod extra_data;
 /// Payload-attribute and builder primitive types.
 pub mod payload;
+/// Shared transaction-type validation helpers.
+pub mod transaction;
 
 pub use extra_data::{
     SHASTA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg, decode_shasta_proposal_id,

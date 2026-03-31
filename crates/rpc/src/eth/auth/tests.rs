@@ -27,7 +27,6 @@ use reth_provider::{
     test_utils::MockNodeTypesWithDB,
 };
 use std::{path::PathBuf, sync::Arc};
-use tokio::runtime::Builder;
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -462,11 +461,8 @@ fn returns_none_for_last_certain_l1_origin_without_mapping() {
     provider_rw.commit().expect("commit");
 
     let api = create_test_api(factory, genesis_header);
-    let runtime = Builder::new_current_thread().enable_all().build().expect("tokio runtime");
 
-    let resolved = runtime
-        .block_on(api.last_certain_l1_origin_by_batch_id(batch_id))
-        .expect("resolve last certain l1 origin");
+    let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
     assert_eq!(resolved, None);
 }
 
@@ -498,11 +494,10 @@ fn returns_last_certain_l1_origin_from_mapping() {
     provider_rw.commit().expect("commit");
 
     let api = create_test_api(factory, genesis_header);
-    let runtime = Builder::new_current_thread().enable_all().build().expect("tokio runtime");
-
-    let resolved = runtime
-        .block_on(api.last_certain_l1_origin_by_batch_id(batch_id))
-        .expect("resolve last certain l1 origin")
+    let resolved = api
+        .read_cached_last_block_number_by_batch_id(batch_id)
+        .unwrap()
+        .and_then(|block_id| api.read_l1_origin_by_block_id(block_id).unwrap())
         .expect("l1 origin should exist");
     assert_eq!(resolved.block_id, block_id);
     assert_eq!(resolved.l1_block_height, U256::from(3u64));

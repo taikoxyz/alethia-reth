@@ -500,7 +500,7 @@ fn returns_last_certain_l1_origin_from_mapping() {
         .and_then(|block_id| api.read_l1_origin_by_block_id(block_id).unwrap())
         .expect("l1 origin should exist");
     assert_eq!(resolved.block_id, block_id);
-    assert_eq!(resolved.l1_block_height, U256::from(3u64));
+    assert_eq!(resolved.l1_block_height, Some(U256::from(3u64)));
 }
 
 #[test]

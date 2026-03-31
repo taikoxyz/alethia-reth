@@ -79,6 +79,12 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     /// Returns the cached last block ID for a given batch ID without scanning the chain.
     #[method(name = "lastCertainBlockIDByBatchID")]
     async fn last_certain_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>>;
+    /// Returns the cached L1 origin for a given batch ID without scanning the chain.
+    #[method(name = "lastCertainL1OriginByBatchID")]
+    async fn last_certain_l1_origin_by_batch_id(
+        &self,
+        batch_id: U256,
+    ) -> RpcResult<Option<RpcL1Origin>>;
     /// Returns candidate transaction lists using a minimum tip threshold.
     #[method(name = "txPoolContentWithMinTip")]
     async fn tx_pool_content_with_min_tip(
@@ -216,6 +222,18 @@ where
     /// Retrieves the cached last block ID for the given batch ID without fallback scanning.
     async fn last_certain_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>> {
         self.read_cached_last_block_number_by_batch_id(batch_id)
+    }
+
+    /// Retrieves the cached L1 origin for the given batch ID without fallback scanning.
+    async fn last_certain_l1_origin_by_batch_id(
+        &self,
+        batch_id: U256,
+    ) -> RpcResult<Option<RpcL1Origin>> {
+        let Some(block_id) = self.read_cached_last_block_number_by_batch_id(batch_id)? else {
+            return Ok(None);
+        };
+
+        self.read_l1_origin_by_block_id(block_id)
     }
 
     /// Retrieves the transaction pool content with the given limits.

@@ -417,6 +417,132 @@ fn returns_none_when_batch_mapping_exists_but_l1_origin_missing() {
 }
 
 #[test]
+/// Returns `None` when the cached batch mapping is absent.
+fn returns_none_for_last_certain_block_without_mapping() {
+    let batch_id = U256::from(1u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let (factory, provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+
+    let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
+    assert_eq!(resolved, None);
+}
+
+#[test]
+/// Returns the cached batch mapping when it exists.
+fn returns_last_certain_block_from_mapping() {
+    let batch_id = U256::from(1u64);
+    let block_id = U256::from(7u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let (factory, mut provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    {
+        let tx = provider_rw.tx_mut();
+        tx.put::<BatchToLastBlock>(batch_id.to(), block_id.to()).expect("insert batch mapping");
+    }
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+
+    let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
+    assert_eq!(resolved, Some(block_id));
+}
+
+#[test]
+/// Returns `None` when the cached batch mapping for the L1 origin is absent.
+fn returns_none_for_last_certain_l1_origin_without_mapping() {
+    let batch_id = U256::from(1u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let (factory, provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+
+    let resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
+    assert_eq!(resolved, None);
+}
+
+#[test]
+/// Returns the cached L1 origin when both the mapping and origin row exist.
+fn returns_last_certain_l1_origin_from_mapping() {
+    let batch_id = U256::from(1u64);
+    let block_id = U256::from(7u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let (factory, mut provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    {
+        let tx = provider_rw.tx_mut();
+        tx.put::<BatchToLastBlock>(batch_id.to(), block_id.to()).expect("insert batch mapping");
+        tx.put::<StoredL1OriginTable>(
+            block_id.to(),
+            StoredL1Origin {
+                block_id,
+                l2_block_hash: Default::default(),
+                l1_block_height: U256::from(3u64),
+                l1_block_hash: Default::default(),
+                build_payload_args_id: [0u8; 8],
+                is_forced_inclusion: false,
+                signature: [0u8; 65],
+            },
+        )
+        .expect("insert l1 origin");
+    }
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+    let resolved = api
+        .read_cached_last_block_number_by_batch_id(batch_id)
+        .unwrap()
+        .and_then(|block_id| api.read_l1_origin_by_block_id(block_id).unwrap())
+        .expect("l1 origin should exist");
+    assert_eq!(resolved.block_id, block_id);
+    assert_eq!(resolved.l1_block_height, Some(U256::from(3u64)));
+}
+
+#[test]
+/// Does not fall back to chain scanning when the cached batch mapping is absent.
+fn last_certain_block_does_not_fallback_to_scanning() {
+    let proposal_id = U256::from(0x010203040506u64);
+    let extra: Bytes = vec![0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06].into();
+    let input = anchor_v4_input();
+
+    let (factory, mut provider_rw) = create_taiko_test_provider_factory_with_genesis();
+
+    let header =
+        Header { number: 1, gas_limit: 1_000_000, extra_data: extra, ..Default::default() };
+    let body = BlockBody { transactions: vec![build_test_anchor_tx(&input)], ..Default::default() };
+    let block = header.clone().into_block(body);
+    let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+    provider_rw.insert_block(&recovered).expect("insert block");
+
+    {
+        let tx = provider_rw.tx_mut();
+        let confirmed_origin = StoredL1Origin {
+            block_id: U256::from(1u64),
+            l2_block_hash: Default::default(),
+            l1_block_height: U256::from(1u64),
+            l1_block_hash: Default::default(),
+            build_payload_args_id: [0u8; 8],
+            is_forced_inclusion: false,
+            signature: [0u8; 65],
+        };
+        tx.put::<StoredL1OriginTable>(1, confirmed_origin).expect("insert confirmed l1 origin");
+    }
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, header);
+
+    let resolved = api.read_cached_last_block_number_by_batch_id(proposal_id).unwrap();
+    assert_eq!(resolved, None);
+    let fallback_resolved = api.resolve_last_block_number_by_batch_id(proposal_id).unwrap();
+    assert_eq!(fallback_resolved, U256::from(1u64));
+}
+
+#[test]
 /// Returns invalid params when extra data is too short to decode the proposal ID.
 fn returns_invalid_params_when_extra_data_too_short() {
     let batch_id = U256::from(1u64);

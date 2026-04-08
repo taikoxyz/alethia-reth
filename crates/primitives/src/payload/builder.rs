@@ -4,7 +4,7 @@ use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::{Withdrawal, Withdrawals};
 use reth_ethereum_primitives::TransactionSigned;
-#[cfg(feature = "serde")]
+#[cfg(feature = "net")]
 use reth_payload_primitives::PayloadAttributes;
 use reth_primitives_traits::{Recovered, SignerRecoverable};
 use sha2::{Digest, Sha256};
@@ -53,7 +53,7 @@ pub struct TaikoPayloadBuilderAttributes {
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
 }
 
-#[cfg(feature = "serde")]
+#[cfg(feature = "net")]
 impl PayloadAttributes for TaikoPayloadBuilderAttributes {
     /// Returns the precomputed payload identifier bound to these payload-job attributes.
     fn payload_id(&self, _parent_hash: &B256) -> PayloadId {

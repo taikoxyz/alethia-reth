@@ -96,6 +96,7 @@ reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }

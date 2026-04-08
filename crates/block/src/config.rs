@@ -7,16 +7,17 @@ use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_chainspec::EthChainSpec;
-use reth_ethereum::EthPrimitives;
 use reth_ethereum_forks::Hardforks;
+use reth_ethereum_primitives::EthPrimitives;
 #[cfg(feature = "net")]
 use reth_evm::ConfigureEngineEvm;
 use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
-use reth_primitives::{BlockTy, SealedBlock, SealedHeader};
-use reth_primitives_traits::{SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA};
+use reth_primitives_traits::{
+    BlockTy, SealedBlock, SealedHeader, SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA,
+};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     primitives::{Address, B256, U256},
@@ -131,6 +132,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             gas_limit: header.gas_limit(),
             basefee,
             blob_excess_gas_and_price: None,
+            slot_num: 0,
         };
 
         Ok(EvmEnv { cfg_env, block_env })
@@ -163,6 +165,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             gas_limit: attributes.gas_limit,
             basefee: attributes.base_fee_per_gas,
             blob_excess_gas_and_price: None,
+            slot_num: 0,
         };
 
         Ok((cfg, block_env).into())
@@ -184,6 +187,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas,
             extra_data: block.header().extra_data.clone(),
+            tx_count_hint: Some(block.transaction_count()),
         })
     }
 
@@ -201,6 +205,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
+            tx_count_hint: None,
         })
     }
 }
@@ -241,6 +246,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             gas_limit: payload.execution_payload.gas_limit,
             basefee: payload.execution_payload.base_fee_per_gas.saturating_to(),
             blob_excess_gas_and_price: None,
+            slot_num: 0,
         };
 
         Ok((cfg_env, block_env).into())
@@ -258,6 +264,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
+            tx_count_hint: Some(
+                payload.execution_payload.transactions.as_ref().map_or(0, Vec::len),
+            ),
         })
     }
 

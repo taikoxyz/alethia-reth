@@ -137,6 +137,7 @@ impl<
 
         // Install the prometheus recorder to be sure to record all metrics
         let _ = install_prometheus_recorder();
+        let rt = runner.runtime();
 
         let components = |spec: Arc<C::ChainSpec>| {
             let evm = TaikoEvmConfig::new(spec.clone());
@@ -154,20 +155,21 @@ impl<
                 TaikoNodeCommand(command).execute(ctx, FnLauncher::new::<C, Ext>(launcher))
             }),
             Commands::Init(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>(rt))
             }
             Commands::InitState(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>(rt))
             }
             Commands::Import(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode, _>(components))
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode, _>(components, rt))
             }
             Commands::ImportEra(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>(rt))
             }
             Commands::ExportEra(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>(rt))
             }
+            Commands::SnapshotManifest(command) => command.execute(),
             Commands::DumpGenesis(command) => runner.run_blocking_until_ctrl_c(command.execute()),
             Commands::Db(command) => {
                 runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
@@ -183,7 +185,7 @@ impl<
                 runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
             }
             Commands::ReExecute(command) => {
-                runner.run_until_ctrl_c(command.execute::<TaikoNode>(components))
+                runner.run_until_ctrl_c(command.execute::<TaikoNode>(components, rt))
             }
         }
     }

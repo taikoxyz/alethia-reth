@@ -2,12 +2,11 @@
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
-use alloy_rpc_types_eth::Withdrawals;
-use reth_ethereum::TransactionSigned;
-use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
-use reth_payload_primitives::PayloadBuilderAttributes;
-use reth_primitives::Recovered;
-use reth_primitives_traits::SignerRecoverable;
+use alloy_rpc_types_eth::{Withdrawal, Withdrawals};
+use reth_ethereum_primitives::TransactionSigned;
+#[cfg(feature = "serde")]
+use reth_payload_primitives::PayloadAttributes;
+use reth_primitives_traits::{Recovered, SignerRecoverable};
 use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use tracing::debug;
@@ -16,9 +15,20 @@ use crate::payload::attributes::TaikoPayloadAttributes;
 
 /// Taiko Payload Builder Attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TaikoPayloadBuilderAttributes {
-    /// Inner ethereum payload builder attributes
-    pub payload_attributes: EthPayloadBuilderAttributes,
+    /// Unique identifier for the payload job.
+    pub id: PayloadId,
+    /// Parent block hash for the payload job.
+    pub parent: B256,
+    /// Suggested fee recipient from the CL payload attributes.
+    pub suggested_fee_recipient: Address,
+    /// Previous RANDAO mix from the CL payload attributes.
+    pub prev_randao: B256,
+    /// Withdrawals committed to the payload job.
+    pub withdrawals: Withdrawals,
+    /// Optional parent beacon block root for post-Cancun payloads.
+    pub parent_beacon_block_root: Option<B256>,
     /// Taiko related attributes.
     /// The hash of the RLP-encoded transactions in the L2 block.
     pub tx_list_hash: B256,
@@ -43,32 +53,39 @@ pub struct TaikoPayloadBuilderAttributes {
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
 }
 
-impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
-    /// The payload attributes that can be used to construct this type. Used as the argument in
-    /// [`PayloadBuilderAttributes::try_new`].
-    type RpcPayloadAttributes = TaikoPayloadAttributes;
-    /// The error type used in [`PayloadBuilderAttributes::try_new`].
-    type Error = alloy_rlp::Error;
+#[cfg(feature = "serde")]
+impl PayloadAttributes for TaikoPayloadBuilderAttributes {
+    /// Returns the precomputed payload identifier bound to these payload-job attributes.
+    fn payload_id(&self, _parent_hash: &B256) -> PayloadId {
+        self.id
+    }
 
+    /// Returns the timestamp for the running payload job.
+    fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the withdrawals configured for the running payload job.
+    fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
+        Some(&self.withdrawals)
+    }
+
+    /// Returns the optional parent beacon block root for the running payload job.
+    fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.parent_beacon_block_root
+    }
+}
+
+impl TaikoPayloadBuilderAttributes {
     /// Creates a new payload builder for the given parent block and the attributes.
     ///
     /// Derives the unique [`PayloadId`] for the given parent and attributes.
-    fn try_new(
+    pub fn try_new(
         parent: B256,
         attributes: TaikoPayloadAttributes,
         version: u8,
-    ) -> Result<Self, Self::Error> {
+    ) -> Result<Self, alloy_rlp::Error> {
         let id = payload_id_taiko(&parent, &attributes, version);
-
-        let payload_attributes = EthPayloadBuilderAttributes {
-            id,
-            parent,
-            timestamp: attributes.payload_attributes.timestamp,
-            suggested_fee_recipient: attributes.payload_attributes.suggested_fee_recipient,
-            prev_randao: attributes.payload_attributes.prev_randao,
-            withdrawals: attributes.payload_attributes.withdrawals.unwrap_or_default().into(),
-            parent_beacon_block_root: attributes.payload_attributes.parent_beacon_block_root,
-        };
 
         // Determine transaction source based on whether tx_list is provided.
         let transactions = match &attributes.block_metadata.tx_list {
@@ -120,7 +137,12 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
             .transpose()?;
 
         let res = Self {
-            payload_attributes,
+            id,
+            parent,
+            suggested_fee_recipient: attributes.payload_attributes.suggested_fee_recipient,
+            prev_randao: attributes.payload_attributes.prev_randao,
+            withdrawals: attributes.payload_attributes.withdrawals.unwrap_or_default().into(),
+            parent_beacon_block_root: attributes.payload_attributes.parent_beacon_block_root,
             tx_list_hash,
             beneficiary: attributes.block_metadata.beneficiary,
             gas_limit: attributes.block_metadata.gas_limit,
@@ -139,38 +161,38 @@ impl PayloadBuilderAttributes for TaikoPayloadBuilderAttributes {
     }
 
     /// Returns the id for the running payload job.
-    fn payload_id(&self) -> PayloadId {
-        self.payload_attributes.id
+    pub const fn payload_id(&self) -> PayloadId {
+        self.id
     }
 
     /// Returns the parent for the running payload job.
-    fn parent(&self) -> B256 {
-        self.payload_attributes.parent
+    pub const fn parent(&self) -> B256 {
+        self.parent
     }
 
-    /// Returns the timestamp for the running payload job.
-    fn timestamp(&self) -> u64 {
+    /// Convenience accessor mirroring [`PayloadAttributes::timestamp`].
+    pub const fn timestamp(&self) -> u64 {
         self.timestamp
     }
 
-    /// Returns the parent beacon block root for the running payload job.
-    fn parent_beacon_block_root(&self) -> Option<B256> {
-        self.payload_attributes.parent_beacon_block_root
+    /// Convenience accessor mirroring [`PayloadAttributes::parent_beacon_block_root`].
+    pub const fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.parent_beacon_block_root
     }
 
     /// Returns the suggested fee recipient for the running payload job.
-    fn suggested_fee_recipient(&self) -> Address {
-        self.beneficiary
+    pub const fn suggested_fee_recipient(&self) -> Address {
+        self.suggested_fee_recipient
     }
 
     /// Returns the random beacon value for the running payload job.
-    fn prev_randao(&self) -> B256 {
-        self.mix_hash
+    pub const fn prev_randao(&self) -> B256 {
+        self.prev_randao
     }
 
-    /// Returns the withdrawals for the running payload job.
-    fn withdrawals(&self) -> &Withdrawals {
-        &self.payload_attributes.withdrawals
+    /// Convenience accessor mirroring [`PayloadAttributes::withdrawals`].
+    pub const fn withdrawals(&self) -> &Withdrawals {
+        &self.withdrawals
     }
 }
 
@@ -220,10 +242,10 @@ mod test {
     use crate::payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes};
     use alloy_consensus::Header;
     use alloy_primitives::{Address, Bytes, U256, hex};
+    use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
     use reth_chainspec::ChainSpec;
     use reth_engine_local::LocalPayloadAttributesBuilder;
-    use reth_ethereum_engine_primitives::EthPayloadAttributes;
-    use reth_node_api::PayloadAttributesBuilder;
+    use reth_payload_primitives::PayloadAttributesBuilder;
     use reth_primitives_traits::SealedHeader;
     use std::sync::Arc;
 

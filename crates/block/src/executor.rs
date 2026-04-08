@@ -2,25 +2,21 @@
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
-    Database, FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
+    FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
     eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
-use alloy_primitives::{Address, Bytes, Uint};
+use alloy_primitives::{Address, Bytes, Log, Uint};
 use reth_evm::{
     Evm, OnStateHook,
     block::{
         BlockExecutionError, BlockExecutor, BlockValidationError, ExecutableTx,
-        InternalBlockExecutionError, StateChangeSource, SystemCaller,
+        InternalBlockExecutionError, StateChangeSource, StateDB, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
 use reth_execution_types::BlockExecutionResult;
-use reth_primitives::Log;
-use reth_revm::{
-    State,
-    context::{Block as _, result::ResultAndState},
-};
-use revm_database_interface::DatabaseCommit;
+use reth_revm::context::{Block as _, result::ResultAndState};
+use revm_database_interface::{Database, DatabaseCommit};
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
@@ -57,10 +53,11 @@ where
 {
     /// Creates a new [`TaikoBlockExecutor`]
     pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
+        let tx_count_hint = ctx.tx_count_hint.unwrap_or_default();
         Self {
             evm,
             ctx,
-            receipts: Vec::new(),
+            receipts: Vec::with_capacity(tx_count_hint),
             gas_used: 0,
             system_caller: SystemCaller::new(spec.clone()),
             spec,
@@ -70,13 +67,9 @@ where
     }
 }
 
-impl<'db, DB, E, Spec, R> BlockExecutor for TaikoBlockExecutor<'_, E, Spec, R>
+impl<E, Spec, R> BlockExecutor for TaikoBlockExecutor<'_, E, Spec, R>
 where
-    DB: Database + 'db,
-    E: Evm<
-            DB = &'db mut State<DB>,
-            Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-        >,
+    E: Evm<DB: StateDB, Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>>,
     Spec: TaikoExecutorSpec,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
 {
@@ -93,25 +86,16 @@ where
     /// NOTE: Here we use a system call to set the Anchor transact sender account information and
     /// decode the base fee share percentage from the block's extra data.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
-        // Set state clear flag if the block is after the Spurious Dragon hardfork.
-        let state_clear_flag =
-            self.spec.is_spurious_dragon_active_at_block(self.evm.block().number().to());
-        self.evm.db_mut().set_state_clear_flag(state_clear_flag);
-
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
         // Initialize the golden touch address nonce if it is not already set.
         if !self.evm_extra_execution_ctx_initialized {
-            let account_info = self
-                .evm
-                .db_mut()
-                .load_cache_account(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
-                .map_err(|e| {
-                    BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
-                })?
-                .account_info();
+            let account_info =
+                self.evm.db_mut().basic(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)).map_err(
+                    |e| BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into())),
+                )?;
 
             // Decode the base fee share percentage from the block's extra data.
             let base_fee_share_pgtg =
@@ -289,11 +273,28 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{U64, U256};
+    use std::sync::Arc;
+
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_evm::EvmFactory;
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
+    use reth_ethereum_primitives::TransactionSigned;
+    use reth_evm::{ConfigureEvm, block::BlockExecutor};
+    use reth_evm_ethereum::RethReceiptBuilder;
+    use reth_primitives_traits::SignedTransaction;
+    use reth_revm::{
+        db::{CacheDB, EmptyDB},
+        state::AccountInfo,
+    };
 
     use alethia_reth_evm::alloy::decode_anchor_system_call_data;
 
     use super::*;
+    use crate::{
+        config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
+        factory::TaikoBlockExecutionCtx,
+    };
+    use alethia_reth_chainspec::spec::TaikoChainSpec;
 
     #[test]
     fn test_encode_anchor_system_call_data() {
@@ -319,6 +320,81 @@ mod test {
                 &U256::from_limbs([base_fee_share_pctg, 0, 0, 0]).to_be_bytes::<32>(),
             )),
             base_fee_share_pctg
+        );
+    }
+
+    #[test]
+    fn test_apply_pre_execution_changes_initializes_anchor_context_from_account_nonce() {
+        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let config = TaikoEvmConfig::new(chain_spec.clone());
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_spec.inner.chain().id());
+        let nonce = 7;
+
+        let make_executor = || {
+            let mut db = CacheDB::<EmptyDB>::default();
+            db.insert_account_info(
+                golden_touch,
+                AccountInfo { nonce, balance: U256::ZERO, ..Default::default() },
+            );
+
+            let evm_env = config
+                .next_evm_env(
+                    &alloy_consensus::Header::default(),
+                    &TaikoNextBlockEnvAttributes {
+                        timestamp: 1,
+                        suggested_fee_recipient: Address::ZERO,
+                        prev_randao: B256::ZERO,
+                        gas_limit: 30_000_000,
+                        extra_data: Bytes::new(),
+                        base_fee_per_gas: 1,
+                    },
+                )
+                .expect("next block env should build");
+            let evm = config.evm_factory.create_evm(db, evm_env);
+
+            TaikoBlockExecutor::new(
+                evm,
+                TaikoBlockExecutionCtx {
+                    parent_hash: B256::ZERO,
+                    parent_beacon_block_root: None,
+                    ommers: &[],
+                    withdrawals: None,
+                    basefee_per_gas: 1,
+                    extra_data: Bytes::new(),
+                    tx_count_hint: Some(1),
+                },
+                chain_spec.clone(),
+                RethReceiptBuilder::default(),
+            )
+        };
+
+        let tx = TxLegacy {
+            chain_id: Some(ChainId::from(chain_spec.inner.chain().id())),
+            nonce,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(treasury),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let signature = Signature::new(U256::from(1), U256::from(2), false);
+        let signed: TransactionSigned = Signed::new_unchecked(tx, signature, B256::ZERO).into();
+        let anchor_tx = signed.with_signer(golden_touch);
+
+        let mut executor_without_init = make_executor();
+        assert!(
+            executor_without_init.execute_transaction(anchor_tx.clone()).is_err(),
+            "without pre-execution initialization, the zero-balance golden-touch tx must not be treated as anchor"
+        );
+
+        let mut executor_with_init = make_executor();
+        executor_with_init
+            .apply_pre_execution_changes()
+            .expect("pre-execution changes should succeed");
+        assert!(
+            executor_with_init.execute_transaction(anchor_tx).is_ok(),
+            "pre-execution initialization should seed anchor detection from the golden-touch account nonce"
         );
     }
 }

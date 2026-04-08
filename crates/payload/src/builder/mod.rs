@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
-use reth::{
-    api::{PayloadBuilderAttributes, PayloadBuilderError},
-    providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{State, database::StateProviderDatabase},
-};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
+    is_better_payload,
 };
 use reth_ethereum::EthPrimitives;
-use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_evm::{
     ConfigureEvm,
-    execute::{BlockBuilder, BlockBuilderOutcome},
+    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutor},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
+use reth_execution_cache::CachedStateProvider;
+use reth_payload_builder::EthBuiltPayload;
+use reth_payload_builder_primitives::PayloadBuilderError;
+use reth_provider::{BlockReader, ChainSpecProvider, StateProviderFactory};
+use reth_revm::{database::StateProviderDatabase, db::State};
 use tracing::{debug, warn};
 
 use alethia_reth_block::{
@@ -25,7 +25,9 @@ use alethia_reth_block::{
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::ANCHOR_V3_V4_GAS_LIMIT;
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_primitives::payload::builder::TaikoPayloadBuilderAttributes;
+use alethia_reth_primitives::payload::{
+    attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes,
+};
 
 use self::execution::{
     ExecutionOutcome, PoolExecutionContext, execute_anchor_and_pool_transactions,
@@ -77,7 +79,7 @@ where
         > + Clone,
 {
     /// The payload attributes type to accept for building.
-    type Attributes = TaikoPayloadBuilderAttributes;
+    type Attributes = TaikoPayloadAttributes;
     /// The type of the built payload.
     type BuiltPayload = EthBuiltPayload;
 
@@ -95,7 +97,7 @@ where
     /// A `Result` indicating the build outcome or an error.
     fn try_build(
         &self,
-        args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
+        args: BuildArguments<TaikoPayloadAttributes, EthBuiltPayload>,
     ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
         taiko_payload(&self.evm_config, &self.client, &self.pool, args)
     }
@@ -105,18 +107,55 @@ where
     /// This can happen if the CL requests a payload before the first payload has been built.
     fn on_missing_payload(
         &self,
-        _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
-        MissingPayloadBehaviour::AwaitInProgress
+        missing_payload_behaviour(args.config)
     }
 
     /// Builds an empty payload without any transaction.
     fn build_empty_payload(
         &self,
-        _config: PayloadConfig<TaikoPayloadBuilderAttributes>,
+        config: PayloadConfig<TaikoPayloadAttributes>,
     ) -> Result<EthBuiltPayload, PayloadBuilderError> {
-        Err(PayloadBuilderError::MissingPayload)
+        empty_payload_result(config)
     }
+}
+
+/// Normalizes engine-facing payload config into the Taiko builder attribute shape.
+fn normalize_payload_config(
+    config: &PayloadConfig<TaikoPayloadAttributes>,
+) -> Result<TaikoPayloadBuilderAttributes, PayloadBuilderError> {
+    let mut attributes = TaikoPayloadBuilderAttributes::try_new(
+        config.parent_header.hash(),
+        config.attributes.clone(),
+        0,
+    )
+    .map_err(PayloadBuilderError::other)?;
+    attributes.id = config.payload_id;
+    Ok(attributes)
+}
+
+/// Returns true if the built payload should be frozen for the remainder of the job.
+fn should_freeze_payload(attributes: &TaikoPayloadBuilderAttributes) -> bool {
+    attributes.transactions.is_some()
+}
+
+/// Determines missing-payload behavior for Taiko payload jobs.
+fn missing_payload_behaviour(
+    config: PayloadConfig<TaikoPayloadAttributes>,
+) -> MissingPayloadBehaviour<EthBuiltPayload> {
+    match normalize_payload_config(&config) {
+        Ok(_) => MissingPayloadBehaviour::AwaitInProgress,
+        Err(err) => MissingPayloadBehaviour::RacePayload(Box::new(move || Err(err))),
+    }
+}
+
+/// Resolves an empty-payload request for Taiko payload jobs.
+fn empty_payload_result(
+    config: PayloadConfig<TaikoPayloadAttributes>,
+) -> Result<EthBuiltPayload, PayloadBuilderError> {
+    normalize_payload_config(&config)?;
+    Err(PayloadBuilderError::MissingPayload)
 }
 
 /// Build a Taiko payload for the given parent/header and job attributes.
@@ -125,7 +164,7 @@ fn taiko_payload<EvmConfig, Client, Pool>(
     evm_config: &EvmConfig,
     client: &Client,
     pool: &Pool,
-    args: BuildArguments<TaikoPayloadBuilderAttributes, EthBuiltPayload>,
+    args: BuildArguments<TaikoPayloadAttributes, EthBuiltPayload>,
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
     EvmConfig: ConfigureEvm<
@@ -139,26 +178,38 @@ where
             BlockAssembler = TaikoBlockAssembler,
         >,
     EvmConfig::Error: core::fmt::Debug,
-    Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TaikoChainSpec>
-        + reth_provider::BlockReader,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TaikoChainSpec> + BlockReader,
     Pool: reth_transaction_pool::TransactionPool<
             Transaction: reth_transaction_pool::PoolTransaction<
                 Consensus = reth_ethereum::TransactionSigned,
             >,
         >,
 {
-    let BuildArguments { mut cached_reads, config, cancel, best_payload: _ } = args;
-    let PayloadConfig { parent_header, attributes } = config;
+    let BuildArguments {
+        mut cached_reads,
+        execution_cache,
+        trie_handle,
+        config,
+        cancel,
+        best_payload,
+    } = args;
+    let attributes = normalize_payload_config(&config)?;
+    let PayloadConfig { parent_header, attributes: _, payload_id } = config;
 
-    let state_provider = client.state_by_block_hash(parent_header.hash())?;
+    let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
+    if let Some(execution_cache) = execution_cache {
+        state_provider = Box::new(CachedStateProvider::new(
+            state_provider,
+            execution_cache.cache().clone(),
+            execution_cache.metrics().clone(),
+        ));
+    }
     let state = StateProviderDatabase::new(state_provider.as_ref());
     let mut db =
-        State::builder().with_database_ref(cached_reads.as_db(state)).with_bundle_update().build();
+        State::builder().with_database(cached_reads.as_db_mut(state)).with_bundle_update().build();
 
-    debug!(target: "payload_builder", id=%attributes.payload_id(), parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
+    debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
-    // Create block builder using the ConfigureEvm API
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,
@@ -174,27 +225,27 @@ where
         )
         .map_err(PayloadBuilderError::other)?;
 
+    if let Some(ref handle) = trie_handle {
+        builder.executor_mut().set_state_hook(Some(Box::new(handle.state_hook())));
+    }
+
     builder.apply_pre_execution_changes().map_err(PayloadBuilderError::other)?;
 
-    // Get the base fee from the builder (already calculated based on attributes)
     let base_fee = builder.evm_mut().block.basefee;
 
-    // Execute transactions - either from provided list (legacy) or from mempool (new mode)
     let total_fees = match &attributes.transactions {
         Some(transactions) => {
-            // Legacy mode: Use provided transactions
-            debug!(target: "payload_builder", id=%attributes.payload_id(), tx_count=transactions.len(), "using provided transaction list");
+            debug!(target: "payload_builder", id=%payload_id, tx_count=transactions.len(), "using provided transaction list");
             match execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)? {
                 ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
                 ExecutionOutcome::Completed(fees) => fees,
             }
         }
         None => {
-            // New mode: Select transactions from mempool
-            debug!(target: "payload_builder", id=%attributes.payload_id(), "selecting transactions from mempool");
+            debug!(target: "payload_builder", id=%payload_id, "selecting transactions from mempool");
 
             let anchor_tx = attributes.anchor_transaction.as_ref().ok_or_else(|| {
-                warn!(target: "payload_builder", id=%attributes.payload_id(), "missing prebuilt anchor transaction in new mode");
+                warn!(target: "payload_builder", id=%payload_id, "missing prebuilt anchor transaction in new mode");
                 PayloadBuilderError::MissingPayload
             })?;
 
@@ -202,7 +253,7 @@ where
                 anchor_tx,
                 parent_header: &parent_header,
                 block_timestamp: attributes.timestamp(),
-                payload_id: attributes.payload_id().to_string(),
+                payload_id: payload_id.to_string(),
                 base_fee,
                 gas_limit: attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
             };
@@ -215,18 +266,132 @@ where
         }
     };
 
-    let BlockBuilderOutcome { execution_result: _, block, .. } =
-        builder.finish(state_provider.as_ref())?;
+    if !is_better_payload(best_payload.as_ref(), total_fees) {
+        drop(builder);
+        return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads });
+    }
 
-    // Seal the block
-    let sealed_block = Arc::new(block.sealed_block().clone());
-    debug!(target: "payload_builder", id=%attributes.payload_id(), sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+    let BlockBuilderOutcome { execution_result: _, block, .. } = if let Some(mut handle) =
+        trie_handle
+    {
+        builder.executor_mut().set_state_hook(None);
 
-    // Build the payload
-    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(
-        attributes.payload_id(),
-        sealed_block,
-        total_fees,
-        None,
-    )))
+        match handle.state_root() {
+            Ok(outcome) => {
+                debug!(target: "payload_builder", id=%payload_id, state_root=?outcome.state_root, "received state root from sparse trie");
+                builder.finish(
+                    state_provider.as_ref(),
+                    Some((outcome.state_root, Arc::unwrap_or_clone(outcome.trie_updates))),
+                )?
+            }
+            Err(err) => {
+                warn!(target: "payload_builder", id=%payload_id, %err, "sparse trie failed, falling back to sync state root");
+                builder.finish(state_provider.as_ref(), None)?
+            }
+        }
+    } else {
+        builder.finish(state_provider.as_ref(), None)?
+    };
+
+    let sealed_block = Arc::new(block.into_sealed_block());
+    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+
+    let payload = EthBuiltPayload::new(sealed_block, total_fees, None);
+    if should_freeze_payload(&attributes) {
+        Ok(BuildOutcome::Freeze(payload))
+    } else {
+        Ok(BuildOutcome::Better { payload, cached_reads })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
+    use alloy_consensus::Header;
+    use alloy_primitives::{Address, B256, Bytes, U256};
+    use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
+    use reth_basic_payload_builder::PayloadConfig;
+    use reth_primitives_traits::SealedHeader;
+    use std::sync::Arc;
+
+    fn test_payload_config(
+        tx_list: Option<Bytes>,
+        base_fee_per_gas: U256,
+        anchor_transaction: Option<Bytes>,
+    ) -> PayloadConfig<TaikoPayloadAttributes> {
+        let parent_header = Arc::new(SealedHeader::seal_slow(Header {
+            number: 7,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        }));
+        let payload_id = PayloadId::new([9; 8]);
+        let attributes = TaikoPayloadAttributes {
+            payload_attributes: EthPayloadAttributes {
+                timestamp: 42,
+                prev_randao: B256::repeat_byte(0x11),
+                suggested_fee_recipient: Address::repeat_byte(0x22),
+                withdrawals: Some(Vec::new()),
+                parent_beacon_block_root: Some(B256::repeat_byte(0x33)),
+            },
+            base_fee_per_gas,
+            block_metadata: TaikoBlockMetadata {
+                beneficiary: Address::repeat_byte(0x44),
+                gas_limit: 30_000_000,
+                timestamp: U256::from(42),
+                mix_hash: B256::repeat_byte(0x55),
+                tx_list,
+                extra_data: Bytes::new(),
+            },
+            l1_origin: RpcL1Origin {
+                block_id: U256::ZERO,
+                l2_block_hash: B256::ZERO,
+                l1_block_height: None,
+                l1_block_hash: None,
+                build_payload_args_id: [0; 8],
+                is_forced_inclusion: false,
+                signature: [0; 65],
+            },
+            anchor_transaction,
+        };
+
+        PayloadConfig::new(parent_header, attributes, payload_id)
+    }
+
+    #[test]
+    fn fixed_transaction_lists_freeze_payload_builds() {
+        let config = test_payload_config(Some(Bytes::new()), U256::from(1u64), None);
+        let attributes = normalize_payload_config(&config).expect("config should normalize");
+
+        assert!(should_freeze_payload(&attributes));
+    }
+
+    #[test]
+    fn malformed_attrs_race_payload_error_on_missing_payload() {
+        let config = test_payload_config(None, U256::from(u128::from(u64::MAX) + 1), None);
+
+        let behaviour = missing_payload_behaviour(config);
+        let MissingPayloadBehaviour::RacePayload(job) = behaviour else {
+            panic!("expected malformed attrs to race the validation error");
+        };
+
+        let err = job().expect_err("malformed attrs should surface an error");
+        assert!(err.to_string().contains("invalid attributes.base_fee_per_gas"));
+    }
+
+    #[test]
+    fn malformed_attrs_fail_empty_payload_resolution_with_validation_error() {
+        let config = test_payload_config(None, U256::from(1u64), Some(Bytes::from(vec![0x01])));
+
+        let err = empty_payload_result(config).expect_err("malformed attrs should fail");
+        assert!(err.to_string().contains("invalid anchor_transaction"));
+    }
+
+    #[test]
+    fn valid_attrs_still_reject_empty_payloads() {
+        let config = test_payload_config(None, U256::from(1u64), None);
+
+        let err = empty_payload_result(config).expect_err("Taiko should not build empty payloads");
+        assert!(matches!(err, PayloadBuilderError::MissingPayload));
+    }
 }

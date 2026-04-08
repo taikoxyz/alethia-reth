@@ -1,6 +1,24 @@
 use super::{anchor::validate_input_selector, *};
 use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
-use alloy_consensus::Header;
+use alloy_consensus::{BlockBody, EMPTY_OMMER_ROOT_HASH, Header};
+use alloy_primitives::{B256, FixedBytes};
+use reth_consensus::{Consensus, ConsensusError};
+use reth_ethereum_primitives::Block;
+use reth_primitives_traits::SealedBlock;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct NoopBlockReader;
+
+impl TaikoBlockReader for NoopBlockReader {
+    fn block_timestamp_by_hash(&self, _hash: B256) -> Option<u64> {
+        None
+    }
+}
+
+fn test_consensus() -> TaikoBeaconConsensus {
+    TaikoBeaconConsensus::new(TAIKO_DEVNET.clone(), Arc::new(NoopBlockReader))
+}
 
 #[test]
 fn test_validate_against_parent_eip4396_base_fee() {
@@ -99,4 +117,34 @@ fn test_min_base_fee_to_clamp_defaults_for_non_mainnet() {
         MIN_BASE_FEE,
         "Non-mainnet chains should use the non-mainnet clamp"
     );
+}
+
+#[test]
+fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
+    let mut header = Header::default();
+    header.ommers_hash = FixedBytes::<32>::with_last_byte(1);
+    let expected = header.ommers_hash;
+
+    let block = SealedBlock::seal_slow(Block { header, body: BlockBody::default() });
+
+    assert!(matches!(
+        test_consensus().validate_block_pre_execution(&block),
+        Err(ConsensusError::BodyOmmersHashDiff(diff))
+            if diff.got == EMPTY_OMMER_ROOT_HASH && diff.expected == expected
+    ));
+}
+
+#[test]
+fn test_validate_block_pre_execution_rejects_non_empty_ommers_body_with_empty_header_hash() {
+    let header = Header::default();
+    let body = BlockBody { ommers: vec![Header::default()], ..Default::default() };
+    let expected = body.calculate_ommers_root();
+
+    let block = SealedBlock::seal_slow(Block { header, body });
+
+    assert!(matches!(
+        test_consensus().validate_block_pre_execution(&block),
+        Err(ConsensusError::BodyOmmersHashDiff(diff))
+            if diff.got == expected && diff.expected == EMPTY_OMMER_ROOT_HASH
+    ));
 }

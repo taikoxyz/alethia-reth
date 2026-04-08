@@ -5,11 +5,10 @@ use alloy_chains::Chain;
 use alloy_consensus::Header;
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
-use alloy_hardforks::{
-    EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Head,
-};
+use alloy_hardforks::{EthereumHardfork, ForkCondition, ForkFilter, ForkId, Hardfork, Head};
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks};
+use reth_ethereum_forks::EthereumHardforks;
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 

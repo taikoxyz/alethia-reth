@@ -3,15 +3,15 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_evm::{
-    Database, EvmFactory, FromRecoveredTx, FromTxWithEncoded,
-    block::{BlockExecutorFactory, BlockExecutorFor},
+    EvmFactory, FromRecoveredTx, FromTxWithEncoded,
+    block::{BlockExecutorFactory, BlockExecutorFor, StateDB},
     eth::receipt_builder::ReceiptBuilder,
 };
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_primitives::Log;
-use reth_revm::{Inspector, State};
+use reth_primitives_traits::Log;
+use reth_revm::Inspector;
 
 use crate::executor::TaikoBlockExecutor;
 use alethia_reth_chainspec::spec::{TaikoChainSpec, TaikoExecutorSpec};
@@ -32,6 +32,8 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub basefee_per_gas: u64,
     /// Block extra data.
     pub extra_data: Bytes,
+    /// Block transactions count hint. Used to preallocate the receipts vector.
+    pub tx_count_hint: Option<usize>,
 }
 
 /// Taiko block executor factory.
@@ -99,12 +101,12 @@ where
     /// Creates an Taiko block executor with given EVM and execution context.
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: EvmF::Evm<&'a mut State<DB>, I>,
+        evm: EvmF::Evm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: Database + 'a,
-        I: Inspector<EvmF::Context<&'a mut State<DB>>> + 'a,
+        DB: StateDB + 'a,
+        I: Inspector<EvmF::Context<DB>> + 'a,
     {
         TaikoBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)
     }

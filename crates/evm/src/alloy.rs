@@ -5,17 +5,19 @@ use std::{
 };
 
 use alloy_evm::{Database, Evm, EvmEnv};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 // Re-export from primitives so downstream consumers can use the lighter crate.
 pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
         BlockEnv, CfgEnv, TxEnv,
-        result::{EVMError, ExecutionResult, HaltReason, Output, ResultAndState, SuccessReason},
+        result::{
+            EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
+        },
     },
     handler::PrecompileProvider,
     interpreter::InterpreterResult,
-    primitives::{Address, Bytes, TxKind, U256},
 };
 use tracing::debug;
 
@@ -168,8 +170,7 @@ where
             return Ok(ResultAndState {
                 result: ExecutionResult::Success {
                     reason: SuccessReason::Return,
-                    gas_used: 0,
-                    gas_refunded: 0,
+                    gas: ResultGas::new(0, 0, 0, 0, 0),
                     logs: vec![],
                     output: Output::Call(Bytes::new()),
                 },

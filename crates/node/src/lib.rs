@@ -33,15 +33,14 @@ use reth_node_api::{BlockTy, NodeAddOns, PayloadAttributesBuilder, PayloadTypes}
 use reth_node_builder::{
     NodeAdapter,
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, PayloadValidatorBuilder, RethRpcAddOns,
-        RpcAddOns, RpcHandle, RpcHooks,
+        EngineApiBuilder, EngineValidatorAddOn, EngineValidatorBuilder, Identity,
+        PayloadValidatorBuilder, RethRpcAddOns, RethRpcMiddleware, RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::node::EthereumPoolBuilder;
-use reth_rpc::eth::core::EthRpcConverterFor;
 use rpc::{
     engine::{builder::TaikoEngineApiBuilder, validator::TaikoEngineValidatorBuilder},
-    eth::{builder::TaikoEthApiBuilder, types::TaikoEthApi},
+    eth::builder::TaikoEthApiBuilder,
 };
 use std::sync::Arc;
 
@@ -60,78 +59,159 @@ impl NodeTypes for TaikoNode {
     type Payload = TaikoEngineTypes;
 }
 
-/// Taiko custom addons which configuring RPC types.
-pub struct TaikoAddOns<N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>, PVB>(
-    RpcAddOns<N, TaikoEthApiBuilder, PVB, TaikoEngineApiBuilder<PVB>>,
-);
+/// Taiko custom addons which configure RPC types.
+#[derive(Debug)]
+pub struct TaikoAddOns<
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    EthB: reth_node_builder::rpc::EthApiBuilder<N> = TaikoEthApiBuilder,
+    PVB = TaikoEngineValidatorBuilder,
+    EB = TaikoEngineApiBuilder<PVB>,
+    EVB = TaikoEngineValidatorBuilder,
+    RpcMiddleware = Identity,
+> {
+    /// Inner RPC addon wiring that launches the node servers.
+    inner: RpcAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>,
+}
 
-impl<N, PVB> Default for TaikoAddOns<N, PVB>
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> TaikoAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
-    PVB: Default,
+    EthB: reth_node_builder::rpc::EthApiBuilder<N>,
 {
-    /// Creates a new instance of `TaikoAddOns` with default configurations.
-    fn default() -> Self {
-        let add_ons = RpcAddOns::new(
-            TaikoEthApiBuilder::default(),
-            PVB::default(),
-            TaikoEngineApiBuilder::default(),
-            Default::default(),
-            Default::default(),
-        );
+    /// Creates a new Taiko addon wrapper from the underlying RPC addon wiring.
+    pub const fn new(inner: RpcAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>) -> Self {
+        Self { inner }
+    }
 
-        TaikoAddOns(add_ons)
+    /// Replaces the engine API builder.
+    pub fn with_engine_api<T>(
+        self,
+        engine_api_builder: T,
+    ) -> TaikoAddOns<N, EthB, PVB, T, EVB, RpcMiddleware>
+    where
+        T: Send,
+    {
+        let Self { inner } = self;
+        TaikoAddOns::new(inner.with_engine_api(engine_api_builder))
+    }
+
+    /// Replaces the payload validator builder.
+    pub fn with_payload_validator<T>(
+        self,
+        payload_validator_builder: T,
+    ) -> TaikoAddOns<N, EthB, T, EB, EVB, RpcMiddleware> {
+        let Self { inner } = self;
+        TaikoAddOns::new(inner.with_payload_validator(payload_validator_builder))
+    }
+
+    /// Replaces the engine validator builder.
+    pub fn with_engine_validator<T>(
+        self,
+        engine_validator_builder: T,
+    ) -> TaikoAddOns<N, EthB, PVB, EB, T, RpcMiddleware> {
+        let Self { inner } = self;
+        TaikoAddOns::new(inner.with_engine_validator(engine_validator_builder))
+    }
+
+    /// Replaces the RPC middleware stack.
+    pub fn with_rpc_middleware<T>(self, rpc_middleware: T) -> TaikoAddOns<N, EthB, PVB, EB, EVB, T>
+    where
+        T: Send,
+    {
+        let Self { inner } = self;
+        TaikoAddOns::new(inner.with_rpc_middleware(rpc_middleware))
+    }
+
+    /// Sets the tokio runtime for the RPC servers.
+    pub fn with_tokio_runtime(self, tokio_runtime: Option<tokio::runtime::Handle>) -> Self {
+        let Self { inner } = self;
+        Self { inner: inner.with_tokio_runtime(tokio_runtime) }
     }
 }
 
-impl<N, PVB> NodeAddOns<N> for TaikoAddOns<N, PVB>
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> Default
+    for TaikoAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    EthB: Default + reth_node_builder::rpc::EthApiBuilder<N>,
+    PVB: Default,
+    EB: Default,
+    EVB: Default,
+    RpcMiddleware: Default,
+{
+    /// Creates a new instance of `TaikoAddOns` with default configurations.
+    fn default() -> Self {
+        Self::new(RpcAddOns::new(
+            EthB::default(),
+            PVB::default(),
+            EB::default(),
+            EVB::default(),
+            Default::default(),
+        ))
+    }
+}
+
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> NodeAddOns<N>
+    for TaikoAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
+where
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    EthB: reth_node_builder::rpc::EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N> + Clone,
     PVB::Validator: PayloadValidator<<N::Types as NodeTypes>::Payload, Block = BlockTy<N::Types>>
         + EngineApiValidator<<N::Types as NodeTypes>::Payload>,
+    EB: EngineApiBuilder<N>,
+    EVB: EngineValidatorBuilder<N>,
+    RpcMiddleware: RethRpcMiddleware,
 {
     /// Handle to add-ons.
-    type Handle = RpcHandle<N, TaikoEthApi<N, EthRpcConverterFor<N>>>;
+    type Handle = RpcHandle<N, EthB::EthApi>;
 
     /// Configures and launches the add-ons.
     async fn launch_add_ons(
         self,
         ctx: reth_node_api::AddOnsContext<'_, N>,
     ) -> eyre::Result<Self::Handle> {
-        self.0.launch_add_ons(ctx).await
+        self.inner.launch_add_ons(ctx).await
     }
 }
 
-impl<N, PVB> RethRpcAddOns<N> for TaikoAddOns<N, PVB>
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> RethRpcAddOns<N>
+    for TaikoAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    EthB: reth_node_builder::rpc::EthApiBuilder<N>,
     PVB: PayloadValidatorBuilder<N> + Clone,
     PVB::Validator: PayloadValidator<<N::Types as NodeTypes>::Payload, Block = BlockTy<N::Types>>
         + EngineApiValidator<<N::Types as NodeTypes>::Payload>,
+    EB: EngineApiBuilder<N>,
+    EVB: EngineValidatorBuilder<N>,
+    RpcMiddleware: RethRpcMiddleware,
 {
     /// eth API implementation.
-    type EthApi = TaikoEthApi<N, EthRpcConverterFor<N>>;
+    type EthApi = EthB::EthApi;
 
     /// Returns a mutable reference to RPC hooks.
     fn hooks_mut(&mut self) -> &mut RpcHooks<N, Self::EthApi> {
-        self.0.hooks_mut()
+        self.inner.hooks_mut()
     }
 }
 
-impl<N, PVB> EngineValidatorAddOn<N> for TaikoAddOns<N, PVB>
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> EngineValidatorAddOn<N>
+    for TaikoAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
-    PVB: PayloadValidatorBuilder<N> + Send,
-    PVB::Validator: PayloadValidator<<N::Types as NodeTypes>::Payload, Block = BlockTy<N::Types>>
-        + EngineApiValidator<<N::Types as NodeTypes>::Payload>,
+    EthB: reth_node_builder::rpc::EthApiBuilder<N>,
+    PVB: Send,
+    EB: EngineApiBuilder<N>,
+    EVB: EngineValidatorBuilder<N>,
+    RpcMiddleware: Send,
 {
     /// The ValidatorBuilder type to use for the engine API.
-    type ValidatorBuilder = BasicEngineValidatorBuilder<PVB>;
+    type ValidatorBuilder = EVB;
 
     /// Returns the engine validator builder.
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
-        EngineValidatorAddOn::<N>::engine_validator_builder(&self.0)
+        EngineValidatorAddOn::<N>::engine_validator_builder(&self.inner)
     }
 }
 
@@ -150,7 +230,7 @@ where
     >;
 
     /// Exposes the customizable node add-on types.
-    type AddOns = TaikoAddOns<NodeAdapter<N>, TaikoEngineValidatorBuilder>;
+    type AddOns = TaikoAddOns<NodeAdapter<N>>;
 
     /// Returns a [`NodeComponentsBuilder`] for the node.
     fn components_builder(&self) -> Self::ComponentsBuilder {

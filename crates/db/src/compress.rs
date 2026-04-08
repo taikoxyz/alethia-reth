@@ -1,6 +1,6 @@
 use alloy_primitives::{B256, U256};
 use alloy_rlp::{Buf, BufMut};
-use reth_codecs::Compact;
+use reth_codecs::{Compact, DecompressError};
 
 use crate::model::StoredL1Origin;
 
@@ -82,7 +82,7 @@ impl reth_db_api::table::Compress for StoredL1Origin {
 
 impl reth_db_api::table::Decompress for StoredL1Origin {
     /// Decompresses owned data coming from the database.
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         let (obj, _) = Compact::from_compact(value, value.len());
         Ok(obj)
     }

@@ -8,11 +8,14 @@ use reth_chainspec::{EthChainSpec, EthereumHardforks};
 #[cfg(feature = "net")]
 use reth_engine_local::LocalPayloadAttributesBuilder;
 #[cfg(feature = "net")]
-use reth_node_api::{PayloadAttributes, PayloadAttributesBuilder};
+use reth_payload_primitives::{PayloadAttributes, PayloadAttributesBuilder};
 #[cfg(feature = "net")]
 use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
 #[cfg(feature = "serde")]
 use serde_with::{As, base64::Base64};
+
+#[cfg(feature = "net")]
+use crate::payload::builder::payload_id_taiko;
 
 #[cfg(feature = "serde")]
 /// Serde helpers for taiko-geth-compatible fixed-size signature hex encoding.
@@ -91,6 +94,11 @@ pub struct TaikoPayloadAttributes {
 
 #[cfg(feature = "net")]
 impl PayloadAttributes for TaikoPayloadAttributes {
+    /// Computes a stable payload identifier for the Taiko payload job.
+    fn payload_id(&self, parent_hash: &B256) -> alloy_rpc_types_engine::PayloadId {
+        payload_id_taiko(parent_hash, self, 0)
+    }
+
     /// Returns the timestamp to be used in the payload job.
     fn timestamp(&self) -> u64 {
         self.payload_attributes.timestamp()

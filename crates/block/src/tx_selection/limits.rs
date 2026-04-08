@@ -1,11 +1,11 @@
 //! Adaptive DA-size limit helpers for transaction selection.
 
+use alloy_consensus::transaction::Recovered;
 use alloy_rlp::{encode_list, list_length};
 use core::fmt;
 use flate2::{Compression, write::ZlibEncoder};
-use reth_ethereum::TransactionSigned;
+use reth_ethereum_primitives::TransactionSigned;
 use reth_evm::block::{BlockExecutionError, InternalBlockExecutionError};
-use reth_primitives::Recovered;
 use reth_transaction_pool::error::{InvalidPoolTransactionError, PoolTransactionError};
 use std::{
     error::Error,

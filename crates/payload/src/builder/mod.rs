@@ -255,8 +255,12 @@ where
     let BlockBuilderOutcome { execution_result: _, block, .. } = if let Some(mut handle) =
         trie_handle
     {
+        // Drop the state hook so the trie task sees the final state updates and can finalize.
         builder.executor_mut().set_state_hook(None);
 
+        // The sparse trie computes alongside transaction execution, so this usually just waits
+        // for the last root/trie update. If that pipeline fails, fall back to synchronous state
+        // root computation inside `finish`.
         match handle.state_root() {
             Ok(outcome) => {
                 debug!(target: "payload_builder", id=%payload_id, state_root=?outcome.state_root, "received state root from sparse trie");

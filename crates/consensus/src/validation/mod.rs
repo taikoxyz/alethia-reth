@@ -116,7 +116,8 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             ));
         }
 
-        let body_ommers_hash = block.body().calculate_ommers_root().unwrap_or(EMPTY_OMMER_ROOT_HASH);
+        let body_ommers_hash =
+            block.body().calculate_ommers_root().unwrap_or(EMPTY_OMMER_ROOT_HASH);
         if body_ommers_hash != EMPTY_OMMER_ROOT_HASH {
             return Err(ConsensusError::BodyOmmersHashDiff(
                 GotExpected { got: body_ommers_hash, expected: EMPTY_OMMER_ROOT_HASH }.into(),

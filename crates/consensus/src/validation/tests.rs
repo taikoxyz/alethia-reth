@@ -134,14 +134,14 @@ fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
 }
 
 #[test]
-fn test_validate_block_pre_execution_ignores_non_empty_ommers_body_when_header_hash_is_empty() {
+fn test_validate_block_pre_execution_rejects_non_empty_ommers_body() {
     let header = Header::default();
     let body = BlockBody { ommers: vec![Header::default()], ..Default::default() };
 
     let block = SealedBlock::seal_slow(Block { header, body });
 
-    assert!(
-        test_consensus().validate_block_pre_execution(&block).is_ok(),
-        "main-branch behavior only enforced the header ommer hash here"
-    );
+    assert!(matches!(
+        test_consensus().validate_block_pre_execution(&block),
+        Err(ConsensusError::BodyOmmersHashDiff(_))
+    ));
 }

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
-    is_better_payload,
 };
 use reth_ethereum::EthPrimitives;
 use reth_evm::{
@@ -107,17 +106,17 @@ where
     /// This can happen if the CL requests a payload before the first payload has been built.
     fn on_missing_payload(
         &self,
-        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
-        missing_payload_behaviour(args.config)
+        missing_payload_behaviour()
     }
 
     /// Builds an empty payload without any transaction.
     fn build_empty_payload(
         &self,
-        config: PayloadConfig<TaikoPayloadAttributes>,
+        _config: PayloadConfig<TaikoPayloadAttributes>,
     ) -> Result<EthBuiltPayload, PayloadBuilderError> {
-        empty_payload_result(config)
+        empty_payload_result()
     }
 }
 
@@ -135,26 +134,18 @@ fn normalize_payload_config(
     Ok(attributes)
 }
 
-/// Returns true if the built payload should be frozen for the remainder of the job.
-fn should_freeze_payload(attributes: &TaikoPayloadBuilderAttributes) -> bool {
-    attributes.transactions.is_some()
+/// Returns true because Taiko payload jobs always freeze the successful payload they build.
+fn should_freeze_payload(_attributes: &TaikoPayloadBuilderAttributes) -> bool {
+    true
 }
 
-/// Determines missing-payload behavior for Taiko payload jobs.
-fn missing_payload_behaviour(
-    config: PayloadConfig<TaikoPayloadAttributes>,
-) -> MissingPayloadBehaviour<EthBuiltPayload> {
-    match normalize_payload_config(&config) {
-        Ok(_) => MissingPayloadBehaviour::AwaitInProgress,
-        Err(err) => MissingPayloadBehaviour::RacePayload(Box::new(move || Err(err))),
-    }
+/// Returns the legacy missing-payload behavior for Taiko payload jobs.
+fn missing_payload_behaviour() -> MissingPayloadBehaviour<EthBuiltPayload> {
+    MissingPayloadBehaviour::AwaitInProgress
 }
 
-/// Resolves an empty-payload request for Taiko payload jobs.
-fn empty_payload_result(
-    config: PayloadConfig<TaikoPayloadAttributes>,
-) -> Result<EthBuiltPayload, PayloadBuilderError> {
-    normalize_payload_config(&config)?;
+/// Returns the legacy empty-payload result for Taiko payload jobs.
+fn empty_payload_result() -> Result<EthBuiltPayload, PayloadBuilderError> {
     Err(PayloadBuilderError::MissingPayload)
 }
 
@@ -191,7 +182,7 @@ where
         trie_handle,
         config,
         cancel,
-        best_payload,
+        best_payload: _,
     } = args;
     let attributes = normalize_payload_config(&config)?;
     let PayloadConfig { parent_header, attributes: _, payload_id } = config;
@@ -266,11 +257,6 @@ where
         }
     };
 
-    if !is_better_payload(best_payload.as_ref(), total_fees) {
-        drop(builder);
-        return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads });
-    }
-
     let BlockBuilderOutcome { execution_result: _, block, .. } = if let Some(mut handle) =
         trie_handle
     {
@@ -296,12 +282,7 @@ where
     let sealed_block = Arc::new(block.into_sealed_block());
     debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
 
-    let payload = EthBuiltPayload::new(sealed_block, total_fees, None);
-    if should_freeze_payload(&attributes) {
-        Ok(BuildOutcome::Freeze(payload))
-    } else {
-        Ok(BuildOutcome::Better { payload, cached_reads })
-    }
+    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(sealed_block, total_fees, None)))
 }
 
 #[cfg(test)]
@@ -367,31 +348,31 @@ mod tests {
     }
 
     #[test]
-    fn malformed_attrs_race_payload_error_on_missing_payload() {
-        let config = test_payload_config(None, U256::from(u128::from(u64::MAX) + 1), None);
-
-        let behaviour = missing_payload_behaviour(config);
-        let MissingPayloadBehaviour::RacePayload(job) = behaviour else {
-            panic!("expected malformed attrs to race the validation error");
-        };
-
-        let err = job().expect_err("malformed attrs should surface an error");
-        assert!(err.to_string().contains("invalid attributes.base_fee_per_gas"));
-    }
-
-    #[test]
-    fn malformed_attrs_fail_empty_payload_resolution_with_validation_error() {
-        let config = test_payload_config(None, U256::from(1u64), Some(Bytes::from(vec![0x01])));
-
-        let err = empty_payload_result(config).expect_err("malformed attrs should fail");
-        assert!(err.to_string().contains("invalid anchor_transaction"));
-    }
-
-    #[test]
-    fn valid_attrs_still_reject_empty_payloads() {
+    fn mempool_mode_also_freezes_payload_builds() {
         let config = test_payload_config(None, U256::from(1u64), None);
+        let attributes = normalize_payload_config(&config).expect("config should normalize");
 
-        let err = empty_payload_result(config).expect_err("Taiko should not build empty payloads");
+        assert!(should_freeze_payload(&attributes));
+    }
+
+    #[test]
+    fn malformed_attrs_still_await_in_progress_on_missing_payload() {
+        assert!(matches!(missing_payload_behaviour(), MissingPayloadBehaviour::AwaitInProgress));
+    }
+
+    #[test]
+    fn malformed_attrs_still_reject_empty_payloads_with_missing_payload() {
+        let _config = test_payload_config(None, U256::from(1u64), Some(Bytes::from(vec![0x01])));
+        let err = empty_payload_result().expect_err("Taiko should not build empty payloads");
+
+        assert!(matches!(err, PayloadBuilderError::MissingPayload));
+    }
+
+    #[test]
+    fn valid_attrs_still_reject_empty_payloads_with_missing_payload() {
+        let _config = test_payload_config(None, U256::from(1u64), None);
+
+        let err = empty_payload_result().expect_err("Taiko should not build empty payloads");
         assert!(matches!(err, PayloadBuilderError::MissingPayload));
     }
 }

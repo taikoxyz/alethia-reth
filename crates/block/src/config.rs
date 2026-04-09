@@ -187,7 +187,6 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas,
             extra_data: block.header().extra_data.clone(),
-            tx_count_hint: Some(block.transaction_count()),
         })
     }
 
@@ -205,7 +204,6 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
-            tx_count_hint: None,
         })
     }
 }
@@ -264,9 +262,6 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
-            tx_count_hint: Some(
-                payload.execution_payload.transactions.as_ref().map_or(0, Vec::len),
-            ),
         })
     }
 

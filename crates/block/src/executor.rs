@@ -53,11 +53,10 @@ where
 {
     /// Creates a new [`TaikoBlockExecutor`]
     pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
-        let tx_count_hint = ctx.tx_count_hint.unwrap_or_default();
         Self {
             evm,
             ctx,
-            receipts: Vec::with_capacity(tx_count_hint),
+            receipts: Vec::new(),
             gas_used: 0,
             system_caller: SystemCaller::new(spec.clone()),
             spec,
@@ -362,7 +361,6 @@ mod test {
                     withdrawals: None,
                     basefee_per_gas: 1,
                     extra_data: Bytes::new(),
-                    tx_count_hint: Some(1),
                 },
                 chain_spec.clone(),
                 RethReceiptBuilder::default(),

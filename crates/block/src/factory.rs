@@ -32,8 +32,6 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub basefee_per_gas: u64,
     /// Block extra data.
     pub extra_data: Bytes,
-    /// Block transactions count hint. Used to preallocate the receipts vector.
-    pub tx_count_hint: Option<usize>,
 }
 
 /// Taiko block executor factory.

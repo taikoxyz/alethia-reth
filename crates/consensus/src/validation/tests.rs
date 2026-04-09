@@ -121,8 +121,7 @@ fn test_min_base_fee_to_clamp_defaults_for_non_mainnet() {
 
 #[test]
 fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
-    let mut header = Header::default();
-    header.ommers_hash = FixedBytes::<32>::with_last_byte(1);
+    let header = Header { ommers_hash: FixedBytes::<32>::with_last_byte(1), ..Default::default() };
     let expected = header.ommers_hash;
 
     let block = SealedBlock::seal_slow(Block { header, body: BlockBody::default() });

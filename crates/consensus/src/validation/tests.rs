@@ -11,8 +11,7 @@ use alloy_consensus::{
 use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
-use reth_ethereum::{Receipt, TransactionSigned};
-use reth_ethereum_primitives::Block;
+use reth_ethereum_primitives::{Block, EthPrimitives, Receipt, TransactionSigned};
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 
@@ -178,20 +177,18 @@ fn uzen_post_execution_rejects_body_past_truncation_point() {
         receipts_root: EMPTY_ROOT_HASH,
         ..Default::default()
     };
-    let block = reth_ethereum::Block {
+    let block = Block {
         header,
         body: BlockBody { transactions: vec![make_legacy_tx()], ommers: vec![], withdrawals: None },
     };
     let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
     let result = BlockExecutionResult::<Receipt>::default();
 
-    let err = <TaikoBeaconConsensus as FullConsensus<reth_ethereum::EthPrimitives>>::validate_block_post_execution(
-        &consensus,
-        &recovered,
-        &result,
-        None,
-    )
-    .expect_err("Uzen blocks must reject bodies that extend past the truncation point");
+    let err =
+        <TaikoBeaconConsensus as FullConsensus<EthPrimitives>>::validate_block_post_execution(
+            &consensus, &recovered, &result, None,
+        )
+        .expect_err("Uzen blocks must reject bodies that extend past the truncation point");
     assert!(matches!(err, ConsensusError::Other(_)));
     assert!(err.to_string().contains("truncation"));
 }

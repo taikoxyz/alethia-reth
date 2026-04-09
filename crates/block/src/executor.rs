@@ -385,8 +385,8 @@ where
                 // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
                 // limit, this should never happen in practice.
                 err if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(()),
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
+                BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
@@ -430,8 +430,8 @@ mod test {
     use reth_evm::{ConfigureEvm, block::BlockExecutor};
     use reth_evm_ethereum::RethReceiptBuilder;
     use reth_primitives_traits::SignedTransaction;
-    use reth_revm::State;
     use reth_revm::{
+        State,
         db::{CacheDB, EmptyDB},
         state::AccountInfo,
     };
@@ -482,7 +482,6 @@ mod test {
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
-            .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         assert_eq!(evm.block_zk_gas_used(), Some(0));
@@ -523,7 +522,6 @@ mod test {
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
-            .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         let ctx = uzen_execution_ctx();
@@ -548,7 +546,6 @@ mod test {
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
-            .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         let mut ctx = uzen_execution_ctx();
@@ -560,13 +557,14 @@ mod test {
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
             .expect("transaction should execute successfully");
 
-        let err = match executor.finish() {
+        let err: BlockExecutionError = match executor.finish() {
             Ok(_) => panic!("imported Uzen blocks must reject difficulty mismatches"),
             Err(err) => err,
         };
         assert!(err.to_string().contains("difficulty"));
     }
 
+    #[test]
     fn test_apply_pre_execution_changes_initializes_anchor_context_from_account_nonce() {
         let chain_spec = Arc::new(TaikoChainSpec::default());
         let config = TaikoEvmConfig::new(chain_spec.clone());

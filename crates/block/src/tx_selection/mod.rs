@@ -309,7 +309,6 @@ mod tests {
                 (BENCH_LATE_CALLER, 0),
             ]))
             .with_bundle_update()
-            .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         let executor = TaikoBlockExecutor::new(

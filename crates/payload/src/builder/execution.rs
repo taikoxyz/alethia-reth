@@ -92,8 +92,8 @@ pub(super) fn execute_provided_transactions(
                 break;
             }
             Err(BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. }
-                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+                BlockValidationError::InvalidTx { .. } |
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) => {
                 trace!(target: "payload_builder", ?tx, "skipping invalid transaction in legacy mode");
                 continue;
@@ -208,7 +208,7 @@ mod tests {
         SignableTransaction, Signed, TxEip1559,
         transaction::{SignerRecoverable, TxHashable},
     };
-    use alloy_primitives::{Address, Bytes};
+    use alloy_primitives::{Address, B256, Bytes};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth::revm::{State, context::result::ExecutionResult};
@@ -306,8 +306,9 @@ mod tests {
         fn finish(
             self,
             state_provider: impl StateProvider,
+            state_root_precomputed: Option<(B256, reth_trie_common::updates::TrieUpdates)>,
         ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError> {
-            self.inner.finish(state_provider)
+            self.inner.finish(state_provider, state_root_precomputed)
         }
 
         fn executor_mut(&mut self) -> &mut Self::Executor {
@@ -349,7 +350,6 @@ mod tests {
                 (BENCH_LATE_CALLER, 0),
             ]))
             .with_bundle_update()
-            .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         let executor = TaikoBlockExecutor::new(
@@ -384,7 +384,6 @@ mod tests {
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
             .with_bundle_update()
-            .without_state_clear()
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
         let executor = TaikoBlockExecutor::new(

@@ -51,3 +51,4 @@ tracing = { workspace = true }
 alethia-reth-block = { path = "../block", features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 reth-storage-api = { workspace = true }
+reth-trie-common = { workspace = true }

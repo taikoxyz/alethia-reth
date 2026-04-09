@@ -121,7 +121,7 @@ mod test {
         execute::{BlockAssembler, BlockAssemblerInput},
     };
     use reth_execution_types::BlockExecutionResult;
-    use reth_primitives::SealedHeader;
+    use reth_primitives_traits::SealedHeader;
     use reth_revm::db::states::BundleState;
     use reth_storage_api::noop::NoopProvider;
 

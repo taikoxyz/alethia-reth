@@ -25,6 +25,13 @@ pub struct TaikoEngineApiBuilder<PVB> {
     payload_validator_builder: PVB,
 }
 
+impl<PVB> TaikoEngineApiBuilder<PVB> {
+    /// Creates a new engine API builder bound to the provided payload validator builder.
+    pub const fn new(payload_validator_builder: PVB) -> Self {
+        Self { payload_validator_builder }
+    }
+}
+
 impl<N, PVB> EngineApiBuilder<N> for TaikoEngineApiBuilder<PVB>
 where
     N: FullNodeComponents,

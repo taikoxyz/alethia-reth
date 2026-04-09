@@ -96,15 +96,6 @@ where
     }
 
     /// Replaces the payload validator builder.
-    pub fn with_payload_validator<T>(
-        self,
-        payload_validator_builder: T,
-    ) -> TaikoAddOns<N, EthB, T, EB, EVB, RpcMiddleware> {
-        let Self { inner } = self;
-        TaikoAddOns::new(inner.with_payload_validator(payload_validator_builder))
-    }
-
-    /// Replaces the engine validator builder.
     pub fn with_engine_validator<T>(
         self,
         engine_validator_builder: T,
@@ -126,6 +117,28 @@ where
     pub fn with_tokio_runtime(self, tokio_runtime: Option<tokio::runtime::Handle>) -> Self {
         let Self { inner } = self;
         Self { inner: inner.with_tokio_runtime(tokio_runtime) }
+    }
+}
+
+impl<N, EthB, PVB, EVB, RpcMiddleware>
+    TaikoAddOns<N, EthB, PVB, TaikoEngineApiBuilder<PVB>, EVB, RpcMiddleware>
+where
+    N: FullNodeComponents<Types = TaikoNode, Evm = TaikoEvmConfig>,
+    EthB: reth_node_builder::rpc::EthApiBuilder<N>,
+{
+    /// Replaces the payload validator builder and keeps the engine API builder in sync.
+    pub fn with_payload_validator<T>(
+        self,
+        payload_validator_builder: T,
+    ) -> TaikoAddOns<N, EthB, T, TaikoEngineApiBuilder<T>, EVB, RpcMiddleware>
+    where
+        T: Clone,
+    {
+        let Self { inner } = self;
+        let inner = inner
+            .with_payload_validator(payload_validator_builder.clone())
+            .with_engine_api(TaikoEngineApiBuilder::new(payload_validator_builder));
+        TaikoAddOns::new(inner)
     }
 }
 

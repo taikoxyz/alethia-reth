@@ -4,22 +4,22 @@
 //! `alethia_reth_payload::builder::execution` tests to avoid duplicating EVM
 //! setup, chain spec creation, and bytecode generation.
 
-use alloy_consensus::{Signed, TxLegacy};
+use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_evm::EvmEnv;
 use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
-use reth_ethereum::EthPrimitives;
+use reth_ethereum_primitives::{EthPrimitives, Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutor},
     execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
 };
-use reth_primitives::Recovered;
 use reth_revm::{
     context::result::ExecutionResult,
     db::InMemoryDB,
     state::{AccountInfo, Bytecode, bytecode::opcode},
 };
 use reth_storage_api::StateProvider;
+use reth_trie_common::updates::TrieUpdates;
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork, spec::TaikoChainSpec};
@@ -70,7 +70,7 @@ pub fn recovered_tx(
     to: Address,
     nonce: u64,
     gas_price: u64,
-) -> Recovered<reth_ethereum::TransactionSigned> {
+) -> Recovered<TransactionSigned> {
     let tx = TxLegacy {
         chain_id: Some(ChainId::from(167_u64)),
         nonce,
@@ -150,10 +150,7 @@ pub struct ExecutorBackedBuilder<E> {
 
 impl<E> BlockBuilder for ExecutorBackedBuilder<E>
 where
-    E: BlockExecutor<
-            Transaction = reth_ethereum::TransactionSigned,
-            Receipt = reth_ethereum::Receipt,
-        >,
+    E: BlockExecutor<Transaction = TransactionSigned, Receipt = Receipt>,
 {
     type Primitives = EthPrimitives;
     type Executor = E;
@@ -176,6 +173,7 @@ where
     fn finish(
         self,
         _state_provider: impl StateProvider,
+        _state_root_precomputed: Option<(B256, TrieUpdates)>,
     ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError> {
         unreachable!("finish is not used in these unit tests")
     }

@@ -8,14 +8,14 @@ use std::{
 
 use alloy_consensus::Header;
 use alloy_evm::{
-    Database,
-    block::{BlockExecutorFactory, BlockExecutorFor},
+    EvmFactory,
+    block::{BlockExecutorFactory, BlockExecutorFor, StateDB},
     eth::receipt_builder::ReceiptBuilder,
 };
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_revm::{Inspector, State};
+use reth_revm::Inspector;
 
 use crate::executor::TaikoBlockExecutor;
 use alethia_reth_chainspec::spec::{TaikoChainSpec, TaikoExecutorSpec};
@@ -125,12 +125,12 @@ where
     /// Creates an Taiko block executor with given EVM and execution context.
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: <TaikoEvmFactory as alloy_evm::EvmFactory>::Evm<&'a mut State<DB>, I>,
+        evm: <TaikoEvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
-        DB: Database + 'a,
-        I: Inspector<<TaikoEvmFactory as alloy_evm::EvmFactory>::Context<&'a mut State<DB>>> + 'a,
+        DB: StateDB + 'a,
+        I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>> + 'a,
     {
         TaikoBlockExecutor::new(evm, ctx, self.spec.clone(), &self.receipt_builder)
     }

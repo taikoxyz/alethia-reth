@@ -4,15 +4,15 @@
 //! from the mempool, used by both the payload builder and the RPC pre-building endpoint.
 
 use alethia_reth_primitives::transaction::is_allowed_tx_type;
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::Encodable2718;
 use alloy_primitives::Address;
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
-use reth_ethereum::{EthPrimitives, TransactionSigned};
+use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
-use reth_primitives::Recovered;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     BestTransactionsAttributes, PoolTransaction, TransactionPool,

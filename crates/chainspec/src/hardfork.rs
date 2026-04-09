@@ -1,9 +1,9 @@
 //! Taiko-specific hardfork identifiers and activation schedules.
 use std::sync::LazyLock;
 
-use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition, Hardfork, hardfork};
-use reth_chainspec::ChainHardforks;
-use reth_revm::primitives::U256;
+use alloy_hardforks::{EthereumHardfork, ForkCondition, Hardfork, hardfork};
+use alloy_primitives::U256;
+use reth_ethereum_forks::{ChainHardforks, EthereumHardforks};
 
 use crate::spec::TaikoChainSpec;
 

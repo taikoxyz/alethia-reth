@@ -2,7 +2,9 @@
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
-use alloy_rpc_types_eth::{Withdrawal, Withdrawals};
+#[cfg(feature = "net")]
+use alloy_rpc_types_eth::Withdrawal;
+use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_primitives::TransactionSigned;
 #[cfg(feature = "net")]
 use reth_payload_primitives::PayloadAttributes;

@@ -129,21 +129,19 @@ fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
     assert!(matches!(
         test_consensus().validate_block_pre_execution(&block),
         Err(ConsensusError::BodyOmmersHashDiff(diff))
-            if diff.got == EMPTY_OMMER_ROOT_HASH && diff.expected == expected
+            if diff.got == expected && diff.expected == EMPTY_OMMER_ROOT_HASH
     ));
 }
 
 #[test]
-fn test_validate_block_pre_execution_rejects_non_empty_ommers_body_with_empty_header_hash() {
+fn test_validate_block_pre_execution_ignores_non_empty_ommers_body_when_header_hash_is_empty() {
     let header = Header::default();
     let body = BlockBody { ommers: vec![Header::default()], ..Default::default() };
-    let expected = body.calculate_ommers_root();
 
     let block = SealedBlock::seal_slow(Block { header, body });
 
-    assert!(matches!(
-        test_consensus().validate_block_pre_execution(&block),
-        Err(ConsensusError::BodyOmmersHashDiff(diff))
-            if diff.got == expected && diff.expected == EMPTY_OMMER_ROOT_HASH
-    ));
+    assert!(
+        test_consensus().validate_block_pre_execution(&block).is_ok(),
+        "main-branch behavior only enforced the header ommer hash here"
+    );
 }

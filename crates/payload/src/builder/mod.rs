@@ -134,11 +134,6 @@ fn normalize_payload_config(
     Ok(attributes)
 }
 
-/// Returns true because Taiko payload jobs always freeze the successful payload they build.
-fn should_freeze_payload(_attributes: &TaikoPayloadBuilderAttributes) -> bool {
-    true
-}
-
 /// Returns the legacy missing-payload behavior for Taiko payload jobs.
 fn missing_payload_behaviour() -> MissingPayloadBehaviour<EthBuiltPayload> {
     MissingPayloadBehaviour::AwaitInProgress
@@ -344,7 +339,7 @@ mod tests {
         let config = test_payload_config(Some(Bytes::new()), U256::from(1u64), None);
         let attributes = normalize_payload_config(&config).expect("config should normalize");
 
-        assert!(should_freeze_payload(&attributes));
+        assert!(attributes.transactions.is_some());
     }
 
     #[test]
@@ -352,7 +347,7 @@ mod tests {
         let config = test_payload_config(None, U256::from(1u64), None);
         let attributes = normalize_payload_config(&config).expect("config should normalize");
 
-        assert!(should_freeze_payload(&attributes));
+        assert!(attributes.transactions.is_none());
     }
 
     #[test]

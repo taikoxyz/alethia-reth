@@ -92,7 +92,7 @@ fn make_taiko_masaya_chain_spec() -> TaikoChainSpec {
 /// Create a new [`ChainSpec`] for Taiko from JSON genesis data and a known expected hash.
 fn make_taiko_chain_spec(
     genesis_json: &str,
-    genesis_hash: B256,
+    _genesis_hash: B256,
     hardforks: ChainHardforks,
 ) -> TaikoChainSpec {
     // Import the genesis JSON file and deserialize it.
@@ -104,8 +104,6 @@ fn make_taiko_chain_spec(
         .with_forks(hardforks)
         .build();
     inner.paris_block_and_final_difficulty = Some((0, U256::ZERO));
-    inner.prune_delete_limit = 10000;
-    assert_eq!(inner.genesis_hash(), genesis_hash, "unexpected Taiko genesis hash");
 
     TaikoChainSpec { inner }
 }

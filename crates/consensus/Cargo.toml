@@ -17,10 +17,9 @@ full = [
     "dep:reth-chainspec",
     "dep:reth-consensus",
     "dep:reth-consensus-common",
-    "dep:reth-ethereum",
     "dep:reth-ethereum-consensus",
+    "dep:reth-ethereum-primitives",
     "dep:reth-execution-types",
-    "dep:reth-primitives",
 ]
 
 [dependencies]
@@ -38,7 +37,6 @@ alloy-hardforks = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
 reth-consensus = { workspace = true, optional = true }
 reth-consensus-common = { workspace = true, optional = true }
-reth-ethereum = { workspace = true, optional = true }
 reth-ethereum-consensus = { workspace = true, optional = true }
+reth-ethereum-primitives = { workspace = true, optional = true }
 reth-execution-types = { workspace = true, optional = true }
-reth-primitives = { workspace = true, optional = true }

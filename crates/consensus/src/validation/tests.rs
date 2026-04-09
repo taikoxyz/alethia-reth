@@ -1,8 +1,26 @@
+use std::sync::Arc;
+
 use super::{anchor::validate_input_selector, *};
 use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
-use alloy_consensus::{Header, Signed, TxEip4844, TxLegacy};
-use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+use alloy_consensus::{BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy};
+use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
+use reth_consensus::{Consensus, ConsensusError};
 use reth_ethereum::TransactionSigned;
+use reth_ethereum_primitives::Block;
+use reth_primitives_traits::SealedBlock;
+
+#[derive(Debug)]
+struct NoopBlockReader;
+
+impl TaikoBlockReader for NoopBlockReader {
+    fn block_timestamp_by_hash(&self, _hash: B256) -> Option<u64> {
+        None
+    }
+}
+
+fn test_consensus() -> TaikoBeaconConsensus {
+    TaikoBeaconConsensus::new(TAIKO_DEVNET.clone(), Arc::new(NoopBlockReader))
+}
 
 #[test]
 fn test_validate_against_parent_eip4396_base_fee() {
@@ -117,6 +135,33 @@ fn test_allows_non_blob_transactions() {
     let transactions = vec![make_legacy_tx()];
 
     assert!(validate_no_blob_transactions(&transactions).is_ok());
+}
+
+#[test]
+fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
+    let header = Header { ommers_hash: FixedBytes::<32>::with_last_byte(1), ..Default::default() };
+    let expected = header.ommers_hash;
+
+    let block = SealedBlock::seal_slow(Block { header, body: BlockBody::default() });
+
+    assert!(matches!(
+        test_consensus().validate_block_pre_execution(&block),
+        Err(ConsensusError::BodyOmmersHashDiff(diff))
+            if diff.got == expected && diff.expected == EMPTY_OMMER_ROOT_HASH
+    ));
+}
+
+#[test]
+fn test_validate_block_pre_execution_ignores_non_empty_ommers_body_when_header_hash_is_empty() {
+    let header = Header::default();
+    let body = BlockBody { ommers: vec![Header::default()], ..Default::default() };
+
+    let block = SealedBlock::seal_slow(Block { header, body });
+
+    assert!(
+        test_consensus().validate_block_pre_execution(&block).is_ok(),
+        "main-branch behavior only enforced the header ommer hash here"
+    );
 }
 
 fn make_blob_tx() -> TransactionSigned {

@@ -3,7 +3,6 @@
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
 use reth::{
-    api::PayloadBuilderError,
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{cancelled::CancelOnDrop, primitives::U256},
 };
@@ -13,7 +12,8 @@ use reth_evm::{
     block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
-use reth_primitives::{Header as RethHeader, Recovered};
+use reth_payload_builder_primitives::PayloadBuilderError;
+use reth_primitives_traits::{Header as RethHeader, NodePrimitives, Recovered};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::tx_selection::{
@@ -77,11 +77,12 @@ pub(super) fn execute_provided_transactions(
             continue;
         }
 
-        let gas_used = match builder.execute_transaction(tx.clone()) {
+        let recovered_tx: Recovered<<EthPrimitives as NodePrimitives>::SignedTx> = tx.clone();
+        let gas_used = match builder.execute_transaction(recovered_tx) {
             Ok(gas_used) => gas_used,
             Err(BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+                BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) => {
                 trace!(target: "payload_builder", ?tx, "skipping invalid transaction in legacy mode");
                 continue;

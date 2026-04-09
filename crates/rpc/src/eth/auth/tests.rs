@@ -87,7 +87,7 @@ fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> 
             .with_default_tables()
             .build()
             .expect("failed to create test RocksDB provider"),
-        reth::tasks::Runtime::default(),
+        reth::tasks::Runtime::test(),
     )
     .expect("failed to create test provider factory")
 }

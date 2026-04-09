@@ -12,9 +12,8 @@ use reth_consensus_common::validation::{
 };
 use reth_ethereum_consensus::validate_block_post_execution;
 use reth_execution_types::BlockExecutionResult;
-use reth_primitives::SealedBlock;
 use reth_primitives_traits::{
-    Block, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedHeader,
+    Block, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader,
 };
 
 use crate::eip4396::{

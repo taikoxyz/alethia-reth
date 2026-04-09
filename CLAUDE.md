@@ -8,8 +8,8 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 
 ## Key Technologies
 
-- Language: Rust (stable 1.88+ recommended)
-- Framework: Reth 1.11.1 APIs (`reth_node_builder`, `reth_rpc`, etc.)
+- Language: Rust (`1.93.1` toolchain via `rust-toolchain.toml` / `justfile`)
+- Framework: Reth v2.0.0 APIs (`reth_node_builder`, `reth_rpc`, `reth_engine_primitives`, etc.)
 - Target protocol: Taiko rollup networks
 - Build & dependency manager: Cargo + `just`
 
@@ -44,9 +44,9 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 1. Update workspace paths when moving crates—Cargo manifests reference `../{crate}`.
 2. When adding modules, re-export through the owning crate’s `lib.rs` if you expect consumers to use them.
 3. Keep genesis fixtures in `crates/chainspec/src/genesis/`; avoid rewriting unless network specs change.
-4. New RPC or engine features often span multiple crates (primitives → payload → rpc). Ensure imports follow the new module boundaries.
+4. New RPC or engine features often span multiple crates (primitives → payload → rpc). Follow the v2 crate boundaries and traits when wiring changes through the stack.
 5. Treat secrets/config cautiously—use env vars or CLI flags rather than hardcoding.
 
 ## Custom Claude Commands
 
-Custom helpers live in `.claude/commands/` (e.g., `improve-pr-desc.md`). Invoke them via `claude run` if the CLI harness supports it.
+No repo-local Claude command set is currently checked in. Prefer the repository commands in `justfile` and the documented crate entry points above.

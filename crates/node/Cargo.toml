@@ -38,3 +38,4 @@ reth-node-builder = { workspace = true }
 reth-node-ethereum = { workspace = true }
 reth-rpc = { workspace = true }
 serde = { workspace = true, optional = true }
+tokio = { workspace = true }

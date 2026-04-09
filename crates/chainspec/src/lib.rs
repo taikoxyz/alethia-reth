@@ -3,11 +3,10 @@
 //! Taiko chain-spec presets and genesis helpers.
 use std::sync::{Arc, LazyLock};
 
-use alloy_primitives::{B256, b256};
-use reth_chainspec::{ChainSpec, make_genesis_header};
+use alloy_genesis::Genesis;
+use alloy_primitives::{B256, U256, b256};
+use reth_chainspec::ChainSpec;
 use reth_ethereum_forks::ChainHardforks;
-use reth_primitives::SealedHeader;
-use reth_revm::primitives::U256;
 
 use crate::{
     hardfork::{
@@ -97,19 +96,15 @@ fn make_taiko_chain_spec(
     hardforks: ChainHardforks,
 ) -> TaikoChainSpec {
     // Import the genesis JSON file and deserialize it.
-    let genesis = serde_json::from_str(genesis_json).expect("Can't deserialize Taiko genesis json");
-    // Ensure the genesis hash matches the expected value.
-    let genesis_header = SealedHeader::new(make_genesis_header(&genesis, &hardforks), genesis_hash);
-
-    let inner = ChainSpec {
-        chain: genesis.config.chain_id.into(),
-        genesis_header,
-        genesis,
-        paris_block_and_final_difficulty: Some((0, U256::from(0))),
-        hardforks,
-        prune_delete_limit: 10000,
-        ..Default::default()
-    };
+    let genesis: Genesis =
+        serde_json::from_str(genesis_json).expect("Can't deserialize Taiko genesis json");
+    let mut inner = ChainSpec::builder()
+        .chain(genesis.config.chain_id.into())
+        .genesis(genesis)
+        .with_forks(hardforks)
+        .build();
+    inner.paris_block_and_final_difficulty = Some((0, U256::ZERO));
+    assert_eq!(inner.genesis_hash(), genesis_hash, "unexpected Taiko genesis hash");
 
     TaikoChainSpec { inner }
 }

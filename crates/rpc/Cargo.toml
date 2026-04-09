@@ -41,6 +41,7 @@ reth-engine-primitives = { workspace = true }
 reth-engine-tree = { workspace = true }
 reth-ethereum = { workspace = true }
 reth-ethereum-engine-primitives = { workspace = true }
+reth-ethereum-primitives = { workspace = true }
 reth-evm = { workspace = true }
 reth-evm-ethereum = { workspace = true }
 reth-node-api = { workspace = true }
@@ -52,6 +53,8 @@ reth-primitives-traits = { workspace = true }
 reth-provider = { workspace = true }
 reth-revm = { workspace = true }
 reth-rpc = { workspace = true }
+reth-rpc-builder = { workspace = true }
+reth-rpc-convert = { workspace = true }
 reth-rpc-engine-api = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
 reth-rpc-eth-types = { workspace = true }

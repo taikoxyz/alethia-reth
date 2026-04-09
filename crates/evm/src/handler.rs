@@ -1,4 +1,5 @@
 //! Taiko EVM handler logic for fee distribution and anchor-aware validation.
+use alloy_primitives::{Address, U256};
 use reth_revm::{
     Database, Inspector,
     context::{
@@ -15,7 +16,6 @@ use reth_revm::{
     interpreter::{
         Gas, InterpreterResult, interpreter::EthInterpreter, interpreter_action::FrameInit,
     },
-    primitives::{Address, U256},
     state::EvmState,
 };
 use tracing::debug;

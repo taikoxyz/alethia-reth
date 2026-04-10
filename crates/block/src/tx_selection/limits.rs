@@ -85,9 +85,9 @@ pub(super) fn lists_empty_error() -> BlockExecutionError {
 /// Returns true if we should run a full zlib size check for the candidate.
 fn should_check_zlib_da_size(config: &TxSelectionConfig, estimated_after: u64) -> bool {
     // Inclusive boundary: trigger once we're within guard bytes of the limit.
-    config.da_size_zlib_guard_bytes > 0
-        && estimated_after.saturating_add(config.da_size_zlib_guard_bytes)
-            >= config.max_da_bytes_per_list
+    config.da_size_zlib_guard_bytes > 0 &&
+        estimated_after.saturating_add(config.da_size_zlib_guard_bytes) >=
+            config.max_da_bytes_per_list
 }
 
 /// Returns the threshold for triggering ratio sampling at the given percentage.
@@ -97,9 +97,9 @@ fn ratio_threshold(limit: u64, percent: u64) -> u64 {
 
 /// Returns true if we should sample the actual ratio at this estimated size.
 fn should_sample_ratio(state: &DaRatioState, estimated_after: u64, limit: u64) -> bool {
-    (!state.sampled_mid && estimated_after >= ratio_threshold(limit, DA_RATIO_SAMPLE_MID_PCT))
-        || (!state.sampled_high
-            && estimated_after >= ratio_threshold(limit, DA_RATIO_SAMPLE_HIGH_PCT))
+    (!state.sampled_mid && estimated_after >= ratio_threshold(limit, DA_RATIO_SAMPLE_MID_PCT)) ||
+        (!state.sampled_high &&
+            estimated_after >= ratio_threshold(limit, DA_RATIO_SAMPLE_HIGH_PCT))
 }
 
 /// Updates the max observed ratio and sampling flags.
@@ -166,8 +166,8 @@ fn exceeds_da_limit(
 
     let mut run_zlib = should_check_zlib_da_size(config, estimated_after);
     if !run_zlib {
-        run_zlib = adjusted_estimate(estimated_after, state) > limit
-            || should_sample_ratio(state, estimated_after, limit);
+        run_zlib = adjusted_estimate(estimated_after, state) > limit ||
+            should_sample_ratio(state, estimated_after, limit);
     }
 
     if run_zlib {

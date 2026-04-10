@@ -100,6 +100,22 @@ fn taiko_blob_excess_gas_and_price(spec: TaikoSpecId) -> Option<BlobExcessGasAnd
         .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 })
 }
 
+/// Normalizes the parent beacon block root for Uzen/Cancun execution contexts.
+///
+/// Uzen activates Cancun semantics, which require a parent beacon block root for block execution.
+/// Imported payloads can supply an explicit value, but local next-block building falls back to the
+/// zero root when Uzen is active.
+fn normalize_parent_beacon_block_root(
+    is_uzen_active: bool,
+    parent_beacon_block_root: Option<B256>,
+) -> Option<B256> {
+    if is_uzen_active {
+        parent_beacon_block_root.or(Some(B256::ZERO))
+    } else {
+        parent_beacon_block_root
+    }
+}
+
 impl ConfigureEvm for TaikoEvmConfig {
     /// The primitives type used by the EVM.
     type Primitives = EthPrimitives;
@@ -226,14 +242,15 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &SealedHeader,
         ctx: Self::NextBlockEnvCtx,
     ) -> Result<reth_evm::ExecutionCtxFor<'_, Self>, Self::Error> {
+        let is_uzen_active = self.chain_spec().is_uzen_active(ctx.timestamp);
         Ok(TaikoBlockExecutionCtx {
             parent_hash: parent.hash(),
-            parent_beacon_block_root: None,
+            parent_beacon_block_root: normalize_parent_beacon_block_root(is_uzen_active, None),
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
-            is_uzen_active: self.chain_spec().is_uzen_active(ctx.timestamp),
+            is_uzen_active,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         })
@@ -287,14 +304,18 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         &self,
         payload: &'a TaikoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
+        let is_uzen_active = self.chain_spec().is_uzen_active(payload.timestamp());
         Ok(TaikoBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
-            parent_beacon_block_root: payload.parent_beacon_block_root(),
+            parent_beacon_block_root: normalize_parent_beacon_block_root(
+                is_uzen_active,
+                payload.parent_beacon_block_root(),
+            ),
             ommers: &[],
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
-            is_uzen_active: self.chain_spec().is_uzen_active(payload.timestamp()),
+            is_uzen_active,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         })

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1](https://github.com/taikoxyz/alethia-reth/compare/v0.7.0...v0.7.1) (2026-04-09)
+
+
+### Chores
+
+* **chainspec:** update devnet genesis JSON ([#138](https://github.com/taikoxyz/alethia-reth/issues/138)) ([bd7c541](https://github.com/taikoxyz/alethia-reth/commit/bd7c541b68540d56f3240a3aef58af2386707e18))
+* **consensus:** update pre-execution block validation ([#140](https://github.com/taikoxyz/alethia-reth/issues/140)) ([1fcc10c](https://github.com/taikoxyz/alethia-reth/commit/1fcc10c48f31fe781c0459d31d2f585f48a9313c))
+* **repo:** bump reth dependency to `v2.0.0` ([#137](https://github.com/taikoxyz/alethia-reth/issues/137)) ([b7f8ef4](https://github.com/taikoxyz/alethia-reth/commit/b7f8ef4d764b002623ec7e65af14c0c319c76216))
+
 ## [0.7.0](https://github.com/taikoxyz/alethia-reth/compare/v0.6.0...v0.7.0) (2026-03-31)
 
 

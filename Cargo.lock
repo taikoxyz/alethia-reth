@@ -103,9 +103,12 @@ dependencies = [
  "reth-primitives-traits",
  "reth-revm",
  "reth-rpc-eth-api",
+ "reth-storage-api",
  "reth-storage-errors",
  "reth-transaction-pool",
+ "reth-trie-common",
  "revm-database-interface",
+ "tokio",
  "tracing",
 ]
 
@@ -300,7 +303,9 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "reth-storage-api",
  "reth-transaction-pool",
+ "reth-trie-common",
  "tracing",
 ]
 
@@ -9082,6 +9087,7 @@ dependencies = [
  "futures-util",
  "metrics",
  "parking_lot",
+ "paste",
  "pin-project",
  "rand 0.9.2",
  "reth-chain-state",

@@ -1,16 +1,20 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use alloy_consensus::{Header, Transaction, TxReceipt};
-use alloy_eips::Encodable2718;
+use alloy_consensus::Header;
 use alloy_evm::{
-    EvmFactory, FromRecoveredTx, FromTxWithEncoded,
+    EvmFactory,
     block::{BlockExecutorFactory, BlockExecutorFor, StateDB},
     eth::receipt_builder::ReceiptBuilder,
 };
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, U256};
 use alloy_rpc_types_eth::Withdrawals;
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_primitives_traits::Log;
 use reth_revm::Inspector;
 
 use crate::executor::TaikoBlockExecutor;
@@ -32,6 +36,29 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub basefee_per_gas: u64,
     /// Block extra data.
     pub extra_data: Bytes,
+    /// Whether Uzen-or-later zk gas rules are active for this block.
+    pub is_uzen_active: bool,
+    /// Imported-header difficulty expected after recomputing finalized block zk gas.
+    pub expected_difficulty: Option<U256>,
+    /// Finalized block zk gas accumulated from fully committed post Uzen transactions.
+    pub finalized_block_zk_gas: Arc<AtomicU64>,
+}
+
+impl<'a> TaikoBlockExecutionCtx<'a> {
+    /// Stores the finalized block zk gas value that should be written into the Uzen header.
+    pub fn set_finalized_block_zk_gas(&self, zk_gas: u64) {
+        self.finalized_block_zk_gas.store(zk_gas, Ordering::Relaxed);
+    }
+
+    /// Returns the finalized block zk gas accumulated from fully committed transactions.
+    pub fn finalized_block_zk_gas(&self) -> u64 {
+        self.finalized_block_zk_gas.load(Ordering::Relaxed)
+    }
+
+    /// Returns the imported-header difficulty expected during Uzen validation, if any.
+    pub fn expected_difficulty(&self) -> Option<U256> {
+        self.expected_difficulty
+    }
 }
 
 /// Taiko block executor factory.
@@ -72,24 +99,23 @@ impl<R, Spec, EvmFactory> TaikoBlockExecutorFactory<R, Spec, EvmFactory> {
     }
 }
 
-impl<R, Spec, EvmF> BlockExecutorFactory for TaikoBlockExecutorFactory<R, Spec, EvmF>
+impl<Spec> BlockExecutorFactory
+    for TaikoBlockExecutorFactory<RethReceiptBuilder, Spec, TaikoEvmFactory>
 where
-    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
-    Spec: TaikoExecutorSpec,
-    EvmF: EvmFactory<Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>>,
+    Spec: TaikoExecutorSpec + Clone,
     Self: 'static,
 {
     /// The EVM factory used by the executor.
-    type EvmFactory = EvmF;
+    type EvmFactory = TaikoEvmFactory;
     /// Context required for block execution.
     ///
     /// This is similar to [`crate::EvmEnv`], but only contains context unrelated to EVM and
     /// required for execution of an entire block.
     type ExecutionCtx<'a> = TaikoBlockExecutionCtx<'a>;
     /// Transaction type used by the executor.
-    type Transaction = R::Transaction;
+    type Transaction = <RethReceiptBuilder as ReceiptBuilder>::Transaction;
     /// Receipt type produced by the executor.
-    type Receipt = R::Receipt;
+    type Receipt = <RethReceiptBuilder as ReceiptBuilder>::Receipt;
 
     /// Reference to EVM factory used by the executor.
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -99,14 +125,14 @@ where
     /// Creates an Taiko block executor with given EVM and execution context.
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: EvmF::Evm<DB, I>,
+        evm: <TaikoEvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
     ) -> impl BlockExecutorFor<'a, Self, DB, I>
     where
         DB: StateDB + 'a,
-        I: Inspector<EvmF::Context<DB>> + 'a,
+        I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>> + 'a,
     {
-        TaikoBlockExecutor::new(evm, ctx, &self.spec, &self.receipt_builder)
+        TaikoBlockExecutor::new(evm, ctx, self.spec.clone(), &self.receipt_builder)
     }
 }
 

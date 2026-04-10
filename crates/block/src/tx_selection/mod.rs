@@ -21,6 +21,7 @@ use reth_transaction_pool::{
 use tracing::trace;
 
 use self::limits::{DaRatioState, da_limit_error, exceeds_list_limits, lists_empty_error};
+use crate::executor::is_zk_gas_limit_exceeded;
 
 /// DA-limit checking and adaptive zlib sizing helpers.
 mod limits;
@@ -232,6 +233,10 @@ where
         // 7. Execute transaction
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
+                trace!(target: "tx_selection", ?tx, "stopping selection after zk gas exhaustion");
+                break;
+            }
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                 error, ..
             })) => {
@@ -265,4 +270,103 @@ where
     }
 
     Ok(SelectionOutcome::Completed(lists))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use alloy_evm::EvmFactory;
+    use alloy_primitives::Address;
+    use reth_evm::block::BlockExecutor;
+    use reth_evm_ethereum::RethReceiptBuilder;
+    use reth_revm::State;
+    use reth_transaction_pool::{TransactionOrigin, TransactionPool, test_utils::testing_pool};
+
+    use super::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions};
+    use crate::{
+        executor::TaikoBlockExecutor,
+        testutil::{
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
+            recovered_tx, uzen_chain_spec, uzen_evm_env, uzen_execution_ctx,
+        },
+    };
+    use alethia_reth_evm::factory::TaikoEvmFactory;
+
+    const BENCH_INVALID_CALLER: Address = Address::with_last_byte(0x30);
+    const BENCH_INCLUDED_CALLER: Address = Address::with_last_byte(0x31);
+    const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x32);
+    const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x33);
+
+    #[test]
+    fn tx_selection_breaks_on_zk_gas_error_but_keeps_skipping_invalid_txs() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[
+                (BENCH_INVALID_CALLER, 1),
+                (BENCH_INCLUDED_CALLER, 0),
+                (BENCH_LIMIT_CALLER, 0),
+                (BENCH_LATE_CALLER, 0),
+            ]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            uzen_execution_ctx(),
+            chain_spec,
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let pool = testing_pool();
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("test runtime");
+
+        rt.block_on(pool.add_consensus_transaction(
+            recovered_tx(BENCH_INVALID_CALLER, BENCH_SUCCESS_TARGET, 0, 40),
+            TransactionOrigin::External,
+        ))
+        .expect("invalid tx should enter the pool");
+        rt.block_on(pool.add_consensus_transaction(
+            recovered_tx(BENCH_INCLUDED_CALLER, BENCH_SUCCESS_TARGET, 0, 30),
+            TransactionOrigin::External,
+        ))
+        .expect("valid tx should enter the pool");
+        rt.block_on(pool.add_consensus_transaction(
+            recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 20),
+            TransactionOrigin::External,
+        ))
+        .expect("limit tx should enter the pool");
+        rt.block_on(pool.add_consensus_transaction(
+            recovered_tx(BENCH_LATE_CALLER, BENCH_SUCCESS_TARGET, 0, 10),
+            TransactionOrigin::External,
+        ))
+        .expect("late tx should enter the pool");
+
+        let outcome = select_and_execute_pool_transactions(
+            &mut builder,
+            &pool,
+            &TxSelectionConfig {
+                base_fee: 0,
+                gas_limit_per_list: 30_000_000,
+                max_da_bytes_per_list: 1_000_000,
+                da_size_zlib_guard_bytes: 0,
+                max_lists: 1,
+                min_tip: 0,
+                locals: vec![],
+            },
+            || false,
+        )
+        .expect("zk gas exhaustion should stop selection cleanly");
+
+        let SelectionOutcome::Completed(lists) = outcome else {
+            panic!("selection should not cancel")
+        };
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].transactions.len(), 1);
+        assert_eq!(
+            *lists[0].transactions[0].tx.tx_hash(),
+            *recovered_tx(BENCH_INCLUDED_CALLER, BENCH_SUCCESS_TARGET, 0, 30).tx_hash()
+        );
+        assert_eq!(builder.executor.receipts().len(), 1);
+    }
 }

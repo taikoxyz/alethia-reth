@@ -81,6 +81,7 @@ where
             &result.requests,
             receipt_root_bloom,
         )?;
+        validate_zk_gas_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,
             &self.chain_spec,
@@ -128,7 +129,6 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         if let Err(error) = block.ensure_transaction_root_valid() {
             return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
         }
-
         validate_no_blob_transactions(block.body().transactions())?;
 
         Ok(())
@@ -145,7 +145,7 @@ where
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
 
-        if !header.difficulty().is_zero() {
+        if !self.chain_spec.is_uzen_active(header.timestamp()) && !header.difficulty().is_zero() {
             return Err(ConsensusError::TheMergeDifficultyIsNotZero);
         }
 
@@ -226,6 +226,34 @@ where
 
         Ok(())
     }
+}
+
+/// Validates zk-gas-specific post-execution rules that depend on both the canonical body and the
+/// committed execution result.
+fn validate_zk_gas_post_execution<B, R>(
+    block: &RecoveredBlock<B>,
+    chain_spec: &TaikoChainSpec,
+    receipts: &[R],
+) -> Result<(), ConsensusError>
+where
+    B: Block,
+{
+    if !chain_spec.is_uzen_active(block.header().timestamp()) {
+        return Ok(());
+    }
+
+    let body_transaction_count = block.body().transactions().len();
+    let committed_receipt_count = receipts.len();
+    // Imported Uzen-or-later blocks are only valid when the canonical body ends exactly at the
+    // last transaction that execution committed. If zk gas truncated execution earlier, the
+    // offending transaction and all later transactions must be absent from the body as well.
+    if body_transaction_count == committed_receipt_count {
+        return Ok(());
+    }
+
+    Err(ConsensusError::Other(format!(
+        "Uzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
+    )))
 }
 
 /// Validates that the header has a base fee set (required after EIP-4396).

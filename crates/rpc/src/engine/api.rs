@@ -1,11 +1,15 @@
 //! Taiko engine API RPC methods and persistence hooks.
-use std::io;
+use std::{
+    collections::HashMap,
+    io,
+    sync::{Arc, Mutex},
+};
 
 use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
 };
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::BlockNumber;
+use alloy_primitives::{B256, BlockNumber, U256};
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
 use async_trait::async_trait;
 use jsonrpsee::{RpcModule, proc_macros::rpc};
@@ -69,6 +73,8 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     provider: Provider,
     /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
+    /// Cache of hash-relevant header fields that `ExecutionPayloadV1` does not carry.
+    built_payload_headers: Arc<Mutex<HashMap<B256, U256>>>,
 }
 
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
@@ -89,7 +95,12 @@ where
     where
         Provider: Clone,
     {
-        Self { inner: engine_api, provider, payload_store }
+        Self {
+            inner: engine_api,
+            provider,
+            payload_store,
+            built_payload_headers: Default::default(),
+        }
     }
 }
 
@@ -104,6 +115,7 @@ where
             PayloadAttributes = TaikoPayloadAttributes,
             BuiltPayload = EthBuiltPayload,
         >,
+    EngineT::ExecutionPayloadEnvelopeV2: From<EthBuiltPayload>,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -114,6 +126,29 @@ where
         E: std::error::Error + Send + Sync + 'static,
     {
         EngineApiError::Internal(Box::new(err))
+    }
+
+    /// Stores the built block's hash-relevant header fields for later `newPayload` hydration.
+    fn cache_built_payload_header(&self, built_payload: &EthBuiltPayload) {
+        let block = built_payload.block();
+        self.built_payload_headers
+            .lock()
+            .expect("built payload header cache mutex should not be poisoned")
+            .insert(block.hash(), block.header().difficulty);
+    }
+
+    /// Restores cached header fields that are omitted by the external payload wire format.
+    fn hydrate_cached_header_fields(&self, payload: &mut TaikoExecutionData) {
+        if payload.taiko_sidecar.header_difficulty.is_some() {
+            return;
+        }
+
+        payload.taiko_sidecar.header_difficulty = self
+            .built_payload_headers
+            .lock()
+            .expect("built payload header cache mutex should not be poisoned")
+            .get(&payload.execution_payload.block_hash)
+            .copied();
     }
 
     /// Waits for a built payload to appear in the payload store; maps absence to `MissingPayload`.
@@ -165,12 +200,14 @@ where
             PayloadAttributes = TaikoPayloadAttributes,
             BuiltPayload = EthBuiltPayload,
         >,
+    EngineT::ExecutionPayloadEnvelopeV2: From<EthBuiltPayload>,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     /// Creates a new execution payload with the given execution data.
-    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
+    async fn new_payload_v2(&self, mut payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
+        self.hydrate_cached_header_fields(&mut payload);
         self.inner.new_payload_v2(payload).await.map_err(|e| e.into())
     }
 
@@ -200,6 +237,7 @@ where
                 .wait_for_built_payload(payload_id)
                 .await
                 .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+            self.cache_built_payload_header(&built_payload);
 
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
@@ -215,7 +253,10 @@ where
         &self,
         payload_id: PayloadId,
     ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
-        self.inner.get_payload_v2(payload_id).await.map_err(|e| e.into())
+        let built_payload =
+            self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
+        self.cache_built_payload_header(&built_payload);
+        Ok(built_payload.into())
     }
 }
 

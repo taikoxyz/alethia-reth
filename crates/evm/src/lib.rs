@@ -14,3 +14,5 @@ pub mod factory;
 pub mod handler;
 /// Taiko hardfork spec identifiers and conversions.
 pub mod spec;
+/// Fork-scoped zk gas schedules for Taiko consensus.
+pub mod zk_gas;

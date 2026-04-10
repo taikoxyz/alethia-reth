@@ -21,24 +21,38 @@ use reth_revm::{
 };
 use tracing::debug;
 
-use crate::{evm::TaikoEvm, handler::get_treasury_address, spec::TaikoSpecId};
+use crate::{
+    evm::TaikoEvm,
+    handler::get_treasury_address,
+    spec::TaikoSpecId,
+    zk_gas::{
+        adapter::{SharedZkGasMeter, ZkGasInspector, lock_meter},
+        meter::ZkGasOutcome,
+    },
+};
+
+/// Maximum transaction gas limit enforced once Osaka/Uzen semantics are active.
+const MAX_SYSTEM_CALL_GAS_LIMIT: u64 = 16_777_216;
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
-pub struct TaikoEvmWrapper<DB: Database, INSP, P> {
+pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// Wrapped Taiko EVM instance implementing execution behavior.
-    inner: TaikoEvm<TaikoEvmContext<DB>, INSP, P>,
+    inner: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
 }
 
-impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
+impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
-    pub const fn new(evm: TaikoEvm<TaikoEvmContext<DB>, INSP, P>, inspect: bool) -> Self {
+    pub const fn new(
+        evm: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
+        inspect: bool,
+    ) -> Self {
         Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
-    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, INSP, P> {
+    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P> {
         self.inner
     }
 
@@ -50,6 +64,52 @@ impl<DB: Database, INSP, P> TaikoEvmWrapper<DB, INSP, P> {
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TaikoEvmContext<DB> {
         &mut self.inner.inner.ctx
+    }
+
+    /// Returns the shared zk gas meter when this wrapper has metering enabled.
+    pub fn shared_meter(&self) -> Option<SharedZkGasMeter> {
+        self.inner.inner.inspector.shared_meter()
+    }
+}
+
+/// EVM extension trait for reading and mutating shared zk gas meter state.
+pub trait TaikoZkGasEvm {
+    /// Discards any in-flight zk gas recorded for the current transaction.
+    fn reset_transaction_zk_gas(&self);
+
+    /// Commits the current transaction's zk gas into the block total and returns the new total.
+    fn commit_transaction_zk_gas(&self) -> Result<Option<u64>, ZkGasOutcome>;
+
+    /// Returns the finalized block zk gas that has already been committed.
+    fn block_zk_gas_used(&self) -> Option<u64>;
+}
+
+impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
+where
+    DB: Database,
+    I: Inspector<TaikoEvmContext<DB>>,
+    P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
+{
+    /// Discards any in-flight zk gas recorded for the current transaction.
+    fn reset_transaction_zk_gas(&self) {
+        if let Some(meter) = self.shared_meter() {
+            lock_meter(&meter).reset_transaction();
+        }
+    }
+
+    /// Commits the current transaction's zk gas into the block total and returns the new total.
+    fn commit_transaction_zk_gas(&self) -> Result<Option<u64>, ZkGasOutcome> {
+        let Some(meter) = self.shared_meter() else {
+            return Ok(None);
+        };
+        let mut meter = lock_meter(&meter);
+        meter.commit_transaction()?;
+        Ok(Some(meter.block_zk_gas_used()))
+    }
+
+    /// Returns the finalized block zk gas that has already been committed.
+    fn block_zk_gas_used(&self) -> Option<u64> {
+        self.shared_meter().map(|meter| lock_meter(&meter).block_zk_gas_used())
     }
 }
 
@@ -119,7 +179,7 @@ where
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
         (
             &self.inner.inner.ctx.journaled_state.database,
-            &self.inner.inner.inspector,
+            self.inner.inner.inspector.inner(),
             &self.inner.inner.precompiles,
         )
     }
@@ -128,7 +188,7 @@ where
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
         (
             &mut self.inner.inner.ctx.journaled_state.database,
-            &mut self.inner.inner.inspector,
+            self.inner.inner.inspector.inner_mut(),
             &mut self.inner.inner.precompiles,
         )
     }
@@ -183,7 +243,8 @@ where
             kind: TxKind::Call(contract),
             // Explicitly set nonce to 0 so revm does not do any nonce checks
             nonce: 0,
-            gas_limit: 30_000_000,
+            // Osaka caps any single transaction gas limit, including internal system calls.
+            gas_limit: MAX_SYSTEM_CALL_GAS_LIMIT,
             value: U256::ZERO,
             data,
             // Setting the gas price to zero enforces that no value is transferred as part of the
@@ -269,12 +330,12 @@ where
 
     /// Getter of inspector.
     fn inspector(&self) -> &Self::Inspector {
-        &self.inner.inner.inspector
+        self.inner.inner.inspector.inner()
     }
 
     /// Mutable getter of inspector.
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
-        &mut self.inner.inner.inspector
+        self.inner.inner.inspector.inner_mut()
     }
 }
 

@@ -35,6 +35,7 @@ impl PayloadTypes for TaikoEngineTypes {
     ) -> Self::ExecutionData {
         let tx_hash = block.transactions_root;
         let withdrawals_hash = block.withdrawals_root;
+        let header_difficulty = block.header().difficulty;
 
         let payload = ExecutionPayloadV1::from_block_unchecked(block.hash(), &block.into_block());
 
@@ -43,6 +44,7 @@ impl PayloadTypes for TaikoEngineTypes {
             taiko_sidecar: TaikoExecutionDataSidecar {
                 tx_hash,
                 withdrawals_hash,
+                header_difficulty: Some(header_difficulty),
                 taiko_block: Some(true),
             },
         }

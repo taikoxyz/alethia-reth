@@ -1,26 +1,27 @@
 use std::sync::Arc;
 
 use super::{anchor::validate_input_selector, *};
-use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
-use alloy_consensus::{
-    BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy, proofs,
+use alethia_reth_chainspec::{
+    TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoChainSpec,
 };
+use alloy_consensus::{
+    BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy,
+    constants::EMPTY_ROOT_HASH, proofs,
+};
+use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
-use reth_consensus::{Consensus, ConsensusError};
-use reth_ethereum_primitives::{Block, TransactionSigned};
-use reth_primitives_traits::SealedBlock;
+use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
+use reth_ethereum_primitives::{Block, EthPrimitives, Receipt, TransactionSigned};
+use reth_execution_types::BlockExecutionResult;
+use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 
 #[derive(Debug)]
-struct NoopBlockReader;
+struct NullBlockReader;
 
-impl TaikoBlockReader for NoopBlockReader {
+impl TaikoBlockReader for NullBlockReader {
     fn block_timestamp_by_hash(&self, _hash: B256) -> Option<u64> {
         None
     }
-}
-
-fn test_consensus() -> TaikoBeaconConsensus {
-    TaikoBeaconConsensus::new(TAIKO_DEVNET.clone(), Arc::new(NoopBlockReader))
 }
 
 #[test]
@@ -149,9 +150,64 @@ fn test_validate_block_pre_execution_rejects_blob_transactions() {
     let block = SealedBlock::seal_slow(Block { header, body });
 
     assert!(matches!(
-        test_consensus().validate_block_pre_execution(&block),
+        test_consensus(devnet_chain_spec()).validate_block_pre_execution(&block),
         Err(ConsensusError::Other(_))
     ));
+}
+
+#[test]
+fn pre_uzen_header_still_rejects_nonzero_difficulty() {
+    let consensus = test_consensus(pre_uzen_chain_spec());
+    let header = Header { difficulty: U256::from(1_u64), ..Default::default() };
+
+    let err = consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect_err("pre-Uzen headers must still reject nonzero difficulty");
+    assert!(matches!(err, ConsensusError::TheMergeDifficultyIsNotZero));
+}
+
+#[test]
+fn uzen_header_allows_nonzero_difficulty() {
+    let consensus = test_consensus(uzen_chain_spec());
+    let header = Header {
+        timestamp: 1,
+        difficulty: U256::from(7_u64),
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        ..Default::default()
+    };
+
+    consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect("Uzen headers should allow nonzero difficulty");
+}
+
+#[test]
+fn uzen_post_execution_rejects_body_past_truncation_point() {
+    let consensus = test_consensus(uzen_chain_spec());
+    let result = BlockExecutionResult::<Receipt>::default();
+    let header = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        gas_used: 0,
+        receipts_root: EMPTY_ROOT_HASH,
+        requests_hash: Some(result.requests.requests_hash()),
+        ..Default::default()
+    };
+    let block = Block {
+        header,
+        body: BlockBody { transactions: vec![make_legacy_tx()], ommers: vec![], withdrawals: None },
+    };
+    let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+
+    let err =
+        <TaikoBeaconConsensus as FullConsensus<EthPrimitives>>::validate_block_post_execution(
+            &consensus, &recovered, &result, None,
+        )
+        .expect_err("Uzen blocks must reject bodies that extend past the truncation point");
+    assert!(matches!(err, ConsensusError::Other(_)));
+    assert!(err.to_string().contains("truncation"));
 }
 
 #[test]
@@ -162,7 +218,7 @@ fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
     let block = SealedBlock::seal_slow(Block { header, body: BlockBody::default() });
 
     assert!(matches!(
-        test_consensus().validate_block_pre_execution(&block),
+        test_consensus(devnet_chain_spec()).validate_block_pre_execution(&block),
         Err(ConsensusError::BodyOmmersHashDiff(diff))
             if diff.got == expected && diff.expected == EMPTY_OMMER_ROOT_HASH
     ));
@@ -176,7 +232,7 @@ fn test_validate_block_pre_execution_rejects_non_empty_ommers_body() {
     let block = SealedBlock::seal_slow(Block { header, body });
 
     assert!(matches!(
-        test_consensus().validate_block_pre_execution(&block),
+        test_consensus(devnet_chain_spec()).validate_block_pre_execution(&block),
         Err(ConsensusError::BodyOmmersHashDiff(_))
     ));
 }
@@ -211,4 +267,24 @@ fn make_legacy_tx() -> TransactionSigned {
     };
     let signature = Signature::new(U256::from(1), U256::from(2), false);
     Signed::new_unchecked(tx, signature, B256::ZERO).into()
+}
+
+fn test_consensus(chain_spec: TaikoChainSpec) -> TaikoBeaconConsensus {
+    TaikoBeaconConsensus::new(Arc::new(chain_spec), Arc::new(NullBlockReader))
+}
+
+fn devnet_chain_spec() -> TaikoChainSpec {
+    (*TAIKO_DEVNET).as_ref().clone()
+}
+
+fn pre_uzen_chain_spec() -> TaikoChainSpec {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Never);
+    chain_spec
+}
+
+fn uzen_chain_spec() -> TaikoChainSpec {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+    chain_spec
 }

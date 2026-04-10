@@ -126,6 +126,9 @@ where
 
         // First parse the block.
         let mut block = Into::<ExecutionPayloadV1>::into(execution_payload).try_into_block()?;
+        if let Some(header_difficulty) = taiko_sidecar.header_difficulty {
+            block.header.difficulty = header_difficulty;
+        }
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
         }
@@ -217,6 +220,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
+    use alethia_reth_primitives::engine::{
+        TaikoEngineTypes,
+        types::{TaikoExecutionData, TaikoExecutionDataSidecar},
+    };
+    use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
+    use alloy_eips::merge::BEACON_NONCE;
+    use alloy_hardforks::ForkCondition;
+    use alloy_primitives::{Address, B256, Bytes, U256};
+    use alloy_rpc_types_engine::ExecutionPayloadV1;
+    use alloy_rpc_types_eth::Withdrawals;
+    use reth_primitives_traits::BlockBody as _;
 
     #[test]
     fn formats_blob_transactions_unsupported_error() {
@@ -224,5 +239,90 @@ mod tests {
             TaikoPayloadValidationError::BlobTransactionsUnsupported.to_string(),
             "blob transactions are unsupported"
         );
+    }
+
+    #[test]
+    fn rejects_round_tripping_uzen_block_through_payload_v1() {
+        let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
+        let payload = sample_uzen_execution_data(U256::from(7_u64), None);
+
+        let err =
+            <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
+                &validator, payload,
+            )
+            .expect_err(
+                "Uzen blocks currently lose hash-relevant fields during payload conversion",
+            );
+
+        assert!(err.to_string().contains("block hash mismatch"));
+    }
+
+    #[test]
+    fn accepts_uzen_payload_when_sidecar_supplies_header_difficulty() {
+        let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
+        let payload = sample_uzen_execution_data(U256::from(7_u64), Some(U256::from(7_u64)));
+
+        let sealed =
+            <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
+                &validator,
+                payload.clone(),
+            )
+            .expect("cached header difficulty should restore the original hash");
+
+        assert_eq!(sealed.hash(), payload.execution_payload.block_hash);
+        assert_eq!(sealed.header().difficulty, U256::from(7_u64));
+    }
+
+    fn uzen_chain_spec() -> TaikoChainSpec {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec
+    }
+
+    fn sample_uzen_execution_data(
+        difficulty: U256,
+        header_difficulty: Option<U256>,
+    ) -> TaikoExecutionData {
+        let block = reth_ethereum::Block {
+            header: Header {
+                parent_hash: B256::with_last_byte(0x11),
+                beneficiary: Address::with_last_byte(0x22),
+                state_root: B256::with_last_byte(0x33),
+                transactions_root: alloy_consensus::proofs::calculate_transaction_root(&Vec::<
+                    reth_ethereum::TransactionSigned,
+                >::new(
+                )),
+                receipts_root: B256::with_last_byte(0x44),
+                withdrawals_root: Some(EMPTY_WITHDRAWALS),
+                logs_bloom: Default::default(),
+                number: 1,
+                gas_limit: 30_000_000,
+                gas_used: 0,
+                timestamp: 1,
+                mix_hash: B256::with_last_byte(0x55),
+                nonce: BEACON_NONCE.into(),
+                base_fee_per_gas: Some(1),
+                extra_data: Bytes::default(),
+                difficulty,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![],
+                ommers: vec![],
+                withdrawals: Some(Withdrawals::default()),
+            },
+        };
+        let block_hash = block.header.hash_slow();
+        let execution_payload = ExecutionPayloadV1::from_block_unchecked(block_hash, &block);
+
+        TaikoExecutionData {
+            execution_payload: execution_payload.into(),
+            taiko_sidecar: TaikoExecutionDataSidecar {
+                tx_hash: block.body.calculate_tx_root(),
+                withdrawals_hash: Some(EMPTY_WITHDRAWALS),
+                header_difficulty,
+                taiko_block: Some(true),
+            },
+        }
     }
 }

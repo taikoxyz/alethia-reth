@@ -109,11 +109,7 @@ fn normalize_parent_beacon_block_root(
     is_uzen_active: bool,
     parent_beacon_block_root: Option<B256>,
 ) -> Option<B256> {
-    if is_uzen_active {
-        parent_beacon_block_root.or(Some(B256::ZERO))
-    } else {
-        parent_beacon_block_root
-    }
+    if is_uzen_active { parent_beacon_block_root.or(Some(B256::ZERO)) } else { None }
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
@@ -452,5 +448,21 @@ mod tests {
 
         assert_eq!(blob_env.excess_blob_gas, 0);
         assert_eq!(blob_env.blob_gasprice, 1);
+    }
+
+    #[test]
+    fn pre_uzen_normalization_discards_supplied_parent_beacon_block_root() {
+        assert_eq!(normalize_parent_beacon_block_root(false, Some(B256::repeat_byte(0x11))), None);
+    }
+
+    #[test]
+    fn uzen_normalization_preserves_supplied_parent_beacon_block_root() {
+        let root = B256::repeat_byte(0x22);
+        assert_eq!(normalize_parent_beacon_block_root(true, Some(root)), Some(root));
+    }
+
+    #[test]
+    fn uzen_normalization_falls_back_to_zero_root_when_missing() {
+        assert_eq!(normalize_parent_beacon_block_root(true, None), Some(B256::ZERO));
     }
 }

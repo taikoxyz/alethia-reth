@@ -14,7 +14,7 @@ use reth_ethereum_consensus::validate_block_post_execution;
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{
     Block, BlockBody, BlockHeader, GotExpected, NodePrimitives, RecoveredBlock, SealedBlock,
-    SealedHeader,
+    SealedHeader, SignedTransaction,
 };
 
 use crate::eip4396::{
@@ -22,6 +22,7 @@ use crate::eip4396::{
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
+use alethia_reth_primitives::transaction::is_allowed_tx_type;
 
 /// Anchor transaction selectors, gas rules, and validation functions.
 mod anchor;
@@ -127,6 +128,8 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         if let Err(error) = block.ensure_transaction_root_valid() {
             return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
         }
+
+        validate_no_blob_transactions(block.body().transactions())?;
 
         Ok(())
     }
@@ -261,4 +264,14 @@ fn min_base_fee_to_clamp(chain_spec: &TaikoChainSpec) -> u64 {
     } else {
         MIN_BASE_FEE
     }
+}
+
+/// Validates that no blob transactions are included in the block.
+fn validate_no_blob_transactions<Tx: SignedTransaction>(
+    transactions: &[Tx],
+) -> Result<(), ConsensusError> {
+    if transactions.iter().any(|tx| !is_allowed_tx_type(tx)) {
+        return Err(ConsensusError::Other("Blob transactions are not allowed".into()));
+    }
+    Ok(())
 }

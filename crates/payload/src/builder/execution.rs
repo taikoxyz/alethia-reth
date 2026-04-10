@@ -22,6 +22,7 @@ use alethia_reth_block::tx_selection::{
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
+use alethia_reth_primitives::transaction::is_allowed_tx_type;
 
 /// Creates an error for when a transaction's effective tip cannot be calculated.
 fn missing_tip_error(base_fee: u64) -> PayloadBuilderError {
@@ -69,6 +70,11 @@ pub(super) fn execute_provided_transactions(
     for tx in transactions {
         if cancel.is_cancelled() {
             return Ok(ExecutionOutcome::Cancelled);
+        }
+
+        if !is_allowed_tx_type(tx.inner()) {
+            trace!(target: "payload_builder", ?tx, "skipping unsupported transaction type in legacy mode");
+            continue;
         }
 
         let recovered_tx: Recovered<<EthPrimitives as NodePrimitives>::SignedTx> = tx.clone();

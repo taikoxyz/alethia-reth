@@ -1,11 +1,14 @@
+use std::sync::Arc;
+
 use super::{anchor::validate_input_selector, *};
 use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
-use alloy_consensus::{BlockBody, EMPTY_OMMER_ROOT_HASH, Header};
-use alloy_primitives::{B256, FixedBytes};
+use alloy_consensus::{
+    BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy, proofs,
+};
+use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
 use reth_consensus::{Consensus, ConsensusError};
-use reth_ethereum_primitives::Block;
+use reth_ethereum_primitives::{Block, TransactionSigned};
 use reth_primitives_traits::SealedBlock;
-use std::sync::Arc;
 
 #[derive(Debug)]
 struct NoopBlockReader;
@@ -120,6 +123,38 @@ fn test_min_base_fee_to_clamp_defaults_for_non_mainnet() {
 }
 
 #[test]
+fn test_rejects_blob_transactions() {
+    let transactions = vec![make_blob_tx()];
+
+    let err =
+        validate_no_blob_transactions(&transactions).expect_err("blob transactions should fail");
+    assert!(matches!(err, ConsensusError::Other(_)));
+}
+
+#[test]
+fn test_allows_non_blob_transactions() {
+    let transactions = vec![make_legacy_tx()];
+
+    assert!(validate_no_blob_transactions(&transactions).is_ok());
+}
+
+#[test]
+fn test_validate_block_pre_execution_rejects_blob_transactions() {
+    let body = BlockBody { transactions: vec![make_blob_tx()], ..Default::default() };
+    let header = Header {
+        transactions_root: proofs::calculate_transaction_root(&body.transactions),
+        ..Default::default()
+    };
+
+    let block = SealedBlock::seal_slow(Block { header, body });
+
+    assert!(matches!(
+        test_consensus().validate_block_pre_execution(&block),
+        Err(ConsensusError::Other(_))
+    ));
+}
+
+#[test]
 fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
     let header = Header { ommers_hash: FixedBytes::<32>::with_last_byte(1), ..Default::default() };
     let expected = header.ommers_hash;
@@ -144,4 +179,36 @@ fn test_validate_block_pre_execution_rejects_non_empty_ommers_body() {
         test_consensus().validate_block_pre_execution(&block),
         Err(ConsensusError::BodyOmmersHashDiff(_))
     ));
+}
+
+fn make_blob_tx() -> TransactionSigned {
+    let tx = TxEip4844 {
+        chain_id: ChainId::from(1u64),
+        nonce: 0,
+        gas_limit: 21_000,
+        max_fee_per_gas: 1,
+        max_priority_fee_per_gas: 0,
+        to: Address::ZERO,
+        value: U256::ZERO,
+        access_list: Default::default(),
+        blob_versioned_hashes: vec![B256::ZERO],
+        max_fee_per_blob_gas: 1,
+        input: Bytes::default(),
+    };
+    let signature = Signature::new(U256::from(1), U256::from(2), false);
+    Signed::new_unchecked(tx, signature, B256::ZERO).into()
+}
+
+fn make_legacy_tx() -> TransactionSigned {
+    let tx = TxLegacy {
+        chain_id: Some(ChainId::from(1u64)),
+        nonce: 0,
+        gas_price: 1,
+        gas_limit: 21_000,
+        to: TxKind::Call(Address::ZERO),
+        value: U256::ZERO,
+        input: Bytes::default(),
+    };
+    let signature = Signature::new(U256::from(1), U256::from(2), false);
+    Signed::new_unchecked(tx, signature, B256::ZERO).into()
 }

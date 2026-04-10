@@ -4,6 +4,7 @@ use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::{
     engine::{TaikoEngineTypes, types::TaikoExecutionData},
     payload::attributes::TaikoPayloadAttributes,
+    transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
@@ -26,6 +27,14 @@ use reth_payload_primitives::{
 };
 use reth_primitives_traits::{Block as BlockTrait, SealedBlock};
 use std::sync::Arc;
+
+/// Taiko-specific payload validation errors that do not map to an upstream Ethereum fork rule.
+#[derive(Debug, thiserror::Error)]
+enum TaikoPayloadValidationError {
+    /// The payload contains blob transactions, which Taiko network never accepts.
+    #[error("blob transactions are unsupported")]
+    BlobTransactionsUnsupported,
+}
 
 /// Builder for [`TaikoEngineValidator`].
 #[derive(Debug, Default, Clone)]
@@ -153,6 +162,13 @@ where
     ) -> Result<RecoveredBlock<Self::Block>, NewPayloadError> {
         let sealed_block =
             <Self as PayloadValidator<Types>>::convert_payload_to_block(self, payload)?;
+
+        if sealed_block.body().transactions().into_iter().any(|tx| !is_allowed_tx_type(tx)) {
+            return Err(NewPayloadError::other(
+                TaikoPayloadValidationError::BlobTransactionsUnsupported,
+            ));
+        }
+
         sealed_block.try_recover().map_err(|e| NewPayloadError::Other(e.into()))
     }
 
@@ -195,5 +211,18 @@ where
     ) -> Result<(), EngineObjectValidationError> {
         // Attributes are well-formed if they pass the basic validation
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_blob_transactions_unsupported_error() {
+        assert_eq!(
+            TaikoPayloadValidationError::BlobTransactionsUnsupported.to_string(),
+            "blob transactions are unsupported"
+        );
     }
 }

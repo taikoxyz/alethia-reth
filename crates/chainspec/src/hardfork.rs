@@ -110,8 +110,10 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
 ) -> Vec<(Box<dyn Hardfork>, ForkCondition)> {
-    // Determine Osaka activation based on Uzen activation, as Osaka is expected to activate
-    // simultaneously with Uzen. If Uzen is not present, default to `ForkCondition::Never`.
+    // Determine the Ethereum fork activations implied by Uzen. Taiko executes Uzen with Osaka
+    // semantics, and upstream validators still consult the predecessor Cancun/Prague fork flags
+    // for some transaction and payload checks. If Uzen is not present, default to
+    // `ForkCondition::Never`.
     let uzen_activation = hardforks
         .iter()
         .find_map(|(fork, condition)| {
@@ -142,6 +144,8 @@ fn extend_with_shared_hardforks(
             },
         ),
         (EthereumHardfork::Shanghai.boxed(), ForkCondition::Timestamp(0)),
+        (EthereumHardfork::Cancun.boxed(), uzen_activation),
+        (EthereumHardfork::Prague.boxed(), uzen_activation),
         (EthereumHardfork::Osaka.boxed(), uzen_activation),
     ];
 
@@ -175,6 +179,22 @@ mod test {
             forks.iter().find(|(fork, _)| fork.name() == "Osaka").map(|(_, condition)| *condition);
 
         assert_eq!(osaka, Some(ForkCondition::Timestamp(123)));
+    }
+
+    #[test]
+    fn test_extend_with_shared_hardforks_sets_cancun_and_prague_from_uzen_activation() {
+        let forks = extend_with_shared_hardforks(vec![
+            (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(1)),
+            (TaikoHardfork::Uzen.boxed(), ForkCondition::Timestamp(123)),
+        ]);
+
+        let cancun =
+            forks.iter().find(|(fork, _)| fork.name() == "Cancun").map(|(_, condition)| *condition);
+        let prague =
+            forks.iter().find(|(fork, _)| fork.name() == "Prague").map(|(_, condition)| *condition);
+
+        assert_eq!(cancun, Some(ForkCondition::Timestamp(123)));
+        assert_eq!(prague, Some(ForkCondition::Timestamp(123)));
     }
 
     #[test]

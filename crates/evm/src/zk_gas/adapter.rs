@@ -146,8 +146,8 @@ where
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
         let outcome = self.inner.call(context, inputs);
-        if outcome.is_none()
-            && let Some(metering) = &mut self.metering
+        if outcome.is_none() &&
+            let Some(metering) = &mut self.metering
         {
             // `None` means REVM continues into a child frame, so this CALL-family opcode should
             // use the fixed spawn estimate instead of its measured interpreter-only gas delta.
@@ -199,8 +199,8 @@ where
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
         let outcome = self.inner.create(context, inputs);
-        if outcome.is_none()
-            && let Some(metering) = &mut self.metering
+        if outcome.is_none() &&
+            let Some(metering) = &mut self.metering
         {
             // CREATE-family opcodes use the same deferred pattern as CALL-family opcodes.
             metering.mark_create_spawn(context.journal().depth());
@@ -309,13 +309,13 @@ impl ZkGasMeteringState {
 
     /// Marks pending or deferred spawn steps when the opcode matches the expected family.
     fn mark_spawn(&mut self, depth: usize, predicate: fn(u8) -> bool) {
-        if let Some(Some(pending)) = self.pending_steps.get_mut(depth)
-            && predicate(pending.opcode)
+        if let Some(Some(pending)) = self.pending_steps.get_mut(depth) &&
+            predicate(pending.opcode)
         {
             pending.spawned = true;
         }
-        if let Some(Some(deferred)) = self.deferred_steps.get_mut(depth)
-            && predicate(deferred.opcode)
+        if let Some(Some(deferred)) = self.deferred_steps.get_mut(depth) &&
+            predicate(deferred.opcode)
         {
             deferred.spawned = true;
         }

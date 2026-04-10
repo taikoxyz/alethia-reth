@@ -53,7 +53,7 @@ pub fn uzen_evm_env() -> EvmEnv<TaikoSpecId> {
 pub fn uzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     TaikoBlockExecutionCtx {
         parent_hash: B256::ZERO,
-        parent_beacon_block_root: None,
+        parent_beacon_block_root: Some(B256::ZERO),
         ommers: &[],
         withdrawals: None,
         basefee_per_gas: 0,

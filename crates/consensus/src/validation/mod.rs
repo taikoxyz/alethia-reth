@@ -109,13 +109,26 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
     /// - Compares the ommer hash in the block header to the block body
     /// - Compares the transactions root in the block header to the block body
     fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
+        let ommers_hash = block.ommers_hash();
+
         // In Taiko network, ommer hash is always empty.
-        if block.ommers_hash() != EMPTY_OMMER_ROOT_HASH {
+        if ommers_hash != EMPTY_OMMER_ROOT_HASH {
             return Err(ConsensusError::BodyOmmersHashDiff(
-                GotExpected { got: block.ommers_hash(), expected: EMPTY_OMMER_ROOT_HASH }.into(),
+                GotExpected { got: ommers_hash, expected: EMPTY_OMMER_ROOT_HASH }.into(),
             ));
         }
 
+        let body_ommers_hash =
+            block.body().calculate_ommers_root().unwrap_or(EMPTY_OMMER_ROOT_HASH);
+        if body_ommers_hash != EMPTY_OMMER_ROOT_HASH {
+            return Err(ConsensusError::BodyOmmersHashDiff(
+                GotExpected { got: body_ommers_hash, expected: EMPTY_OMMER_ROOT_HASH }.into(),
+            ));
+        }
+
+        if let Err(error) = block.ensure_transaction_root_valid() {
+            return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
+        }
         validate_no_blob_transactions(block.body().transactions())?;
 
         Ok(())

@@ -6,7 +6,7 @@ use alethia_reth_chainspec::{
 };
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy,
-    constants::EMPTY_ROOT_HASH,
+    constants::EMPTY_ROOT_HASH, proofs,
 };
 use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
@@ -140,6 +140,22 @@ fn test_allows_non_blob_transactions() {
 }
 
 #[test]
+fn test_validate_block_pre_execution_rejects_blob_transactions() {
+    let body = BlockBody { transactions: vec![make_blob_tx()], ..Default::default() };
+    let header = Header {
+        transactions_root: proofs::calculate_transaction_root(&body.transactions),
+        ..Default::default()
+    };
+
+    let block = SealedBlock::seal_slow(Block { header, body });
+
+    assert!(matches!(
+        test_consensus(devnet_chain_spec()).validate_block_pre_execution(&block),
+        Err(ConsensusError::Other(_))
+    ));
+}
+
+#[test]
 fn pre_uzen_header_still_rejects_nonzero_difficulty() {
     let consensus = test_consensus(pre_uzen_chain_spec());
     let header = Header { difficulty: U256::from(1_u64), ..Default::default() };
@@ -169,12 +185,14 @@ fn uzen_header_allows_nonzero_difficulty() {
 #[test]
 fn uzen_post_execution_rejects_body_past_truncation_point() {
     let consensus = test_consensus(uzen_chain_spec());
+    let result = BlockExecutionResult::<Receipt>::default();
     let header = Header {
         timestamp: 1,
         base_fee_per_gas: Some(1),
         gas_limit: 30_000_000,
         gas_used: 0,
         receipts_root: EMPTY_ROOT_HASH,
+        requests_hash: Some(result.requests.requests_hash()),
         ..Default::default()
     };
     let block = Block {
@@ -182,7 +200,6 @@ fn uzen_post_execution_rejects_body_past_truncation_point() {
         body: BlockBody { transactions: vec![make_legacy_tx()], ommers: vec![], withdrawals: None },
     };
     let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
-    let result = BlockExecutionResult::<Receipt>::default();
 
     let err =
         <TaikoBeaconConsensus as FullConsensus<EthPrimitives>>::validate_block_post_execution(
@@ -208,16 +225,16 @@ fn test_validate_block_pre_execution_rejects_non_empty_ommer_hash() {
 }
 
 #[test]
-fn test_validate_block_pre_execution_ignores_non_empty_ommers_body_when_header_hash_is_empty() {
+fn test_validate_block_pre_execution_rejects_non_empty_ommers_body() {
     let header = Header::default();
     let body = BlockBody { ommers: vec![Header::default()], ..Default::default() };
 
     let block = SealedBlock::seal_slow(Block { header, body });
 
-    assert!(
-        test_consensus(devnet_chain_spec()).validate_block_pre_execution(&block).is_ok(),
-        "main-branch behavior only enforced the header ommer hash here"
-    );
+    assert!(matches!(
+        test_consensus(devnet_chain_spec()).validate_block_pre_execution(&block),
+        Err(ConsensusError::BodyOmmersHashDiff(_))
+    ));
 }
 
 fn make_blob_tx() -> TransactionSigned {

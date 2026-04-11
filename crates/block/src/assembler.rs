@@ -4,7 +4,7 @@ use std::sync::Arc;
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
-use alloy_eips::merge::BEACON_NONCE;
+use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
 use alloy_primitives::U256;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned, calculate_receipt_root_no_memo};
@@ -74,6 +74,7 @@ where
 
         let withdrawals = Some(Withdrawals::default());
         let withdrawals_root = Some(EMPTY_WITHDRAWALS);
+        let requests_hash = ctx.is_uzen_active.then_some(EMPTY_REQUESTS_HASH);
         let difficulty = if ctx.is_uzen_active {
             U256::from(ctx.finalized_block_zk_gas())
         } else {
@@ -101,7 +102,7 @@ where
             parent_beacon_block_root: ctx.parent_beacon_block_root,
             blob_gas_used: None,
             excess_blob_gas: None,
-            requests_hash: None,
+            requests_hash,
         };
 
         Ok(Block {
@@ -114,7 +115,8 @@ where
 #[cfg(test)]
 mod test {
     use alloy_consensus::{Header, Signed, TxLegacy};
-    use alloy_eips::eip7685::Requests;
+    use alloy_eips::eip7685::{EMPTY_REQUESTS_HASH, Requests};
+    use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_evm::{
         EvmEnv,
@@ -127,6 +129,7 @@ mod test {
 
     use super::*;
     use crate::factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory};
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alethia_reth_evm::spec::TaikoSpecId;
 
     #[test]
@@ -184,6 +187,55 @@ mod test {
             .expect("Uzen block should assemble");
 
         assert_eq!(block.header.difficulty, U256::from(42_u64));
+    }
+
+    #[test]
+    fn assembled_uzen_block_sets_requests_hash() {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        let assembler = TaikoBlockAssembler::new(Arc::new(chain_spec));
+        let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        evm_env.cfg_env.spec = TaikoSpecId::UZEN;
+        evm_env.block_env.number = U256::from(1);
+        evm_env.block_env.timestamp = U256::from(1);
+        evm_env.block_env.gas_limit = 30_000_000;
+
+        let ctx = TaikoBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: Some(B256::ZERO),
+            ommers: &[],
+            withdrawals: None,
+            basefee_per_gas: 0,
+            extra_data: Bytes::default(),
+            is_uzen_active: true,
+            expected_difficulty: None,
+            finalized_block_zk_gas: Default::default(),
+        };
+
+        let parent = SealedHeader::seal_slow(Header::default());
+        let output: BlockExecutionResult<Receipt> = BlockExecutionResult {
+            receipts: Vec::new(),
+            requests: Default::default(),
+            gas_used: 0,
+            blob_gas_used: 0,
+        };
+        let bundle_state = BundleState::default();
+        let state_provider = NoopProvider::default();
+
+        let block = assembler
+            .assemble_block(BlockAssemblerInput::<TaikoBlockExecutorFactory>::new(
+                evm_env,
+                ctx,
+                &parent,
+                vec![sample_transaction()],
+                &output,
+                &bundle_state,
+                &state_provider,
+                B256::ZERO,
+            ))
+            .expect("Uzen block should assemble");
+
+        assert_eq!(block.header.requests_hash, Some(EMPTY_REQUESTS_HASH));
     }
 
     fn sample_transaction() -> TransactionSigned {

@@ -7,6 +7,7 @@ use alethia_reth_primitives::{
     transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
+use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
 use alloy_rpc_types_eth::Withdrawals;
@@ -132,6 +133,7 @@ where
             block.header.difficulty = header_difficulty;
         }
         block.header.parent_beacon_block_root = is_uzen_active.then_some(B256::ZERO);
+        block.header.requests_hash = is_uzen_active.then_some(EMPTY_REQUESTS_HASH);
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
         }
@@ -298,6 +300,7 @@ mod tests {
 
         assert_eq!(sealed.hash(), payload.execution_payload.block_hash);
         assert_eq!(sealed.header().parent_beacon_block_root, Some(B256::ZERO));
+        assert_eq!(sealed.header().requests_hash, Some(EMPTY_REQUESTS_HASH));
     }
 
     fn uzen_chain_spec() -> TaikoChainSpec {
@@ -333,6 +336,7 @@ mod tests {
                 extra_data: Bytes::default(),
                 difficulty,
                 parent_beacon_block_root,
+                requests_hash: Some(EMPTY_REQUESTS_HASH),
                 ..Default::default()
             },
             body: BlockBody {

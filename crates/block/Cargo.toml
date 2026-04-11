@@ -52,4 +52,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 reth-storage-api = { workspace = true }
+reth-trie-common = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }

@@ -1,12 +1,13 @@
 //! Engine payload validator implementation for Taiko execution payloads.
 use alethia_reth_block::config::TaikoEvmConfig;
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::{
     engine::{TaikoEngineTypes, types::TaikoExecutionData},
     payload::attributes::TaikoPayloadAttributes,
     transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
+use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
@@ -123,12 +124,14 @@ where
         let TaikoExecutionData { execution_payload, taiko_sidecar } = payload;
 
         let expected_hash = execution_payload.block_hash;
+        let is_uzen_active = self.chain_spec.is_uzen_active(execution_payload.timestamp);
 
         // First parse the block.
         let mut block = Into::<ExecutionPayloadV1>::into(execution_payload).try_into_block()?;
         if let Some(header_difficulty) = taiko_sidecar.header_difficulty {
             block.header.difficulty = header_difficulty;
         }
+        block.header.parent_beacon_block_root = is_uzen_active.then_some(B256::ZERO);
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
         }
@@ -244,7 +247,7 @@ mod tests {
     #[test]
     fn rejects_round_tripping_uzen_block_through_payload_v1() {
         let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
-        let payload = sample_uzen_execution_data(U256::from(7_u64), None);
+        let payload = sample_uzen_execution_data(U256::from(7_u64), None, None);
 
         let err =
             <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
@@ -260,7 +263,11 @@ mod tests {
     #[test]
     fn accepts_uzen_payload_when_sidecar_supplies_header_difficulty() {
         let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
-        let payload = sample_uzen_execution_data(U256::from(7_u64), Some(U256::from(7_u64)));
+        let payload = sample_uzen_execution_data(
+            U256::from(7_u64),
+            Some(U256::from(7_u64)),
+            Some(B256::ZERO),
+        );
 
         let sealed =
             <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
@@ -273,6 +280,26 @@ mod tests {
         assert_eq!(sealed.header().difficulty, U256::from(7_u64));
     }
 
+    #[test]
+    fn accepts_uzen_payload_when_validator_infers_parent_beacon_block_root() {
+        let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
+        let payload = sample_uzen_execution_data(
+            U256::from(7_u64),
+            Some(U256::from(7_u64)),
+            Some(B256::ZERO),
+        );
+
+        let sealed =
+            <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
+                &validator,
+                payload.clone(),
+            )
+            .expect("validator should infer parent beacon block root from Uzen activation");
+
+        assert_eq!(sealed.hash(), payload.execution_payload.block_hash);
+        assert_eq!(sealed.header().parent_beacon_block_root, Some(B256::ZERO));
+    }
+
     fn uzen_chain_spec() -> TaikoChainSpec {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
@@ -282,6 +309,7 @@ mod tests {
     fn sample_uzen_execution_data(
         difficulty: U256,
         header_difficulty: Option<U256>,
+        parent_beacon_block_root: Option<B256>,
     ) -> TaikoExecutionData {
         let block = reth_ethereum::Block {
             header: Header {
@@ -304,6 +332,7 @@ mod tests {
                 base_fee_per_gas: Some(1),
                 extra_data: Bytes::default(),
                 difficulty,
+                parent_beacon_block_root,
                 ..Default::default()
             },
             body: BlockBody {

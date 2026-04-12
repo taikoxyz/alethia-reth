@@ -138,11 +138,11 @@ where
 
     /// Stores the built block's hash-relevant header fields for later `newPayload` hydration.
     fn cache_built_payload_header(&self, built_payload: &EthBuiltPayload) {
-        let block = built_payload.block();
-        self.built_payload_headers
+        let mut built_payload_headers = self
+            .built_payload_headers
             .lock()
-            .expect("built payload header cache mutex should not be poisoned")
-            .insert(block.hash(), block.header().difficulty);
+            .expect("built payload header cache mutex should not be poisoned");
+        cache_built_payload_header_in_map(&mut built_payload_headers, built_payload);
     }
 
     /// Converts a built payload into the standard V2 envelope, preserving the builder fee unless
@@ -159,16 +159,11 @@ where
 
     /// Restores cached header fields that are omitted by the external payload wire format.
     fn hydrate_cached_header_fields(&self, payload: &mut TaikoExecutionData) {
-        if payload.taiko_sidecar.header_difficulty.is_some() {
-            return;
-        }
-
-        payload.taiko_sidecar.header_difficulty = self
+        let built_payload_headers = self
             .built_payload_headers
             .lock()
-            .expect("built payload header cache mutex should not be poisoned")
-            .get(&payload.execution_payload.block_hash)
-            .copied();
+            .expect("built payload header cache mutex should not be poisoned");
+        hydrate_cached_header_fields_from_map(&built_payload_headers, payload);
     }
 
     /// Waits for a built payload to appear in the payload store; maps absence to `MissingPayload`.
@@ -315,16 +310,42 @@ fn convert_built_payload_to_execution_payload_envelope_v2(
     envelope
 }
 
+/// Stores the header difficulty for a built payload in the supplied cache.
+fn cache_built_payload_header_in_map(
+    built_payload_headers: &mut HashMap<B256, U256>,
+    built_payload: &EthBuiltPayload,
+) {
+    let block = built_payload.block();
+    built_payload_headers.insert(block.hash(), block.header().difficulty);
+}
+
+/// Restores a cached header difficulty for a payload that lost it on the wire.
+fn hydrate_cached_header_fields_from_map(
+    built_payload_headers: &HashMap<B256, U256>,
+    payload: &mut TaikoExecutionData,
+) {
+    if payload.taiko_sidecar.header_difficulty.is_some() {
+        return;
+    }
+
+    payload.taiko_sidecar.header_difficulty =
+        built_payload_headers.get(&payload.execution_payload.block_hash).copied();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use alethia_reth_chainspec::{hardfork::TaikoHardfork, TAIKO_DEVNET};
+    use alethia_reth_primitives::engine::types::TaikoExecutionDataSidecar;
     use alloy_consensus::{constants::EMPTY_WITHDRAWALS, BlockBody, Header};
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, Bytes, B256, U256};
+    use alloy_rpc_types_engine::ExecutionPayloadV1;
     use reth_primitives_traits::Block as _;
+    use reth_primitives_traits::BlockBody as _;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     #[test]
@@ -353,6 +374,26 @@ mod tests {
         assert_eq!(envelope.block_value, U256::from(1_u64));
     }
 
+    #[test]
+    fn get_payload_v2_cache_still_hydrates_new_payload_v2_for_uzen() {
+        let chain_spec = uzen_chain_spec();
+        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
+        let mut built_payload_headers = HashMap::new();
+
+        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
+            chain_spec.as_ref(),
+            built_payload.clone(),
+        );
+        assert_eq!(envelope.block_value, U256::from(7_u64));
+
+        cache_built_payload_header_in_map(&mut built_payload_headers, &built_payload);
+
+        let mut payload = sample_execution_data(U256::from(7_u64), 1);
+        hydrate_cached_header_fields_from_map(&built_payload_headers, &mut payload);
+
+        assert_eq!(payload.taiko_sidecar.header_difficulty, Some(U256::from(7_u64)));
+    }
+
     fn uzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
@@ -366,7 +407,30 @@ mod tests {
     }
 
     fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {
-        let block = reth_ethereum::Block {
+        let block = sample_uzen_block(difficulty, timestamp);
+        let sealed_block = Arc::new(block.seal_slow());
+
+        EthBuiltPayload::new(sealed_block, fees, None)
+    }
+
+    fn sample_execution_data(difficulty: U256, timestamp: u64) -> TaikoExecutionData {
+        let block = sample_uzen_block(difficulty, timestamp);
+        let block_hash = block.header.hash_slow();
+        let execution_payload = ExecutionPayloadV1::from_block_unchecked(block_hash, &block);
+
+        TaikoExecutionData {
+            execution_payload: execution_payload.into(),
+            taiko_sidecar: TaikoExecutionDataSidecar {
+                tx_hash: block.body.calculate_tx_root(),
+                withdrawals_hash: Some(EMPTY_WITHDRAWALS),
+                header_difficulty: None,
+                taiko_block: Some(true),
+            },
+        }
+    }
+
+    fn sample_uzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {
+        reth_ethereum::Block {
             header: Header {
                 parent_hash: B256::with_last_byte(0x11),
                 beneficiary: Address::with_last_byte(0x22),
@@ -396,9 +460,6 @@ mod tests {
                 ommers: vec![],
                 withdrawals: Some(Default::default()),
             },
-        };
-        let sealed_block = Arc::new(block.seal_slow());
-
-        EthBuiltPayload::new(sealed_block, fees, None)
+        }
     }
 }

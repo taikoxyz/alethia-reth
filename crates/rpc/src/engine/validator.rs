@@ -36,6 +36,9 @@ enum TaikoPayloadValidationError {
     /// The payload contains blob transactions, which Taiko network never accepts.
     #[error("blob transactions are unsupported")]
     BlobTransactionsUnsupported,
+    /// Uzen payloads must carry the original header difficulty through the Taiko sidecar.
+    #[error("missing header difficulty for Uzen payload")]
+    MissingUzenHeaderDifficulty,
 }
 
 /// Builder for [`TaikoEngineValidator`].
@@ -126,6 +129,12 @@ where
 
         let expected_hash = execution_payload.block_hash;
         let is_uzen_active = self.chain_spec.is_uzen_active(execution_payload.timestamp);
+
+        if is_uzen_active && taiko_sidecar.header_difficulty.is_none() {
+            return Err(NewPayloadError::other(
+                TaikoPayloadValidationError::MissingUzenHeaderDifficulty,
+            ));
+        }
 
         // First parse the block.
         let mut block = Into::<ExecutionPayloadV1>::into(execution_payload).try_into_block()?;
@@ -247,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_round_tripping_uzen_block_through_payload_v1() {
+    fn rejects_uzen_payload_without_header_difficulty() {
         let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
         let payload = sample_uzen_execution_data(U256::from(7_u64), None, None);
 
@@ -255,11 +264,9 @@ mod tests {
             <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
                 &validator, payload,
             )
-            .expect_err(
-                "Uzen blocks currently lose hash-relevant fields during payload conversion",
-            );
+            .expect_err("Uzen payloads must supply header difficulty explicitly");
 
-        assert!(err.to_string().contains("block hash mismatch"));
+        assert_eq!(err.to_string(), "missing header difficulty for Uzen payload");
     }
 
     #[test]
@@ -276,7 +283,7 @@ mod tests {
                 &validator,
                 payload.clone(),
             )
-            .expect("cached header difficulty should restore the original hash");
+            .expect("explicit header difficulty should restore the original hash");
 
         assert_eq!(sealed.hash(), payload.execution_payload.block_hash);
         assert_eq!(sealed.header().difficulty, U256::from(7_u64));

@@ -1,16 +1,16 @@
-# Header Difficulty In `engine_getPayloadV2`
+# Header Difficulty Via `blockValue` In `engine_getPayloadV2`
 
 ## Summary
 
-Extend Taiko's `engine_getPayloadV2` response with an optional top-level `headerDifficulty`
-field. The field carries the finalized Uzen `header.difficulty` value, which is the finalized
+Reuse Taiko's `engine_getPayloadV2` `blockValue` field for Uzen-and-later payloads. For those
+payloads, `blockValue` carries the finalized `header.difficulty` value, which is the finalized
 block zk gas committed into the built block header.
 
 The goal is to make Taiko clients always pass the original header difficulty back through
 `engine_newPayloadV2`, instead of relying on per-node cache hydration.
 
-This extension must remain backward compatible with clients that only understand the standard
-`ExecutionPayloadEnvelopeV2` response shape.
+This keeps the standard `ExecutionPayloadEnvelopeV2` wire shape unchanged while redefining
+`blockValue` semantics for Taiko Uzen payloads.
 
 ## Problem
 
@@ -20,8 +20,8 @@ hash-relevant for imported payload validation and round-tripping built payloads.
 Today:
 
 - The built block header contains the correct difficulty.
-- `engine_getPayloadV2` returns the standard `ExecutionPayloadEnvelopeV2` shape, which does not
-  expose header difficulty.
+- `engine_getPayloadV2` returns the standard `ExecutionPayloadEnvelopeV2` shape, and Taiko
+  currently does not use `blockValue`.
 - `engine_newPayloadV2` accepts Taiko-specific top-level fields including `headerDifficulty`.
 - Local same-node round trips work only because `alethia-reth` caches built header difficulty by
   block hash and hydrates it during `engine_newPayloadV2` when the client omits it.
@@ -34,67 +34,56 @@ pass the original header difficulty across nodes, restarts, or offline transport
 1. A Taiko client must be able to obtain the original header difficulty from
    `engine_getPayloadV2`.
 2. A Taiko client must always pass that value back in `engine_newPayloadV2`.
-3. Existing clients that deserialize `engine_getPayloadV2` as the standard
-   `ExecutionPayloadEnvelopeV2` must continue to work.
-4. Existing servers that do not yet return `headerDifficulty` must remain readable by updated
-   Taiko clients during rollout.
-5. `blockValue` semantics must remain unchanged.
+3. The `engine_getPayloadV2` JSON field layout must remain the standard
+   `ExecutionPayloadEnvelopeV2` shape.
+4. Existing servers that still return legacy Taiko `blockValue` contents must remain readable by
+   updated Taiko clients during rollout.
+5. Pre-Uzen behavior must remain unchanged.
 
 ## Non-Goals
 
-- Do not overload `blockValue` with zk gas or header difficulty.
 - Do not introduce a second RPC round trip for payload metadata.
 - Do not require upstream Engine API type changes.
+- Do not add a new top-level `headerDifficulty` field to `engine_getPayloadV2`.
 
 ## Chosen Approach
 
-Add an optional Taiko-specific top-level `headerDifficulty` field to the JSON object returned by
-`engine_getPayloadV2`.
+For Uzen-and-later Taiko payloads, set `engine_getPayloadV2.blockValue` equal to the built block's
+`header.difficulty`.
 
 Example response shape:
 
 ```json
 {
   "executionPayload": { "...": "..." },
-  "blockValue": "0x0",
-  "headerDifficulty": "0x2a"
+  "blockValue": "0x2a"
 }
 ```
 
-The existing `executionPayload` and `blockValue` fields remain unchanged. The new field is
-optional and only carries Taiko metadata.
+No new fields are added. The existing `blockValue` field is repurposed for Taiko Uzen payloads.
+For pre-Uzen payloads, keep the existing behavior.
 
 ## Compatibility Model
 
 ### Old client -> new server
 
-Safe. Old clients that deserialize into `ExecutionPayloadEnvelopeV2` should ignore the unknown
-`headerDifficulty` field.
+Wire-compatible. However, any client that interprets `blockValue` using standard Ethereum
+fee-recipient-value semantics will see Taiko-specific meaning instead for Uzen payloads.
 
 ### New client -> old server
 
-Safe during rollout. Updated clients deserialize `headerDifficulty` as optional. If the field is
-absent, the client receives `None`.
+Safe during rollout only if the client treats legacy servers as not carrying header difficulty in
+`blockValue` and continues to rely on the same-node hydration fallback.
 
 Operationally, "always pass" becomes guaranteed only once the client talks to a server version
-that implements this extension.
+that writes Uzen header difficulty into `blockValue`.
 
 ### New client -> new server
 
-Desired steady state. The client reads `headerDifficulty` from `engine_getPayloadV2` and always
-echoes it into `engine_newPayloadV2`.
+Desired steady state. The client reads Uzen header difficulty from `blockValue` and always echoes
+it into `engine_newPayloadV2.headerDifficulty`.
 
 ## Server Design (`alethia-reth`)
-
-### New response wrapper
-
-Introduce a Taiko response wrapper type for `engine_getPayloadV2`:
-
-- `envelope: ExecutionPayloadEnvelopeV2` via `#[serde(flatten)]`
-- `header_difficulty: Option<U256>` serialized as `headerDifficulty`
-
-This wrapper remains wire-compatible with the standard response because it flattens the standard
-envelope and only adds one optional field.
 
 ### Conversion
 
@@ -102,16 +91,15 @@ Replace the current direct `From<EthBuiltPayload>` path used by Taiko `getPayloa
 Taiko-specific conversion that:
 
 - builds the normal `ExecutionPayloadEnvelopeV2`
-- extracts `built_payload.block().header().difficulty`
-- includes it as `headerDifficulty`
+- for Uzen payloads, overwrites `block_value` with `built_payload.block().header().difficulty`
+- for pre-Uzen payloads, preserves the current `block_value` behavior
 
 ### API surface
 
-`engine_getPayloadV2` in Taiko's RPC trait should return the new wrapper type instead of the bare
-standard envelope.
+`engine_getPayloadV2` keeps returning the standard `ExecutionPayloadEnvelopeV2` type.
 
-This only changes Taiko's concrete RPC surface. The JSON fields for standard consumers remain the
-same plus one extra optional field.
+This avoids any wire-shape change on the RPC surface. The change is entirely semantic for Taiko
+Uzen payloads.
 
 ### Cache behavior
 
@@ -122,33 +110,31 @@ That cache becomes a fallback rather than the primary transport.
 
 ## Client Design (`taiko-client-rs`)
 
-### New response wrapper
-
-Introduce a client-side `engine_getPayloadV2` response type with:
-
-- `envelope: ExecutionPayloadEnvelopeV2` via `#[serde(flatten)]`
-- `header_difficulty: Option<U256>` from `headerDifficulty`
-
 ### RPC client method
 
-Change `engine_get_payload_v2` to deserialize into the new wrapper type instead of directly into
-`ExecutionPayloadEnvelopeV2`.
+Keep `engine_get_payload_v2` deserializing into `ExecutionPayloadEnvelopeV2`.
 
 ### Submission path
 
-When converting the fetched payload into `TaikoExecutionDataSidecar`, propagate
-`header_difficulty` from the wrapper into `TaikoExecutionDataSidecar.header_difficulty`.
+When converting the fetched payload into `TaikoExecutionDataSidecar`, set
+`header_difficulty = Some(envelope.block_value)` for Uzen-and-later payloads.
 
 This replaces the current behavior that intentionally sets `header_difficulty: None` for
 `engine_getPayloadV2` round trips.
 
 ### Rollout behavior
 
-If `headerDifficulty` is absent because the server is old, the client keeps `header_difficulty:
-None`.
+If the server is old and still returns legacy `blockValue` contents, the client must treat that
+server as not carrying Uzen header difficulty and keep `header_difficulty: None`.
 
 That keeps the client backward compatible during rollout, while the same-node server fallback can
 still hydrate the value when available.
+
+### Uzen detection
+
+The client must only interpret `blockValue` as `headerDifficulty` for Uzen-and-later payloads.
+Use the existing Taiko hardfork activation logic keyed by payload timestamp or block context rather
+than treating `blockValue` that way unconditionally.
 
 ## Testing
 
@@ -156,31 +142,30 @@ still hydrate the value when available.
 
 Add tests covering:
 
-1. `engine_getPayloadV2` response serialization includes `headerDifficulty`.
-2. The value equals the built block header difficulty.
-3. The field is omitted or preserved correctly under serde expectations when optional.
+1. `engine_getPayloadV2` response serialization keeps the standard envelope shape.
+2. For Uzen payloads, `blockValue` equals the built block header difficulty.
+3. For pre-Uzen payloads, `blockValue` preserves existing behavior.
 
 ### `taiko-client-rs`
 
 Add tests covering:
 
-1. `engine_get_payload_v2` response deserializes successfully when `headerDifficulty` is present.
-2. Deserialization still succeeds when `headerDifficulty` is absent.
-3. The driver submission path propagates `headerDifficulty` into the Taiko sidecar.
+1. The Uzen submission path maps `blockValue` into `header_difficulty`.
+2. The pre-Uzen submission path does not reinterpret `blockValue` as header difficulty.
+3. Legacy-server rollout behavior still leaves `header_difficulty` unset when appropriate.
 
 ## Risks
 
-- If any consumer uses a strict JSON schema that rejects unknown fields in `engine_getPayloadV2`,
-  the extra field could break that consumer. This is unlikely for normal serde-based Rust clients,
-  but should be called out.
+- Any consumer that assumes standard Engine API `blockValue` semantics will misinterpret Taiko
+  Uzen payloads.
 - During mixed-version rollout, "always pass" is not enforceable until the server side is upgraded.
 
 ## Rejected Alternatives
 
-### Reuse `blockValue`
+### Add `headerDifficulty`
 
-Rejected because `blockValue` has standard Engine API semantics unrelated to header difficulty or
-zk gas. Reusing it would create protocol ambiguity and future breakage risk.
+Rejected because it changes the `engine_getPayloadV2` wire shape and introduces a Taiko-specific
+top-level field when the existing envelope already has an unused slot in Taiko deployments.
 
 ### Separate metadata RPC
 

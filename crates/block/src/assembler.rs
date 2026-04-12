@@ -100,8 +100,8 @@ where
             gas_used: *gas_used,
             extra_data: ctx.extra_data,
             parent_beacon_block_root: ctx.parent_beacon_block_root,
-            blob_gas_used: None,
-            excess_blob_gas: None,
+            blob_gas_used: ctx.is_uzen_active.then_some(0),
+            excess_blob_gas: ctx.is_uzen_active.then_some(0),
             requests_hash,
         };
 
@@ -236,6 +236,8 @@ mod test {
             .expect("Uzen block should assemble");
 
         assert_eq!(block.header.requests_hash, Some(EMPTY_REQUESTS_HASH));
+        assert_eq!(block.header.blob_gas_used, Some(0));
+        assert_eq!(block.header.excess_blob_gas, Some(0));
     }
 
     fn sample_transaction() -> TransactionSigned {

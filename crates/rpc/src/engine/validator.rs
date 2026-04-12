@@ -142,6 +142,8 @@ where
             block.header.difficulty = header_difficulty;
         }
         block.header.parent_beacon_block_root = is_uzen_active.then_some(B256::ZERO);
+        block.header.blob_gas_used = is_uzen_active.then_some(0);
+        block.header.excess_blob_gas = is_uzen_active.then_some(0);
         block.header.requests_hash = is_uzen_active.then_some(EMPTY_REQUESTS_HASH);
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
@@ -307,6 +309,8 @@ mod tests {
 
         assert_eq!(sealed.hash(), payload.execution_payload.block_hash);
         assert_eq!(sealed.header().parent_beacon_block_root, Some(B256::ZERO));
+        assert_eq!(sealed.header().blob_gas_used, Some(0));
+        assert_eq!(sealed.header().excess_blob_gas, Some(0));
         assert_eq!(sealed.header().requests_hash, Some(EMPTY_REQUESTS_HASH));
     }
 
@@ -343,6 +347,8 @@ mod tests {
                 extra_data: Bytes::default(),
                 difficulty,
                 parent_beacon_block_root,
+                blob_gas_used: Some(0),
+                excess_blob_gas: Some(0),
                 requests_hash: Some(EMPTY_REQUESTS_HASH),
                 ..Default::default()
             },

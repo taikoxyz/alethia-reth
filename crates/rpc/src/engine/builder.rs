@@ -4,7 +4,7 @@ use reth::payload::PayloadStore;
 use reth_engine_primitives::EngineApiValidator;
 use reth_node_api::{AddOnsContext, FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EngineApiBuilder, PayloadValidatorBuilder};
-use reth_node_core::version::{version_metadata, CLIENT_CODE};
+use reth_node_core::version::{CLIENT_CODE, version_metadata};
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineCapabilities;
 
@@ -36,10 +36,10 @@ impl<N, PVB> EngineApiBuilder<N> for TaikoEngineApiBuilder<PVB>
 where
     N: FullNodeComponents,
     N::Types: NodeTypes<
-        Primitives = EthPrimitives,
-        ChainSpec = TaikoChainSpec,
-        Payload = TaikoEngineTypes,
-    >,
+            Primitives = EthPrimitives,
+            ChainSpec = TaikoChainSpec,
+            Payload = TaikoEngineTypes,
+        >,
     PVB: PayloadValidatorBuilder<N>,
     PVB::Validator: EngineApiValidator<<N::Types as NodeTypes>::Payload>,
 {

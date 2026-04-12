@@ -9,12 +9,12 @@ use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
 };
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::{BlockNumber, B256, U256};
+use alloy_primitives::{B256, BlockNumber, U256};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV2, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
 };
 use async_trait::async_trait;
-use jsonrpsee::{proc_macros::rpc, RpcModule};
+use jsonrpsee::{RpcModule, proc_macros::rpc};
 use jsonrpsee_core::RpcResult;
 use jsonrpsee_types::ErrorObjectOwned;
 use reth::{
@@ -32,10 +32,9 @@ use reth_provider::{
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
 
-use alethia_reth_chainspec::hardfork::TaikoHardforks;
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
-    StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable, STORED_L1_HEAD_ORIGIN_KEY,
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
 };
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
@@ -119,11 +118,11 @@ where
     Provider:
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     EngineT: EngineTypes<
-        ExecutionData = TaikoExecutionData,
-        PayloadAttributes = TaikoPayloadAttributes,
-        BuiltPayload = EthBuiltPayload,
-        ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
-    >,
+            ExecutionData = TaikoExecutionData,
+            PayloadAttributes = TaikoPayloadAttributes,
+            BuiltPayload = EthBuiltPayload,
+            ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
+        >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -211,11 +210,11 @@ where
     Provider:
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     EngineT: EngineTypes<
-        ExecutionData = TaikoExecutionData,
-        PayloadAttributes = TaikoPayloadAttributes,
-        BuiltPayload = EthBuiltPayload,
-        ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
-    >,
+            ExecutionData = TaikoExecutionData,
+            PayloadAttributes = TaikoPayloadAttributes,
+            BuiltPayload = EthBuiltPayload,
+            ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
+        >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -336,17 +335,15 @@ fn hydrate_cached_header_fields_from_map(
 mod tests {
     use super::*;
 
-    use alethia_reth_chainspec::{hardfork::TaikoHardfork, TAIKO_DEVNET};
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alethia_reth_primitives::engine::types::TaikoExecutionDataSidecar;
-    use alloy_consensus::{constants::EMPTY_WITHDRAWALS, BlockBody, Header};
+    use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::ForkCondition;
-    use alloy_primitives::{Address, Bytes, B256, U256};
+    use alloy_primitives::{Address, B256, Bytes, U256};
     use alloy_rpc_types_engine::ExecutionPayloadV1;
-    use reth_primitives_traits::Block as _;
-    use reth_primitives_traits::BlockBody as _;
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use reth_primitives_traits::{Block as _, BlockBody as _};
+    use std::{collections::HashMap, sync::Arc};
 
     #[test]
     fn uzen_payload_overwrites_block_value_with_header_difficulty() {

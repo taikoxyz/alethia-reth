@@ -9,10 +9,12 @@ use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
 };
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::{B256, BlockNumber, U256};
-use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus};
+use alloy_primitives::{BlockNumber, B256, U256};
+use alloy_rpc_types_engine::{
+    ExecutionPayloadEnvelopeV2, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
+};
 use async_trait::async_trait;
-use jsonrpsee::{RpcModule, proc_macros::rpc};
+use jsonrpsee::{proc_macros::rpc, RpcModule};
 use jsonrpsee_core::RpcResult;
 use jsonrpsee_types::ErrorObjectOwned;
 use reth::{
@@ -30,8 +32,10 @@ use reth_provider::{
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
 
+use alethia_reth_chainspec::hardfork::TaikoHardforks;
+use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_db::model::{
-    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
+    StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable, STORED_L1_HEAD_ORIGIN_KEY,
 };
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
@@ -71,6 +75,8 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
     /// Provider used for DB reads/writes during L1-origin persistence.
     provider: Provider,
+    /// Taiko chain spec used to detect Uzen payloads when preparing `getPayloadV2` responses.
+    chain_spec: Arc<TaikoChainSpec>,
     /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
     /// Cache of hash-relevant header fields that `ExecutionPayloadV1` does not carry.
@@ -90,6 +96,7 @@ where
     pub fn new(
         engine_api: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
         provider: Provider,
+        chain_spec: Arc<TaikoChainSpec>,
         payload_store: PayloadStore<PayloadT>,
     ) -> Self
     where
@@ -98,6 +105,7 @@ where
         Self {
             inner: engine_api,
             provider,
+            chain_spec,
             payload_store,
             built_payload_headers: Default::default(),
         }
@@ -111,11 +119,11 @@ where
     Provider:
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     EngineT: EngineTypes<
-            ExecutionData = TaikoExecutionData,
-            PayloadAttributes = TaikoPayloadAttributes,
-            BuiltPayload = EthBuiltPayload,
-        >,
-    EngineT::ExecutionPayloadEnvelopeV2: From<EthBuiltPayload>,
+        ExecutionData = TaikoExecutionData,
+        PayloadAttributes = TaikoPayloadAttributes,
+        BuiltPayload = EthBuiltPayload,
+        ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
+    >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -135,6 +143,18 @@ where
             .lock()
             .expect("built payload header cache mutex should not be poisoned")
             .insert(block.hash(), block.header().difficulty);
+    }
+
+    /// Converts a built payload into the standard V2 envelope, preserving the builder fee unless
+    /// Uzen requires the hash-relevant header difficulty to be carried through `blockValue`.
+    fn convert_built_payload_to_execution_payload_envelope_v2(
+        &self,
+        built_payload: EthBuiltPayload,
+    ) -> ExecutionPayloadEnvelopeV2 {
+        convert_built_payload_to_execution_payload_envelope_v2(
+            self.chain_spec.as_ref(),
+            built_payload,
+        )
     }
 
     /// Restores cached header fields that are omitted by the external payload wire format.
@@ -196,11 +216,11 @@ where
     Provider:
         HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
     EngineT: EngineTypes<
-            ExecutionData = TaikoExecutionData,
-            PayloadAttributes = TaikoPayloadAttributes,
-            BuiltPayload = EthBuiltPayload,
-        >,
-    EngineT::ExecutionPayloadEnvelopeV2: From<EthBuiltPayload>,
+        ExecutionData = TaikoExecutionData,
+        PayloadAttributes = TaikoPayloadAttributes,
+        BuiltPayload = EthBuiltPayload,
+        ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
+    >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -256,7 +276,7 @@ where
         let built_payload =
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
         self.cache_built_payload_header(&built_payload);
-        Ok(built_payload.into())
+        Ok(self.convert_built_payload_to_execution_payload_envelope_v2(built_payload))
     }
 }
 
@@ -270,5 +290,115 @@ where
     /// returns them as a single [`RpcModule`]
     fn into_rpc_module(self) -> RpcModule<()> {
         self.into_rpc().remove_context()
+    }
+}
+
+/// Converts a built payload into the standard V2 execution payload envelope.
+///
+/// Uzen reuses `blockValue` to transport the hash-relevant header difficulty through the standard
+/// `getPayloadV2` response shape without adding a new wire field.
+fn convert_built_payload_to_execution_payload_envelope_v2(
+    chain_spec: &TaikoChainSpec,
+    built_payload: EthBuiltPayload,
+) -> ExecutionPayloadEnvelopeV2 {
+    let block = built_payload.block();
+    let is_uzen_active = chain_spec.is_uzen_active(block.header().timestamp);
+    let header_difficulty = block.header().difficulty;
+    let mut envelope = ExecutionPayloadEnvelopeV2::from(built_payload);
+
+    if is_uzen_active {
+        // Consensus rule: Taiko Uzen round-trips the header difficulty through `blockValue` so
+        // the RPC response can carry the hash-relevant field without introducing a new wire field.
+        envelope.block_value = header_difficulty;
+    }
+
+    envelope
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use alethia_reth_chainspec::{hardfork::TaikoHardfork, TAIKO_DEVNET};
+    use alloy_consensus::{constants::EMPTY_WITHDRAWALS, BlockBody, Header};
+    use alloy_eips::merge::BEACON_NONCE;
+    use alloy_hardforks::ForkCondition;
+    use alloy_primitives::{Address, Bytes, B256, U256};
+    use reth_primitives_traits::Block as _;
+    use std::sync::Arc;
+
+    #[test]
+    fn uzen_payload_overwrites_block_value_with_header_difficulty() {
+        let chain_spec = uzen_chain_spec();
+        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
+
+        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
+            chain_spec.as_ref(),
+            built_payload,
+        );
+
+        assert_eq!(envelope.block_value, U256::from(7_u64));
+    }
+
+    #[test]
+    fn pre_uzen_payload_preserves_original_block_value() {
+        let chain_spec = pre_uzen_chain_spec();
+        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
+
+        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
+            chain_spec.as_ref(),
+            built_payload,
+        );
+
+        assert_eq!(envelope.block_value, U256::from(1_u64));
+    }
+
+    fn uzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        Arc::new(chain_spec)
+    }
+
+    fn pre_uzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(10));
+        Arc::new(chain_spec)
+    }
+
+    fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {
+        let block = reth_ethereum::Block {
+            header: Header {
+                parent_hash: B256::with_last_byte(0x11),
+                beneficiary: Address::with_last_byte(0x22),
+                state_root: B256::with_last_byte(0x33),
+                transactions_root: alloy_consensus::proofs::calculate_transaction_root(&Vec::<
+                    reth_ethereum::TransactionSigned,
+                >::new(
+                )),
+                receipts_root: B256::with_last_byte(0x44),
+                withdrawals_root: Some(EMPTY_WITHDRAWALS),
+                logs_bloom: Default::default(),
+                number: 1,
+                gas_limit: 30_000_000,
+                gas_used: 0,
+                timestamp,
+                mix_hash: B256::with_last_byte(0x55),
+                nonce: BEACON_NONCE.into(),
+                base_fee_per_gas: Some(1),
+                extra_data: Bytes::default(),
+                difficulty,
+                parent_beacon_block_root: Some(B256::ZERO),
+                requests_hash: None,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![],
+                ommers: vec![],
+                withdrawals: Some(Default::default()),
+            },
+        };
+        let sealed_block = Arc::new(block.seal_slow());
+
+        EthBuiltPayload::new(sealed_block, fees, None)
     }
 }

@@ -2,7 +2,8 @@
 use std::{io, sync::Arc};
 
 use alethia_reth_primitives::{
-    engine::types::TaikoExecutionData, payload::attributes::TaikoPayloadAttributes,
+    decode_shasta_proposal_id, engine::types::TaikoExecutionData,
+    payload::attributes::TaikoPayloadAttributes,
 };
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
@@ -30,7 +31,8 @@ use reth_rpc_engine_api::EngineApiError;
 
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
-    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
+    BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
+    StoredL1OriginTable,
 };
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
@@ -153,6 +155,7 @@ where
         &self,
         stored_l1_origin: StoredL1Origin,
         is_preconf_block: bool,
+        batch_id: Option<u64>,
     ) -> Result<(), EngineApiError> {
         let tx = self.provider.database_provider_rw().map_err(Self::internal_error)?.into_tx();
 
@@ -164,6 +167,10 @@ where
         if !is_preconf_block {
             tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, block_number)
                 .map_err(Self::internal_error)?;
+
+            if let Some(batch_id) = batch_id {
+                tx.put::<BatchToLastBlock>(batch_id, block_number).map_err(Self::internal_error)?;
+            }
         }
 
         tx.commit().map_err(Self::internal_error)?;
@@ -200,12 +207,13 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        let (stored_l1_origin, is_preconf_block) = match payload_attributes.as_ref() {
+        let (stored_l1_origin, is_preconf_block, batch_id) = match payload_attributes.as_ref() {
             Some(payload) => (
                 Some(StoredL1Origin::from(&payload.l1_origin)),
                 payload.l1_origin.is_preconf_block(),
+                decode_shasta_proposal_id(payload.block_metadata.extra_data.as_ref()),
             ),
-            None => (None, false),
+            None => (None, false, None),
         };
 
         let status =
@@ -223,7 +231,7 @@ where
 
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
-            self.persist_l1_origin(stored_l1_origin, is_preconf_block)
+            self.persist_l1_origin(stored_l1_origin, is_preconf_block, batch_id)
                 .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
         }
 

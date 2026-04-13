@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, devnet-413]
+    branches: [main]
   release:
     types: [published]
 

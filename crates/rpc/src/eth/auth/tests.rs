@@ -641,14 +641,12 @@ async fn set_batch_to_last_block_returns_u256_quantity() {
     let batch_id = U256::from(7u64);
     let block_id = U256::from(11u64);
 
-    let stored_batch_id = api
-        .store_batch_to_last_block(batch_id, block_id)
-        .expect("set batch mapping");
+    let stored_batch_id =
+        api.store_batch_to_last_block(batch_id, block_id).expect("set batch mapping");
 
     assert_eq!(stored_batch_id, batch_id);
     assert_eq!(
-        api.read_cached_last_block_number_by_batch_id(batch_id)
-            .expect("read cached mapping"),
+        api.read_cached_last_block_number_by_batch_id(batch_id).expect("read cached mapping"),
         Some(block_id)
     );
 }

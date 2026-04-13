@@ -628,3 +628,25 @@ fn skips_preconfirmation_blocks_when_scanning() {
     let block_id = api.resolve_last_block_number_by_batch_id(proposal_id).unwrap();
     assert_eq!(block_id, U256::from(1u64));
 }
+
+#[tokio::test]
+/// Returns a geth-compatible quantity when storing the batch-to-last-block mapping.
+async fn set_batch_to_last_block_returns_u256_quantity() {
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+    let (factory, provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+
+    let batch_id = U256::from(7u64);
+    let block_id = U256::from(11u64);
+
+    let stored_batch_id =
+        api.store_batch_to_last_block(batch_id, block_id).expect("set batch mapping");
+
+    assert_eq!(stored_batch_id, batch_id);
+    assert_eq!(
+        api.read_cached_last_block_number_by_batch_id(batch_id).expect("read cached mapping"),
+        Some(block_id)
+    );
+}

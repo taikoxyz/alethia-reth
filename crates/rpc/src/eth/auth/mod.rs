@@ -69,7 +69,7 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
     async fn set_l1_origin_signature(&self, id: U256, signature: Bytes) -> RpcResult<RpcL1Origin>;
     /// Stores an explicit batch-to-last-block mapping.
     #[method(name = "setBatchToLastBlock")]
-    async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<u64>;
+    async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<U256>;
     /// Returns the last L1 origin for a given batch ID.
     #[method(name = "lastL1OriginByBatchID")]
     async fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>>;
@@ -129,6 +129,26 @@ impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, 
     pub fn new(provider: Provider, pool: Pool, tx_resp_builder: Eth, evm_config: Evm) -> Self {
         Self { provider, pool, tx_resp_builder, evm_config }
     }
+
+    /// Stores the current L1 head origin block id.
+    fn store_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
+        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
+
+        tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
+            .map_err(internal_eth_error)?;
+
+        tx.commit().map_err(internal_eth_error)?;
+
+        Ok(id)
+    }
+
+    /// Stores the mapping from batch ID to its last block number.
+    fn store_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<U256> {
+        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
+        tx.put::<BatchToLastBlock>(batch_id.to(), block_number.to()).map_err(internal_eth_error)?;
+        tx.commit().map_err(internal_eth_error)?;
+        Ok(batch_id)
+    }
 }
 
 #[async_trait]
@@ -156,14 +176,7 @@ where
 {
     /// Sets the L1 head origin in the database.
     async fn set_head_l1_origin(&self, id: U256) -> RpcResult<U256> {
-        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
-
-        tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, id.to::<u64>())
-            .map_err(internal_eth_error)?;
-
-        tx.commit().map_err(internal_eth_error)?;
-
-        Ok(id)
+        self.store_head_l1_origin(id)
     }
 
     /// Sets the L1 origin signature in the database.
@@ -188,11 +201,8 @@ where
     }
 
     /// Sets the mapping from batch ID to its last block number in the database.
-    async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<u64> {
-        let tx = self.provider.database_provider_rw().map_err(internal_eth_error)?.into_tx();
-        tx.put::<BatchToLastBlock>(batch_id.to(), block_number.to()).map_err(internal_eth_error)?;
-        tx.commit().map_err(internal_eth_error)?;
-        Ok(batch_id.to())
+    async fn set_batch_to_last_block(&self, batch_id: U256, block_number: U256) -> RpcResult<U256> {
+        self.store_batch_to_last_block(batch_id, block_number)
     }
 
     /// Updates the L1 origin in the database.

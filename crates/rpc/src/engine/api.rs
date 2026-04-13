@@ -208,11 +208,18 @@ where
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
         let (stored_l1_origin, is_preconf_block, batch_id) = match payload_attributes.as_ref() {
-            Some(payload) => (
-                Some(StoredL1Origin::from(&payload.l1_origin)),
-                payload.l1_origin.is_preconf_block(),
-                decode_shasta_proposal_id(payload.block_metadata.extra_data.as_ref()),
-            ),
+            Some(payload) => {
+                let batch_id = self
+                    .chain_spec
+                    .is_shasta_active(payload.payload_attributes.timestamp)
+                    .then(|| decode_shasta_proposal_id(payload.block_metadata.extra_data.as_ref()))
+                    .flatten();
+                (
+                    Some(StoredL1Origin::from(&payload.l1_origin)),
+                    payload.l1_origin.is_preconf_block(),
+                    batch_id,
+                )
+            }
             None => (None, false, None),
         };
 

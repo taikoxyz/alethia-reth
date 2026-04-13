@@ -24,7 +24,7 @@ The code has no per-tx zk-gas cap at pool admission (validation at `tx_selection
 ## Operational context
 
 - The affected RPC is called on a ~2s cadence by the proposer.
-- In practice, `max_transactions_lists = 1` for every call, so the "start a new list" branch (`tx_selection/mod.rs:209-231`) is never exercised.
+- In practice, the proposer always passes `max_transactions_lists = 1`, so the "start a new list" branch (`tx_selection/mod.rs:209-231`) is never exercised in production. The parameter is still honored by the code; the fix must not assume `max_lists = 1`.
 - With `max_lists = 1`, the loop's only natural termination conditions are (a) the single list fills from regular gas or DA, or (b) the pool iterator is exhausted. Failed (zk-gas-exceeded) txs do not contribute to the list's gas/DA totals (lines 264-267 run only on success), so a pool dominated by zk-bombs would be scanned end-to-end.
 
 ## Decision
@@ -74,7 +74,7 @@ All tests go in the existing `#[cfg(test)] mod tests` block in `crates/block/src
    A pool with `[zk_bomb_from_A, valid_tx_from_B, valid_tx_from_C]`. After selection, the returned list must contain `valid_tx_from_B` and `valid_tx_from_C`. This is the test that specifically reproduces the reported bug.
 
 2. **Sender descendants are skipped.**
-   A pool with `[zk_bomb_from_A@nonce=n, valid_tx_from_A@nonce=n+1, valid_tx_from_B]`. Exactly one execution attempt should be made for sender A (the bomb). The `nonce=n+1` tx from A must not be executed (since a gap would invalidate it anyway) or must be skipped via `mark_invalid`'s descendant propagation. `valid_tx_from_B` must appear in the result.
+   A pool with `[zk_bomb_from_A@nonce=n, valid_tx_from_A@nonce=n+1, valid_tx_from_B]`. Exactly one execution attempt should be made for sender A — the bomb at `nonce=n`. The `nonce=n+1` tx from A must not be executed, because `mark_invalid` on the bomb causes the pool iterator to treat A's queue as unusable for the rest of this selection call. `valid_tx_from_B` must appear in the result. The assertion on "exactly one execution attempt for A" is the behavior lock referenced in the Risks section.
 
 3. **Interleaved bombs across multiple senders.**
    A pool with `[zk_bomb_from_A, valid_tx_from_B, zk_bomb_from_C, valid_tx_from_D]`. Result contains `valid_tx_from_B` and `valid_tx_from_D`. Verifies that one sender's zk-bomb does not skip unrelated senders.

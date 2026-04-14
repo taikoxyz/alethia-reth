@@ -41,14 +41,15 @@ pub use parser::TaikoChainSpecParser;
 /// Additional Taiko CLI arguments layered on top of the base CLI.
 #[derive(Debug, clap::Args)]
 pub struct TaikoCliExtArgs {
-    /// Override the devnet Shasta hardfork activation timestamp (`0` keeps the embedded value).
+    /// Override the devnet Uzen hardfork activation timestamp (`0` keeps the embedded value).
     #[arg(
-        long = "devnet-shasta-timestamp",
+        long = "devnet-uzen-timestamp",
+        env = "ALETHIA_RETH_DEVNET_UZEN_TIMESTAMP",
         value_name = "TIMESTAMP",
         default_value_t = 0u64,
         help_heading = "Taiko"
     )]
-    pub devnet_shasta_timestamp: u64,
+    pub devnet_uzen_timestamp: u64,
 }
 
 /// The main alethia-reth cli interface.
@@ -197,5 +198,64 @@ impl<
     pub fn init_tracing(&self) -> eyre::Result<Option<FileWorkerGuard>> {
         let guard = self.inner.logs.init_tracing()?;
         Ok(guard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, OnceLock};
+
+    use clap::Parser;
+
+    use super::TaikoCliExtArgs;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock should not be poisoned")
+    }
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        ext: TaikoCliExtArgs,
+    }
+
+    #[test]
+    fn test_parse_devnet_uzen_timestamp_flag() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_UZEN_TIMESTAMP") };
+        let cli = TestCli::try_parse_from(["alethia-reth", "--devnet-uzen-timestamp", "42"])
+            .expect("flag should parse");
+
+        assert_eq!(cli.ext.devnet_uzen_timestamp, 42);
+    }
+
+    #[test]
+    fn test_parse_devnet_uzen_timestamp_default() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_UZEN_TIMESTAMP") };
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
+
+        assert_eq!(cli.ext.devnet_uzen_timestamp, 0);
+    }
+
+    #[test]
+    fn test_parse_devnet_uzen_timestamp_from_env() {
+        let _lock = env_lock();
+        unsafe { std::env::set_var("ALETHIA_RETH_DEVNET_UZEN_TIMESTAMP", "42") };
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("env-backed args should parse");
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_UZEN_TIMESTAMP") };
+
+        assert_eq!(cli.ext.devnet_uzen_timestamp, 42);
+    }
+
+    #[test]
+    fn test_rejects_legacy_devnet_shasta_timestamp_flag() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_UZEN_TIMESTAMP") };
+        let err = TestCli::try_parse_from(["alethia-reth", "--devnet-shasta-timestamp", "42"])
+            .expect_err("legacy flag should be rejected");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 }

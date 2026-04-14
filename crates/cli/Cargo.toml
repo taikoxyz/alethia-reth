@@ -17,7 +17,7 @@ alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-node = { path = "../node" }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 eyre = { workspace = true }
 reth = { workspace = true }
 reth-cli = { workspace = true }

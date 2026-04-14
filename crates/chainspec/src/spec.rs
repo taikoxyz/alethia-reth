@@ -184,6 +184,15 @@ impl TaikoDevnetConfigExt for TaikoChainSpec {
 
         let mut cloned = self.clone();
         cloned.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(timestamp));
+        cloned
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Cancun, ForkCondition::Timestamp(timestamp));
+        cloned
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Prague, ForkCondition::Timestamp(timestamp));
+        cloned.inner.hardforks.insert(EthereumHardfork::Osaka, ForkCondition::Timestamp(timestamp));
         Some(cloned)
     }
 }
@@ -280,6 +289,18 @@ mod test {
             .expect("devnet override should succeed");
         assert_eq!(
             overridden.taiko_fork_activation(TaikoHardfork::Uzen),
+            ForkCondition::Timestamp(42)
+        );
+        assert_eq!(
+            overridden.ethereum_fork_activation(EthereumHardfork::Cancun),
+            ForkCondition::Timestamp(42)
+        );
+        assert_eq!(
+            overridden.ethereum_fork_activation(EthereumHardfork::Prague),
+            ForkCondition::Timestamp(42)
+        );
+        assert_eq!(
+            overridden.ethereum_fork_activation(EthereumHardfork::Osaka),
             ForkCondition::Timestamp(42)
         );
 

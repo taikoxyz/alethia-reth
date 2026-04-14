@@ -97,9 +97,12 @@ impl EthChainSpec for TaikoChainSpec {
         self.inner.base_fee_params_at_timestamp(timestamp)
     }
 
-    /// Get the [`BlobParams`] for the given timestamp, in Taiko network this is always `None`.
-    fn blob_params_at_timestamp(&self, _timestamp: u64) -> Option<BlobParams> {
-        None
+    /// Get the [`BlobParams`] for the given timestamp.
+    ///
+    /// Taiko inherits the wrapped chain spec's blob fee schedule for any active Cancun-or-later
+    /// Ethereum fork, even though Taiko consensus still rejects blob transactions.
+    fn blob_params_at_timestamp(&self, timestamp: u64) -> Option<BlobParams> {
+        self.inner.blob_params_at_timestamp(timestamp)
     }
 
     /// Returns the [`DepositContract`] for the chain, in Taiko network this is always `None`.
@@ -225,6 +228,7 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
 mod test {
     use super::*;
     use crate::{TAIKO_DEVNET, TAIKO_MAINNET};
+    use alloy_consensus::BlockHeader;
 
     #[test]
     fn test_chain_spec_is_optimism() {
@@ -240,6 +244,31 @@ mod test {
         assert_eq!(spec.deposit_contract(), None);
         assert_eq!(spec.blob_params_at_timestamp(0), None);
         assert_eq!(spec.final_paris_total_difficulty(), Some(U256::ZERO));
+    }
+
+    #[test]
+    fn test_mainnet_blob_params_remain_unset_before_uzen() {
+        let spec = TAIKO_MAINNET.as_ref();
+
+        assert_eq!(spec.blob_params_at_timestamp(0), None);
+    }
+
+    #[test]
+    fn test_devnet_uzen_exposes_osaka_blob_params_and_blob_base_fee() {
+        let spec = TAIKO_DEVNET.as_ref();
+        let header = Header {
+            timestamp: 0,
+            base_fee_per_gas: Some(1),
+            blob_gas_used: Some(0),
+            excess_blob_gas: Some(0),
+            ..Header::default()
+        };
+
+        assert_eq!(spec.blob_params_at_timestamp(0), Some(BlobParams::osaka()));
+        assert_eq!(
+            header.maybe_next_block_blob_fee(spec.blob_params_at_timestamp(header.timestamp())),
+            Some(1)
+        );
     }
 
     #[test]

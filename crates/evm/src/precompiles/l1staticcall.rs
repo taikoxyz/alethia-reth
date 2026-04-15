@@ -26,18 +26,23 @@ const MAX_RETURN_DATA_SIZE: usize = 24576;
 /// Maximum number of L1 blocks to look back from L1 origin.
 const L1STATICCALL_MAX_BLOCK_LOOKBACK: u64 = 256;
 
+/// Maximum gas limit passed to L1 `debug_traceCall`.
+const L1_CALL_MAX_GAS_CAP: u64 = 30_000_000;
+
 /// Type alias for the L1 staticcall cache map.
-/// Key: (target_address, block_number, keccak256(calldata)) -> Value: return_data
-type L1StaticCallCache = HashMap<(Address, u64, B256), Vec<u8>>;
+/// Key: (target_address, block_number, keccak256(calldata)) -> Value: (l1_gas_used, return_data)
+type L1StaticCallCache = HashMap<(Address, u64, B256), (u64, Vec<u8>)>;
 
 /// In-memory cache for L1 staticcall results.
 static L1_STATICCALL_CACHE: LazyLock<Mutex<L1StaticCallCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Callback function type for fetching L1 staticcall results via RPC.
-/// Arguments: (target_address, block_number, calldata_bytes) -> return_data
+///
+/// The fetcher must call `debug_traceCall` (not `eth_call`) to capture actual gas.
+/// Arguments: (target_address, block_number, gas_limit, calldata_bytes) -> (gas_used, return_data)
 type L1StaticCallFetcher =
-    Box<dyn Fn(Address, u64, &[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
+    Box<dyn Fn(Address, u64, u64, &[u8]) -> Result<(u64, Vec<u8>), String> + Send + Sync>;
 
 /// Live L1 RPC fetcher for handling cache misses on L1STATICCALL calls.
 static L1_STATICCALL_RPC_FETCHER: LazyLock<Mutex<Option<L1StaticCallFetcher>>> =
@@ -54,6 +59,8 @@ pub struct L1StaticCallRecord {
     pub calldata: Vec<u8>,
     /// The return data from the L1 contract call.
     pub return_data: Vec<u8>,
+    /// Actual gas consumed on L1, as reported by `debug_traceCall`.
+    pub gas_used: u64,
 }
 
 /// Tracks L1STATICCALL calls served via the live RPC fetcher (not from pre-fetched cache).
@@ -67,11 +74,12 @@ pub fn set_l1_staticcall_value(
     target: Address,
     block_number: u64,
     calldata: &[u8],
+    gas_used: u64,
     result: Vec<u8>,
 ) {
     let calldata_hash = keccak256(calldata);
     let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
-    cache.insert((target, block_number, calldata_hash), result);
+    cache.insert((target, block_number, calldata_hash), (gas_used, result));
 }
 
 /// Clear the L1STATICCALL cache only (does NOT clear the shared anchor/l1origin context).
@@ -81,7 +89,10 @@ pub fn clear_l1_staticcall_cache() {
 
 /// Set the L1 staticcall RPC fetcher callback for live fetching on cache miss.
 pub fn set_l1_staticcall_rpc_fetcher(
-    fetcher: impl Fn(Address, u64, &[u8]) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+    fetcher: impl Fn(Address, u64, u64, &[u8]) -> Result<(u64, Vec<u8>), String>
+        + Send
+        + Sync
+        + 'static,
 ) {
     *L1_STATICCALL_RPC_FETCHER.lock().expect("L1_STATICCALL_RPC_FETCHER mutex poisoned") =
         Some(Box::new(fetcher));
@@ -111,7 +122,12 @@ pub fn clear_l1_staticcall_rpc_served_calls() {
 }
 
 /// Looks up a cached L1 staticcall result by target, block number, and calldata hash.
-fn get_l1_staticcall_value(target: Address, block_number: u64, calldata: &[u8]) -> Option<Vec<u8>> {
+/// Returns `(gas_used, return_data)`.
+fn get_l1_staticcall_value(
+    target: Address,
+    block_number: u64,
+    calldata: &[u8],
+) -> Option<(u64, Vec<u8>)> {
     let calldata_hash = keccak256(calldata);
     L1_STATICCALL_CACHE
         .lock()
@@ -129,12 +145,13 @@ fn get_l1_staticcall_value(target: Address, block_number: u64, calldata: &[u8]) 
 ///
 /// Output: variable-length return data (capped at 24 KB).
 pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
-    // Gas calculation: fixed + overhead + per-byte for calldata beyond header
+    // Static gas: fixed + overhead + per-byte for calldata beyond header.
+    // Dynamic L1 gas is added after execution from cache or fetcher.
     let extra_calldata_len = input.len().saturating_sub(MIN_INPUT_LENGTH);
-    let gas_used = L1STATICCALL_FIXED_GAS
+    let static_gas = L1STATICCALL_FIXED_GAS
         + L1STATICCALL_PER_CALL_OVERHEAD
         + L1STATICCALL_PER_BYTE_CALLDATA_GAS * (extra_calldata_len as u64);
-    if gas_used > gas_limit {
+    if static_gas > gas_limit {
         return Err(PrecompileError::OutOfGas);
     }
 
@@ -196,8 +213,8 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         ));
     }
 
-    // Cache lookup
-    let result =
+    // Cache lookup: returns (l1_gas_used, return_data)
+    let (l1_gas, result) =
         if let Some(cached) = get_l1_staticcall_value(target, requested_block, calldata) {
             trace!(
                 "L1STATICCALL: cache hit target={:?} block={} calldata_len={}",
@@ -217,17 +234,21 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                     requested_block,
                     calldata.len()
                 );
-                let fetched = fetcher(target, requested_block, calldata).map_err(|e| {
-                    PrecompileError::Other(format!("L1 RPC error: {e}").into())
-                })?;
+                let effective_gas_limit = gas_limit.min(L1_CALL_MAX_GAS_CAP);
+                let (fetched_gas, fetched_data) =
+                    fetcher(target, requested_block, effective_gas_limit, calldata).map_err(
+                        |e| PrecompileError::Other(format!("L1 RPC error: {e}").into()),
+                    )?;
                 drop(fetcher_guard);
 
+                let l1_gas = fetched_gas.min(effective_gas_limit);
+
                 // Enforce max return data size
-                if fetched.len() > MAX_RETURN_DATA_SIZE {
+                if fetched_data.len() > MAX_RETURN_DATA_SIZE {
                     return Err(PrecompileError::Other(
                         format!(
                             "L1STATICCALL return data too large: {} > {} bytes",
-                            fetched.len(),
+                            fetched_data.len(),
                             MAX_RETURN_DATA_SIZE
                         )
                         .into(),
@@ -235,7 +256,13 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                 }
 
                 // Cache the result
-                set_l1_staticcall_value(target, requested_block, calldata, fetched.clone());
+                set_l1_staticcall_value(
+                    target,
+                    requested_block,
+                    calldata,
+                    l1_gas,
+                    fetched_data.clone(),
+                );
 
                 // Track the served call
                 L1_STATICCALL_RPC_SERVED_CALLS
@@ -245,10 +272,11 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                         target,
                         block_number: requested_block,
                         calldata: calldata.to_vec(),
-                        return_data: fetched.clone(),
+                        return_data: fetched_data.clone(),
+                        gas_used: l1_gas,
                     });
 
-                fetched
+                (l1_gas, fetched_data)
             } else {
                 warn!(
                     "L1STATICCALL: cache miss + no RPC — target={:?} block={} calldata_len={}",
@@ -274,7 +302,8 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         ));
     }
 
-    Ok(PrecompileOutput::new(gas_used, Bytes::from(result)))
+    let total_gas = static_gas + l1_gas;
+    Ok(PrecompileOutput::new(total_gas, Bytes::from(result)))
 }
 
 #[cfg(test)]
@@ -344,7 +373,7 @@ mod tests {
 
         // Populate cache so it doesn't fail on cache miss
         let target = Address::from(TEST_ADDRESS);
-        set_l1_staticcall_value(target, 100, &[], vec![0xAA]);
+        set_l1_staticcall_value(target, 100, &[], 0, vec![0xAA]);
 
         let result = l1staticcall_run(&input, expected_gas(0));
         assert!(result.is_ok(), "52-byte input should be accepted: {:?}", result.err());
@@ -360,7 +389,7 @@ mod tests {
 
         for extra_len in [1, 4, 32, 100, 256] {
             let calldata = vec![0xBBu8; extra_len];
-            set_l1_staticcall_value(target, 100, &calldata, vec![0xCC]);
+            set_l1_staticcall_value(target, 100, &calldata, 0, vec![0xCC]);
 
             let input = create_test_input(100, &calldata);
             assert_eq!(input.len(), 52 + extra_len);
@@ -430,7 +459,7 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0x01, 0x02, 0x03, 0x04];
         let return_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        set_l1_staticcall_value(target, 100, &calldata, return_data.clone());
+        set_l1_staticcall_value(target, 100, &calldata, 0, return_data.clone());
 
         let input = create_test_input(100, &calldata);
         let result = l1staticcall_run(&input, expected_gas(calldata.len()));
@@ -465,10 +494,10 @@ mod tests {
 
         // Verify precompile reports correct gas on success
         let calldata = vec![0xAA; 100];
-        set_l1_staticcall_value(target, 100, &calldata, vec![0x01]);
+        set_l1_staticcall_value(target, 100, &calldata, 0, vec![0x01]);
         let input = create_test_input(100, &calldata);
         let output = l1staticcall_run(&input, gas_100).unwrap();
-        assert_eq!(output.gas_used, gas_100);
+        assert_eq!(output.gas_used, gas_100, "static gas with 0 L1 gas");
     }
 
     #[test]
@@ -515,7 +544,7 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0x11];
         let return_data = vec![0x22, 0x33];
-        set_l1_staticcall_value(target, 115, &calldata, return_data.clone());
+        set_l1_staticcall_value(target, 115, &calldata, 0, return_data.clone());
 
         let input = create_test_input(115, &calldata);
         let result = l1staticcall_run(&input, expected_gas(calldata.len()));
@@ -545,7 +574,7 @@ mod tests {
 
         let block = 1000 - L1STATICCALL_MAX_BLOCK_LOOKBACK; // 744
         let target = Address::from(TEST_ADDRESS);
-        set_l1_staticcall_value(target, block, &[], vec![0xFF]);
+        set_l1_staticcall_value(target, block, &[], 0, vec![0xFF]);
 
         let input = create_min_input(block);
         let result = l1staticcall_run(&input, expected_gas(0));
@@ -561,7 +590,7 @@ mod tests {
 
         let target = Address::from(TEST_ADDRESS);
         let return_data = vec![0x42];
-        set_l1_staticcall_value(target, 200, &[], return_data.clone());
+        set_l1_staticcall_value(target, 200, &[], 0, return_data.clone());
 
         let input = create_min_input(200);
         let result = l1staticcall_run(&input, expected_gas(0));
@@ -584,8 +613,8 @@ mod tests {
         let return_a = vec![0x11];
         let return_b = vec![0x22];
 
-        set_l1_staticcall_value(target, 100, &calldata_a, return_a.clone());
-        set_l1_staticcall_value(target, 100, &calldata_b, return_b.clone());
+        set_l1_staticcall_value(target, 100, &calldata_a, 0, return_a.clone());
+        set_l1_staticcall_value(target, 100, &calldata_b, 0, return_b.clone());
 
         // Verify each calldata retrieves its own result
         let input_a = create_test_input(100, &calldata_a);
@@ -608,20 +637,20 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
 
         // Empty return data
-        set_l1_staticcall_value(target, 100, &[0x01], vec![]);
+        set_l1_staticcall_value(target, 100, &[0x01], 0, vec![]);
         let input = create_test_input(100, &[0x01]);
         let output = l1staticcall_run(&input, expected_gas(1)).unwrap();
         assert!(output.bytes.is_empty(), "Empty return data should be allowed");
 
         // Single byte
-        set_l1_staticcall_value(target, 100, &[0x02], vec![0xFF]);
+        set_l1_staticcall_value(target, 100, &[0x02], 0, vec![0xFF]);
         let input = create_test_input(100, &[0x02]);
         let output = l1staticcall_run(&input, expected_gas(1)).unwrap();
         assert_eq!(output.bytes.as_ref(), &[0xFF]);
 
         // 1024 bytes
         let big_return = vec![0xAB; 1024];
-        set_l1_staticcall_value(target, 100, &[0x03], big_return.clone());
+        set_l1_staticcall_value(target, 100, &[0x03], 0, big_return.clone());
         let input = create_test_input(100, &[0x03]);
         let output = l1staticcall_run(&input, expected_gas(1)).unwrap();
         assert_eq!(output.bytes.len(), 1024);
@@ -644,11 +673,11 @@ mod tests {
         let expected_target = target;
         let expected_calldata = calldata.clone();
         let expected_return = return_data.clone();
-        set_l1_staticcall_rpc_fetcher(move |t, bn, cd| {
+        set_l1_staticcall_rpc_fetcher(move |t, bn, _gl, cd| {
             assert_eq!(t, expected_target);
             assert_eq!(bn, 100);
             assert_eq!(cd, expected_calldata.as_slice());
-            Ok(expected_return.clone())
+            Ok((0, expected_return.clone()))
         });
 
         let input = create_test_input(100, &calldata);
@@ -662,6 +691,7 @@ mod tests {
         assert_eq!(served[0].block_number, 100);
         assert_eq!(served[0].calldata, calldata);
         assert_eq!(served[0].return_data, return_data);
+        assert_eq!(served[0].gas_used, 0);
 
         // Second call should be served from cache even without fetcher
         clear_l1_staticcall_rpc_fetcher();
@@ -678,7 +708,7 @@ mod tests {
         set_anchor_block_id(100);
         set_l1_origin_block_id(100);
 
-        set_l1_staticcall_rpc_fetcher(|_, _, _| Err("L1 node unavailable".to_string()));
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Err("L1 node unavailable".to_string()));
 
         let input = create_min_input(100);
         let result = l1staticcall_run(&input, expected_gas(0));
@@ -694,11 +724,11 @@ mod tests {
         set_anchor_block_id(100);
         set_l1_origin_block_id(110);
 
-        set_l1_staticcall_rpc_fetcher(|_, bn, cd| {
+        set_l1_staticcall_rpc_fetcher(|_, bn, _, cd| {
             let mut ret = vec![0u8; 4];
             ret[0] = bn as u8;
             ret[1] = cd.first().copied().unwrap_or(0);
-            Ok(ret)
+            Ok((0, ret))
         });
 
         // Two calls with different blocks
@@ -726,7 +756,7 @@ mod tests {
         set_l1_origin_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
-        set_l1_staticcall_value(target, 100, &[0x01], vec![0xFF]);
+        set_l1_staticcall_value(target, 100, &[0x01], 0, vec![0xFF]);
 
         // Verify cached value is accessible
         let input = create_test_input(100, &[0x01]);
@@ -745,7 +775,7 @@ mod tests {
         assert!(get_l1_origin_block_id().is_some(), "L1 origin should survive cache clear");
 
         // Test served calls clear
-        set_l1_staticcall_rpc_fetcher(|_, _, _| Ok(vec![0x99]));
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((0, vec![0x99])));
         let _ = l1staticcall_run(&input, expected_gas(1)).unwrap();
         assert_eq!(take_l1_staticcall_rpc_served_calls().len(), 1);
 
@@ -753,7 +783,7 @@ mod tests {
         assert!(take_l1_staticcall_rpc_served_calls().is_empty());
 
         // Explicit clear
-        set_l1_staticcall_rpc_fetcher(|_, _, _| Ok(vec![0x88]));
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((0, vec![0x88])));
         clear_l1_staticcall_cache(); // force cache miss
         let _ = l1staticcall_run(&input, expected_gas(1)).unwrap();
         clear_l1_staticcall_rpc_served_calls();
@@ -771,7 +801,7 @@ mod tests {
         set_l1_origin_block_id(block);
 
         let target = Address::from(TEST_ADDRESS);
-        set_l1_staticcall_value(target, block, &[], vec![0x01]);
+        set_l1_staticcall_value(target, block, &[], 0, vec![0x01]);
 
         let input = create_min_input(block);
         let result = l1staticcall_run(&input, expected_gas(0));
@@ -803,7 +833,7 @@ mod tests {
 
         // Exactly at max — should succeed
         let exact_max = vec![0xAA; MAX_RETURN_DATA_SIZE];
-        set_l1_staticcall_value(target, 100, &[0x01], exact_max.clone());
+        set_l1_staticcall_value(target, 100, &[0x01], 0, exact_max.clone());
         let input = create_test_input(100, &[0x01]);
         let result = l1staticcall_run(&input, expected_gas(1));
         assert!(result.is_ok(), "Exactly MAX_RETURN_DATA_SIZE should succeed");
@@ -813,7 +843,7 @@ mod tests {
         clear_l1_staticcall_cache();
         let over_max = vec![0xBB; MAX_RETURN_DATA_SIZE + 1];
         let over_clone = over_max.clone();
-        set_l1_staticcall_rpc_fetcher(move |_, _, _| Ok(over_clone.clone()));
+        set_l1_staticcall_rpc_fetcher(move |_, _, _, _| Ok((0, over_clone.clone())));
         let result = l1staticcall_run(&input, expected_gas(1));
         assert!(result.is_err(), "Over MAX_RETURN_DATA_SIZE should fail");
         let msg = format!("{:?}", result.unwrap_err());
@@ -828,7 +858,7 @@ mod tests {
         set_l1_origin_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
-        set_l1_staticcall_value(target, 0, &[], vec![0x00]);
+        set_l1_staticcall_value(target, 0, &[], 0, vec![0x00]);
 
         let input = create_min_input(0);
         let result = l1staticcall_run(&input, expected_gas(0));
@@ -848,8 +878,8 @@ mod tests {
         let return1 = vec![0xAA, 0xBB];
         let return2 = vec![0xCC, 0xDD];
 
-        set_l1_staticcall_value(target, 100, &calldata1, return1.clone());
-        set_l1_staticcall_value(target, 100, &calldata2, return2.clone());
+        set_l1_staticcall_value(target, 100, &calldata1, 0, return1.clone());
+        set_l1_staticcall_value(target, 100, &calldata2, 0, return2.clone());
 
         let input1 = create_test_input(100, &calldata1);
         let result1 = l1staticcall_run(&input1, expected_gas(2)).unwrap();
@@ -862,6 +892,76 @@ mod tests {
         assert_ne!(
             result1.bytes, result2.bytes,
             "Same target with different calldata should return different values"
+        );
+    }
+
+    // ── Dynamic gas tests ────────────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn test_l1staticcall_charges_dynamic_gas_from_cache() {
+        reset_all();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        let target = Address::from(TEST_ADDRESS);
+        let l1_gas = 50_000u64;
+        set_l1_staticcall_value(target, 100, &[], l1_gas, vec![0x42]);
+
+        let input = create_min_input(100);
+        let output = l1staticcall_run(&input, 1_000_000).unwrap();
+        assert_eq!(
+            output.gas_used,
+            expected_gas(0) + l1_gas,
+            "total gas = static + L1 gas from cache"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1staticcall_charges_dynamic_gas_from_rpc() {
+        reset_all();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        let l1_gas = 50_000u64;
+        let return_data = vec![0xBE, 0xEF];
+        let rd_clone = return_data.clone();
+        set_l1_staticcall_rpc_fetcher(move |_, _, _, _| Ok((l1_gas, rd_clone.clone())));
+
+        let input = create_min_input(100);
+        let output = l1staticcall_run(&input, 1_000_000).unwrap();
+        assert_eq!(output.bytes.as_ref(), &return_data);
+        assert_eq!(
+            output.gas_used,
+            expected_gas(0) + l1_gas,
+            "total gas = static + L1 gas from fetcher"
+        );
+
+        let served = take_l1_staticcall_rpc_served_calls();
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].gas_used, l1_gas, "record carries L1 gas_used");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1staticcall_l1_gas_clamped_at_gas_cap() {
+        reset_all();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        let huge_l1_gas = 1_000_000_000u64;
+        set_l1_staticcall_rpc_fetcher(move |_, _, gl, _| Ok((huge_l1_gas, vec![0x01])));
+
+        let input = create_min_input(100);
+        let gas_limit = 100_000u64;
+        let output = l1staticcall_run(&input, gas_limit).unwrap();
+
+        let effective_cap = gas_limit.min(L1_CALL_MAX_GAS_CAP);
+        assert_eq!(
+            output.gas_used,
+            expected_gas(0) + effective_cap,
+            "L1 gas should be clamped to min(gas_limit, 30M)"
         );
     }
 }

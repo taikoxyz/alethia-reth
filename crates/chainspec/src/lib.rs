@@ -21,9 +21,15 @@ pub mod hardfork;
 /// Taiko chain-spec wrapper traits and helper methods.
 pub mod spec;
 
-/// Genesis hash for the Taiko Devnet network.
+/// Genesis hash for the Taiko Devnet network when the default Uzen activation (Timestamp(0))
+/// is in effect, which makes the genesis header an Osaka-era block.
 pub const TAIKO_DEVNET_GENESIS_HASH: B256 =
     b256!("0x0ab9db72570aa79341b50c888abaf2e64395d5ce31d3753b738b7e5abec132c4");
+
+/// Genesis hash for the Taiko Devnet network when `--devnet-uzen-timestamp` pushes the Uzen
+/// activation past genesis, leaving genesis as a Shanghai-era block (no blob/requests fields).
+pub const TAIKO_DEVNET_GENESIS_HASH_SHANGHAI: B256 =
+    b256!("0xc417ef878f13238b8c19696b2ef043149b423f8450cab1e0dd3ca845ee16688d");
 
 /// Genesis hash for the Taiko Hoodi network.
 pub const TAIKO_HOODI_GENESIS_HASH: B256 =

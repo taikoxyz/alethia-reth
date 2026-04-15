@@ -7,12 +7,17 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_hardforks::{EthereumHardfork, ForkCondition, ForkFilter, ForkId, Hardfork, Head};
 use alloy_primitives::{Address, B256, U256};
-use reth_chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks};
+use reth_chainspec::{
+    BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks, make_genesis_header,
+};
 use reth_ethereum_forks::EthereumHardforks;
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
+use reth_primitives_traits::SealedHeader;
 
-use crate::{TAIKO_DEVNET_GENESIS_HASH, hardfork::TaikoHardfork};
+use crate::{
+    TAIKO_DEVNET_GENESIS_HASH, TAIKO_DEVNET_GENESIS_HASH_SHANGHAI, hardfork::TaikoHardfork,
+};
 
 /// An Taiko chain specification.
 ///
@@ -173,12 +178,13 @@ pub trait TaikoDevnetConfigExt {
 
 impl TaikoDevnetConfigExt for TaikoChainSpec {
     /// Returns a cloned [`TaikoChainSpec`] with the Uzen hardfork activation timestamp updated
-    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks.
+    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks or when
+    /// `timestamp == 0` (the default devnet config already activates Uzen at genesis).
     fn clone_with_devnet_uzen_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized,
     {
-        if self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH {
+        if timestamp == 0 || self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH {
             return None;
         }
 
@@ -193,6 +199,19 @@ impl TaikoDevnetConfigExt for TaikoChainSpec {
             .hardforks
             .insert(EthereumHardfork::Prague, ForkCondition::Timestamp(timestamp));
         cloned.inner.hardforks.insert(EthereumHardfork::Osaka, ForkCondition::Timestamp(timestamp));
+
+        // Pushing Osaka past genesis changes the genesis header schema (no blob/requests fields),
+        // so the cached `genesis_header` must be regenerated from the updated hardforks.
+        cloned.inner.genesis_header = SealedHeader::seal_slow(make_genesis_header(
+            &cloned.inner.genesis,
+            &cloned.inner.hardforks,
+        ));
+        assert_eq!(
+            cloned.genesis_hash(),
+            TAIKO_DEVNET_GENESIS_HASH_SHANGHAI,
+            "unexpected Taiko devnet genesis hash after Uzen timestamp override",
+        );
+
         Some(cloned)
     }
 }
@@ -302,6 +321,18 @@ mod test {
         assert_eq!(
             overridden.ethereum_fork_activation(EthereumHardfork::Osaka),
             ForkCondition::Timestamp(42)
+        );
+        assert_eq!(overridden.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH_SHANGHAI);
+        assert_eq!(
+            overridden.genesis_header().withdrawals_root,
+            Some(alloy_consensus::EMPTY_ROOT_HASH)
+        );
+        assert_eq!(overridden.genesis_header().blob_gas_used, None);
+        assert_eq!(overridden.genesis_header().requests_hash, None);
+
+        assert!(
+            devnet_spec.as_ref().clone_with_devnet_uzen_timestamp(0).is_none(),
+            "zero timestamp should skip the override"
         );
 
         let mainnet_spec = (*TAIKO_MAINNET).clone();

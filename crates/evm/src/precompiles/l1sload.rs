@@ -55,7 +55,7 @@ pub fn set_anchor_block_id(anchor_block_id: u64) {
 }
 
 /// Reads the current anchor block ID from global context.
-fn get_anchor_block_id() -> Option<u64> {
+pub(crate) fn get_anchor_block_id() -> Option<u64> {
     *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned")
 }
 
@@ -67,7 +67,7 @@ pub fn set_l1_origin_block_id(l1_origin_block_id: u64) {
 }
 
 /// Reads the current L1 origin block ID from global context.
-fn get_l1_origin_block_id() -> Option<u64> {
+pub(crate) fn get_l1_origin_block_id() -> Option<u64> {
     *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned")
 }
 

@@ -11,7 +11,7 @@ pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
-        BlockEnv, CfgEnv, TxEnv,
+        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
@@ -221,12 +221,18 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
-            contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
+            && contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
             debug!(target: "taiko_evm", "Anchor system call detected: base_fee_share_pctg = {}, caller_nonce = {}", base_fee_share_pctg, caller_nonce);
+
+            // Load the system accounts through the journal so witness generation can include the
+            // same pre-execution dependencies that stateless validation will read later.
+            let journal = self.ctx_mut().journal_mut();
+            journal.load_account(caller)?;
+            journal.load_account(contract)?;
 
             // Set the Anchor transaction information for the later EVM execution.
             self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
@@ -353,4 +359,55 @@ pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
     let base_fee_share_pctg = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
     let caller_nonce = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
     Some((base_fee_share_pctg, caller_nonce))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_evm::{Evm, EvmEnv, EvmFactory};
+    use alloy_primitives::U256;
+    use reth_revm::{context::ContextTr, db::InMemoryDB, state::AccountInfo};
+
+    use super::*;
+    use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+
+    fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(&base_fee_share_pctg.to_be_bytes());
+        bytes.extend_from_slice(&caller_nonce.to_be_bytes());
+        bytes.into()
+    }
+
+    #[test]
+    fn anchor_system_call_touches_system_accounts_for_witness_generation() {
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            golden_touch,
+            AccountInfo { nonce: 7, balance: U256::ZERO, ..Default::default() },
+        );
+        db.insert_account_info(
+            treasury,
+            AccountInfo { nonce: 0, balance: U256::ZERO, ..Default::default() },
+        );
+
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.chain_id = chain_id;
+        let mut evm = TaikoEvmFactory.create_evm(db, env);
+
+        evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
+            .expect("anchor system call should short-circuit successfully");
+
+        let witness_state = &evm.ctx().journal().state;
+        assert!(
+            witness_state.contains_key(&golden_touch),
+            "golden touch must be recorded in journal state for witness generation"
+        );
+        assert!(
+            witness_state.contains_key(&treasury),
+            "treasury must be recorded in journal state for witness generation"
+        );
+    }
 }

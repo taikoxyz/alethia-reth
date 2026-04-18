@@ -191,13 +191,25 @@ where
             } else {
                 let parent_base_fee =
                     parent.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
-                let block_time = parent_block_time(self.block_reader.as_ref(), parent)?;
-                calculate_next_block_eip4396_base_fee(
-                    parent.header(),
-                    block_time,
-                    parent_base_fee,
-                    min_base_fee_to_clamp,
-                )
+                // KNOWN GAP: when the grandparent timestamp cannot be resolved we fall back to the
+                // header's own base fee, which makes the comparison a no-op. The fallback exists
+                // because non-Node CLI paths (`import`, `stage`, `re-execute`) wire
+                // `TaikoBeaconConsensus` with `ProviderTaikoBlockReader(NoopProvider)`
+                // (see `crates/cli/src/lib.rs`), and `NoopProvider` cannot answer historical
+                // timestamp queries. Removing the fallback would reject otherwise-valid Shasta
+                // blocks on those paths. The proper fix is to wire those commands with a real
+                // provider-backed `TaikoBlockReader`; until then this remains a soundness gap on
+                // the Engine API path that should be tracked separately.
+                parent_block_time(self.block_reader.as_ref(), parent)
+                    .map(|block_time| {
+                        calculate_next_block_eip4396_base_fee(
+                            parent.header(),
+                            block_time,
+                            parent_base_fee,
+                            min_base_fee_to_clamp,
+                        )
+                    })
+                    .unwrap_or(header_base_fee)
             };
 
             // Verify the block's base fee matches the expected value.

@@ -149,6 +149,18 @@ impl<
             let consensus = Arc::new(TaikoBeaconConsensus::new(spec, block_reader));
             (evm, consensus)
         };
+        // KNOWN LIMITATION: Only `Commands::Node` opens the database via [`TaikoNodeCommand`],
+        // which registers [`TaikoTables`] (`StoredL1OriginTable`, `StoredL1HeadOriginTable`,
+        // `BatchToLastBlock`). The other commands below dispatch into reth's stock commands, which
+        // open the DB with [`reth_db::Tables::ALL`] only:
+        //   - `init`, `import`, `import-era`, `init-state`, `db`, `stage`, `prune`, `re-execute`
+        //     can read/write the chain DB but cannot operate on Taiko-specific tables.
+        //   - `prune` will not prune Taiko origin rows; `stage unwind` will leave stale rows after
+        //     a reorg until a subsequent Node run rewrites them.
+        // The data is not lost (mdbx does not garbage-collect tables that the current env handle
+        // does not name), but maintenance commands cannot reach it. Reth's `env: EnvironmentArgs`
+        // is private on each command, so injecting `TaikoTables` requires either a reth-side hook
+        // for custom table sets or per-command wrappers around `init_db_for::<_, TaikoTables>`.
         match self.inner.command {
             // NOTE: We use the custom `TaikoNodeCommand` to handle the node commands, to initialize
             // all Taiko related database tables.

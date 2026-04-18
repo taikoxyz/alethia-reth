@@ -1,5 +1,5 @@
 //! Taiko engine API RPC methods and persistence hooks.
-use std::{io, sync::Arc};
+use std::sync::Arc;
 
 use alethia_reth_primitives::{
     decode_shasta_proposal_id, engine::types::TaikoExecutionData,
@@ -226,11 +226,12 @@ where
         let status =
             self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?;
 
-        if let Some(mut stored_l1_origin) = stored_l1_origin {
-            let payload_id = status
-                .payload_id
-                .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
-
+        // Only persist the L1 origin when the EL actually started building a payload. SYNCING and
+        // ACCEPTED responses carry no `payload_id`; treating that as an error breaks CL sync, so
+        // we skip persistence and return the upstream status untouched.
+        if let Some(mut stored_l1_origin) = stored_l1_origin &&
+            let Some(payload_id) = status.payload_id
+        {
             let built_payload = self
                 .wait_for_built_payload(payload_id)
                 .await

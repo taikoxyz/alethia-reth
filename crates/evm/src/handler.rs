@@ -229,16 +229,14 @@ pub fn validate_against_state_and_deduct_caller<
         debug!(target: "taiko_evm", "Anchor transaction not detected, balance check enabled, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block.number());
     }
 
-    // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
-    if tx.kind().is_call() {
-        caller_account.bump_nonce();
-    }
-
     let max_balance_spending =
         if is_anchor_transaction { U256::ZERO } else { tx.max_balance_spending()? };
 
     // Check if account has enough balance for `gas_limit * max_fee`` and value transfer.
     // Transfer will be done inside `*_inner` functions.
+    // NOTE: balance is checked BEFORE bumping the nonce, mirroring upstream revm. Bumping first
+    // would leak the nonce of a rejected tx on any future simulation path that does not snapshot
+    // through the journal.
     if max_balance_spending > *caller_account.balance() && !cfg.is_balance_check_disabled() {
         return Err(InvalidTransaction::LackOfFundForMaxFee {
             fee: Box::new(max_balance_spending),
@@ -264,6 +262,12 @@ pub fn validate_against_state_and_deduct_caller<
     }
 
     caller_account.set_balance(new_balance);
+
+    // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
+    if tx.kind().is_call() {
+        caller_account.bump_nonce();
+    }
+
     Ok(())
 }
 
@@ -306,12 +310,14 @@ pub fn reimburse_caller<CTX: ContextTr>(
         additional_refund
     );
 
-    // Return balance of not spend gas.
+    // Return balance of not spend gas. Refunded is `i64`; clamp negatives to zero before casting
+    // to avoid wrapping into a gargantuan refund, and saturate the addition into the gas counter.
+    let refunded_nonneg = gas.refunded().max(0) as u64;
+    let total_gas_returned = gas.remaining().saturating_add(refunded_nonneg);
     context.journal_mut().balance_incr(
         caller,
-        U256::from(
-            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
-        ) + additional_refund,
+        U256::from(effective_gas_price.saturating_mul(total_gas_returned as u128)) +
+            additional_refund,
     )?;
 
     Ok(())

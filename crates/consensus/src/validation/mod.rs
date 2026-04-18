@@ -191,19 +191,13 @@ where
             } else {
                 let parent_base_fee =
                     parent.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
-                parent_block_time(self.block_reader.as_ref(), parent)
-                    .map(|block_time| {
-                        calculate_next_block_eip4396_base_fee(
-                            parent.header(),
-                            block_time,
-                            parent_base_fee,
-                            min_base_fee_to_clamp,
-                        )
-                    })
-                    // If we cannot retrieve the grandparent timestamp (e.g. when running without a
-                    // fully wired block reader), fall back to the header's base fee to avoid
-                    // rejecting the block outright.
-                    .unwrap_or(header_base_fee)
+                let block_time = parent_block_time(self.block_reader.as_ref(), parent)?;
+                calculate_next_block_eip4396_base_fee(
+                    parent.header(),
+                    block_time,
+                    parent_base_fee,
+                    min_base_fee_to_clamp,
+                )
             };
 
             // Verify the block's base fee matches the expected value.

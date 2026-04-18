@@ -93,7 +93,12 @@ where
 {
     let anchor_transaction = match block.body().transactions().first() {
         Some(tx) => tx,
-        None => return Ok(()),
+        None if block.number() == 0 => return Ok(()),
+        None => {
+            return Err(ConsensusError::Other(
+                "Block must contain at least the anchor transaction".into(),
+            ));
+        }
     };
 
     validate_anchor_transaction(

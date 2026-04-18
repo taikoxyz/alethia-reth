@@ -312,7 +312,11 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
             is_uzen_active,
-            expected_difficulty: None,
+            // Mirror `context_for_block`: carry the imported header difficulty into the engine path
+            // so `validate_expected_zk_gas_difficulty` actually runs on `engine_newPayload`.
+            expected_difficulty: is_uzen_active
+                .then_some(payload.taiko_sidecar.header_difficulty)
+                .flatten(),
             finalized_block_zk_gas: Default::default(),
         })
     }

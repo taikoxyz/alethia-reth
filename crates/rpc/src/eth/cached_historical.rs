@@ -2,17 +2,18 @@
 use alloy_eips::merge::EPOCH_SLOTS;
 use alloy_primitives::{Address, BlockNumber, Bytes, StorageKey, StorageValue, B256};
 use reth_primitives_traits::{Account, Bytecode};
+use reth_provider::providers::LowestAvailableBlocks;
 use reth_provider::{
     AccountReader, BlockHashReader, BlockNumReader, BytecodeReader, ChangeSetReader, DBProvider,
     HashedPostStateProvider, HistoricalStateProviderRef, NodePrimitivesProvider, ProviderError,
     ProviderResult, RocksDBProviderFactory, StateProofProvider, StateProvider, StateRootProvider,
     StorageChangeSetReader, StorageRootProvider, StorageSettingsCache,
 };
-use reth_provider::providers::LowestAvailableBlocks;
 use reth_trie::{
-    AccountProof, HashedPostState, HashedPostStateSorted, KeccakKeyHasher, MultiProof,
-    MultiProofTargets, StateRoot, TrieInput, hashed_cursor::HashedPostStateCursorFactory, proof::Proof,
+    hashed_cursor::HashedPostStateCursorFactory, proof::Proof,
     trie_cursor::InMemoryTrieCursorFactory, updates::TrieUpdates, witness::TrieWitness,
+    AccountProof, HashedPostState, HashedPostStateSorted, KeccakKeyHasher, MultiProof,
+    MultiProofTargets, StateRoot, TrieInput,
 };
 use reth_trie_db::{DatabaseProof, DatabaseStateRoot};
 use std::sync::{Arc, Mutex};
@@ -86,15 +87,6 @@ where
         }
     }
 
-    /// Returns a copy of this provider configured with explicit history availability bounds.
-    pub const fn with_lowest_available_blocks(
-        mut self,
-        lowest_available_blocks: LowestAvailableBlocks,
-    ) -> Self {
-        self.lowest_available_blocks = lowest_available_blocks;
-        self
-    }
-
     /// Returns a borrowing historical provider view for methods we do not customize.
     fn as_ref(&self) -> HistoricalStateProviderRef<'_, Provider> {
         HistoricalStateProviderRef::new_with_lowest_available_blocks(
@@ -110,23 +102,25 @@ where
     }
 
     /// Returns whether the requested historical block is far enough from tip to deserve a warning.
-    fn check_distance_against_limit(&self, limit: u64) -> ProviderResult<bool> {
+    fn is_far_from_tip(&self, limit: u64) -> ProviderResult<bool> {
         let tip = self.provider.last_block_number()?;
         Ok(tip.saturating_sub(self.block_number) > limit)
     }
 
-    /// Loads and caches the reverted hashed-state overlay for this historical view.
-    fn revert_state(&self) -> ProviderResult<Arc<HashedPostStateSorted>>
-    where
-        Provider: StorageSettingsCache,
-    {
-        if !self.lowest_available_blocks.is_account_history_available(self.block_number) ||
-            !self.lowest_available_blocks.is_storage_history_available(self.block_number)
+    /// Ensures account and storage history remain available for this historical view.
+    fn ensure_history_available(&self) -> ProviderResult<()> {
+        if !self.lowest_available_blocks.is_account_history_available(self.block_number)
+            || !self.lowest_available_blocks.is_storage_history_available(self.block_number)
         {
-            return Err(ProviderError::StateAtBlockPruned(self.block_number))
+            return Err(ProviderError::StateAtBlockPruned(self.block_number));
         }
 
-        if self.check_distance_against_limit(EPOCH_SLOTS)? {
+        Ok(())
+    }
+
+    /// Emits the same old-block warning as upstream historical state providers.
+    fn warn_if_far_from_tip(&self) -> ProviderResult<()> {
+        if self.is_far_from_tip(EPOCH_SLOTS)? {
             tracing::warn!(
                 target: "providers::historical_sp",
                 target = self.block_number,
@@ -134,15 +128,50 @@ where
             );
         }
 
+        Ok(())
+    }
+
+    /// Loads and caches the reverted hashed-state overlay for this historical view.
+    fn revert_state(&self) -> ProviderResult<Arc<HashedPostStateSorted>>
+    where
+        Provider: StorageSettingsCache,
+    {
+        self.ensure_history_available()?;
+        self.warn_if_far_from_tip()?;
+
         self.revert_state.get_or_try_init(|| {
             reth_trie_db::from_reverts_auto(&self.provider, self.block_number..).map(Arc::new)
         })
+    }
+
+    /// Returns the historical trie input with the cached revert overlay prepended.
+    fn prepend_revert_state(&self, mut input: TrieInput) -> ProviderResult<TrieInput>
+    where
+        Provider: StorageSettingsCache,
+    {
+        input.prepend((*self.revert_state()?).clone().into());
+        Ok(input)
+    }
+
+    /// Returns the post-state overlay applied on top of the cached historical revert state.
+    fn overlay_hashed_state(
+        &self,
+        hashed_state: HashedPostState,
+    ) -> ProviderResult<HashedPostStateSorted>
+    where
+        Provider: StorageSettingsCache,
+    {
+        let mut revert_state = (*self.revert_state()?).clone();
+        let hashed_state_sorted = hashed_state.into_sorted();
+        revert_state.extend_ref_and_sort(&hashed_state_sorted);
+        Ok(revert_state)
     }
 }
 
 impl<Provider> BlockHashReader for CachedHistoricalStateProvider<Provider>
 where
-    Provider: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader + StorageChangeSetReader,
+    Provider:
+        DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader + StorageChangeSetReader,
 {
     /// Returns the canonical hash for the requested block number.
     fn block_hash(&self, number: BlockNumber) -> ProviderResult<Option<B256>> {
@@ -206,9 +235,7 @@ where
     /// Returns the post-state root on top of the cached historical revert overlay.
     fn state_root(&self, hashed_state: HashedPostState) -> ProviderResult<B256> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut revert_state = (*self.revert_state()?).clone();
-            let hashed_state_sorted = hashed_state.into_sorted();
-            revert_state.extend_ref_and_sort(&hashed_state_sorted);
+            let revert_state = self.overlay_hashed_state(hashed_state)?;
             Ok(<DbStateRoot<'_, _, A>>::overlay_root(self.tx(), &revert_state)?)
         })
     }
@@ -216,8 +243,7 @@ where
     /// Returns the post-state root for the given trie input on top of the cached historical view.
     fn state_root_from_nodes(&self, input: TrieInput) -> ProviderResult<B256> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut input = input;
-            input.prepend((*self.revert_state()?).clone().into());
+            let input = self.prepend_revert_state(input)?;
             Ok(<DbStateRoot<'_, _, A>>::overlay_root_from_nodes(
                 self.tx(),
                 reth_trie::TrieInputSorted::from_unsorted(input),
@@ -231,9 +257,7 @@ where
         hashed_state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut revert_state = (*self.revert_state()?).clone();
-            let hashed_state_sorted = hashed_state.into_sorted();
-            revert_state.extend_ref_and_sort(&hashed_state_sorted);
+            let revert_state = self.overlay_hashed_state(hashed_state)?;
             Ok(<DbStateRoot<'_, _, A>>::overlay_root_with_updates(self.tx(), &revert_state)?)
         })
     }
@@ -244,8 +268,7 @@ where
         input: TrieInput,
     ) -> ProviderResult<(B256, TrieUpdates)> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut input = input;
-            input.prepend((*self.revert_state()?).clone().into());
+            let input = self.prepend_revert_state(input)?;
             Ok(<DbStateRoot<'_, _, A>>::overlay_root_from_nodes_with_updates(
                 self.tx(),
                 reth_trie::TrieInputSorted::from_unsorted(input),
@@ -310,8 +333,7 @@ where
         slots: &[B256],
     ) -> ProviderResult<AccountProof> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut input = input;
-            input.prepend((*self.revert_state()?).clone().into());
+            let input = self.prepend_revert_state(input)?;
             let proof = <DbProof<'_, _, A> as DatabaseProof>::from_tx(self.tx());
             proof.overlay_account_proof(input, address, slots).map_err(ProviderError::from)
         })
@@ -324,8 +346,7 @@ where
         targets: MultiProofTargets,
     ) -> ProviderResult<MultiProof> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut input = input;
-            input.prepend((*self.revert_state()?).clone().into());
+            let input = self.prepend_revert_state(input)?;
             let proof = <DbProof<'_, _, A> as DatabaseProof>::from_tx(self.tx());
             proof.overlay_multiproof(input, targets).map_err(ProviderError::from)
         })
@@ -334,8 +355,7 @@ where
     /// Returns a witness using the cached historical revert overlay.
     fn witness(&self, input: TrieInput, target: HashedPostState) -> ProviderResult<Vec<Bytes>> {
         reth_trie_db::with_adapter!(self.provider, |A| {
-            let mut input = input;
-            input.prepend((*self.revert_state()?).clone().into());
+            let input = self.prepend_revert_state(input)?;
             let nodes_sorted = input.nodes.into_sorted();
             let state_sorted = input.state.into_sorted();
             TrieWitness::new(
@@ -382,8 +402,8 @@ where
 mod tests {
     use super::LazyRevertStateCache;
     use std::sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     };
 
     #[test]
@@ -436,5 +456,26 @@ mod tests {
         assert_eq!(*first, 11);
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(loads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn lazy_revert_cache_does_not_persist_failed_init() {
+        let loads = AtomicUsize::new(0);
+        let cache: LazyRevertStateCache<usize> = LazyRevertStateCache::default();
+
+        let first = cache.get_or_try_init(|| {
+            loads.fetch_add(1, Ordering::Relaxed);
+            Err::<Arc<usize>, &'static str>("boom")
+        });
+        let second = cache
+            .get_or_try_init(|| {
+                loads.fetch_add(1, Ordering::Relaxed);
+                Ok::<Arc<usize>, &'static str>(Arc::new(17))
+            })
+            .unwrap();
+
+        assert_eq!(first, Err("boom"));
+        assert_eq!(*second, 17);
+        assert_eq!(loads.load(Ordering::Relaxed), 2);
     }
 }

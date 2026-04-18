@@ -1,11 +1,11 @@
 //! Taiko `eth` namespace RPC methods backed by Taiko DB tables.
 use crate::eth::{
     cached_historical::CachedHistoricalStateProvider,
-    error::{TaikoApiError, internal_eth_error},
+    error::{internal_eth_error, TaikoApiError},
 };
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_db::model::{
-    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
+    StoredL1HeadOriginTable, StoredL1OriginTable, STORED_L1_HEAD_ORIGIN_KEY,
 };
 use alethia_reth_primitives::payload::attributes::RpcL1Origin;
 use alloy_consensus::{BlockHeader, Header};
@@ -17,7 +17,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_chain_state::{ComputedTrieData, ExecutedBlock, MemoryOverlayStateProvider};
 use reth_db_api::transaction::DbTx;
 use reth_ethereum::{Block, EthPrimitives};
-use reth_evm::{ConfigureEvm, execute::Executor};
+use reth_evm::{execute::Executor, ConfigureEvm};
 use reth_provider::{
     BlockExecutionOutput, BlockHashReader, BlockNumReader, BlockReaderIdExt, ChangeSetReader,
     DBProvider, DatabaseProviderFactory, HeaderProvider, NodePrimitivesProvider,
@@ -27,6 +27,10 @@ use reth_provider::{
 use reth_revm::{database::StateProviderDatabase, witness::ExecutionWitnessRecord};
 use reth_rpc_eth_types::EthApiError;
 use std::sync::Arc;
+
+/// Shared historical state provider reused across all blocks in one range request.
+type RangeHistoricalStateProvider<Provider> =
+    Arc<CachedHistoricalStateProvider<<Provider as DatabaseProviderFactory>::Provider>>;
 
 /// Trait interface for the custom `taiko` RPC namespace.
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "taiko"))]
@@ -121,19 +125,21 @@ where
     }
 
     /// Creates the shared historical provider for the requested range.
-    fn historical_state_provider_for_range(
+    ///
+    /// `CachedHistoricalStateProvider` follows upstream `HistoricalStateProvider` semantics:
+    /// `block_number` points at the target block, and historical reads observe `block_number - 1`.
+    fn range_historical_state_provider(
         &self,
         first_block: u64,
-    ) -> Result<Arc<CachedHistoricalStateProvider<Provider::Provider>>, EthApiError> {
+    ) -> Result<RangeHistoricalStateProvider<Provider>, EthApiError> {
         let db_provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
-        let historical_block = range_anchor_block_number(first_block).saturating_add(1);
-        Ok(Arc::new(CachedHistoricalStateProvider::new(db_provider, historical_block)))
+        Ok(Arc::new(CachedHistoricalStateProvider::new(db_provider, first_block)))
     }
 
     /// Builds the execution provider for the next block in the range.
-    fn execution_state_provider(
+    fn range_block_state_provider(
         &self,
-        historical: &Arc<CachedHistoricalStateProvider<Provider::Provider>>,
+        historical: &RangeHistoricalStateProvider<Provider>,
         overlay_blocks: &[ExecutedBlock<EthPrimitives>],
     ) -> Result<StateProviderBox, EthApiError> {
         if overlay_blocks.is_empty() {
@@ -162,12 +168,12 @@ where
     /// Re-executes one block in the range and produces its execution witness.
     fn execution_witness_for_block(
         &self,
-        historical: &Arc<CachedHistoricalStateProvider<Provider::Provider>>,
+        historical: &RangeHistoricalStateProvider<Provider>,
         execution_overlay: &mut Vec<ExecutedBlock<EthPrimitives>>,
         block: reth_primitives_traits::RecoveredBlock<Block>,
     ) -> Result<ExecutionWitness, EthApiError> {
         let mut executor = self.evm_config.executor(StateProviderDatabase::new(
-            self.execution_state_provider(historical, execution_overlay.as_slice())?,
+            self.range_block_state_provider(historical, execution_overlay.as_slice())?,
         ));
         let result = executor.execute_one(&block).map_err(internal_eth_error)?;
         let mut db = executor.into_state();
@@ -273,13 +279,17 @@ where
     ) -> RpcResult<Vec<ExecutionWitness>> {
         let (start_block, end_block) = parse_witness_block_range(start_block, end_block)?;
         let blocks = self.recovered_block_range(start_block, end_block)?;
-        let historical = self.historical_state_provider_for_range(start_block)?;
+        let historical = self.range_historical_state_provider(start_block)?;
 
         let mut execution_overlay = Vec::with_capacity(blocks.len());
         let mut witnesses = Vec::with_capacity(blocks.len());
 
         for block in blocks {
-            witnesses.push(self.execution_witness_for_block(&historical, &mut execution_overlay, block)?);
+            witnesses.push(self.execution_witness_for_block(
+                &historical,
+                &mut execution_overlay,
+                block,
+            )?);
         }
 
         Ok(witnesses)
@@ -309,11 +319,6 @@ fn parse_witness_block_range(
     }
 
     Ok((start_block, end_block))
-}
-
-/// Returns the persisted parent block number used as the range anchor.
-fn range_anchor_block_number(start_block: u64) -> u64 {
-    start_block.saturating_sub(1)
 }
 
 /// Returns the first header number that must be attached to a witness response.
@@ -352,6 +357,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_witness_range_accepts_single_block() {
+        let range = parse_witness_block_range(U256::from(42_u64), U256::from(42_u64)).unwrap();
+        assert_eq!(range, (42, 42));
+    }
+
+    #[test]
     fn header_start_uses_parent_when_blockhash_was_not_accessed() {
         assert_eq!(header_start_block_number(42, None), 41);
     }
@@ -359,11 +370,5 @@ mod tests {
     #[test]
     fn header_start_uses_lowest_blockhash_reference_when_present() {
         assert_eq!(header_start_block_number(42, Some(7)), 7);
-    }
-
-    #[test]
-    fn range_anchor_uses_parent_of_first_block() {
-        assert_eq!(range_anchor_block_number(1), 0);
-        assert_eq!(range_anchor_block_number(42), 41);
     }
 }

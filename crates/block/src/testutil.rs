@@ -14,7 +14,6 @@ use reth_evm::{
     execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
 };
 use reth_revm::{
-    context::result::ExecutionResult,
     db::InMemoryDB,
     state::{AccountInfo, Bytecode, bytecode::opcode},
 };
@@ -162,12 +161,10 @@ where
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
-        f: impl FnOnce(
-            &ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as reth_evm::Evm>::HaltReason>,
-        ) -> reth_evm::block::CommitChanges,
+        f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result) -> reth_evm::block::CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError> {
         let tx = tx.into_parts();
-        self.executor.execute_transaction_with_commit_condition(tx, f)
+        Ok(self.executor.execute_transaction_with_commit_condition(tx, f)?.map(|g| g.tx_gas_used()))
     }
 
     fn finish(

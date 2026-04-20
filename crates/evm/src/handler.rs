@@ -14,7 +14,8 @@ use reth_revm::{
     },
     inspector::{InspectorEvmTr, InspectorHandler},
     interpreter::{
-        Gas, InterpreterResult, interpreter::EthInterpreter, interpreter_action::FrameInit,
+        Gas, InitialAndFloorGas, InterpreterResult, interpreter::EthInterpreter,
+        interpreter_action::FrameInit,
     },
     state::EvmState,
 };
@@ -100,6 +101,7 @@ where
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
+        _init_and_floor_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
         validate_against_state_and_deduct_caller(evm.ctx(), self.extra_execution_ctx.clone())
     }
@@ -146,7 +148,10 @@ fn reward_beneficiary<CTX: ContextTr>(
     // Reward beneficiary.
     context.journal_mut().balance_incr(
         beneficiary,
-        U256::from(coinbase_gas_price * gas.spent().saturating_sub(gas.refunded() as u64) as u128),
+        U256::from(
+            coinbase_gas_price *
+                gas.total_gas_spent().saturating_sub(gas.refunded() as u64) as u128,
+        ),
     )?;
 
     // If the extra execution context is provided, which means we are building an L2 block,
@@ -164,7 +169,7 @@ fn reward_beneficiary<CTX: ContextTr>(
             context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
         {
             // Total base fee income; guard against underflow if refunded exceeds spent.
-            let spent_minus_refund = gas.spent().saturating_sub(gas.refunded() as u64);
+            let spent_minus_refund = gas.total_gas_spent().saturating_sub(gas.refunded() as u64);
             let total_fee = U256::from(basefee.saturating_mul(spent_minus_refund as u128));
 
             // Share the base fee income with the coinbase and treasury.

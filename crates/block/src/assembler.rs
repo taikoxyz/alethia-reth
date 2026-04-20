@@ -103,6 +103,8 @@ where
             blob_gas_used: ctx.is_uzen_active.then_some(0),
             excess_blob_gas: ctx.is_uzen_active.then_some(0),
             requests_hash,
+            block_access_list_hash: None,
+            slot_number: None,
         };
 
         Ok(Block {

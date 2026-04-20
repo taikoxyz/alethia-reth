@@ -345,7 +345,7 @@ mod tests {
         let block = sample_uzen_block(difficulty, timestamp);
         let sealed_block = Arc::new(block.seal_slow());
 
-        EthBuiltPayload::new(sealed_block, fees, None)
+        EthBuiltPayload::new(sealed_block, fees, None, None)
     }
 
     fn sample_uzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {

@@ -76,6 +76,11 @@ impl PayloadAttributes for TaikoPayloadBuilderAttributes {
     fn parent_beacon_block_root(&self) -> Option<B256> {
         self.parent_beacon_block_root
     }
+
+    /// Taiko payload-builder attributes do not track a beacon slot number.
+    fn slot_number(&self) -> Option<u64> {
+        None
+    }
 }
 
 impl TaikoPayloadBuilderAttributes {
@@ -270,6 +275,7 @@ mod test {
             suggested_fee_recipient: Address::ZERO,
             withdrawals: Some(vec![]),
             parent_beacon_block_root: Some(B256::ZERO),
+            slot_number: None,
         }
     }
 

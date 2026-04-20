@@ -170,6 +170,11 @@ where
         &self.block
     }
 
+    /// Reference to [`CfgEnv`].
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.cfg
+    }
+
     /// Returns the chain ID of the environment.
     fn chain_id(&self) -> u64 {
         self.cfg.chain_id
@@ -230,7 +235,7 @@ where
             return Ok(ResultAndState {
                 result: ExecutionResult::Success {
                     reason: SuccessReason::Return,
-                    gas: ResultGas::new(0, 0, 0, 0, 0),
+                    gas: ResultGas::new_with_state_gas(0, 0, 0, 0),
                     logs: vec![],
                     output: Output::Call(Bytes::new()),
                 },

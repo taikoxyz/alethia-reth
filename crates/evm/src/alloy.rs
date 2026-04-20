@@ -228,14 +228,20 @@ where
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
             debug!(target: "taiko_evm", "Anchor system call detected: base_fee_share_pctg = {}, caller_nonce = {}", base_fee_share_pctg, caller_nonce);
 
+            // Set the Anchor transaction information for the later EVM execution.
+            self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
+
             // Load the system accounts through the journal so witness generation can include the
             // same pre-execution dependencies that stateless validation will read later.
+            //
+            // Commit the synthetic pre-execution load immediately afterwards. This keeps the
+            // loaded accounts in state for witness generation, but advances the journal
+            // transaction id so the first real anchor transaction still pays normal cold-access
+            // costs and preserves mainline gas accounting.
             let journal = self.ctx_mut().journal_mut();
             journal.load_account(caller)?;
             journal.load_account(contract)?;
-
-            // Set the Anchor transaction information for the later EVM execution.
-            self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
+            journal.commit_tx();
 
             // Return a dummy execution result and state to avoid further processing.
             return Ok(ResultAndState {
@@ -378,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn anchor_system_call_touches_system_accounts_for_witness_generation() {
+    fn anchor_system_call_records_witness_accounts_without_warming_next_tx() {
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let chain_id = 167_000;
         let treasury = get_treasury_address(chain_id);
@@ -400,7 +406,8 @@ mod tests {
         evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
             .expect("anchor system call should short-circuit successfully");
 
-        let witness_state = &evm.ctx().journal().state;
+        let journal = evm.ctx().journal();
+        let witness_state = &journal.state;
         assert!(
             witness_state.contains_key(&golden_touch),
             "golden touch must be recorded in journal state for witness generation"
@@ -408,6 +415,24 @@ mod tests {
         assert!(
             witness_state.contains_key(&treasury),
             "treasury must be recorded in journal state for witness generation"
+        );
+
+        let next_tx_id = journal.transaction_id;
+        assert_eq!(next_tx_id, 1, "synthetic pre-execution load should advance tx id");
+
+        let golden_touch_account = witness_state
+            .get(&golden_touch)
+            .expect("golden touch account must stay in witness state");
+        assert!(
+            golden_touch_account.is_cold_transaction_id(next_tx_id),
+            "golden touch must be cold again for the first real transaction"
+        );
+
+        let treasury_account =
+            witness_state.get(&treasury).expect("treasury account must stay in witness state");
+        assert!(
+            treasury_account.is_cold_transaction_id(next_tx_id),
+            "treasury must be cold again for the first real transaction"
         );
     }
 }

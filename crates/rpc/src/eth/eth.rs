@@ -1,11 +1,11 @@
 //! Taiko `eth` namespace RPC methods backed by Taiko DB tables.
 use crate::eth::{
     cached_historical::CachedHistoricalStateProvider,
-    error::{internal_eth_error, TaikoApiError},
+    error::{TaikoApiError, internal_eth_error},
 };
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_db::model::{
-    StoredL1HeadOriginTable, StoredL1OriginTable, STORED_L1_HEAD_ORIGIN_KEY,
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
 use alethia_reth_primitives::payload::attributes::RpcL1Origin;
 use alloy_consensus::{BlockHeader, Header};
@@ -17,7 +17,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_chain_state::{ComputedTrieData, ExecutedBlock, MemoryOverlayStateProvider};
 use reth_db_api::transaction::DbTx;
 use reth_ethereum::{Block, EthPrimitives};
-use reth_evm::{execute::Executor, ConfigureEvm};
+use reth_evm::{ConfigureEvm, execute::Executor};
 use reth_provider::{
     BlockExecutionOutput, BlockHashReader, BlockNumReader, BlockReaderIdExt, ChangeSetReader,
     DBProvider, DatabaseProviderFactory, HeaderProvider, NodePrimitivesProvider,
@@ -106,12 +106,12 @@ where
             .map_err(EthApiError::from)?;
 
         let expected_len = end_block.saturating_sub(start_block).saturating_add(1) as usize;
-        let is_contiguous = blocks.len() == expected_len
-            && blocks.first().map(|block| block.number()) == Some(start_block)
-            && blocks.last().map(|block| block.number()) == Some(end_block)
-            && blocks.windows(2).all(|window| {
-                window[0].number().saturating_add(1) == window[1].number()
-                    && window[0].hash() == window[1].parent_hash()
+        let is_contiguous = blocks.len() == expected_len &&
+            blocks.first().map(|block| block.number()) == Some(start_block) &&
+            blocks.last().map(|block| block.number()) == Some(end_block) &&
+            blocks.windows(2).all(|window| {
+                window[0].number().saturating_add(1) == window[1].number() &&
+                    window[0].hash() == window[1].parent_hash()
             });
 
         if !is_contiguous {

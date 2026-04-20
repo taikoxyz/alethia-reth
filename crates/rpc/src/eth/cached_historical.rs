@@ -1,19 +1,19 @@
 //! Request-local cached historical provider helpers for witness generation.
 use alloy_eips::merge::EPOCH_SLOTS;
-use alloy_primitives::{Address, BlockNumber, Bytes, StorageKey, StorageValue, B256};
+use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue};
 use reth_primitives_traits::{Account, Bytecode};
-use reth_provider::providers::LowestAvailableBlocks;
 use reth_provider::{
     AccountReader, BlockHashReader, BlockNumReader, BytecodeReader, ChangeSetReader, DBProvider,
     HashedPostStateProvider, HistoricalStateProviderRef, NodePrimitivesProvider, ProviderError,
     ProviderResult, RocksDBProviderFactory, StateProofProvider, StateProvider, StateRootProvider,
     StorageChangeSetReader, StorageRootProvider, StorageSettingsCache,
+    providers::LowestAvailableBlocks,
 };
 use reth_trie::{
-    hashed_cursor::HashedPostStateCursorFactory, proof::Proof,
-    trie_cursor::InMemoryTrieCursorFactory, updates::TrieUpdates, witness::TrieWitness,
     AccountProof, HashedPostState, HashedPostStateSorted, KeccakKeyHasher, MultiProof,
-    MultiProofTargets, StateRoot, TrieInput,
+    MultiProofTargets, StateRoot, TrieInput, hashed_cursor::HashedPostStateCursorFactory,
+    proof::Proof, trie_cursor::InMemoryTrieCursorFactory, updates::TrieUpdates,
+    witness::TrieWitness,
 };
 use reth_trie_db::{DatabaseProof, DatabaseStateRoot};
 use std::sync::{Arc, Mutex};
@@ -109,8 +109,8 @@ where
 
     /// Ensures account and storage history remain available for this historical view.
     fn ensure_history_available(&self) -> ProviderResult<()> {
-        if !self.lowest_available_blocks.is_account_history_available(self.block_number)
-            || !self.lowest_available_blocks.is_storage_history_available(self.block_number)
+        if !self.lowest_available_blocks.is_account_history_available(self.block_number) ||
+            !self.lowest_available_blocks.is_storage_history_available(self.block_number)
         {
             return Err(ProviderError::StateAtBlockPruned(self.block_number));
         }
@@ -402,8 +402,8 @@ where
 mod tests {
     use super::LazyRevertStateCache;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     #[test]

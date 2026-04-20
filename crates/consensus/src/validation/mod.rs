@@ -2,7 +2,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    constants::MAXIMUM_EXTRA_DATA_SIZE, BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH,
+    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
 use alloy_primitives::B256;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
@@ -18,19 +18,19 @@ use reth_primitives_traits::{
 };
 
 use crate::eip4396::{
-    calculate_next_block_eip4396_base_fee, MAINNET_MIN_BASE_FEE, MIN_BASE_FEE,
-    SHASTA_INITIAL_BASE_FEE,
+    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
+    calculate_next_block_eip4396_base_fee,
 };
-use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec, TAIKO_MAINNET};
+use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::transaction::is_allowed_tx_type;
 
 /// Anchor transaction selectors, gas rules, and validation functions.
 mod anchor;
 
 pub use anchor::{
-    validate_anchor_transaction, validate_anchor_transaction_in_block, AnchorValidationContext,
     ANCHOR_V1_SELECTOR, ANCHOR_V1_V2_GAS_LIMIT, ANCHOR_V2_SELECTOR, ANCHOR_V3_SELECTOR,
-    ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR,
+    ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR, AnchorValidationContext,
+    validate_anchor_transaction, validate_anchor_transaction_in_block,
 };
 
 #[cfg(test)]

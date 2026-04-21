@@ -9,8 +9,17 @@ license.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["std"]
 serde = ["dep:serde", "alloy-hardforks/serde"]
+std = [
+    "reth-chainspec/std",
+    "reth-ethereum-forks/std",
+    "reth-evm/std",
+    "reth-network-peers/std",
+    "reth-primitives/std",
+    "reth-primitives-traits/std",
+    "reth-revm/std",
+]
 
 [dependencies]
 alloy-chains = { workspace = true }
@@ -20,12 +29,12 @@ alloy-genesis = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-primitives = { workspace = true }
 auto_impl = { workspace = true }
-reth-chainspec = { workspace = true }
-reth-ethereum-forks = { workspace = true }
-reth-evm = { workspace = true }
-reth-network-peers = { workspace = true }
+reth-chainspec = { workspace = true, default-features = false }
+reth-ethereum-forks = { workspace = true, default-features = false }
+reth-evm = { workspace = true, default-features = false }
+reth-network-peers = { workspace = true, default-features = false }
 reth-primitives = { workspace = true }
 reth-primitives-traits = { workspace = true }
-reth-revm = { workspace = true }
+reth-revm = { workspace = true, default-features = false }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }

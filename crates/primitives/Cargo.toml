@@ -17,7 +17,23 @@ serde = [
     "alloy-rpc-types-eth/serde",
 ]
 
-net = ["dep:reth-engine-local", "serde"]
+net = [
+    "std",
+    "dep:reth-chainspec",
+    "dep:reth-engine-local",
+    "dep:reth-engine-primitives",
+    "dep:reth-ethereum-engine-primitives",
+    "dep:reth-payload-primitives",
+    "serde",
+]
+std = [
+    "reth-chainspec?/std",
+    "reth-engine-primitives?/std",
+    "reth-ethereum-engine-primitives?/std",
+    "reth-ethereum-primitives/std",
+    "reth-payload-primitives?/std",
+    "reth-primitives-traits/std",
+]
 
 [dependencies]
 alloy-consensus = { workspace = true }
@@ -26,12 +42,12 @@ alloy-rlp = { workspace = true }
 alloy-rpc-types-engine = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 alloy-serde = { workspace = true }
-reth-chainspec = { workspace = true }
-reth-engine-local = { workspace = true, optional = true }
-reth-engine-primitives = { workspace = true }
-reth-ethereum-engine-primitives = { workspace = true }
-reth-ethereum-primitives = { workspace = true }
-reth-payload-primitives = { workspace = true }
+reth-chainspec = { workspace = true, default-features = false, optional = true }
+reth-engine-local = { workspace = true, default-features = false, optional = true }
+reth-engine-primitives = { workspace = true, default-features = false, optional = true }
+reth-ethereum-engine-primitives = { workspace = true, default-features = false, optional = true }
+reth-ethereum-primitives = { workspace = true, default-features = false }
+reth-payload-primitives = { workspace = true, default-features = false, optional = true }
 reth-primitives-traits = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, features = ["base64"] }

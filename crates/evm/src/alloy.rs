@@ -1,23 +1,21 @@
 //! Alloy EVM trait adapter for Taiko execution semantics.
-use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 // Re-export from primitives so downstream consumers can use the lighter crate.
 pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
-    Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
+        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
     },
     handler::PrecompileProvider,
     interpreter::InterpreterResult,
+    state::EvmState,
+    Context, ExecuteEvm, InspectEvm, Inspector,
 };
 use tracing::debug;
 
@@ -26,7 +24,7 @@ use crate::{
     handler::get_treasury_address,
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::{SharedZkGasMeter, ZkGasInspector, lock_meter},
+        adapter::{lock_meter, SharedZkGasMeter, ZkGasInspector},
         meter::ZkGasOutcome,
     },
 };
@@ -198,7 +196,11 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
+        if self.inspect {
+            self.inner.inspect_tx(tx)
+        } else {
+            self.inner.transact(tx)
+        }
     }
 
     /// Executes a system call.
@@ -216,8 +218,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
-            contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
+            && contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
@@ -246,7 +248,7 @@ where
                     logs: vec![],
                     output: Output::Call(Bytes::new()),
                 },
-                state: HashMap::default(),
+                state: EvmState::default(),
             });
         }
 

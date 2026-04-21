@@ -9,7 +9,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = ["full"]
+default = ["full", "std"]
 full = [
     "dep:alethia-reth-chainspec",
     "dep:alethia-reth-evm",
@@ -20,6 +20,18 @@ full = [
     "dep:reth-ethereum-consensus",
     "dep:reth-ethereum-primitives",
     "dep:reth-execution-types",
+]
+std = [
+    "alethia-reth-chainspec?/std",
+    "alethia-reth-evm?/std",
+    "alethia-reth-primitives/std",
+    "reth-chainspec?/std",
+    "reth-consensus?/std",
+    "reth-consensus-common?/std",
+    "reth-ethereum-consensus?/std",
+    "reth-ethereum-primitives?/std",
+    "reth-execution-types?/std",
+    "reth-primitives-traits/std",
 ]
 
 [dependencies]
@@ -32,11 +44,11 @@ reth-primitives-traits = { workspace = true }
 
 # Only with "full"
 alethia-reth-chainspec = { path = "../chainspec", default-features = false, optional = true }
-alethia-reth-evm = { path = "../evm", optional = true }
+alethia-reth-evm = { path = "../evm", default-features = false, optional = true }
 alloy-hardforks = { workspace = true, optional = true }
-reth-chainspec = { workspace = true, optional = true }
-reth-consensus = { workspace = true, optional = true }
-reth-consensus-common = { workspace = true, optional = true }
-reth-ethereum-consensus = { workspace = true, optional = true }
-reth-ethereum-primitives = { workspace = true, optional = true }
-reth-execution-types = { workspace = true, optional = true }
+reth-chainspec = { workspace = true, default-features = false, optional = true }
+reth-consensus = { workspace = true, default-features = false, optional = true }
+reth-consensus-common = { workspace = true, default-features = false, optional = true }
+reth-ethereum-consensus = { workspace = true, default-features = false, optional = true }
+reth-ethereum-primitives = { workspace = true, default-features = false, optional = true }
+reth-execution-types = { workspace = true, default-features = false, optional = true }

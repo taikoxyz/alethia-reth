@@ -9,15 +9,20 @@ license.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["std"]
 serde = ["dep:serde"]
+std = [
+    "alethia-reth-primitives/std",
+    "reth-evm/std",
+    "reth-revm/std",
+]
 
 [dependencies]
 alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-evm = { workspace = true }
 alloy-primitives = { workspace = true }
-reth-evm = { workspace = true }
-reth-revm = { workspace = true }
+reth-evm = { workspace = true, default-features = false }
+reth-revm = { workspace = true, default-features = false }
 revm-database-interface = { workspace = true }
 serde = { workspace = true, optional = true }
 tracing = { workspace = true }

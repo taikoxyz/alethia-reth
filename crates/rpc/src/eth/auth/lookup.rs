@@ -10,10 +10,7 @@ use reth_primitives_traits::BlockBody as _;
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
 
-use crate::eth::{
-    error::{TaikoApiError, internal_eth_error},
-    eth::into_rpc,
-};
+use crate::eth::error::{TaikoApiError, internal_eth_error};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{BatchToLastBlock, StoredL1OriginTable};
 use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
@@ -225,6 +222,6 @@ where
             .into_tx()
             .get::<StoredL1OriginTable>(block_id.to())
             .map_err(internal_eth_error)?
-            .map(into_rpc))
+            .map(|origin| origin.into_rpc()))
     }
 }

@@ -32,7 +32,8 @@ fn main() {
                     let provider = ctx.node().provider().clone();
 
                     // Extend the RPC modules with `taiko_` namespace RPCs extensions.
-                    let taiko_rpc_ext = TaikoExt::new(provider.clone());
+                    let taiko_rpc_ext =
+                        TaikoExt::new(provider.clone(), ctx.node().evm_config().clone());
                     ctx.modules.merge_configured(taiko_rpc_ext.into_rpc())?;
 
                     // Extend the RPC modules with `taikoAuth_` namespace RPCs extensions.

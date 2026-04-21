@@ -81,6 +81,7 @@ where
             &result.requests,
             receipt_root_bloom,
         )?;
+
         validate_zk_gas_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,

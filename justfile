@@ -1,5 +1,5 @@
 toolchain := "1.93.1"
-fmt_toolchain := "nightly"
+fmt_toolchain := "nightly-2026-04-18"
 
 fmt:
   rustup toolchain install {{fmt_toolchain}} --component rustfmt && \

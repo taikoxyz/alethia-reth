@@ -3,6 +3,8 @@
 pub mod auth;
 /// Builder for Taiko `eth` API integration.
 pub mod builder;
+/// Request-local cached historical provider helpers for witness generation.
+pub mod cached_historical;
 /// Error types and helpers for Taiko `eth` RPC methods.
 pub mod error;
 #[allow(clippy::module_inception)]

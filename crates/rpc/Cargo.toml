@@ -26,6 +26,8 @@ alloy-eips = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-json-rpc = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-rpc-types-debug = { version = "1.8.3", default-features = false }
 alloy-rpc-types-engine = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 async-trait = { workspace = true }
@@ -37,6 +39,7 @@ op-alloy-flz = { workspace = true }
 reth = { workspace = true }
 reth-db = { workspace = true }
 reth-db-api = { workspace = true }
+reth-chain-state = { workspace = true }
 reth-engine-primitives = { workspace = true }
 reth-engine-tree = { workspace = true }
 reth-ethereum = { workspace = true }
@@ -58,6 +61,8 @@ reth-rpc-convert = { workspace = true }
 reth-rpc-engine-api = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
 reth-rpc-eth-types = { workspace = true }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
+reth-trie-db = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

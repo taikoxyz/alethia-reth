@@ -74,13 +74,7 @@ where
         result: &BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
-        validate_block_post_execution(
-            block,
-            &self.chain_spec,
-            &result.receipts,
-            &result.requests,
-            receipt_root_bloom,
-        )?;
+        validate_block_post_execution(block, &self.chain_spec, result, receipt_root_bloom)?;
         validate_zk_gas_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,

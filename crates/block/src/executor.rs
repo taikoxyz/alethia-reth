@@ -3,6 +3,7 @@ use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
     FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
+    block::GasOutput,
     eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
 use alloy_primitives::{Address, Bytes, Log, U256, Uint};
@@ -15,10 +16,7 @@ use reth_evm::{
     eth::receipt_builder::ReceiptBuilderCtx,
 };
 use reth_execution_types::BlockExecutionResult;
-use reth_revm::context::{
-    Block as _,
-    result::{ExecutionResult, ResultAndState},
-};
+use reth_revm::context::{Block as _, result::ResultAndState};
 use revm_database_interface::{Database, DatabaseCommit};
 
 use crate::factory::TaikoBlockExecutionCtx;
@@ -240,11 +238,11 @@ where
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutableTx<Self>,
-        f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
-    ) -> Result<Option<u64>, BlockExecutionError> {
+        f: impl FnOnce(&Self::Result) -> CommitChanges,
+    ) -> Result<Option<GasOutput>, BlockExecutionError> {
         let output = self.execute_transaction_without_commit(tx)?;
 
-        if !f(&output.result.result).should_commit() {
+        if !f(&output).should_commit() {
             self.reset_current_transaction_zk_gas();
             return Ok(None);
         }
@@ -299,12 +297,15 @@ where
 
     /// Commits a previously executed transaction: updates receipts, gas accounting, and writes the
     /// buffered state changes to the database.
-    fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
+    fn commit_transaction(
+        &mut self,
+        output: Self::Result,
+    ) -> Result<GasOutput, BlockExecutionError> {
         let EthTxResult { result: ResultAndState { result, state }, tx_type, .. } = output;
 
         self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
 
-        let gas_used = result.gas_used();
+        let gas_used = result.tx_gas_used();
         self.commit_current_transaction_zk_gas()?;
 
         // append gas used
@@ -322,7 +323,7 @@ where
         // Commit the state changes.
         self.evm.db_mut().commit(state);
 
-        Ok(gas_used)
+        Ok(GasOutput::new(gas_used))
     }
 
     /// Applies any necessary changes after executing the block's transactions, completes execution
@@ -512,7 +513,7 @@ mod test {
 
         let (_, result) = executor.finish().expect("executor should finish after truncation");
         assert_eq!(result.receipts.len(), 1);
-        assert_eq!(result.gas_used, gas_used);
+        assert_eq!(result.gas_used, gas_used.tx_gas_used());
     }
 
     #[cfg(feature = "prover")]

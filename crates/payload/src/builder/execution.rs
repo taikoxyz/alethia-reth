@@ -289,11 +289,7 @@ mod tests {
         fn execute_transaction_with_commit_condition(
             &mut self,
             tx: impl ExecutorTx<Self::Executor>,
-            f: impl FnOnce(
-                &ExecutionResult<
-                    <<Self::Executor as BlockExecutor>::Evm as reth_evm::Evm>::HaltReason,
-                >,
-            ) -> CommitChanges,
+            f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result) -> CommitChanges,
         ) -> Result<Option<u64>, BlockExecutionError> {
             if self.fail_next_execution {
                 self.fail_next_execution = false;

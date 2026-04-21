@@ -9,7 +9,7 @@ use reth_evm::{
     execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutor},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_execution_cache::CachedStateProvider;
+use reth_execution_cache::{CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider};
 use reth_payload_builder::EthBuiltPayload;
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_provider::{BlockReader, ChainSpecProvider, StateProviderFactory};
@@ -187,7 +187,7 @@ where
         state_provider = Box::new(CachedStateProvider::new(
             state_provider,
             execution_cache.cache().clone(),
-            execution_cache.metrics().clone(),
+            CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
         ));
     }
     let state = StateProviderDatabase::new(state_provider.as_ref());
@@ -281,7 +281,7 @@ where
     let sealed_block = Arc::new(block.into_sealed_block());
     debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
 
-    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(sealed_block, total_fees, None)))
+    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(sealed_block, total_fees, None, None)))
 }
 
 #[cfg(test)]
@@ -313,6 +313,7 @@ mod tests {
                 suggested_fee_recipient: Address::repeat_byte(0x22),
                 withdrawals: Some(Vec::new()),
                 parent_beacon_block_root: Some(B256::repeat_byte(0x33)),
+                slot_number: None,
             },
             base_fee_per_gas,
             block_metadata: TaikoBlockMetadata {

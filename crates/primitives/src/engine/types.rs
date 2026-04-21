@@ -88,9 +88,19 @@ impl ExecutionPayloadTr for TaikoExecutionData {
         self.execution_payload.gas_used
     }
 
+    /// Returns the gas limit of the block.
+    fn gas_limit(&self) -> u64 {
+        self.execution_payload.gas_limit
+    }
+
     /// Returns the number of transactions in the payload.
     fn transaction_count(&self) -> usize {
         self.execution_payload.transactions.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Returns the slot number for the payload. Taiko payloads do not carry a beacon slot.
+    fn slot_number(&self) -> Option<u64> {
+        None
     }
 }
 

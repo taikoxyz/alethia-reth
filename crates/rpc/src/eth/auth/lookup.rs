@@ -222,6 +222,6 @@ where
             .into_tx()
             .get::<StoredL1OriginTable>(block_id.to())
             .map_err(internal_eth_error)?
-            .map(|l1_origin| l1_origin.into_rpc()))
+            .map(|origin| origin.into_rpc()))
     }
 }

@@ -2,6 +2,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
+#[cfg(feature = "net")]
 use alloy_eips::Decodable2718;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
@@ -11,17 +12,21 @@ use reth_ethereum_forks::Hardforks;
 use reth_ethereum_primitives::EthPrimitives;
 #[cfg(feature = "net")]
 use reth_evm::ConfigureEngineEvm;
-use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor};
+#[cfg(feature = "net")]
+use reth_evm::{ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives_traits::{
-    BlockTy, SealedBlock, SealedHeader, SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA,
+    constants::MAX_TX_GAS_LIMIT_OSAKA, BlockTy, SealedBlock, SealedHeader,
 };
+#[cfg(feature = "net")]
+use reth_primitives_traits::{SignedTransaction, TxTy};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,
-    primitives::{Address, B256, U256, hardfork::SpecId},
+    primitives::{hardfork::SpecId, Address, B256, U256},
 };
 #[cfg(feature = "net")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
@@ -109,7 +114,11 @@ fn normalize_parent_beacon_block_root(
     is_uzen_active: bool,
     parent_beacon_block_root: Option<B256>,
 ) -> Option<B256> {
-    if is_uzen_active { parent_beacon_block_root.or(Some(B256::ZERO)) } else { None }
+    if is_uzen_active {
+        parent_beacon_block_root.or(Some(B256::ZERO))
+    } else {
+        None
+    }
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
@@ -406,7 +415,7 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
+    use alethia_reth_chainspec::{hardfork::TaikoHardfork, TAIKO_DEVNET};
     use alloy_hardforks::ForkCondition;
     use std::sync::Arc;
 

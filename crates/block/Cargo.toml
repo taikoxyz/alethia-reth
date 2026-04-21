@@ -13,6 +13,7 @@ default = ["net"]
 prover = ["dep:alethia-reth-primitives"]
 test-utils = ["dep:reth-storage-api", "dep:reth-trie-common"]
 net = [
+    "std",
     "dep:alethia-reth-primitives",
     "alethia-reth-primitives?/net",
     "dep:reth-payload-primitives",
@@ -20,10 +21,28 @@ net = [
     "dep:reth-transaction-pool",
 ]
 serde = ["dep:alethia-reth-primitives", "alethia-reth-primitives?/serde"]
+std = [
+    "alethia-reth-chainspec/std",
+    "alethia-reth-evm/std",
+    "alethia-reth-primitives?/std",
+    "reth-chainspec/std",
+    "reth-ethereum-forks/std",
+    "reth-ethereum-primitives/std",
+    "reth-evm/std",
+    "reth-evm-ethereum/std",
+    "reth-execution-types/std",
+    "reth-payload-primitives?/std",
+    "reth-primitives-traits/std",
+    "reth-revm/std",
+    "reth-rpc-eth-api?/client",
+    "reth-storage-api?/std",
+    "reth-storage-errors/std",
+    "reth-trie-common?/std",
+]
 
 [dependencies]
 alethia-reth-chainspec = { path = "../chainspec", default-features = false }
-alethia-reth-evm = { path = "../evm" }
+alethia-reth-evm = { path = "../evm", default-features = false }
 alethia-reth-primitives = { path = "../primitives", default-features = false, optional = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
@@ -34,20 +53,20 @@ alloy-rlp = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 flate2 = { workspace = true }
 op-alloy-flz = { workspace = true }
-reth-chainspec = { workspace = true }
-reth-ethereum-forks = { workspace = true }
-reth-ethereum-primitives = { workspace = true }
-reth-evm = { workspace = true }
-reth-evm-ethereum = { workspace = true }
-reth-execution-types = { workspace = true }
-reth-payload-primitives = { workspace = true, optional = true }
+reth-chainspec = { workspace = true, default-features = false }
+reth-ethereum-forks = { workspace = true, default-features = false }
+reth-ethereum-primitives = { workspace = true, default-features = false }
+reth-evm = { workspace = true, default-features = false }
+reth-evm-ethereum = { workspace = true, default-features = false }
+reth-execution-types = { workspace = true, default-features = false }
+reth-payload-primitives = { workspace = true, default-features = false, optional = true }
 reth-primitives-traits = { workspace = true }
-reth-revm = { workspace = true }
+reth-revm = { workspace = true, default-features = false }
 reth-rpc-eth-api = { workspace = true, optional = true }
-reth-storage-api = { workspace = true, optional = true }
-reth-storage-errors = { workspace = true }
+reth-storage-api = { workspace = true, default-features = false, optional = true }
+reth-storage-errors = { workspace = true, default-features = false }
 reth-transaction-pool = { workspace = true, optional = true }
-reth-trie-common = { workspace = true, optional = true }
+reth-trie-common = { workspace = true, default-features = false, optional = true }
 revm-database-interface = { workspace = true }
 tracing = { workspace = true }
 

@@ -1,7 +1,7 @@
 //! Taiko `eth` namespace RPC methods backed by Taiko DB tables.
 use crate::eth::error::{TaikoApiError, internal_eth_error};
 use alethia_reth_db::model::{
-    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
+    STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin, StoredL1OriginTable,
 };
 use alethia_reth_primitives::payload::attributes::RpcL1Origin;
 use alloy_primitives::U256;
@@ -50,14 +50,13 @@ where
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>> {
         let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
 
-        Ok(Some(
+        Ok(Some(into_rpc_l1_origin(
             provider
                 .into_tx()
                 .get::<StoredL1OriginTable>(id.to())
                 .map_err(internal_eth_error)?
-                .ok_or(TaikoApiError::GethNotFound)?
-                .into_rpc(),
-        ))
+                .ok_or(TaikoApiError::GethNotFound)?,
+        )))
     }
 
     /// Retrieves the head L1 origin from the database.
@@ -71,5 +70,21 @@ where
                 .map_err(internal_eth_error)?
                 .ok_or(TaikoApiError::GethNotFound)?,
         ))
+    }
+}
+
+/// Converts a stored L1 origin into the Taiko RPC shape.
+///
+/// In particular, preconfirmation origins keep zero-valued `l1_block_height` and
+/// `l1_block_hash` fields present instead of omitting them.
+pub(crate) fn into_rpc_l1_origin(origin: StoredL1Origin) -> RpcL1Origin {
+    RpcL1Origin {
+        block_id: origin.block_id,
+        l2_block_hash: origin.l2_block_hash,
+        l1_block_height: Some(origin.l1_block_height),
+        l1_block_hash: Some(origin.l1_block_hash),
+        build_payload_args_id: origin.build_payload_args_id,
+        is_forced_inclusion: origin.is_forced_inclusion,
+        signature: origin.signature,
     }
 }

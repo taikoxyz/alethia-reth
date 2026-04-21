@@ -23,7 +23,7 @@ use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
 use tracing::info;
 
-use crate::eth::error::internal_eth_error;
+use crate::eth::{error::internal_eth_error, eth::into_rpc};
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::TaikoNextBlockEnvAttributes,
@@ -197,7 +197,7 @@ where
 
         tx.commit().map_err(internal_eth_error)?;
 
-        Ok(l1_origin.into_rpc())
+        Ok(into_rpc(l1_origin))
     }
 
     /// Sets the mapping from batch ID to its last block number in the database.

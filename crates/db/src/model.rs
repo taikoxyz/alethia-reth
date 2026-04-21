@@ -65,21 +65,6 @@ impl From<&RpcL1Origin> for StoredL1Origin {
     }
 }
 
-impl StoredL1Origin {
-    /// Converts the stored representation back into its RPC form.
-    pub fn into_rpc(self) -> RpcL1Origin {
-        RpcL1Origin {
-            block_id: self.block_id,
-            l2_block_hash: self.l2_block_hash,
-            l1_block_height: (self.l1_block_height != U256::ZERO).then_some(self.l1_block_height),
-            l1_block_hash: (self.l1_block_hash != B256::ZERO).then_some(self.l1_block_hash),
-            build_payload_args_id: self.build_payload_args_id,
-            is_forced_inclusion: self.is_forced_inclusion,
-            signature: self.signature,
-        }
-    }
-}
-
 tables! {
   table StoredL1OriginTable {
     type Key = BlockNumber;

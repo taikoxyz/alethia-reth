@@ -12,7 +12,7 @@ use reth_rpc_eth_types::EthApiError;
 
 use crate::eth::{
     error::{TaikoApiError, internal_eth_error},
-    eth::into_rpc_l1_origin,
+    eth::into_rpc,
 };
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{BatchToLastBlock, StoredL1OriginTable};
@@ -225,6 +225,6 @@ where
             .into_tx()
             .get::<StoredL1OriginTable>(block_id.to())
             .map_err(internal_eth_error)?
-            .map(into_rpc_l1_origin))
+            .map(into_rpc))
     }
 }

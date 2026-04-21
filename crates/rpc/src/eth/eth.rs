@@ -50,7 +50,7 @@ where
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>> {
         let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
 
-        Ok(Some(into_rpc_l1_origin(
+        Ok(Some(into_rpc(
             provider
                 .into_tx()
                 .get::<StoredL1OriginTable>(id.to())
@@ -77,7 +77,7 @@ where
 ///
 /// In particular, preconfirmation origins keep zero-valued `l1_block_height` and
 /// `l1_block_hash` fields present instead of omitting them.
-pub(crate) fn into_rpc_l1_origin(origin: StoredL1Origin) -> RpcL1Origin {
+pub(crate) fn into_rpc(origin: StoredL1Origin) -> RpcL1Origin {
     RpcL1Origin {
         block_id: origin.block_id,
         l2_block_hash: origin.l2_block_hash,

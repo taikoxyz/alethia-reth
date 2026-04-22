@@ -96,7 +96,7 @@ pub struct TaikoPayloadAttributes {
 impl PayloadAttributes for TaikoPayloadAttributes {
     /// Computes a stable payload identifier for the Taiko payload job.
     fn payload_id(&self, parent_hash: &B256) -> alloy_rpc_types_engine::PayloadId {
-        payload_id_taiko(parent_hash, self, 0)
+        payload_id_taiko(parent_hash, self, 2)
     }
 
     /// Returns the timestamp to be used in the payload job.

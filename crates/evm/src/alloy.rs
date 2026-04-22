@@ -160,8 +160,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
-            contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
+            && contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;
@@ -218,6 +218,14 @@ where
         // Temporarily override the EIP-7825 tx gas limit cap so the 30M system-call
         // gas limit isn't rejected (the Osaka-era default cap is only 16M).
         // `None` falls back to the spec default, so we must use an explicit value.
+        //
+        // Safe because `transact_system_call` is only invoked for Taiko anchor/treasury
+        // system calls whose caller is the GoldenTouch address and which are validated
+        // upstream — no user-supplied data reaches this path. The override is scoped
+        // via `core::mem::swap` and restored on both success and failure of the call.
+        //
+        // TODO(osaka): once Osaka activates for Taiko (see `crates/chainspec/src/hardfork.rs`),
+        // confirm whether this override is still needed or the 30M cap lands under spec.
         let mut tx_gas_limit_cap = Some(u64::MAX);
 
         // ensure the block gas limit is >= the tx

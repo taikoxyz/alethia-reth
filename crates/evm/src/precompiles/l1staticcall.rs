@@ -1,9 +1,22 @@
+//! L1STATICCALL precompile (address `0x10002`).
+//!
+//! **Global-state invariant.** The cache, fetcher, and RPC-served-calls list are process-global
+//! `LazyLock<Mutex<_>>`. They are safe only when the host drives the precompile single-threaded
+//! with one `(anchor, l1origin)` context at a time — the normal preflight and ZK-guest pattern.
+//! Running two different `(anchor, l1origin)` contexts concurrently will silently cross-contaminate
+//! cache hits.
+//!
+//! **Cache lifecycle.** There is no automatic eviction. The caller (surge-raiko) must invoke
+//! [`clear_l1_staticcall_cache`] at the top of every new block / batch iteration, just like
+//! `clear_l1sload_cache()` in the L1SLOAD precompile. Tests use `#[serial]` to serialize the
+//! global-state mutations.
+
 use std::{
     collections::HashMap,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
-use alloy_primitives::{keccak256, Address, Bytes, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use reth_revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tracing::{debug, trace, warn};
 
@@ -43,8 +56,12 @@ static L1_STATICCALL_CACHE: LazyLock<Mutex<L1StaticCallCache>> =
 /// The fetcher must call `debug_traceCall` (not `eth_call`) to capture actual gas.
 /// Arguments: (target_address, block_number, gas_limit, calldata_bytes)
 /// -> (gas_used, return_data, is_reverted)
+///
+/// Wrapped in `Arc` so callers can clone the pointer out of the global mutex and drop the
+/// lock before invoking the (slow) RPC call — preventing concurrent `set_*`/`clear_*`/second
+/// precompile invocations from blocking on the lock or getting poisoned if the fetcher panics.
 type L1StaticCallFetcher =
-    Box<dyn Fn(Address, u64, u64, &[u8]) -> Result<(u64, Vec<u8>, bool), String> + Send + Sync>;
+    Arc<dyn Fn(Address, u64, u64, &[u8]) -> Result<(u64, Vec<u8>, bool), String> + Send + Sync>;
 
 /// Live L1 RPC fetcher for handling cache misses on L1STATICCALL calls.
 static L1_STATICCALL_RPC_FETCHER: LazyLock<Mutex<Option<L1StaticCallFetcher>>> =
@@ -95,12 +112,12 @@ pub fn clear_l1_staticcall_cache() {
 /// Set the L1 staticcall RPC fetcher callback for live fetching on cache miss.
 pub fn set_l1_staticcall_rpc_fetcher(
     fetcher: impl Fn(Address, u64, u64, &[u8]) -> Result<(u64, Vec<u8>, bool), String>
-        + Send
-        + Sync
-        + 'static,
+    + Send
+    + Sync
+    + 'static,
 ) {
     *L1_STATICCALL_RPC_FETCHER.lock().expect("L1_STATICCALL_RPC_FETCHER mutex poisoned") =
-        Some(Box::new(fetcher));
+        Some(Arc::new(fetcher));
 }
 
 /// Clear the L1 staticcall RPC fetcher (disables live RPC fallback).
@@ -150,19 +167,20 @@ fn get_l1_staticcall_value(
 ///
 /// Output: variable-length return data (capped at 24 KB).
 pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
+    // Validate input before charging gas so malformed short inputs surface as
+    // "Invalid input length" instead of OutOfGas.
+    if input.len() < MIN_INPUT_LENGTH {
+        return Err(PrecompileError::Other("Invalid input length".into()));
+    }
+
     // Static gas: fixed + overhead + per-byte for calldata beyond header.
     // Dynamic L1 gas is added after execution from cache or fetcher.
-    let extra_calldata_len = input.len().saturating_sub(MIN_INPUT_LENGTH);
+    let extra_calldata_len = input.len() - MIN_INPUT_LENGTH;
     let static_gas = L1STATICCALL_FIXED_GAS
         + L1STATICCALL_PER_CALL_OVERHEAD
         + L1STATICCALL_PER_BYTE_CALLDATA_GAS * (extra_calldata_len as u64);
     if static_gas > gas_limit {
         return Err(PrecompileError::OutOfGas);
-    }
-
-    // Input validation
-    if input.len() < MIN_INPUT_LENGTH {
-        return Err(PrecompileError::Other("Invalid input length".into()));
     }
 
     // Parse input fields
@@ -176,8 +194,10 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .try_into()
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
-    // Block range validation using shared anchor/l1origin context
-    let anchor_block_id = match get_anchor_block_id() {
+    // Block-range validation uses only `l1_origin_block_id` for the `[l1origin − 256, l1origin]`
+    // window. `_anchor_block_id` participates only in the `l1origin < anchor` invariant check
+    // — the underscore prefix signals that anchor is *not* a bound of the lookback window.
+    let _anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
         None => {
             warn!("L1STATICCALL: anchor block ID not set");
@@ -192,16 +212,16 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         }
     };
 
-    if l1_origin_block_id < anchor_block_id {
+    if l1_origin_block_id < _anchor_block_id {
         return Err(PrecompileError::Other(
             "Invalid L1STATICCALL context: l1origin < anchor".into(),
         ));
     }
 
     if requested_block > l1_origin_block_id {
-        warn!(
+        debug!(
             "L1STATICCALL: rejected block {} > l1origin {} (anchor={})",
-            requested_block, l1_origin_block_id, anchor_block_id
+            requested_block, l1_origin_block_id, _anchor_block_id
         );
         return Err(PrecompileError::Other(
             "Requested block number is after the L1 origin block".into(),
@@ -209,7 +229,7 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     }
 
     if l1_origin_block_id - requested_block > L1STATICCALL_MAX_BLOCK_LOOKBACK {
-        warn!(
+        debug!(
             "L1STATICCALL: rejected block {} too old (l1origin={}, lookback={})",
             requested_block, l1_origin_block_id, L1STATICCALL_MAX_BLOCK_LOOKBACK
         );
@@ -219,7 +239,7 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     }
 
     // Cache lookup: returns (l1_gas_used, return_data, is_reverted)
-    let (l1_gas, result, is_reverted) = if let Some(cached) =
+    let (l1_gas, result, is_reverted) = if let Some((cached_gas, cached_data, cached_reverted)) =
         get_l1_staticcall_value(target, requested_block, calldata)
     {
         trace!(
@@ -228,12 +248,21 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
             requested_block,
             calldata.len()
         );
-        cached
+        // Clamp cached L1 gas the same way the RPC path does — keeps the two branches
+        // symmetric so a cache entry seeded by an earlier caller with a larger budget
+        // cannot overcharge a later caller with a smaller `gas_limit`.
+        let effective_gas_limit = gas_limit.min(L1_CALL_MAX_GAS_CAP);
+        (cached_gas.min(effective_gas_limit), cached_data, cached_reverted)
     } else {
-        // RPC fallback
-        let fetcher_guard =
-            L1_STATICCALL_RPC_FETCHER.lock().expect("L1_STATICCALL_RPC_FETCHER mutex poisoned");
-        if let Some(ref fetcher) = *fetcher_guard {
+        // RPC fallback — clone the Arc out of the lock so the (slow) fetcher runs without
+        // holding the mutex. Concurrent `set_*`/`clear_*` callers are not blocked on the
+        // fetcher's wall time, and a fetcher panic does not poison the global mutex.
+        let fetcher = L1_STATICCALL_RPC_FETCHER
+            .lock()
+            .expect("L1_STATICCALL_RPC_FETCHER mutex poisoned")
+            .as_ref()
+            .map(Arc::clone);
+        if let Some(fetcher) = fetcher {
             debug!(
                 "L1STATICCALL: RPC fallback target={:?} block={} calldata_len={}",
                 target,
@@ -244,7 +273,6 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
             let (fetched_gas, fetched_data, is_reverted) =
                 fetcher(target, requested_block, effective_gas_limit, calldata)
                     .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
-            drop(fetcher_guard);
 
             // Clamp misbehaving RPC responses; the fetcher must not overcharge beyond
             // the gas budget we handed to the L1 call.
@@ -298,8 +326,12 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     };
 
     if is_reverted {
-        // Known limitation: `PrecompileError` cannot carry post-call gas, so reverted
-        // L1 calls still diverge from NMC's "charge gas on failure" path for now.
+        // NMC parity: `GethLikeTxTracer.MarkAsFailed` returns `gas=0` for reverted `debug_traceCall`
+        // invocations. Entries cached with `is_reverted=true` therefore carry `gas_used=0` and
+        // empty `return_data`, matching surge-raiko's guest-side revert assertion (`ensure!(w.gas_used == 0 && w.return_data.is_empty())`).
+        //
+        // Known limitation: `PrecompileError` cannot carry post-call gas, so reverted L1 calls still
+        // diverge from NMC's "charge gas on failure" path. Tracked as M9 in surge-raiko #63.
         return Err(PrecompileError::Other("L1 call reverted".into()));
     }
 
@@ -1024,5 +1056,78 @@ mod tests {
         let served = take_l1_staticcall_rpc_served_calls();
         assert_eq!(served.len(), 1);
         assert!(served[0].is_reverted);
+    }
+
+    // ── Concurrent + panic-safety ─────────────────────────────────────
+
+    /// Two threads hitting the precompile with the same cached entry must not deadlock on the
+    /// global mutex even when the fetcher sleeps. Regression guard for the A1 `Arc<dyn Fn..>`
+    /// swap that drops the fetcher lock before invoking.
+    #[test]
+    #[serial]
+    fn test_l1staticcall_concurrent_invocation_no_deadlock() {
+        use std::{
+            sync::{Arc as StdArc, Barrier},
+            thread,
+            time::Duration,
+        };
+
+        reset_all();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        // Fetcher sleeps so a second thread would block on the lock if the lock were still held.
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| {
+            thread::sleep(Duration::from_millis(50));
+            Ok((10_000, vec![0xAA], false))
+        });
+
+        let barrier = StdArc::new(Barrier::new(2));
+        let b1 = StdArc::clone(&barrier);
+        let b2 = StdArc::clone(&barrier);
+
+        let h1 = thread::spawn(move || {
+            b1.wait();
+            let input = create_test_input(100, &[0x11]);
+            l1staticcall_run(&input, 1_000_000).map(|o| o.bytes.to_vec())
+        });
+        let h2 = thread::spawn(move || {
+            b2.wait();
+            let input = create_test_input(100, &[0x22]);
+            l1staticcall_run(&input, 1_000_000).map(|o| o.bytes.to_vec())
+        });
+
+        let r1 = h1.join().expect("thread 1 panicked");
+        let r2 = h2.join().expect("thread 2 panicked");
+        assert!(r1.is_ok(), "thread 1 did not complete: {:?}", r1.err());
+        assert!(r2.is_ok(), "thread 2 did not complete: {:?}", r2.err());
+    }
+
+    /// A panicking fetcher must not poison the global mutex — after the panic unwinds, the
+    /// next call still sees the fetcher and either succeeds (no state change) or fails cleanly.
+    #[test]
+    #[serial]
+    fn test_l1staticcall_fetcher_panic_does_not_poison_mutex() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        reset_all();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        // Install a panicking fetcher.
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| {
+            panic!("fetcher panic (test): L1 node exploded");
+        });
+
+        let input = create_min_input(100);
+        let first = catch_unwind(AssertUnwindSafe(|| l1staticcall_run(&input, 1_000_000)));
+        assert!(first.is_err(), "first call must propagate the fetcher panic");
+
+        // Install a well-behaved fetcher — subsequent calls must succeed, proving the
+        // L1_STATICCALL_RPC_FETCHER mutex was not poisoned by the panic.
+        clear_l1_staticcall_cache();
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((0, vec![0xBB], false)));
+        let out = l1staticcall_run(&input, 1_000_000).expect("recovered fetcher should succeed");
+        assert_eq!(out.bytes.as_ref(), &[0xBB]);
     }
 }

@@ -1,8 +1,5 @@
 //! Alloy EVM trait adapter for Taiko execution semantics.
-use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
@@ -11,13 +8,14 @@ pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
-        BlockEnv, CfgEnv, TxEnv,
+        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
     },
     handler::PrecompileProvider,
     interpreter::InterpreterResult,
+    state::EvmState,
 };
 use tracing::debug;
 
@@ -208,11 +206,13 @@ where
 
     /// Executes a system call.
     ///
-    /// Note: this will only keep the target `contract` in the state. This is done because revm is
-    /// loading [`BlockEnv::beneficiary`] into state by default, and we need to avoid it by also
-    /// covering edge cases when beneficiary is set to the system contract address.
-    /// NOTE: we use this call as a workaround to mark the Anchor transaction and base fee share
-    /// percentage in the current block.
+    /// For regular system calls, only the target `contract` is kept in the returned changeset.
+    /// This avoids revm's default [`BlockEnv::beneficiary`] state load, including the edge case
+    /// where the beneficiary is set to the system contract address.
+    ///
+    /// Anchor system calls are handled as a metadata marker for the current block: they retain the
+    /// caller and contract accounts in the internal journal for witness generation, but still
+    /// return an empty changeset.
     fn transact_system_call(
         &mut self,
         caller: Address,
@@ -231,7 +231,22 @@ where
             // Set the Anchor transaction information for the later EVM execution.
             self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
 
-            // Return a dummy execution result and state to avoid further processing.
+            // Load both system-call participants through the journal so witness generation can
+            // include the same pre-execution dependencies that stateless validation will read
+            // later.
+            //
+            // Commit the synthetic pre-execution load immediately afterwards. This keeps both the
+            // `caller` and `contract` accounts in the internal journal state for witness
+            // generation, but advances the journal transaction id so the first real anchor
+            // transaction still pays normal cold-access costs and preserves mainline gas
+            // accounting.
+            let journal = self.ctx_mut().journal_mut();
+            journal.load_account(caller)?;
+            journal.load_account(contract)?;
+            journal.commit_tx();
+
+            // Return a dummy execution result with an empty `ResultAndState.state` changeset to
+            // avoid further processing. The internal journal state above is intentionally retained.
             return Ok(ResultAndState {
                 result: ExecutionResult::Success {
                     reason: SuccessReason::Return,
@@ -239,7 +254,7 @@ where
                     logs: vec![],
                     output: Output::Call(Bytes::new()),
                 },
-                state: HashMap::default(),
+                state: EvmState::default(),
             });
         }
 
@@ -353,4 +368,74 @@ pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
     let base_fee_share_pctg = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
     let caller_nonce = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
     Some((base_fee_share_pctg, caller_nonce))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_evm::{Evm, EvmEnv, EvmFactory};
+    use alloy_primitives::U256;
+    use reth_revm::{context::ContextTr, db::InMemoryDB, state::AccountInfo};
+
+    use super::*;
+    use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+
+    fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(&base_fee_share_pctg.to_be_bytes());
+        bytes.extend_from_slice(&caller_nonce.to_be_bytes());
+        bytes.into()
+    }
+
+    #[test]
+    fn anchor_system_call_records_witness_accounts_without_warming_next_tx() {
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            golden_touch,
+            AccountInfo { nonce: 7, balance: U256::ZERO, ..Default::default() },
+        );
+        db.insert_account_info(
+            treasury,
+            AccountInfo { nonce: 0, balance: U256::ZERO, ..Default::default() },
+        );
+
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.chain_id = chain_id;
+        let mut evm = TaikoEvmFactory.create_evm(db, env);
+
+        evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
+            .expect("anchor system call should short-circuit successfully");
+
+        let journal = evm.ctx().journal();
+        let witness_state = &journal.state;
+        assert!(
+            witness_state.contains_key(&golden_touch),
+            "golden touch must be recorded in journal state for witness generation"
+        );
+        assert!(
+            witness_state.contains_key(&treasury),
+            "treasury must be recorded in journal state for witness generation"
+        );
+
+        let next_tx_id = journal.transaction_id;
+        assert_eq!(next_tx_id, 1, "synthetic pre-execution load should advance tx id");
+
+        let golden_touch_account = witness_state
+            .get(&golden_touch)
+            .expect("golden touch account must stay in witness state");
+        assert!(
+            golden_touch_account.is_cold_transaction_id(next_tx_id),
+            "golden touch must be cold again for the first real transaction"
+        );
+
+        let treasury_account =
+            witness_state.get(&treasury).expect("treasury account must stay in witness state");
+        assert!(
+            treasury_account.is_cold_transaction_id(next_tx_id),
+            "treasury must be cold again for the first real transaction"
+        );
+    }
 }

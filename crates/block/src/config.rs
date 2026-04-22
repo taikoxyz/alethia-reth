@@ -2,6 +2,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_consensus::{BlockHeader, Header};
+#[cfg(feature = "net")]
 use alloy_eips::Decodable2718;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
@@ -11,13 +12,17 @@ use reth_ethereum_forks::Hardforks;
 use reth_ethereum_primitives::EthPrimitives;
 #[cfg(feature = "net")]
 use reth_evm::ConfigureEngineEvm;
-use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor};
+#[cfg(feature = "net")]
+use reth_evm::{ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives_traits::{
-    BlockTy, SealedBlock, SealedHeader, SignedTransaction, TxTy, constants::MAX_TX_GAS_LIMIT_OSAKA,
+    BlockTy, SealedBlock, SealedHeader, constants::MAX_TX_GAS_LIMIT_OSAKA,
 };
+#[cfg(feature = "net")]
+use reth_primitives_traits::{SignedTransaction, TxTy};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,

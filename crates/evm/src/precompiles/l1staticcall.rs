@@ -18,7 +18,7 @@ use std::{
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use reth_revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::l1sload::{get_anchor_block_id, get_l1_origin_block_id};
 
@@ -106,7 +106,12 @@ pub fn set_l1_staticcall_value(
 
 /// Clear the L1STATICCALL cache only (does NOT clear the shared anchor/l1origin context).
 pub fn clear_l1_staticcall_cache() {
-    L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned").clear();
+    let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
+    let prior = cache.len();
+    cache.clear();
+    if prior > 0 {
+        debug!("L1STATICCALL: cache cleared (evicted {prior} entries)");
+    }
 }
 
 /// Set the L1 staticcall RPC fetcher callback for live fetching on cache miss.
@@ -116,13 +121,20 @@ pub fn set_l1_staticcall_rpc_fetcher(
     + Sync
     + 'static,
 ) {
+    info!("L1STATICCALL: RPC fetcher installed (live-fetch fallback enabled)");
     *L1_STATICCALL_RPC_FETCHER.lock().expect("L1_STATICCALL_RPC_FETCHER mutex poisoned") =
         Some(Arc::new(fetcher));
 }
 
 /// Clear the L1 staticcall RPC fetcher (disables live RPC fallback).
 pub fn clear_l1_staticcall_rpc_fetcher() {
-    *L1_STATICCALL_RPC_FETCHER.lock().expect("L1_STATICCALL_RPC_FETCHER mutex poisoned") = None;
+    let mut slot = L1_STATICCALL_RPC_FETCHER
+        .lock()
+        .expect("L1_STATICCALL_RPC_FETCHER mutex poisoned");
+    if slot.is_some() {
+        info!("L1STATICCALL: RPC fetcher cleared (live-fetch fallback disabled)");
+    }
+    *slot = None;
 }
 
 /// Get all L1STATICCALL calls that were served via live RPC (not from cache).
@@ -167,9 +179,20 @@ fn get_l1_staticcall_value(
 ///
 /// Output: variable-length return data (capped at 24 KB).
 pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
+    debug!(
+        "L1STATICCALL: precompile called, input_len={} gas_limit={}",
+        input.len(),
+        gas_limit
+    );
+
     // Validate input before charging gas so malformed short inputs surface as
     // "Invalid input length" instead of OutOfGas.
     if input.len() < MIN_INPUT_LENGTH {
+        warn!(
+            "L1STATICCALL: rejected invalid input length {}, minimum {}",
+            input.len(),
+            MIN_INPUT_LENGTH
+        );
         return Err(PrecompileError::Other("Invalid input length".into()));
     }
 
@@ -274,12 +297,22 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
                 fetcher(target, requested_block, effective_gas_limit, calldata)
                     .map_err(|e| PrecompileError::Other(format!("L1 RPC error: {e}").into()))?;
 
+            debug!(
+                "L1STATICCALL: RPC returned target={:?} block={} gas={} return_len={} reverted={}",
+                target, requested_block, fetched_gas, fetched_data.len(), is_reverted
+            );
+
             // Clamp misbehaving RPC responses; the fetcher must not overcharge beyond
             // the gas budget we handed to the L1 call.
             let l1_gas = fetched_gas.min(effective_gas_limit);
 
             // Enforce max return data size
             if fetched_data.len() > MAX_RETURN_DATA_SIZE {
+                warn!(
+                    "L1STATICCALL: return data too large ({} bytes, max {})",
+                    fetched_data.len(),
+                    MAX_RETURN_DATA_SIZE
+                );
                 return Err(PrecompileError::Other(
                     format!(
                         "L1STATICCALL return data too large: {} > {} bytes",
@@ -332,11 +365,20 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         //
         // Known limitation: `PrecompileError` cannot carry post-call gas, so reverted L1 calls still
         // diverge from NMC's "charge gas on failure" path. Tracked as M9 in surge-raiko #63.
+        debug!(
+            "L1STATICCALL: reverted target={:?} block={} — surfacing PrecompileError",
+            target, requested_block
+        );
         return Err(PrecompileError::Other("L1 call reverted".into()));
     }
 
     // Enforce max return data size (also for cached values)
     if result.len() > MAX_RETURN_DATA_SIZE {
+        warn!(
+            "L1STATICCALL: cached return data too large ({} bytes, max {})",
+            result.len(),
+            MAX_RETURN_DATA_SIZE
+        );
         return Err(PrecompileError::Other(
             format!(
                 "L1STATICCALL return data too large: {} > {} bytes",
@@ -350,6 +392,14 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     // `total_gas` may exceed `gas_limit`; revm applies the final OOG check after the
     // precompile returns its reported gas usage.
     let total_gas = static_gas + l1_gas;
+    debug!(
+        "L1STATICCALL: success target={:?} block={} return_len={} l1_gas={} total_gas={}",
+        target,
+        requested_block,
+        result.len(),
+        l1_gas,
+        total_gas
+    );
     Ok(PrecompileOutput::new(total_gas, Bytes::from(result)))
 }
 

@@ -92,8 +92,8 @@ pub(super) fn execute_provided_transactions(
                 break;
             }
             Err(BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+                BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) => {
                 trace!(target: "payload_builder", ?tx, "skipping invalid transaction in legacy mode");
                 continue;

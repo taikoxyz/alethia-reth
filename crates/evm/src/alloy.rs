@@ -6,16 +6,16 @@ use alloy_primitives::{Address, Bytes, TxKind, U256};
 // Re-export from primitives so downstream consumers can use the lighter crate.
 pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
+    Context, ExecuteEvm, InspectEvm, Inspector,
     context::{
+        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
-        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
     },
     handler::PrecompileProvider,
     interpreter::InterpreterResult,
     state::EvmState,
-    Context, ExecuteEvm, InspectEvm, Inspector,
 };
 use tracing::debug;
 
@@ -24,7 +24,7 @@ use crate::{
     handler::get_treasury_address,
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::{lock_meter, SharedZkGasMeter, ZkGasInspector},
+        adapter::{SharedZkGasMeter, ZkGasInspector, lock_meter},
         meter::ZkGasOutcome,
     },
 };
@@ -201,11 +201,7 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect {
-            self.inner.inspect_tx(tx)
-        } else {
-            self.inner.transact(tx)
-        }
+        if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
     }
 
     /// Executes a system call.

@@ -62,8 +62,8 @@ where
         if let Ok(Some(block_number)) = batch_lookup {
             return Ok(Some(U256::from(block_number)));
         }
-        if let Err(error) = batch_lookup &&
-            !Self::is_missing_table_error(&error)
+        if let Err(error) = batch_lookup
+            && !Self::is_missing_table_error(&error)
         {
             return Err(internal_eth_error(error).into());
         }
@@ -75,8 +75,8 @@ where
     fn is_missing_table_error(error: &DatabaseError) -> bool {
         match error {
             DatabaseError::Open(info) | DatabaseError::Read(info) => {
-                info.code == -30798 ||
-                    info.message.as_ref().contains("no matching key/data pair found")
+                info.code == -30798
+                    || info.message.as_ref().contains("no matching key/data pair found")
             }
             _ => false,
         }

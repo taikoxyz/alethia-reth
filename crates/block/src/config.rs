@@ -19,14 +19,14 @@ use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives_traits::{
-    constants::MAX_TX_GAS_LIMIT_OSAKA, BlockTy, SealedBlock, SealedHeader,
+    BlockTy, SealedBlock, SealedHeader, constants::MAX_TX_GAS_LIMIT_OSAKA,
 };
 #[cfg(feature = "net")]
 use reth_primitives_traits::{SignedTransaction, TxTy};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,
-    primitives::{hardfork::SpecId, Address, B256, U256},
+    primitives::{Address, B256, U256, hardfork::SpecId},
 };
 #[cfg(feature = "net")]
 use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
@@ -114,11 +114,7 @@ fn normalize_parent_beacon_block_root(
     is_uzen_active: bool,
     parent_beacon_block_root: Option<B256>,
 ) -> Option<B256> {
-    if is_uzen_active {
-        parent_beacon_block_root.or(Some(B256::ZERO))
-    } else {
-        None
-    }
+    if is_uzen_active { parent_beacon_block_root.or(Some(B256::ZERO)) } else { None }
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
@@ -415,7 +411,7 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alethia_reth_chainspec::{hardfork::TaikoHardfork, TAIKO_DEVNET};
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_hardforks::ForkCondition;
     use std::sync::Arc;
 

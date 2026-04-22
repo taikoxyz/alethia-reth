@@ -206,11 +206,13 @@ where
 
     /// Executes a system call.
     ///
-    /// Note: this will only keep the target `contract` in the state. This is done because revm is
-    /// loading [`BlockEnv::beneficiary`] into state by default, and we need to avoid it by also
-    /// covering edge cases when beneficiary is set to the system contract address.
-    /// NOTE: we use this call as a workaround to mark the Anchor transaction and base fee share
-    /// percentage in the current block.
+    /// For regular system calls, only the target `contract` is kept in the returned changeset.
+    /// This avoids revm's default [`BlockEnv::beneficiary`] state load, including the edge case
+    /// where the beneficiary is set to the system contract address.
+    ///
+    /// Anchor system calls are handled as a metadata marker for the current block: they retain the
+    /// caller and contract accounts in the internal journal for witness generation, but still
+    /// return an empty changeset.
     fn transact_system_call(
         &mut self,
         caller: Address,
@@ -229,19 +231,22 @@ where
             // Set the Anchor transaction information for the later EVM execution.
             self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
 
-            // Load the system accounts through the journal so witness generation can include the
-            // same pre-execution dependencies that stateless validation will read later.
+            // Load both system-call participants through the journal so witness generation can
+            // include the same pre-execution dependencies that stateless validation will read
+            // later.
             //
-            // Commit the synthetic pre-execution load immediately afterwards. This keeps the
-            // loaded accounts in state for witness generation, but advances the journal
-            // transaction id so the first real anchor transaction still pays normal cold-access
-            // costs and preserves mainline gas accounting.
+            // Commit the synthetic pre-execution load immediately afterwards. This keeps both the
+            // `caller` and `contract` accounts in the internal journal state for witness
+            // generation, but advances the journal transaction id so the first real anchor
+            // transaction still pays normal cold-access costs and preserves mainline gas
+            // accounting.
             let journal = self.ctx_mut().journal_mut();
             journal.load_account(caller)?;
             journal.load_account(contract)?;
             journal.commit_tx();
 
-            // Return a dummy execution result and state to avoid further processing.
+            // Return a dummy execution result with an empty `ResultAndState.state` changeset to
+            // avoid further processing. The internal journal state above is intentionally retained.
             return Ok(ResultAndState {
                 result: ExecutionResult::Success {
                     reason: SuccessReason::Return,

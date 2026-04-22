@@ -13,5 +13,5 @@ pub mod factory;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testutil;
 /// Shared transaction-selection primitives used by block and RPC flows.
-#[cfg(any(test, feature = "net"))]
+#[cfg(feature = "net")]
 pub mod tx_selection;

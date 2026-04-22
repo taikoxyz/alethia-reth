@@ -15,7 +15,7 @@ use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
 use serde_with::{As, base64::Base64};
 
 #[cfg(feature = "net")]
-use crate::payload::builder::payload_id_taiko;
+use crate::payload::builder::{PAYLOAD_ID_VERSION_V2, payload_id_taiko};
 
 #[cfg(feature = "serde")]
 /// Serde helpers for taiko-geth-compatible fixed-size signature hex encoding.
@@ -96,7 +96,7 @@ pub struct TaikoPayloadAttributes {
 impl PayloadAttributes for TaikoPayloadAttributes {
     /// Computes a stable payload identifier for the Taiko payload job.
     fn payload_id(&self, parent_hash: &B256) -> alloy_rpc_types_engine::PayloadId {
-        payload_id_taiko(parent_hash, self, 0)
+        payload_id_taiko(parent_hash, self, PAYLOAD_ID_VERSION_V2)
     }
 
     /// Returns the timestamp to be used in the payload job.

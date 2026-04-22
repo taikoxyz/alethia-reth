@@ -15,6 +15,9 @@ use tracing::debug;
 
 use crate::payload::attributes::TaikoPayloadAttributes;
 
+/// Version byte stamped into Taiko payload identifiers for the `engine_*V2` surface.
+pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
+
 /// Taiko Payload Builder Attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -86,13 +89,14 @@ impl PayloadAttributes for TaikoPayloadBuilderAttributes {
 impl TaikoPayloadBuilderAttributes {
     /// Creates a new payload builder for the given parent block and the attributes.
     ///
-    /// Derives the unique [`PayloadId`] for the given parent and attributes.
+    /// Derives the unique [`PayloadId`] for the given parent and attributes, stamped with the
+    /// [`PAYLOAD_ID_VERSION_V2`] byte to match the `engine_*V2` surface this client exposes.
+    /// Callers that want a different version byte should invoke [`payload_id_taiko`] directly.
     pub fn try_new(
         parent: B256,
         attributes: TaikoPayloadAttributes,
-        version: u8,
     ) -> Result<Self, alloy_rlp::Error> {
-        let id = payload_id_taiko(&parent, &attributes, version);
+        let id = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_V2);
 
         // Determine transaction source based on whether tx_list is provided.
         let transactions = match &attributes.block_metadata.tx_list {
@@ -320,7 +324,7 @@ mod test {
         let tx_list_bytes = Bytes::from_static(&hex!("c0"));
         let payload_attrs = create_payload_attrs(1000, Some(tx_list_bytes.clone()), 100_000_000);
 
-        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs, 1)
+        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
             .expect("Should create builder attributes in legacy mode");
 
         assert!(attrs.transactions.is_some(), "Legacy mode should have transactions");
@@ -336,7 +340,7 @@ mod test {
     fn test_taiko_payload_builder_attributes_new_mode() {
         let payload_attrs = create_payload_attrs(1000, None, 100_000_000);
 
-        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs, 1)
+        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
             .expect("Should create builder attributes in new mode");
 
         assert!(attrs.transactions.is_none(), "New mode should use mempool selection");

@@ -151,8 +151,8 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             return Err(ConsensusError::WithdrawalsRootMissing);
         }
 
-        if self.chain_spec.is_osaka_active_at_timestamp(block.timestamp()) &&
-            block.rlp_length() > MAX_RLP_BLOCK_SIZE
+        if self.chain_spec.is_osaka_active_at_timestamp(block.timestamp())
+            && block.rlp_length() > MAX_RLP_BLOCK_SIZE
         {
             return Err(ConsensusError::BlockTooLarge {
                 rlp_length: block.rlp_length(),
@@ -448,12 +448,9 @@ where
     // operation as hashing that is required for state root got calculated in every
     // transaction This was replaced with is_success flag.
     // See more about EIP here: https://eips.ethereum.org/EIPS/eip-658
-    if chain_spec.is_byzantium_active_at_block(block.header().number()) &&
-        let Err(error) = verify_receipts(
-            block.header().receipts_root(),
-            block.header().logs_bloom(),
-            receipts,
-        )
+    if chain_spec.is_byzantium_active_at_block(block.header().number())
+        && let Err(error) =
+            verify_receipts(block.header().receipts_root(), block.header().logs_bloom(), receipts)
     {
         let receipts = receipts
             .iter()

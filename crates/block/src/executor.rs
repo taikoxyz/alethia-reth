@@ -385,8 +385,8 @@ where
                 // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
                 // limit, this should never happen in practice.
                 err if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(()),
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) |
-                BlockExecutionError::Validation(
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
+                | BlockExecutionError::Validation(
                     BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
                 ) if !is_anchor_transaction => Ok(()),
                 _ => Err(err),
@@ -423,18 +423,19 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{SignableTransaction, Signed, TxLegacy};
     use alloy_evm::EvmFactory;
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
     use reth_ethereum_primitives::TransactionSigned;
     use reth_evm::{ConfigureEvm, block::BlockExecutor};
     use reth_evm_ethereum::RethReceiptBuilder;
-    use reth_primitives_traits::SignedTransaction;
+    use reth_primitives_traits::{SealedHeader, SignedTransaction};
     use reth_revm::{
         State,
         db::{CacheDB, EmptyDB},
         state::AccountInfo,
     };
+    use reth_storage_api::noop::NoopProvider;
 
     use alethia_reth_evm::{alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory};
 
@@ -538,6 +539,51 @@ mod test {
         assert_eq!(result.receipts.len(), 1);
         assert!(result.gas_used > 0);
         assert!(ctx.finalized_block_zk_gas() > 0);
+    }
+
+    #[cfg(feature = "prover")]
+    #[test]
+    fn execute_and_filter_block_transactions_skips_invalid_nonce_transaction() {
+        let chain_spec = Arc::new(uzen_chain_spec());
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent = SealedHeader::seal_slow(alloy_consensus::Header {
+            number: 0,
+            timestamp: 0,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1),
+            ..Default::default()
+        });
+        let invalid_tx: TransactionSigned = TxLegacy {
+            chain_id: Some(ChainId::from(167_u64)),
+            nonce: 1,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::default(),
+        }
+        .into_signed(Signature::test_signature())
+        .into();
+
+        let outcome = crate::filtered_block::execute_and_filter_block_transactions(
+            &config,
+            &parent,
+            TaikoNextBlockEnvAttributes {
+                timestamp: 1,
+                suggested_fee_recipient: Address::ZERO,
+                prev_randao: B256::ZERO,
+                gas_limit: 30_000_000,
+                extra_data: Bytes::default(),
+                base_fee_per_gas: 1,
+            },
+            None,
+            vec![invalid_tx],
+            NoopProvider::default(),
+        )
+        .expect("invalid nonce transaction should be skipped");
+
+        assert_eq!(outcome.filtered_block.body().transactions().count(), 0);
+        assert!(outcome.execution_result.receipts.is_empty());
     }
 
     #[test]

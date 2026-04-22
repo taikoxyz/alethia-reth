@@ -9,6 +9,9 @@ pub mod config;
 pub mod executor;
 /// Executor factory wiring for Taiko block execution.
 pub mod factory;
+/// Filtered block reconstruction helper used by txlist-driven proving paths.
+#[cfg(feature = "prover")]
+pub mod filtered_block;
 /// Shared test utilities for zk gas integration tests.
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testutil;

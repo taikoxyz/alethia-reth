@@ -127,7 +127,6 @@ fn normalize_payload_config(
     let mut attributes = TaikoPayloadBuilderAttributes::try_new(
         config.parent_header.hash(),
         config.attributes.clone(),
-        0,
     )
     .map_err(PayloadBuilderError::other)?;
     attributes.id = config.payload_id;

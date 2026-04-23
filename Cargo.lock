@@ -145,6 +145,7 @@ dependencies = [
  "alloy-hardforks",
  "clap",
  "eyre",
+ "humantime",
  "reth",
  "reth-cli",
  "reth-cli-commands",

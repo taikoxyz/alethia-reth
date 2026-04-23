@@ -60,6 +60,7 @@ clap = "4"
 derive_more = { version = "2", default-features = false, features = ["full"] }
 eyre = "0.6"
 futures-util = { version = "0.3.31", default-features = false }
+humantime = "2"
 parking_lot = "0.12.5"
 strum = { version = "0.27", default-features = false }
 tempfile = "3.24.0"

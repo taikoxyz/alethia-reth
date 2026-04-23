@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["net"]
-prover = ["dep:alethia-reth-primitives"]
+prover = ["dep:alethia-reth-primitives", "dep:reth-storage-api", "dep:reth-trie-common"]
 test-utils = ["dep:reth-storage-api", "dep:reth-trie-common"]
 net = [
     "std",

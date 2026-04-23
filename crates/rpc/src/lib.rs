@@ -5,3 +5,5 @@
 pub mod engine;
 /// Taiko `eth` namespace extensions and custom RPC methods.
 pub mod eth;
+/// RPC overrides backed by the proofs-history sidecar (imported from op-reth).
+pub mod proofs;

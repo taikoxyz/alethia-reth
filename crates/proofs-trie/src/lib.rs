@@ -20,7 +20,6 @@ use reth_metrics as _;
 use reth_revm as _;
 use reth_storage_errors as _;
 use reth_tasks as _;
-use reth_trie as _;
 use reth_trie_db as _;
 use strum as _;
 use tokio as _;

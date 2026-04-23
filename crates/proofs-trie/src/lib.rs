@@ -7,14 +7,10 @@
 //! trie data, enabling sub-second historical `eth_getProof` / `debug_executionWitness`
 //! within a configurable retention window.
 
-// The following crates are declared as dependencies in `Cargo.toml` because they will be
-// consumed by forthcoming tasks (live store, metrics). They are pulled in here with `as _`
-// to silence `unused_crate_dependencies` until those modules land.
-use eyre as _;
-use metrics as _;
-use parking_lot as _;
+// The following crates are declared as dependencies in `Cargo.toml` because they are
+// only consumed from test-only modules (or by forthcoming tasks). They are pulled in
+// here with `as _` to silence `unused_crate_dependencies` outside of tests.
 use reth_db_api as _;
-use reth_evm as _;
 use reth_storage_errors as _;
 use reth_trie_db as _;
 
@@ -25,6 +21,8 @@ pub mod error;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod in_memory;
 pub mod initialize;
+pub mod live;
+pub mod metrics;
 pub mod proof;
 pub mod provider;
 pub mod prune;
@@ -36,6 +34,8 @@ pub use error::{ProofsStorageError, ProofsStorageResult};
 #[cfg(any(test, feature = "test-utils"))]
 pub use in_memory::InMemoryProofsStorage;
 pub use initialize::InitializationJob;
+pub use live::LiveTrieCollector;
+pub use metrics::{ProofsStorage, StorageMetrics};
 pub use provider::ProofsStateProviderRef;
 pub use prune::{
     ProofsStoragePruner, ProofsStoragePrunerResult, ProofsStoragePrunerTask, PrunerError,

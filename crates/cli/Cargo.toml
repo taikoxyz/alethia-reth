@@ -15,12 +15,14 @@ default = []
 alethia-reth-block = { path = "../block" }
 alethia-reth-chainspec = { path = "../chainspec" }
 alethia-reth-node = { path = "../node" }
+alethia-reth-proofs-trie = { path = "../proofs-trie" }
 alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 eyre = { workspace = true }
 humantime = { workspace = true }
 reth = { workspace = true }
+reth-chainspec = { workspace = true }
 reth-cli = { workspace = true }
 reth-cli-commands = { workspace = true }
 reth-db = { workspace = true }
@@ -29,6 +31,9 @@ reth-ethereum-forks = { workspace = true }
 reth-evm-ethereum = { workspace = true }
 reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
+reth-node-core = { workspace = true }
+reth-provider = { workspace = true }
 reth-storage-api = { workspace = true }
+reth-tasks = { workspace = true }
 reth-tracing = { workspace = true }
 tracing = { workspace = true }

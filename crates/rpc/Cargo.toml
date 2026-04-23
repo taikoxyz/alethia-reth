@@ -26,6 +26,8 @@ alloy-eips = { workspace = true }
 alloy-hardforks = { workspace = true }
 alloy-json-rpc = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-rpc-types-debug = { workspace = true }
 alloy-rpc-types-engine = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 async-trait = { workspace = true }
@@ -59,10 +61,11 @@ reth-rpc-convert = { workspace = true }
 reth-rpc-engine-api = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
 reth-rpc-eth-types = { workspace = true }
+reth-storage-api = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

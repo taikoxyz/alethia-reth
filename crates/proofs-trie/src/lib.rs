@@ -10,7 +10,6 @@
 // The following crates are declared as dependencies in `Cargo.toml` because they will be
 // consumed by forthcoming tasks (provider, cursors, live store, metrics). They are pulled
 // in here with `as _` to silence `unused_crate_dependencies` until those modules land.
-use auto_impl as _;
 use eyre as _;
 use metrics as _;
 use parking_lot as _;
@@ -25,7 +24,10 @@ use strum as _;
 use tokio as _;
 use tracing as _;
 
+pub mod api;
 pub mod db;
 pub mod error;
 
+pub use api::*;
+pub use db::MdbxProofsStorage;
 pub use error::{ProofsStorageError, ProofsStorageResult};

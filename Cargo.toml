@@ -20,7 +20,7 @@ resolver = "2"
 [workspace.package]
 version = "0.7.1"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.94"
 license = "MIT"
 
 [workspace.dependencies]
@@ -124,8 +124,14 @@ reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0"
 reth-storage-errors = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0", default-features = false }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
+
+# op-reth (historical-proofs sidecar) imported from ethereum-optimism monorepo
+reth-exex = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
+reth-optimism-exex = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.1.0-rc.1" }
+reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.1.0-rc.1" }
 
 # revm
 revm-database-interface = { version = "10.0.0", default-features = false }

@@ -81,4 +81,23 @@ tables! {
         type Key = u64; // Block number
         type Value = ChangeSet;
     }
+
+    /// Stores the on-disk schema version of the proofs-trie sidecar database.
+    ///
+    /// This is a single-row metadata table. The key is always the reserved
+    /// sentinel [`PROOFS_TRIE_SCHEMA_VERSION_KEY`] (`0u8`); `reth-db`'s `tables!`
+    /// macro does not accept `()` as a key type, so we use `u8` with a single
+    /// documented value. The stored value is the current schema version,
+    /// matching [`PROOFS_TRIE_SCHEMA_VERSION`].
+    table SchemaVersion {
+        type Key = u8;
+        type Value = u32;
+    }
 }
+
+/// Reserved sentinel key for the single row in the [`SchemaVersion`] table.
+pub const PROOFS_TRIE_SCHEMA_VERSION_KEY: u8 = 0u8;
+
+/// Current proofs-trie on-disk schema version. Bump on any breaking change to
+/// table keys/values, `VersionedValue` encoding, or `ChangeSet` encoding.
+pub const PROOFS_TRIE_SCHEMA_VERSION: u32 = 1;

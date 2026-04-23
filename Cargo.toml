@@ -133,6 +133,7 @@ reth-trie-db = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 
 # op-reth (historical-proofs sidecar) imported from ethereum-optimism monorepo
 reth-exex = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
+reth-exex-test-utils = { git = "https://github.com/paradigmxyz/reth", tag = "v2.0.0" }
 reth-optimism-exex = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.1.0-rc.1" }
 reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v2.1.0-rc.1" }
 
@@ -152,6 +153,9 @@ thiserror = { version = "2.0.0", default-features = false }
 
 # async utilities
 tokio = { version = "1.44.2", default-features = false }
+
+# testing
+tempfile = "3"
 
 # observability
 tracing = { version = "0.1.0", default-features = false }

@@ -409,6 +409,7 @@ dependencies = [
  "alethia-reth-db",
  "alethia-reth-evm",
  "alethia-reth-primitives",
+ "alethia-reth-proofs-trie",
  "alethia-reth-rpc-types",
  "alloy-consensus",
  "alloy-eips 2.0.0",

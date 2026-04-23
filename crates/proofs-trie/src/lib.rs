@@ -28,6 +28,12 @@ pub mod api;
 pub mod db;
 pub mod error;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod in_memory;
+
 pub use api::*;
 pub use db::MdbxProofsStorage;
 pub use error::{ProofsStorageError, ProofsStorageResult};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use in_memory::InMemoryProofsStorage;

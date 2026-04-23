@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["net"]
-prover = ["dep:alethia-reth-primitives"]
+prover = ["dep:alethia-reth-primitives", "dep:reth-storage-api", "dep:reth-trie-common"]
 test-utils = ["dep:reth-storage-api", "dep:reth-trie-common"]
 net = [
     "std",
@@ -71,7 +71,7 @@ revm-database-interface = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-storage-api = { workspace = true }
+reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-trie-common = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }

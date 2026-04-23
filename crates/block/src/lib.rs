@@ -5,6 +5,9 @@
 pub mod assembler;
 /// EVM and block-construction configuration for Taiko execution.
 pub mod config;
+/// Prover helpers for executing derived candidate blocks.
+#[cfg(feature = "prover")]
+pub mod derived_block;
 /// Block execution strategy and anchor pre-execution logic.
 pub mod executor;
 /// Executor factory wiring for Taiko block execution.

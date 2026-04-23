@@ -211,7 +211,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use reth::revm::{State, context::result::ExecutionResult};
+    use reth::revm::State;
     use reth_evm::{
         EvmFactory,
         block::{BlockExecutionError, BlockExecutor, CommitChanges},

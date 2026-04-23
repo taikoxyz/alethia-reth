@@ -15,12 +15,8 @@ use metrics as _;
 use parking_lot as _;
 use reth_db_api as _;
 use reth_evm as _;
-use reth_metrics as _;
 use reth_storage_errors as _;
-use reth_tasks as _;
 use reth_trie_db as _;
-use strum as _;
-use tokio as _;
 
 pub mod api;
 pub mod cursor_factory;
@@ -31,6 +27,7 @@ pub mod in_memory;
 pub mod initialize;
 pub mod proof;
 pub mod provider;
+pub mod prune;
 
 pub use api::*;
 pub use cursor_factory::{ProofsHashedAccountCursorFactory, ProofsTrieCursorFactory};
@@ -40,3 +37,7 @@ pub use error::{ProofsStorageError, ProofsStorageResult};
 pub use in_memory::InMemoryProofsStorage;
 pub use initialize::InitializationJob;
 pub use provider::ProofsStateProviderRef;
+pub use prune::{
+    ProofsStoragePruner, ProofsStoragePrunerResult, ProofsStoragePrunerTask, PrunerError,
+    PrunerOutput,
+};

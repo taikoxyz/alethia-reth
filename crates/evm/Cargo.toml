@@ -11,11 +11,7 @@ path = "src/lib.rs"
 [features]
 default = ["std"]
 serde = ["dep:serde"]
-std = [
-    "alethia-reth-primitives/std",
-    "reth-evm/std",
-    "reth-revm/std",
-]
+std = ["alethia-reth-primitives/std", "reth-evm/std", "reth-revm/std"]
 
 [dependencies]
 alethia-reth-primitives = { path = "../primitives", default-features = false }

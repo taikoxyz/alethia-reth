@@ -80,8 +80,8 @@ where
         evm_config.executor_factory.receipt_builder(),
     );
 
-    let execution_outcome =
-        executor.execute_block_with_committed_transactions(derived_block.transactions_recovered())?;
+    let execution_outcome = executor
+        .execute_block_with_committed_transactions(derived_block.transactions_recovered())?;
     state.merge_transitions(BundleRetention::Reverts);
 
     let bundle_state = state.take_bundle();
@@ -151,7 +151,7 @@ mod tests {
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
 
-    fn test_tx(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
+    fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
         let tx = TxLegacy {
             chain_id: Some(ChainId::from(chain_id)),
             nonce,
@@ -175,12 +175,19 @@ mod tests {
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new(chain_spec);
         let parent_header = SealedHeader::seal_slow(Header::default());
-        let anchor_tx = test_tx(chain_id, 0);
-        let valid_tx = test_tx(chain_id, 1);
-        let invalid_tx = test_tx(chain_id, 99);
-        let transactions =
-            vec![anchor_tx.clone_inner(), valid_tx.clone_inner(), invalid_tx.clone_inner()];
-        let senders = vec![anchor_tx.signer(), valid_tx.signer(), invalid_tx.signer()];
+        let anchor_transaction = test_transaction(chain_id, 0);
+        let valid_transaction = test_transaction(chain_id, 1);
+        let invalid_transaction = test_transaction(chain_id, 99);
+        let transactions = vec![
+            anchor_transaction.clone_inner(),
+            valid_transaction.clone_inner(),
+            invalid_transaction.clone_inner(),
+        ];
+        let senders = vec![
+            anchor_transaction.signer(),
+            valid_transaction.signer(),
+            invalid_transaction.signer(),
+        ];
         let derived_block = RecoveredBlock::new_unhashed(
             Block {
                 header: Header {

@@ -71,7 +71,7 @@ revm-database-interface = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-storage-api = { workspace = true }
+reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-trie-common = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }

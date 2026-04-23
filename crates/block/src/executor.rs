@@ -212,21 +212,7 @@ where
             }
 
             let committed_tx = Recovered::new_unchecked((*tx.inner()).clone(), tx.signer());
-            let committed =
-                self.execute_transaction(tx).map(|_| true).or_else(|err| match err {
-                    // We don't allow anchor transaction to be discarded even if it exceeds the zk
-                    // gas limit, this should never happen in practice.
-                    err if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(false),
-                    BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                    | BlockExecutionError::Validation(
-                        BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                            ..
-                        },
-                    ) if !is_anchor_transaction => Ok(false),
-                    _ => Err(err),
-                })?;
-
-            if committed {
+            if self.try_execute_filtered(tx, is_anchor_transaction)? {
                 committed_transactions.push(committed_tx);
             }
             if self.zk_gas_exhausted {
@@ -236,6 +222,43 @@ where
 
         let execution_result = self.apply_post_execution_changes()?;
         Ok(CommittedBlockExecutionOutcome { execution_result, committed_transactions })
+    }
+}
+
+/// Shared prover-mode filter: executes a single transaction and classifies the failure.
+///
+/// Lives on the inherent impl so both [`Self::execute_block_with_committed_transactions`] and the
+/// trait-level [`BlockExecutor::execute_block`] route through one place — the filtering rules
+/// (zk gas truncation, invalid tx, gas-exceeds-block) cannot drift between the two prover entry
+/// points.
+#[cfg(feature = "prover")]
+impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
+where
+    E: Evm<
+            DB: StateDB + DatabaseCommit,
+            Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
+        > + TaikoZkGasEvm,
+    Spec: TaikoExecutorSpec + Clone,
+    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+{
+    /// Executes `tx` and returns `Ok(true)` if it committed, `Ok(false)` if it was filtered as a
+    /// recoverable non-anchor failure, or `Err` for fatal / anchor errors.
+    fn try_execute_filtered(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        is_anchor_transaction: bool,
+    ) -> Result<bool, BlockExecutionError> {
+        match self.execute_transaction(tx) {
+            Ok(_) => Ok(true),
+            // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
+            // limit, this should never happen in practice.
+            Err(err) if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(false),
+            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })) |
+            Err(BlockExecutionError::Validation(
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+            )) if !is_anchor_transaction => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -449,17 +472,7 @@ where
             if !is_anchor_transaction && *tx.signer() == Address::ZERO {
                 continue;
             }
-            // Execute transaction, if invalid, skip it directly.
-            self.execute_transaction((tx_env, tx)).map(|_| ()).or_else(|err| match err {
-                // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
-                // limit, this should never happen in practice.
-                err if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(()),
-                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
-                | BlockExecutionError::Validation(
-                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
-                ) if !is_anchor_transaction => Ok(()),
-                _ => Err(err),
-            })?;
+            self.try_execute_filtered((tx_env, tx), is_anchor_transaction)?;
             if self.zk_gas_exhausted {
                 break;
             }

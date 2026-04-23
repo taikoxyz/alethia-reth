@@ -4,7 +4,7 @@
 use std::{fmt, sync::Arc};
 
 use alloy_consensus::Header;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use reth::{
     CliRunner,
     cli::{Cli, Commands},
@@ -33,11 +33,14 @@ use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
 pub mod args;
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
+/// Alethia-specific subcommands (e.g. `proofs init|prune|unwind`) layered on top of the base CLI.
+pub mod commands;
 /// Chain-spec parser implementations for Taiko network names and genesis input.
 pub mod parser;
 /// Database table-set registration used by CLI DB initialization.
 pub mod tables;
 
+pub use commands::ProofsCommand;
 pub use parser::TaikoChainSpecParser;
 
 /// Additional Taiko CLI arguments layered on top of the base CLI.
@@ -61,23 +64,32 @@ pub struct TaikoCliExtArgs {
 /// The main alethia-reth cli interface.
 ///
 /// This is the entrypoint to the executable.
+///
+/// The `SubCmd` type parameter plugs into `reth`'s top-level extension subcommand slot. Alethia
+/// uses this hook to expose additional first-class subcommands (for example, `proofs`) alongside
+/// the built-in `reth` commands (`node`, `stage`, `db`, ...).
 #[derive(Debug)]
 pub struct TaikoCli<
     C: ChainSpecParser = TaikoChainSpecParser,
     Ext: clap::Args + fmt::Debug = NoArgs,
+    SubCmd: Subcommand + fmt::Debug = ProofsCommand<C>,
 > {
     /// Wrapped `reth` CLI structure containing parsed commands and global options.
-    pub inner: Cli<C, Ext>,
+    pub inner: Cli<C, Ext, reth::rpc::server_types::DefaultRpcModuleValidator, SubCmd>,
 }
 
-impl<C, Ext> TaikoCli<C, Ext>
+impl<C, Ext, SubCmd> TaikoCli<C, Ext, SubCmd>
 where
     C: ChainSpecParser,
     Ext: clap::Args + fmt::Debug,
+    SubCmd: Subcommand + fmt::Debug,
 {
     /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
-        Self { inner: Cli::<C, Ext>::parse() }
+        Self {
+            inner: Cli::<C, Ext, reth::rpc::server_types::DefaultRpcModuleValidator, SubCmd>::parse(
+            ),
+        }
     }
 
     /// Parsers only the default CLI arguments from the given iterator
@@ -86,14 +98,17 @@ where
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        Cli::<C, Ext>::try_parse_from(itr).map(|inner| Self { inner })
+        Cli::<C, Ext, reth::rpc::server_types::DefaultRpcModuleValidator, SubCmd>::try_parse_from(
+            itr,
+        )
+        .map(|inner| Self { inner })
     }
 }
 
 impl<
-    C: ChainSpecParser<ChainSpec = TaikoChainSpec>,
+    C: ChainSpecParser<ChainSpec = TaikoChainSpec> + fmt::Debug,
     Ext: clap::Args + fmt::Debug + TaikoNodeExtArgs,
-> TaikoCli<C, Ext>
+> TaikoCli<C, Ext, ProofsCommand<C>>
 {
     /// Execute the configured cli command.
     ///
@@ -193,6 +208,10 @@ impl<
             }
             Commands::ReExecute(command) => {
                 runner.run_until_ctrl_c(command.execute::<TaikoNode>(components, rt))
+            }
+            // Alethia-specific extension subcommands surfaced via reth's `SubCmd` hook.
+            Commands::Ext(command) => {
+                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>(rt))
             }
         }
     }

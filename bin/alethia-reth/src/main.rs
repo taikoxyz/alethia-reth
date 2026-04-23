@@ -13,6 +13,10 @@ use reth::api::FullNodeComponents;
 use reth_rpc::eth::EthApiTypes;
 use tracing::info;
 
+/// Helper that installs the historical-proofs sidecar (ExEx + RPC overrides)
+/// into the node builder when `--proofs-history` is enabled.
+mod proofs_history;
+
 #[global_allocator]
 /// Global allocator used by the node binary.
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
@@ -24,10 +28,14 @@ fn main() {
     }
 
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
-        async move |builder, _ext_args| {
+        async move |builder, ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
+            let builder = builder.node(TaikoNode);
+            let builder =
+                crate::proofs_history::install_proofs_history(builder, &ext_args.proofs_history)
+                    .await?;
+
             let handle = builder
-                .node(TaikoNode)
                 .extend_rpc_modules(move |ctx| {
                     let provider = ctx.node().provider().clone();
 

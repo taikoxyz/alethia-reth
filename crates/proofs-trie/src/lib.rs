@@ -21,7 +21,6 @@ use reth_tasks as _;
 use reth_trie_db as _;
 use strum as _;
 use tokio as _;
-use tracing as _;
 
 pub mod api;
 pub mod cursor_factory;
@@ -29,6 +28,7 @@ pub mod db;
 pub mod error;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod in_memory;
+pub mod initialize;
 pub mod proof;
 pub mod provider;
 
@@ -38,4 +38,5 @@ pub use db::MdbxProofsStorage;
 pub use error::{ProofsStorageError, ProofsStorageResult};
 #[cfg(any(test, feature = "test-utils"))]
 pub use in_memory::InMemoryProofsStorage;
+pub use initialize::InitializationJob;
 pub use provider::ProofsStateProviderRef;

@@ -28,7 +28,7 @@ Pattern adapted from op-rs's [`reth-optimism-exex` + `reth-optimism-trie`](https
 | Decision | Value |
 |---|---|
 | RPC scope | `debug_executionWitness` + `eth_getProof` |
-| Default retention window | 604,800 blocks (≈ 7 days at 1s block time) |
+| Default retention window | 259,200 blocks (≈ 72 hours at 1s block time) |
 | Window is configurable | Yes, via `--proofs-history.window` |
 | Rollout model | Brand-new nodes as documented path; retrofit of existing nodes is free operationally |
 | Delivery | Single end-to-end PR |
@@ -227,7 +227,7 @@ Manually triggers pruner. For space reclamation after a window change or if back
 alethia-reth proofs prune \
   --datadir /data/alethia-reth \
   --proofs-history.storage-path /data/alethia-reth/proofs \
-  --proofs-history.window 604800 \
+  --proofs-history.window 259200 \
   --proofs-history.prune-batch-size 10000
 ```
 
@@ -324,7 +324,7 @@ When `--proofs-history` is on, `--rpc.eth-proof-window` is **ignored for histori
 
 ```
 INFO proofs-history enabled; historical eth_getProof window is now controlled by
-     --proofs-history.window (604800 blocks), superseding --rpc.eth-proof-window
+     --proofs-history.window (259200 blocks), superseding --rpc.eth-proof-window
 ```
 
 The native window still applies if the sidecar doesn't cover a block (before init, after prune), preserving backward-compatible error behavior.
@@ -447,7 +447,7 @@ ExEx + pruner both respond to reth's graceful shutdown signal. Final MDBX commit
 |---|---|---|---|---|
 | `--proofs-history` | `bool` | `false` | No | Master switch |
 | `--proofs-history.storage-path` | `PathBuf` | — | **Yes** if enabled | Recommend `<datadir>/proofs` |
-| `--proofs-history.window` | `u64` | `604_800` | No | 7 days at 1s block time |
+| `--proofs-history.window` | `u64` | `259_200` | No | 72 hours at 1s block time |
 | `--proofs-history.prune-interval` | `humantime::Duration` | `15s` | No | Pruner cadence |
 | `--proofs-history.prune-batch-size` | `u64` | `10_000` | No | Max blocks per prune tx |
 | `--proofs-history.verification-interval` | `u64` | `0` | No | Full-exec integrity check every N; `0` = disabled |
@@ -477,7 +477,7 @@ exec ./alethia-reth node \
   …
   --proofs-history \
   --proofs-history.storage-path /data/alethia-reth/proofs \
-  --proofs-history.window 604800 \
+  --proofs-history.window 259200 \
   --proofs-history.prune-interval 15s \
   …
 ```
@@ -502,14 +502,15 @@ Op-reth measured ~1 TB for 4 weeks of Base Sepolia (~2s block time, ~1.2M blocks
 
 | Window | Blocks (1s block time) | Estimated sidecar size |
 |---|---|---|
-| 7 days (default) | 604,800 | ~500 GB |
+| 72 hours (default) | 259,200 | ~215 GB |
+| 7 days | 604,800 | ~500 GB |
 | 14 days | 1,209,600 | ~1 TB |
 | 30 days | 2,592,000 | ~2.15 TB |
 
-Current hoodi PVC is **512 Gi**. At the 7-day default the sidecar alone approaches this. Required change:
+Current hoodi PVC is **512 Gi**. At the 72h default the sidecar fits alongside the main chain DB with headroom — likely **no PVC change needed** for default-window deployments. Operators choosing a longer window (7d+) should plan a PVC resize.
 
-1. Grow `taiko-reth-l2-volume` from `512Gi` → **`1500Gi`** (main DB + sidecar + headroom).
-2. NVMe-class storage required (pruner needs IOPS).
+1. For the 72h default: monitor actual sidecar size in staging; if the Base-derived estimate is low by 2× (~430 GB), PVC growth to `1024Gi` gives safe margin.
+2. NVMe-class storage required regardless (pruner needs IOPS).
 3. Numbers are Base-derived; Taiko per-block touch rate may differ ±2×. **Measure in staging before mainnet.**
 
 ### Metrics
@@ -612,6 +613,6 @@ Each step reversible by removing the flag.
 
 ## Open questions for reviewers
 
-- Confirm storage budget: is growing the hoodi PVC to 1.5Ti acceptable? If not, the default window drops.
+- Confirm storage budget: at the 72h default, the sidecar likely fits in the existing 512Gi PVC, but a 2× variance in per-block size (Base-derived vs Taiko-actual) could push past that. Is a PVC resize to `1024Gi` as a safety margin acceptable, or do we want to risk it at 512Gi and resize reactively if measurement shows we need to?
 - Confirm no other RPCs we care about (e.g. `trace_*`, `debug_traceBlock*`) are silently dependent on fast historical state. If they are, either the sidecar needs to serve them too or we document they stay slow.
 - Confirm `--rpc.eth-proof-window` override behavior is acceptable (sidecar window supersedes).

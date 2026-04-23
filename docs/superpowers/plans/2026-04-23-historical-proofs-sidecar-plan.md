@@ -675,6 +675,55 @@ git commit -m "feat(proofs-trie): define ProofsStore trait family"
 
 ---
 
+## Task 7a (v2.1 delta): Port `in_memory.rs` test utility
+
+**Why added:** per Task 0 spike findings — `provider.rs` and the ExEx both use `InMemoryProofsStorage` in their tests. Must port before Task 8 (provider tests) and Task 13 (ExEx tests) can pass.
+
+**Files:**
+- Create: `crates/proofs-trie/src/in_memory.rs`
+- Modify: `crates/proofs-trie/src/lib.rs` — re-export
+
+**Reference source:** op-reth's `crates/trie/src/in_memory.rs` (~930 LoC)
+
+**Per-file adaptations:**
+- Renames (`OpProofs*` → `Proofs*`)
+- **v2.1 delta:** `reth_provider::noop::NoopProvider` moved to `reth_provider::test_utils::NoopProvider` — fix this import
+- Gate the module behind `#[cfg(any(test, feature = "test-utils"))]` if op-reth doesn't already; test-only code shouldn't bloat the prod build
+
+- [ ] **Step 1: Port in_memory.rs**
+
+Copy with renames and the NoopProvider import fix. Exposes `InMemoryProofsStorage` implementing `ProofsStore`, `ProofsProviderRO`, `ProofsProviderRw`, `ProofsInitProvider`.
+
+- [ ] **Step 2: Port the file's own round-trip tests**
+
+op-reth's `in_memory.rs` ships tests at the bottom of the file — port them.
+
+- [ ] **Step 3: Add to lib.rs**
+
+```rust
+#[cfg(any(test, feature = "test-utils"))]
+pub mod in_memory;
+#[cfg(any(test, feature = "test-utils"))]
+pub use in_memory::InMemoryProofsStorage;
+```
+
+Add a `test-utils` feature to `crates/proofs-trie/Cargo.toml`:
+```toml
+[features]
+test-utils = []
+```
+
+- [ ] **Step 4: Run + commit**
+
+```bash
+cargo nextest run -p alethia-reth-proofs-trie
+just fmt && just clippy -p alethia-reth-proofs-trie
+git add crates/proofs-trie/
+git commit -m "feat(proofs-trie): port InMemoryProofsStorage test utility"
+```
+
+---
+
 ## Task 7: Implement `ProofsStore` + providers against `MdbxProofsStorage`
 
 **Files:**
@@ -733,6 +782,20 @@ Copy op-reth's `cursor_factory.rs` to `crates/proofs-trie/src/cursor_factory.rs`
 - [ ] **Step 2: Port `provider.rs`**
 
 Copy op-reth's `provider.rs` to `crates/proofs-trie/src/provider.rs`. Provides `ProofsStateProvider` that implements reth's `StateProvider` + `StorageRootProvider` traits, backed by `ProofsProviderRO` cursors at a specific target block.
+
+**v2.1 delta (required):** reth v2.1.0 added an `ExecutionWitnessMode` parameter to `StateProofProvider::witness`. At op-reth's `crates/trie/src/provider.rs:180` (roughly), the signature is:
+```rust
+fn witness(&self, input: HashedPostState) -> Result<Vec<Bytes>, _> { ... }
+```
+Update it to:
+```rust
+fn witness(
+    &self,
+    mode: reth_trie_common::ExecutionWitnessMode,
+    input: HashedPostState,
+) -> Result<Vec<Bytes>, _> { ... }
+```
+Forward `mode` into `TrieWitness::compute` if that method now takes it too, otherwise ignore (the trait just surfaces the mode for the caller to decide behavior). Cross-check against `/tmp/reth-v21/crates/trie/provider/src/lib.rs` for the exact current trait definition.
 
 - [ ] **Step 3: Port `proof.rs`**
 

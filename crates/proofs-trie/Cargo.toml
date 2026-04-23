@@ -1,0 +1,57 @@
+[package]
+name = "alethia-reth-proofs-trie"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# reth
+reth-codecs = { workspace = true }
+reth-db = { workspace = true, features = ["mdbx"] }
+reth-db-api = { workspace = true }
+reth-evm = { workspace = true, default-features = false }
+reth-execution-errors = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-provider = { workspace = true }
+reth-revm = { workspace = true, default-features = false }
+reth-storage-errors = { workspace = true, default-features = false }
+reth-tasks = { workspace = true }
+reth-trie = { workspace = true, features = ["serde"] }
+reth-trie-common = { workspace = true, features = ["serde"] }
+reth-trie-db = { workspace = true }
+
+# alloy / ethereum
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true }
+
+# async + sync
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+# codec
+bincode = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+
+# misc
+auto_impl = { workspace = true }
+derive_more = { workspace = true }
+eyre = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# metrics (always on for now)
+metrics = { workspace = true }
+reth-metrics = { workspace = true, features = ["common"] }
+
+[dev-dependencies]
+reth-db = { workspace = true, features = ["mdbx", "test-utils"] }
+reth-provider = { workspace = true, features = ["test-utils"] }
+reth-trie = { workspace = true, features = ["test-utils"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

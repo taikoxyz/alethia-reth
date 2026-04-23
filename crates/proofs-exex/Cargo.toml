@@ -1,0 +1,31 @@
+[package]
+name = "alethia-reth-proofs-exex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+alethia-reth-proofs-trie = { path = "../proofs-trie" }
+
+reth-execution-types = { workspace = true }
+reth-exex = { workspace = true }
+reth-node-api = { workspace = true }
+reth-provider = { workspace = true }
+reth-trie = { workspace = true }
+
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+
+eyre = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+reth-exex-test-utils = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

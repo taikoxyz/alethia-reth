@@ -31,6 +31,7 @@ alloy-rlp = { workspace = true }
 alloy-rpc-types-debug = { workspace = true }
 alloy-rpc-types-engine = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
+alloy-serde = { workspace = true }
 async-trait = { workspace = true }
 eyre = { workspace = true }
 jsonrpsee = { workspace = true, features = ["macros", "server", "client"] }
@@ -61,7 +62,7 @@ reth-rpc-convert = { workspace = true }
 reth-rpc-engine-api = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
 reth-rpc-eth-types = { workspace = true }
-reth-trie-common = { workspace = true }
+reth-trie-common = { workspace = true, features = ["eip1186"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

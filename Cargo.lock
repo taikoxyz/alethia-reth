@@ -71,9 +71,22 @@ version = "0.7.1"
 dependencies = [
  "alethia-reth-cli",
  "alethia-reth-node",
+ "alethia-reth-proofs-exex",
+ "alethia-reth-proofs-trie",
+ "alethia-reth-rpc",
+ "alloy-consensus",
+ "alloy-rlp",
+ "eyre",
+ "futures-util",
+ "jsonrpsee-types",
  "reth",
  "reth-cli-util",
+ "reth-evm",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-provider",
  "reth-rpc",
+ "reth-rpc-eth-api",
  "tracing",
 ]
 

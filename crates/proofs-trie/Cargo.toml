@@ -8,6 +8,9 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+test-utils = []
+
 [dependencies]
 # reth
 reth-codecs = { workspace = true }

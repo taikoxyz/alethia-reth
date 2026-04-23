@@ -29,6 +29,8 @@ use reth_storage_api::noop::NoopProvider;
 
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
 
+/// CLI extension arguments for alethia-reth-specific features.
+pub mod args;
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
 /// Chain-spec parser implementations for Taiko network names and genesis input.
@@ -50,6 +52,10 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_uzen_timestamp: u64,
+
+    /// Configuration for the historical-proofs sidecar.
+    #[command(flatten)]
+    pub proofs_history: crate::args::ProofsHistoryArgs,
 }
 
 /// The main alethia-reth cli interface.

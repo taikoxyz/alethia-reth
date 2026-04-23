@@ -8,6 +8,7 @@ use alloy_primitives::U256;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_db_api::transaction::DbTx;
 use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
+use reth_rpc_eth_types::EthApiError;
 
 /// trait interface for a custom rpc namespace: `taiko`
 ///
@@ -49,11 +50,14 @@ where
     /// Retrieves the L1 origin by its ID from the database.
     fn l1_origin_by_id(&self, id: U256) -> RpcResult<Option<RpcL1Origin>> {
         let provider = self.provider.database_provider_ro().map_err(internal_eth_error)?;
+        let block_number = u64::try_from(id).map_err(|_| {
+            EthApiError::InvalidParams("L1 origin block id does not fit in u64".to_string())
+        })?;
 
         Ok(Some(
             provider
                 .into_tx()
-                .get::<StoredL1OriginTable>(id.to())
+                .get::<StoredL1OriginTable>(block_number)
                 .map_err(internal_eth_error)?
                 .ok_or(TaikoApiError::GethNotFound)?
                 .into_rpc(),

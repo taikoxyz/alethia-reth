@@ -31,5 +31,6 @@ reth-db = { workspace = true, features = ["test-utils"] }
 reth-ethereum-primitives = { workspace = true }
 reth-exex-test-utils = { workspace = true }
 reth-primitives-traits = { workspace = true }
+reth-storage-api = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

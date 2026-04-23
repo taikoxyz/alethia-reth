@@ -371,6 +371,7 @@ dependencies = [
  "reth-node-api",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-storage-api",
  "reth-trie",
  "tempfile",
  "tokio",

@@ -40,12 +40,19 @@ use reth_optimism_trie::{
 };
 use reth_primitives_traits::Account;
 use reth_rpc_eth_api::helpers::FullEthApi;
-use reth_storage_api::{ChainStateBlockReader, StorageSettingsCache};
+use reth_storage_api::{
+    ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
+};
+use reth_trie::StateRoot;
 use reth_trie_common::{
     BranchNodeCompact, HashedPostStateSorted, Nibbles, SortedTrieData, StoredNibbles,
-    updates::TrieUpdatesSorted,
+    updates::{StorageTrieUpdatesSorted, TrieUpdatesSorted},
 };
-use reth_trie_db::{LegacyKeyAdapter, PackedKeyAdapter, StorageTrieEntryLike, TrieTableAdapter};
+use reth_trie_db::{
+    DatabaseHashedCursorFactory, DatabaseHashedPostState, DatabaseStateRoot,
+    DatabaseTrieCursorFactory, LegacyKeyAdapter, PackedKeyAdapter, StorageTrieEntryLike,
+    TrieTableAdapter,
+};
 use std::{
     path::PathBuf,
     sync::{
@@ -55,7 +62,7 @@ use std::{
     time::Duration,
 };
 use tokio::{sync::watch, task, time, time::sleep};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Default proof-history retention window in blocks.
 const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
@@ -143,8 +150,13 @@ where
     AO: NodeAddOns<NodeAdapter<T, CB::Components>> + RethRpcAddOns<NodeAdapter<T, CB::Components>>,
     AO::EthApi: FullEthApi + Send + Sync + 'static,
     T::Provider: BlockNumReader + DatabaseProviderFactory,
-    <T::Provider as DatabaseProviderFactory>::Provider:
-        ChainStateBlockReader + StorageSettingsCache,
+    <T::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
+        + ChainStateBlockReader
+        + ChangeSetReader
+        + DBProvider
+        + HeaderProvider
+        + StorageChangeSetReader
+        + StorageSettingsCache,
     <T::DB as Database>::TX: Sync,
 {
     if !config.enabled {
@@ -241,6 +253,22 @@ enum DelayedProofHistoryStart {
     },
 }
 
+/// Work that empty proof-history storage must perform before live indexing can start.
+#[derive(Debug)]
+enum ProofHistoryInitializationAction {
+    /// Initialization is waiting for a stable window anchor or local execution.
+    Wait,
+    /// Initialize from the node's current canonical state.
+    CurrentState,
+    /// Build an initial state for a missed historical proof-history window.
+    HistoricalWindow {
+        /// First block retained in proof-history storage.
+        start_block: u64,
+        /// Current local execution head used as the source state for reverse changesets.
+        target_block: u64,
+    },
+}
+
 /// Returns the first block retained by a finalized proof-history window.
 const fn proof_history_window_start_block(finalized_block: u64, window: u64) -> u64 {
     finalized_block.saturating_sub(window)
@@ -319,8 +347,13 @@ impl<Node, Storage, Primitives> ProofHistoryExEx<Node, Storage>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = Primitives>>,
     Node::Provider: BlockNumReader + DatabaseProviderFactory,
-    <Node::Provider as DatabaseProviderFactory>::Provider:
-        ChainStateBlockReader + StorageSettingsCache,
+    <Node::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
+        + ChainStateBlockReader
+        + ChangeSetReader
+        + DBProvider
+        + HeaderProvider
+        + StorageChangeSetReader
+        + StorageSettingsCache,
     <Node::Provider as DatabaseProviderFactory>::DB: Database,
     <<Node::Provider as DatabaseProviderFactory>::DB as Database>::TX: Sync,
     Primitives: NodePrimitives,
@@ -368,17 +401,37 @@ where
     /// Initializes proof-history storage immediately or waits for the finalized window.
     fn initialize_or_wait(&self) -> eyre::Result<bool> {
         if proof_history_storage_needs_initialization(&self.storage)? {
-            if self.backfill_window_only && !self.wait_for_finalized_window_start()? {
-                return Ok(false);
+            let action = if self.backfill_window_only {
+                self.finalized_window_initialization_action()?
+            } else {
+                ProofHistoryInitializationAction::CurrentState
+            };
+
+            match action {
+                ProofHistoryInitializationAction::Wait => return Ok(false),
+                ProofHistoryInitializationAction::CurrentState => initialize_proof_history_storage(
+                    self.ctx.provider(),
+                    self.init_storage.clone(),
+                )?,
+                ProofHistoryInitializationAction::HistoricalWindow {
+                    start_block,
+                    target_block,
+                } => initialize_historical_proof_history_storage(
+                    self.ctx.provider(),
+                    self.init_storage.clone(),
+                    start_block,
+                    target_block,
+                )?,
             }
-            initialize_proof_history_storage(self.ctx.provider(), self.init_storage.clone())?;
         }
         self.ensure_initialized()?;
         Ok(true)
     }
 
-    /// Returns whether local execution is aligned with the finalized proof-history window start.
-    fn wait_for_finalized_window_start(&self) -> eyre::Result<bool> {
+    /// Returns how empty storage should initialize for a finalized proof-history window.
+    fn finalized_window_initialization_action(
+        &self,
+    ) -> eyre::Result<ProofHistoryInitializationAction> {
         let finalized_block = finalized_block_number(self.ctx.provider())?;
         let executed_head = self.ctx.provider().best_block_number()?;
 
@@ -393,7 +446,7 @@ where
                     executed_head,
                     "waiting for finalized head before initializing empty proof-history storage"
                 );
-                Ok(false)
+                Ok(ProofHistoryInitializationAction::Wait)
             }
             DelayedProofHistoryStart::WaitForExecution { start_block } => {
                 debug!(
@@ -403,7 +456,7 @@ where
                     start_block,
                     "waiting for local execution to reach proof-history window start"
                 );
-                Ok(false)
+                Ok(ProofHistoryInitializationAction::Wait)
             }
             DelayedProofHistoryStart::MissedStart { start_block } => {
                 if self.missed_start_logged.swap(true, Ordering::Relaxed) {
@@ -415,15 +468,18 @@ where
                         "waiting for proof-history window start to match local execution"
                     );
                 } else {
-                    warn!(
+                    info!(
                         target: "reth::taiko::proof_history",
                         ?finalized_block,
                         executed_head,
                         start_block,
-                        "empty proof-history storage missed the finalized window start; continuing to acknowledge notifications without initializing"
+                        "empty proof-history storage missed the finalized window start; building historical proof-history anchor"
                     );
                 }
-                Ok(false)
+                Ok(ProofHistoryInitializationAction::HistoricalWindow {
+                    start_block,
+                    target_block: executed_head,
+                })
             }
             DelayedProofHistoryStart::Ready { start_block } => {
                 info!(
@@ -433,7 +489,7 @@ where
                     start_block,
                     "initializing empty proof-history storage from finalized window"
                 );
-                Ok(true)
+                Ok(ProofHistoryInitializationAction::CurrentState)
             }
         }
     }
@@ -797,6 +853,84 @@ where
     Ok(())
 }
 
+/// Initializes empty proof-history storage from a historical canonical state.
+fn initialize_historical_proof_history_storage<Provider, Storage>(
+    provider: &Provider,
+    storage: Storage,
+    start_block: u64,
+    target_block: u64,
+) -> eyre::Result<()>
+where
+    Provider: BlockNumReader + DatabaseProviderFactory,
+    Provider::Provider: BlockNumReader
+        + ChainStateBlockReader
+        + ChangeSetReader
+        + DBProvider
+        + HeaderProvider
+        + StorageChangeSetReader
+        + StorageSettingsCache,
+    <Provider::DB as Database>::TX: Sync,
+    Storage: OpProofsStore + Send,
+{
+    if !proof_history_storage_needs_initialization(&storage)? {
+        return Ok(());
+    }
+
+    if start_block > target_block {
+        return Err(eyre!(
+            "proof-history historical initialization start block {start_block} is above target block {target_block}"
+        ));
+    }
+
+    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+    let anchor_header = db_provider
+        .sealed_header(start_block)?
+        .ok_or_else(|| eyre!("missing proof-history anchor header {start_block}"))?;
+    let anchor = BlockNumHash::new(start_block, anchor_header.hash());
+
+    info!(
+        target: "reth::taiko::proof_history",
+        start_block,
+        target_block,
+        anchor_hash = ?anchor.hash,
+        "initializing proof-history storage from historical canonical state"
+    );
+
+    let historical_post_state =
+        HashedPostStateSorted::from_reverts(&db_provider, start_block.saturating_add(1)..=target_block)
+            .wrap_err_with(|| {
+                format!(
+                    "failed to build reverse changesets for proof-history anchor {start_block} from target {target_block}"
+                )
+            })?;
+
+    let storage_v2 = db_provider.cached_storage_settings().is_v2();
+    let init_job = ProofHistoryInitializationJob::new(storage, db_provider.into_tx());
+    if storage_v2 {
+        init_job.run_historical_with_adapter::<PackedKeyAdapter>(
+            anchor,
+            anchor_header.state_root(),
+            historical_post_state,
+        )?;
+    } else {
+        init_job.run_historical_with_adapter::<LegacyKeyAdapter>(
+            anchor,
+            anchor_header.state_root(),
+            historical_post_state,
+        )?;
+    }
+
+    info!(
+        target: "reth::taiko::proof_history",
+        start_block,
+        target_block,
+        anchor_hash = ?anchor.hash,
+        "historical proof-history storage initialized"
+    );
+
+    Ok(())
+}
+
 /// Returns the latest finalized block number recorded in the node database.
 fn finalized_block_number<Provider>(provider: &Provider) -> eyre::Result<Option<u64>>
 where
@@ -808,6 +942,52 @@ where
 
 /// Batch size used while copying the current node state into proof-history storage.
 const PROOF_HISTORY_INITIALIZATION_BATCH_SIZE: usize = 100_000;
+
+/// Historical overlay used to rewrite the current node state into an older anchor state.
+#[derive(Debug)]
+struct HistoricalAnchorOverlay {
+    /// Account and storage leaf changes that rewind current state to the anchor.
+    hashed_state: HashedPostStateSorted,
+    /// Account and storage branch changes that rewind current tries to the anchor.
+    trie_updates: TrieUpdatesSorted,
+}
+
+impl HistoricalAnchorOverlay {
+    /// Returns whether a current hashed account row must be replaced by the overlay.
+    fn has_account_update(&self, hashed_address: &B256) -> bool {
+        self.hashed_state.accounts.binary_search_by_key(hashed_address, |(key, _)| *key).is_ok()
+    }
+
+    /// Returns whether a current hashed storage row must be replaced by the overlay.
+    fn has_storage_update(&self, hashed_address: &B256, hashed_slot: &B256) -> bool {
+        self.hashed_state.storages.get(hashed_address).is_some_and(|storage| {
+            storage.is_wiped() ||
+                storage
+                    .storage_slots_ref()
+                    .binary_search_by_key(hashed_slot, |(key, _)| *key)
+                    .is_ok()
+        })
+    }
+
+    /// Returns whether a current account trie branch must be replaced by the overlay.
+    fn has_account_trie_update(&self, path: &Nibbles) -> bool {
+        self.trie_updates.account_nodes_ref().binary_search_by_key(path, |(key, _)| *key).is_ok()
+    }
+
+    /// Returns whether a current storage trie branch must be replaced by the overlay.
+    fn has_storage_trie_update(&self, hashed_address: &B256, path: &Nibbles) -> bool {
+        self.trie_updates
+            .storage_tries_ref()
+            .get(hashed_address)
+            .is_some_and(|storage| storage_trie_has_path_update(storage, path))
+    }
+}
+
+/// Returns whether a sorted storage trie overlay replaces a given path.
+fn storage_trie_has_path_update(storage: &StorageTrieUpdatesSorted, path: &Nibbles) -> bool {
+    storage.is_deleted() ||
+        storage.storage_nodes_ref().binary_search_by_key(path, |(key, _)| *key).is_ok()
+}
 
 /// Copies the node's current trie and hashed-state tables into proof-history storage.
 #[derive(Debug)]
@@ -861,6 +1041,66 @@ where
         Ok(())
     }
 
+    /// Runs initialization after rewriting current node tables into a historical anchor state.
+    fn run_historical_with_adapter<Adapter>(
+        &self,
+        block: BlockNumHash,
+        state_root: B256,
+        hashed_state: HashedPostStateSorted,
+    ) -> eyre::Result<()>
+    where
+        Adapter: TrieTableAdapter,
+    {
+        let (computed_root, trie_updates) = <StateRoot<
+            DatabaseTrieCursorFactory<&Tx, Adapter>,
+            DatabaseHashedCursorFactory<&Tx>,
+        > as DatabaseStateRoot<'_, Tx>>::overlay_root_with_updates(
+            &self.tx, &hashed_state
+        )?;
+
+        if computed_root != state_root {
+            return Err(eyre!(
+                "historical proof-history anchor state root mismatch at block {}: computed={computed_root:?} expected={state_root:?}",
+                block.number
+            ));
+        }
+
+        let overlay =
+            HistoricalAnchorOverlay { hashed_state, trie_updates: trie_updates.into_sorted() };
+
+        let init_provider = self.storage.initialization_provider()?;
+        let anchor = init_provider.initial_state_anchor()?;
+
+        match anchor.status {
+            InitialStateStatus::Completed => return Ok(()),
+            InitialStateStatus::NotStarted => {
+                init_provider.set_initial_state_anchor(block)?;
+                OpProofsInitProvider::commit(init_provider)?;
+            }
+            InitialStateStatus::InProgress => {
+                self.validate_anchor_block(&anchor, block.number, block.hash)?;
+                drop(init_provider);
+            }
+        }
+
+        self.initialize_hashed_accounts_with_overlay(anchor.latest_hashed_account_key, &overlay)?;
+        self.initialize_hashed_storages_with_overlay(anchor.latest_hashed_storage_key, &overlay)?;
+        self.initialize_storage_trie_with_overlay::<Adapter>(
+            anchor.latest_storage_trie_key,
+            &overlay,
+        )?;
+        self.initialize_account_trie_with_overlay::<Adapter>(
+            anchor.latest_account_trie_key,
+            &overlay,
+        )?;
+
+        let init_provider = self.storage.initialization_provider()?;
+        init_provider.commit_initial_state()?;
+        OpProofsInitProvider::commit(init_provider)?;
+
+        Ok(())
+    }
+
     /// Validates that a resumed initialization still targets the same source block.
     fn validate_anchor_block(
         &self,
@@ -897,6 +1137,46 @@ where
 
         let mut batch = Vec::with_capacity(PROOF_HISTORY_INITIALIZATION_BATCH_SIZE);
         while let Some((hashed_address, account)) = cursor.next()? {
+            batch.push((hashed_address, Some(account)));
+            if batch.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE {
+                self.store_hashed_accounts(std::mem::take(&mut batch))?;
+            }
+        }
+        self.store_hashed_accounts(batch)
+    }
+
+    /// Copies historical hashed account leaves, replacing current rows with overlay rows.
+    fn initialize_hashed_accounts_with_overlay(
+        &self,
+        start_key: Option<B256>,
+        overlay: &HistoricalAnchorOverlay,
+    ) -> eyre::Result<()> {
+        self.initialize_hashed_accounts_filtered(start_key, |hashed_address| {
+            !overlay.has_account_update(hashed_address)
+        })?;
+        self.store_hashed_accounts(overlay.hashed_state.accounts.clone())
+    }
+
+    /// Copies hashed account leaves that satisfy `include`.
+    fn initialize_hashed_accounts_filtered(
+        &self,
+        start_key: Option<B256>,
+        include: impl Fn(&B256) -> bool,
+    ) -> eyre::Result<()> {
+        let mut cursor = self.tx.cursor_read::<tables::HashedAccounts>()?;
+
+        if let Some(latest_key) = start_key {
+            cursor.seek(latest_key)?.filter(|(key, _)| *key == latest_key).ok_or_else(|| {
+                eyre!("proof-history initialization resume key missing in HashedAccounts")
+            })?;
+        }
+
+        let mut batch = Vec::with_capacity(PROOF_HISTORY_INITIALIZATION_BATCH_SIZE);
+        while let Some((hashed_address, account)) = cursor.next()? {
+            if !include(&hashed_address) {
+                continue;
+            }
+
             batch.push((hashed_address, Some(account)));
             if batch.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE {
                 self.store_hashed_accounts(std::mem::take(&mut batch))?;
@@ -942,6 +1222,68 @@ where
         Ok(())
     }
 
+    /// Copies historical hashed storage leaves, replacing current rows with overlay rows.
+    fn initialize_hashed_storages_with_overlay(
+        &self,
+        start_key: Option<HashedStorageKey>,
+        overlay: &HistoricalAnchorOverlay,
+    ) -> eyre::Result<()> {
+        self.initialize_hashed_storages_filtered(start_key, |hashed_address, hashed_slot| {
+            !overlay.has_storage_update(hashed_address, hashed_slot)
+        })?;
+
+        for (hashed_address, storage) in &overlay.hashed_state.storages {
+            self.store_hashed_storages(*hashed_address, storage.storage_slots_ref().to_vec())?;
+        }
+
+        Ok(())
+    }
+
+    /// Copies hashed storage leaves that satisfy `include`.
+    fn initialize_hashed_storages_filtered(
+        &self,
+        start_key: Option<HashedStorageKey>,
+        include: impl Fn(&B256, &B256) -> bool,
+    ) -> eyre::Result<()> {
+        let mut cursor = self.tx.cursor_dup_read::<tables::HashedStorages>()?;
+
+        if let Some(latest_key) = start_key {
+            cursor
+                .seek_by_key_subkey(latest_key.hashed_address, latest_key.hashed_storage_key)?
+                .filter(|storage| storage.key == latest_key.hashed_storage_key)
+                .ok_or_else(|| {
+                    eyre!("proof-history initialization resume key missing in HashedStorages")
+                })?;
+        }
+
+        let mut current_address = None;
+        let mut current_slots = Vec::with_capacity(PROOF_HISTORY_INITIALIZATION_BATCH_SIZE);
+        while let Some((hashed_address, storage)) =
+            next_dup_entry::<tables::HashedStorages, _>(&mut cursor)?
+        {
+            if !include(&hashed_address, &storage.key) {
+                continue;
+            }
+
+            if current_address.is_some_and(|address| address != hashed_address) ||
+                current_slots.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
+            {
+                let address =
+                    current_address.expect("storage batch is only populated after address is set");
+                self.store_hashed_storages(address, std::mem::take(&mut current_slots))?;
+            }
+
+            current_address = Some(hashed_address);
+            current_slots.push((storage.key, storage.value));
+        }
+
+        if let Some(address) = current_address {
+            self.store_hashed_storages(address, current_slots)?;
+        }
+
+        Ok(())
+    }
+
     /// Copies account trie branches from the node database into proof-history storage.
     fn initialize_account_trie<Adapter>(&self, start_key: Option<StoredNibbles>) -> eyre::Result<()>
     where
@@ -959,6 +1301,54 @@ where
         let mut batch = Vec::with_capacity(PROOF_HISTORY_INITIALIZATION_BATCH_SIZE);
         while let Some((path, branch)) = cursor.next()? {
             batch.push((Adapter::account_key_to_nibbles(&path), Some(branch)));
+            if batch.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE {
+                self.store_account_branches(std::mem::take(&mut batch))?;
+            }
+        }
+        self.store_account_branches(batch)
+    }
+
+    /// Copies historical account trie branches, replacing current rows with overlay rows.
+    fn initialize_account_trie_with_overlay<Adapter>(
+        &self,
+        start_key: Option<StoredNibbles>,
+        overlay: &HistoricalAnchorOverlay,
+    ) -> eyre::Result<()>
+    where
+        Adapter: TrieTableAdapter,
+    {
+        self.initialize_account_trie_filtered::<Adapter>(start_key, |path| {
+            !overlay.has_account_trie_update(path)
+        })?;
+        self.store_account_branches(overlay.trie_updates.account_nodes_ref().to_vec())
+    }
+
+    /// Copies account trie branches that satisfy `include`.
+    fn initialize_account_trie_filtered<Adapter>(
+        &self,
+        start_key: Option<StoredNibbles>,
+        include: impl Fn(&Nibbles) -> bool,
+    ) -> eyre::Result<()>
+    where
+        Adapter: TrieTableAdapter,
+    {
+        let mut cursor = self.tx.cursor_read::<Adapter::AccountTrieTable>()?;
+
+        if let Some(latest_key) = start_key {
+            let adapter_key = Adapter::AccountKey::from(latest_key.0);
+            cursor.seek(adapter_key.clone())?.filter(|(key, _)| *key == adapter_key).ok_or_else(
+                || eyre!("proof-history initialization resume key missing in account trie"),
+            )?;
+        }
+
+        let mut batch = Vec::with_capacity(PROOF_HISTORY_INITIALIZATION_BATCH_SIZE);
+        while let Some((path, branch)) = cursor.next()? {
+            let nibbles = Adapter::account_key_to_nibbles(&path);
+            if !include(&nibbles) {
+                continue;
+            }
+
+            batch.push((nibbles, Some(branch)));
             if batch.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE {
                 self.store_account_branches(std::mem::take(&mut batch))?;
             }
@@ -1002,6 +1392,77 @@ where
             let (subkey, branch) = entry.into_parts();
             current_address = Some(hashed_address);
             current_nodes.push((Adapter::subkey_to_nibbles(&subkey), Some(branch)));
+        }
+
+        if let Some(address) = current_address {
+            self.store_storage_branches(address, current_nodes)?;
+        }
+
+        Ok(())
+    }
+
+    /// Copies historical storage trie branches, replacing current rows with overlay rows.
+    fn initialize_storage_trie_with_overlay<Adapter>(
+        &self,
+        start_key: Option<StorageTrieKey>,
+        overlay: &HistoricalAnchorOverlay,
+    ) -> eyre::Result<()>
+    where
+        Adapter: TrieTableAdapter,
+    {
+        self.initialize_storage_trie_filtered::<Adapter>(start_key, |hashed_address, path| {
+            !overlay.has_storage_trie_update(hashed_address, path)
+        })?;
+
+        for (hashed_address, storage) in overlay.trie_updates.storage_tries_ref() {
+            self.store_storage_branches(*hashed_address, storage.storage_nodes_ref().to_vec())?;
+        }
+
+        Ok(())
+    }
+
+    /// Copies storage trie branches that satisfy `include`.
+    fn initialize_storage_trie_filtered<Adapter>(
+        &self,
+        start_key: Option<StorageTrieKey>,
+        include: impl Fn(&B256, &Nibbles) -> bool,
+    ) -> eyre::Result<()>
+    where
+        Adapter: TrieTableAdapter,
+    {
+        let mut cursor = self.tx.cursor_dup_read::<Adapter::StorageTrieTable>()?;
+
+        if let Some(latest_key) = start_key {
+            let adapter_subkey = Adapter::StorageSubKey::from(latest_key.path.0);
+            cursor
+                .seek_by_key_subkey(latest_key.hashed_address, adapter_subkey.clone())?
+                .filter(|entry| *entry.nibbles() == adapter_subkey)
+                .ok_or_else(|| {
+                    eyre!("proof-history initialization resume key missing in storage trie")
+                })?;
+        }
+
+        let mut current_address = None;
+        let mut current_nodes = Vec::with_capacity(PROOF_HISTORY_INITIALIZATION_BATCH_SIZE);
+        while let Some((hashed_address, entry)) =
+            next_dup_entry::<Adapter::StorageTrieTable, _>(&mut cursor)?
+        {
+            let (subkey, branch) = entry.into_parts();
+            let nibbles = Adapter::subkey_to_nibbles(&subkey);
+            if !include(&hashed_address, &nibbles) {
+                continue;
+            }
+
+            if current_address.is_some_and(|address| address != hashed_address) ||
+                current_nodes.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
+            {
+                let address = current_address
+                    .expect("storage trie batch is only populated after address is set");
+                self.store_storage_branches(address, std::mem::take(&mut current_nodes))?;
+            }
+
+            current_address = Some(hashed_address);
+            current_nodes.push((nibbles, Some(branch)));
         }
 
         if let Some(address) = current_address {
@@ -1138,7 +1599,7 @@ fn spawn_proofs_db_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{B256, U256};
+    use alloy_primitives::{B256, U256, map::B256Map};
     use reth::providers::{DBProvider, DatabaseProviderFactory};
     use reth_db::{
         tables::{self, PackedStoragesTrie},
@@ -1153,8 +1614,8 @@ mod tests {
     use reth_provider::test_utils::create_test_provider_factory;
     use reth_storage_api::{StorageSettings, StorageSettingsCache};
     use reth_trie_common::{
-        BranchNodeCompact, Nibbles, PackedStorageTrieEntry, PackedStoredNibblesSubKey,
-        StoredNibbles, TrieMask,
+        BranchNodeCompact, HashedStorageSorted, Nibbles, PackedStorageTrieEntry,
+        PackedStoredNibblesSubKey, StoredNibbles, TrieMask, updates::StorageTrieUpdatesSorted,
     };
     use reth_trie_db::PackedKeyAdapter;
 
@@ -1239,6 +1700,65 @@ mod tests {
             delayed_proof_history_start(Some(1_000_000), 650_000, 350_000),
             DelayedProofHistoryStart::Ready { start_block: 650_000 }
         );
+    }
+
+    #[test]
+    fn historical_anchor_overlay_tracks_replaced_rows() {
+        let account = B256::with_last_byte(1);
+        let storage = B256::with_last_byte(2);
+        let wiped_storage = B256::with_last_byte(3);
+        let slot = B256::with_last_byte(4);
+        let account_path = Nibbles::from_nibbles([0x01]);
+        let storage_path = Nibbles::from_nibbles([0x02]);
+        let untouched_path = Nibbles::from_nibbles([0x03]);
+        let branch = BranchNodeCompact::new(
+            TrieMask::new(0b0011),
+            TrieMask::new(0b0011),
+            TrieMask::new(0),
+            Vec::new(),
+            None,
+        );
+
+        let overlay = HistoricalAnchorOverlay {
+            hashed_state: HashedPostStateSorted::new(
+                vec![(account, None)],
+                B256Map::from_iter([
+                    (
+                        storage,
+                        HashedStorageSorted {
+                            storage_slots: vec![(slot, U256::ZERO)],
+                            wiped: false,
+                        },
+                    ),
+                    (wiped_storage, HashedStorageSorted { storage_slots: Vec::new(), wiped: true }),
+                ]),
+            ),
+            trie_updates: TrieUpdatesSorted::new(
+                vec![(account_path.clone(), None)],
+                B256Map::from_iter([
+                    (
+                        storage,
+                        StorageTrieUpdatesSorted {
+                            is_deleted: false,
+                            storage_nodes: vec![(storage_path.clone(), Some(branch))],
+                        },
+                    ),
+                    (
+                        wiped_storage,
+                        StorageTrieUpdatesSorted { is_deleted: true, storage_nodes: Vec::new() },
+                    ),
+                ]),
+            ),
+        };
+
+        assert!(overlay.has_account_update(&account));
+        assert!(overlay.has_storage_update(&storage, &slot));
+        assert!(overlay.has_storage_update(&wiped_storage, &B256::with_last_byte(99)));
+        assert!(overlay.has_account_trie_update(&account_path));
+        assert!(overlay.has_storage_trie_update(&storage, &storage_path));
+        assert!(overlay.has_storage_trie_update(&wiped_storage, &untouched_path));
+        assert!(!overlay.has_account_update(&B256::with_last_byte(99)));
+        assert!(!overlay.has_storage_trie_update(&storage, &untouched_path));
     }
 
     #[test]

@@ -260,6 +260,7 @@ dependencies = [
  "reth-rpc",
  "reth-rpc-eth-api",
  "reth-storage-api",
+ "reth-trie",
  "reth-trie-common",
  "reth-trie-db",
  "serde",

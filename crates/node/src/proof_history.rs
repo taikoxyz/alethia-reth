@@ -483,19 +483,20 @@ where
         let should_verify = self.verification_interval > 0 &&
             block_number.is_multiple_of(self.verification_interval);
 
-        if let Some(block) = chain.blocks().get(&block_number)
-            && let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
+        if let Some(block) = chain.blocks().get(&block_number) &&
+            let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
                 let SortedTrieData { hashed_state, trie_updates } = d.get();
                 (trie_updates, hashed_state)
-            })
-                && !should_verify {
-                    collector.store_block_updates(
-                        block.block_with_parent(),
-                        (**trie_updates).clone(),
-                        (**hashed_state).clone(),
-                    )?;
-                    return Ok(());
-                }
+            }) &&
+            !should_verify
+        {
+            collector.store_block_updates(
+                block.block_with_parent(),
+                (**trie_updates).clone(),
+                (**hashed_state).clone(),
+            )?;
+            return Ok(());
+        }
 
         let block = self
             .ctx
@@ -533,16 +534,17 @@ where
                 ));
             }
 
-            if let Some(block) = new.blocks().get(block_number)
-                && let Some(trie_data) = new.trie_data_at(*block_number) {
-                    let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
-                    block_updates.push((
-                        block.block_with_parent(),
-                        trie_updates.clone(),
-                        hashed_state.clone(),
-                    ));
-                    continue;
-                }
+            if let Some(block) = new.blocks().get(block_number) &&
+                let Some(trie_data) = new.trie_data_at(*block_number)
+            {
+                let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+                block_updates.push((
+                    block.block_with_parent(),
+                    trie_updates.clone(),
+                    hashed_state.clone(),
+                ));
+                continue;
+            }
 
             self.process_block(*block_number, &new, collector)?;
         }

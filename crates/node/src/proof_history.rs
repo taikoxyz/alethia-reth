@@ -40,7 +40,7 @@ use reth_optimism_trie::{
 };
 use reth_primitives_traits::Account;
 use reth_rpc_eth_api::helpers::FullEthApi;
-use reth_storage_api::StorageSettingsCache;
+use reth_storage_api::{ChainStateBlockReader, StorageSettingsCache};
 use reth_trie_common::{
     BranchNodeCompact, HashedPostStateSorted, Nibbles, SortedTrieData, StoredNibbles,
     updates::TrieUpdatesSorted,
@@ -136,7 +136,8 @@ where
     AO: NodeAddOns<NodeAdapter<T, CB::Components>> + RethRpcAddOns<NodeAdapter<T, CB::Components>>,
     AO::EthApi: FullEthApi + Send + Sync + 'static,
     T::Provider: BlockNumReader + DatabaseProviderFactory,
-    <T::Provider as DatabaseProviderFactory>::Provider: StorageSettingsCache,
+    <T::Provider as DatabaseProviderFactory>::Provider:
+        ChainStateBlockReader + StorageSettingsCache,
     <T::DB as Database>::TX: Sync,
 {
     if !config.enabled {
@@ -164,13 +165,14 @@ where
                 Ok(())
             })
             .install_exex("proofs-history", async move |exex_context| {
-                initialize_proof_history_storage(exex_context.provider(), storage_for_init)?;
                 Ok(ProofHistoryExEx::new(
                     exex_context,
                     storage_for_exex,
+                    storage_for_init,
                     config.window,
                     config.prune_interval,
                     config.verification_interval,
+                    config.backfill_window_only,
                 )
                 .run())
             }),
@@ -184,8 +186,8 @@ where
     Storage: OpProofsStore,
 {
     let provider_ro = storage.provider_ro()?;
-    Ok(provider_ro.get_earliest_block_number()?.is_none() ||
-        provider_ro.get_latest_block_number()?.is_none())
+    Ok(provider_ro.get_earliest_block_number()?.is_none()
+        || provider_ro.get_latest_block_number()?.is_none())
 }
 
 /// Safety threshold for automatic proof-history pruning on startup.
@@ -212,7 +214,6 @@ fn proof_history_backfill_target(
 
 /// Decision for delayed proof-history initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code, reason = "wired into delayed proof-history initialization in a follow-up task")]
 enum DelayedProofHistoryStart {
     /// No finalized block has been observed yet.
     WaitForFinalized,
@@ -229,13 +230,11 @@ enum DelayedProofHistoryStart {
 }
 
 /// Returns the first block retained by a finalized proof-history window.
-#[allow(dead_code, reason = "wired into delayed proof-history initialization in a follow-up task")]
 const fn proof_history_window_start_block(finalized_block: u64, window: u64) -> u64 {
     finalized_block.saturating_sub(window)
 }
 
 /// Computes whether delayed proof-history initialization can start.
-#[allow(dead_code, reason = "wired into delayed proof-history initialization in a follow-up task")]
 fn delayed_proof_history_start(
     finalized_block: Option<u64>,
     executed_head: u64,
@@ -263,12 +262,16 @@ where
     ctx: ExExContext<Node>,
     /// Proof-history storage populated by the extension.
     storage: OpProofsStorage<Storage>,
+    /// Raw proof-history storage handle used for the initial current-state snapshot.
+    init_storage: Storage,
     /// Number of recent blocks retained in proof-history storage.
     proofs_history_window: u64,
     /// Wall-clock interval between proof-history prune passes.
     proofs_history_prune_interval: Duration,
     /// Block interval between full execution verification checks.
     verification_interval: u64,
+    /// Whether empty proof-history storage waits for the finalized retention window.
+    backfill_window_only: bool,
 }
 
 impl<Node, Storage> ProofHistoryExEx<Node, Storage>
@@ -279,16 +282,20 @@ where
     const fn new(
         ctx: ExExContext<Node>,
         storage: OpProofsStorage<Storage>,
+        init_storage: Storage,
         proofs_history_window: u64,
         proofs_history_prune_interval: Duration,
         verification_interval: u64,
+        backfill_window_only: bool,
     ) -> Self {
         Self {
             ctx,
             storage,
+            init_storage,
             proofs_history_window,
             proofs_history_prune_interval,
             verification_interval,
+            backfill_window_only,
         }
     }
 }
@@ -296,23 +303,22 @@ where
 impl<Node, Storage, Primitives> ProofHistoryExEx<Node, Storage>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = Primitives>>,
+    Node::Provider: BlockNumReader + DatabaseProviderFactory,
+    <Node::Provider as DatabaseProviderFactory>::Provider:
+        ChainStateBlockReader + StorageSettingsCache,
+    <Node::Provider as DatabaseProviderFactory>::DB: Database,
+    <<Node::Provider as DatabaseProviderFactory>::DB as Database>::TX: Sync,
     Primitives: NodePrimitives,
-    Storage: OpProofsStore + Clone + 'static,
+    Storage: OpProofsStore + Clone + Send + 'static,
 {
     /// Runs proof-history indexing until the node shuts down.
     async fn run(mut self) -> eyre::Result<()> {
-        self.ensure_initialized()?;
-        let sync_target_tx = self.spawn_sync_task();
-
-        let prune_task = OpProofStoragePrunerTask::new(
-            self.storage.clone(),
-            self.ctx.provider().clone(),
-            self.proofs_history_window,
-            self.proofs_history_prune_interval,
-        );
-        self.ctx
-            .task_executor()
-            .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
+        let mut initialized = self.initialize_or_wait()?;
+        let mut sync_target_tx = initialized.then(|| {
+            let sync_target_tx = self.spawn_sync_task();
+            self.spawn_pruner_task();
+            sync_target_tx
+        });
 
         let collector = LiveTrieCollector::new(
             self.ctx.evm_config().clone(),
@@ -321,10 +327,84 @@ where
         );
 
         while let Some(notification) = self.ctx.notifications.try_next().await? {
-            self.handle_notification(notification, &collector, &sync_target_tx)?;
+            if !initialized {
+                initialized = self.initialize_or_wait()?;
+                if initialized {
+                    sync_target_tx = Some(self.spawn_sync_task());
+                    self.spawn_pruner_task();
+                } else {
+                    self.acknowledge_notification(&notification)?;
+                    continue;
+                }
+            }
+
+            self.handle_notification(
+                notification,
+                &collector,
+                sync_target_tx.as_ref().expect("initialized proof-history ExEx has a sync target"),
+            )?;
         }
 
         Ok(())
+    }
+
+    /// Initializes proof-history storage immediately or waits for the finalized window.
+    fn initialize_or_wait(&self) -> eyre::Result<bool> {
+        if !proof_history_storage_needs_initialization(&self.storage)? {
+            self.ensure_initialized()?;
+            return Ok(true);
+        }
+
+        if !self.backfill_window_only {
+            initialize_proof_history_storage(self.ctx.provider(), self.init_storage.clone())?;
+            self.ensure_initialized()?;
+            return Ok(true);
+        }
+
+        self.try_initialize_from_finalized_window()
+    }
+
+    /// Attempts delayed initialization once local execution reaches the finalized window start.
+    fn try_initialize_from_finalized_window(&self) -> eyre::Result<bool> {
+        let finalized_block = finalized_block_number(self.ctx.provider())?;
+        let executed_head = self.ctx.provider().best_block_number()?;
+
+        match delayed_proof_history_start(
+            finalized_block,
+            executed_head,
+            self.proofs_history_window,
+        ) {
+            DelayedProofHistoryStart::WaitForFinalized => {
+                debug!(
+                    target: "reth::taiko::proof_history",
+                    executed_head,
+                    "waiting for finalized head before initializing empty proof-history storage"
+                );
+                Ok(false)
+            }
+            DelayedProofHistoryStart::WaitForExecution { start_block } => {
+                debug!(
+                    target: "reth::taiko::proof_history",
+                    ?finalized_block,
+                    executed_head,
+                    start_block,
+                    "waiting for local execution to reach proof-history window start"
+                );
+                Ok(false)
+            }
+            DelayedProofHistoryStart::Ready { start_block } => {
+                info!(
+                    target: "reth::taiko::proof_history",
+                    ?finalized_block,
+                    executed_head,
+                    start_block,
+                    "initializing empty proof-history storage from finalized window"
+                );
+                initialize_proof_history_storage(self.ctx.provider(), self.init_storage.clone())?;
+                self.ensure_initialized()?;
+                Ok(true)
+            }
+        }
     }
 
     /// Verifies the proof-history database is initialized and safe to prune automatically.
@@ -352,6 +432,31 @@ where
         }
 
         Ok(())
+    }
+
+    /// Acknowledges committed ExEx notifications without proof-history processing.
+    fn acknowledge_notification(
+        &self,
+        notification: &ExExNotification<Primitives>,
+    ) -> eyre::Result<()> {
+        if let Some(committed_chain) = notification.committed_chain() {
+            self.ctx.events.send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Spawns the periodic proof-history pruning task.
+    fn spawn_pruner_task(&self) {
+        let prune_task = OpProofStoragePrunerTask::new(
+            self.storage.clone(),
+            self.ctx.provider().clone(),
+            self.proofs_history_window,
+            self.proofs_history_prune_interval,
+        );
+        self.ctx
+            .task_executor()
+            .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
     }
 
     /// Spawns the guarded proof-history backfill task.
@@ -484,9 +589,7 @@ where
             }
         }
 
-        if let Some(committed_chain) = notification.committed_chain() {
-            self.ctx.events.send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
-        }
+        self.acknowledge_notification(&notification)?;
 
         Ok(())
     }
@@ -505,8 +608,8 @@ where
 
         let best_block = self.ctx.provider().best_block_number()?;
         let is_sequential = new.tip().number() == latest_stored + 1;
-        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
-            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
+        let is_near_tip = best_block.saturating_sub(new.tip().number())
+            < PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
 
         if is_sequential && is_near_tip {
             for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
@@ -526,15 +629,15 @@ where
         chain: &Chain<Primitives>,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
-        let should_verify = self.verification_interval > 0 &&
-            block_number.is_multiple_of(self.verification_interval);
+        let should_verify = self.verification_interval > 0
+            && block_number.is_multiple_of(self.verification_interval);
 
-        if let Some(block) = chain.blocks().get(&block_number) &&
-            let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
+        if let Some(block) = chain.blocks().get(&block_number)
+            && let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
                 let SortedTrieData { hashed_state, trie_updates } = d.get();
                 (trie_updates, hashed_state)
-            }) &&
-            !should_verify
+            })
+            && !should_verify
         {
             collector.store_block_updates(
                 block.block_with_parent(),
@@ -580,8 +683,8 @@ where
                 ));
             }
 
-            if let Some(block) = new.blocks().get(block_number) &&
-                let Some(trie_data) = new.trie_data_at(*block_number)
+            if let Some(block) = new.blocks().get(block_number)
+                && let Some(trie_data) = new.trie_data_at(*block_number)
             {
                 let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
                 block_updates.push((
@@ -661,6 +764,15 @@ where
     );
 
     Ok(())
+}
+
+/// Returns the latest finalized block number recorded in the node database.
+fn finalized_block_number<Provider>(provider: &Provider) -> eyre::Result<Option<u64>>
+where
+    Provider: DatabaseProviderFactory,
+    Provider::Provider: ChainStateBlockReader,
+{
+    Ok(provider.database_provider_ro()?.last_finalized_block_number()?)
 }
 
 /// Batch size used while copying the current node state into proof-history storage.
@@ -780,8 +892,8 @@ where
         while let Some((hashed_address, storage)) =
             next_dup_entry::<tables::HashedStorages, _>(&mut cursor)?
         {
-            if current_address.is_some_and(|address| address != hashed_address) ||
-                current_slots.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
+            if current_address.is_some_and(|address| address != hashed_address)
+                || current_slots.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
             {
                 let address =
                     current_address.expect("storage batch is only populated after address is set");
@@ -848,8 +960,8 @@ where
         while let Some((hashed_address, entry)) =
             next_dup_entry::<Adapter::StorageTrieTable, _>(&mut cursor)?
         {
-            if current_address.is_some_and(|address| address != hashed_address) ||
-                current_nodes.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
+            if current_address.is_some_and(|address| address != hashed_address)
+                || current_nodes.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
             {
                 let address = current_address
                     .expect("storage trie batch is only populated after address is set");
@@ -1020,15 +1132,21 @@ mod tests {
         let config = ProofHistoryConfig::disabled();
 
         assert!(!config.enabled);
+        assert!(!config.backfill_window_only);
         assert!(config.storage_path.is_none());
         assert!(config.required_storage_path().is_err());
     }
 
     #[test]
     fn enabled_config_requires_storage_path() {
-        let config = ProofHistoryConfig { enabled: true, ..ProofHistoryConfig::disabled() };
+        let config = ProofHistoryConfig {
+            enabled: true,
+            backfill_window_only: true,
+            ..ProofHistoryConfig::disabled()
+        };
 
         assert!(config.required_storage_path().is_err());
+        assert!(config.backfill_window_only);
     }
 
     #[test]

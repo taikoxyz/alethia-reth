@@ -74,8 +74,8 @@ where
 
         let withdrawals = Some(Withdrawals::default());
         let withdrawals_root = Some(EMPTY_WITHDRAWALS);
-        let requests_hash = ctx.is_uzen_active.then_some(EMPTY_REQUESTS_HASH);
-        let difficulty = if ctx.is_uzen_active {
+        let requests_hash = ctx.is_unzen_active.then_some(EMPTY_REQUESTS_HASH);
+        let difficulty = if ctx.is_unzen_active {
             U256::from(ctx.finalized_block_zk_gas())
         } else {
             block_env.difficulty()
@@ -100,8 +100,8 @@ where
             gas_used: *gas_used,
             extra_data: ctx.extra_data,
             parent_beacon_block_root: ctx.parent_beacon_block_root,
-            blob_gas_used: ctx.is_uzen_active.then_some(0),
-            excess_blob_gas: ctx.is_uzen_active.then_some(0),
+            blob_gas_used: ctx.is_unzen_active.then_some(0),
+            excess_blob_gas: ctx.is_unzen_active.then_some(0),
             requests_hash,
             block_access_list_hash: None,
             slot_number: None,
@@ -143,10 +143,10 @@ mod test {
     }
 
     #[test]
-    fn assembled_uzen_block_uses_final_zk_gas_as_difficulty() {
+    fn assembled_unzen_block_uses_final_zk_gas_as_difficulty() {
         let assembler = TaikoBlockAssembler::new(Arc::new(TaikoChainSpec::default()));
         let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
-        evm_env.cfg_env.spec = TaikoSpecId::UZEN;
+        evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
         evm_env.block_env.timestamp = U256::from(1);
         evm_env.block_env.gas_limit = 30_000_000;
@@ -159,7 +159,7 @@ mod test {
             withdrawals: None,
             basefee_per_gas: 0,
             extra_data: Bytes::default(),
-            is_uzen_active: true,
+            is_unzen_active: true,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         };
@@ -186,18 +186,18 @@ mod test {
                 &state_provider,
                 B256::ZERO,
             ))
-            .expect("Uzen block should assemble");
+            .expect("Unzen block should assemble");
 
         assert_eq!(block.header.difficulty, U256::from(42_u64));
     }
 
     #[test]
-    fn assembled_uzen_block_sets_requests_hash() {
+    fn assembled_unzen_block_sets_requests_hash() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
         let assembler = TaikoBlockAssembler::new(Arc::new(chain_spec));
         let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
-        evm_env.cfg_env.spec = TaikoSpecId::UZEN;
+        evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
         evm_env.block_env.timestamp = U256::from(1);
         evm_env.block_env.gas_limit = 30_000_000;
@@ -209,7 +209,7 @@ mod test {
             withdrawals: None,
             basefee_per_gas: 0,
             extra_data: Bytes::default(),
-            is_uzen_active: true,
+            is_unzen_active: true,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         };
@@ -235,7 +235,7 @@ mod test {
                 &state_provider,
                 B256::ZERO,
             ))
-            .expect("Uzen block should assemble");
+            .expect("Unzen block should assemble");
 
         assert_eq!(block.header.requests_hash, Some(EMPTY_REQUESTS_HASH));
         assert_eq!(block.header.blob_gas_used, Some(0));

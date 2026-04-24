@@ -156,19 +156,19 @@ fn test_validate_block_pre_execution_rejects_blob_transactions() {
 }
 
 #[test]
-fn pre_uzen_header_still_rejects_nonzero_difficulty() {
-    let consensus = test_consensus(pre_uzen_chain_spec());
+fn pre_unzen_header_still_rejects_nonzero_difficulty() {
+    let consensus = test_consensus(pre_unzen_chain_spec());
     let header = Header { difficulty: U256::from(1_u64), ..Default::default() };
 
     let err = consensus
         .validate_header(&SealedHeader::new_unhashed(header))
-        .expect_err("pre-Uzen headers must still reject nonzero difficulty");
+        .expect_err("pre-Unzen headers must still reject nonzero difficulty");
     assert!(matches!(err, ConsensusError::TheMergeDifficultyIsNotZero));
 }
 
 #[test]
-fn uzen_header_allows_nonzero_difficulty() {
-    let consensus = test_consensus(uzen_chain_spec());
+fn unzen_header_allows_nonzero_difficulty() {
+    let consensus = test_consensus(unzen_chain_spec());
     let header = Header {
         timestamp: 1,
         difficulty: U256::from(7_u64),
@@ -179,12 +179,12 @@ fn uzen_header_allows_nonzero_difficulty() {
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(header))
-        .expect("Uzen headers should allow nonzero difficulty");
+        .expect("Unzen headers should allow nonzero difficulty");
 }
 
 #[test]
-fn uzen_post_execution_rejects_body_past_truncation_point() {
-    let consensus = test_consensus(uzen_chain_spec());
+fn unzen_post_execution_rejects_body_past_truncation_point() {
+    let consensus = test_consensus(unzen_chain_spec());
     let result = BlockExecutionResult::<Receipt>::default();
     let header = Header {
         timestamp: 1,
@@ -205,7 +205,7 @@ fn uzen_post_execution_rejects_body_past_truncation_point() {
         <TaikoBeaconConsensus as FullConsensus<EthPrimitives>>::validate_block_post_execution(
             &consensus, &recovered, &result, None,
         )
-        .expect_err("Uzen blocks must reject bodies that extend past the truncation point");
+        .expect_err("Unzen blocks must reject bodies that extend past the truncation point");
     assert!(matches!(err, ConsensusError::Other(_)));
     assert!(err.to_string().contains("truncation"));
 }
@@ -277,14 +277,14 @@ fn devnet_chain_spec() -> TaikoChainSpec {
     (*TAIKO_DEVNET).as_ref().clone()
 }
 
-fn pre_uzen_chain_spec() -> TaikoChainSpec {
+fn pre_unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = devnet_chain_spec();
-    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Never);
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Never);
     chain_spec
 }
 
-fn uzen_chain_spec() -> TaikoChainSpec {
+fn unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = devnet_chain_spec();
-    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
     chain_spec
 }

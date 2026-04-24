@@ -1,21 +1,21 @@
-//! Fixed Uzen zk gas schedule constants copied from the approved protocol spec.
+//! Fixed Unzen zk gas schedule constants copied from the approved protocol spec.
 //!
 //! Source:
 //! <https://github.com/taikoxyz/taiko-mono/blob/main/packages/protocol/docs/zk_gas_spec.md>
 
 use super::schedule::{SpawnEstimates, ZkGasSchedule};
 
-/// Maximum zk gas permitted within a single Uzen block.
+/// Maximum zk gas permitted within a single Unzen block.
 pub const BLOCK_ZK_GAS_LIMIT: u64 = 100_000_000;
 
-/// Fail-safe multiplier used for any opcode or precompile missing from the Uzen table.
+/// Fail-safe multiplier used for any opcode or precompile missing from the Unzen table.
 const FAILSAFE_MULTIPLIER: u16 = u16::MAX;
 
-/// Fixed Uzen zk gas schedule used for consensus execution.
-pub const UZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = ZkGasSchedule {
+/// Fixed Unzen zk gas schedule used for consensus execution.
+pub const UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = ZkGasSchedule {
     block_limit: BLOCK_ZK_GAS_LIMIT,
-    opcode_multipliers: uzen_opcode_multipliers(),
-    precompile_multipliers: uzen_precompile_multipliers(),
+    opcode_multipliers: unzen_opcode_multipliers(),
+    precompile_multipliers: unzen_precompile_multipliers(),
     spawn_estimates: SpawnEstimates {
         call: 12_500,
         callcode: 12_500,
@@ -26,8 +26,8 @@ pub const UZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = ZkGasSchedule {
     },
 };
 
-/// Returns the fixed Uzen opcode multiplier table with fail-safe defaults for unlisted opcodes.
-const fn uzen_opcode_multipliers() -> [u16; 256] {
+/// Returns the fixed Unzen opcode multiplier table with fail-safe defaults for unlisted opcodes.
+const fn unzen_opcode_multipliers() -> [u16; 256] {
     let mut array = [FAILSAFE_MULTIPLIER; 256];
     array[0x09] = 152; // mulmod
     array[0x04] = 110; // div
@@ -181,8 +181,9 @@ const fn uzen_opcode_multipliers() -> [u16; 256] {
     array
 }
 
-/// Returns the fixed Uzen precompile multiplier table with fail-safe defaults for unlisted entries.
-const fn uzen_precompile_multipliers() -> [u16; 256] {
+/// Returns the fixed Unzen precompile multiplier table with fail-safe defaults for unlisted
+/// entries.
+const fn unzen_precompile_multipliers() -> [u16; 256] {
     let mut array = [FAILSAFE_MULTIPLIER; 256];
     array[0x05] = 1363; // modexp
     array[0x0a] = 398; // point_evaluation

@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-/// Maximum transaction gas limit enforced once Osaka/Uzen semantics are active.
+/// Maximum transaction gas limit enforced once Osaka/Unzen semantics are active.
 const MAX_SYSTEM_CALL_GAS_LIMIT: u64 = 16_777_216;
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.

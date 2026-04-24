@@ -288,7 +288,7 @@ mod tests {
         executor::TaikoBlockExecutor,
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
-            recovered_tx, uzen_chain_spec, uzen_evm_env, uzen_execution_ctx,
+            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_evm::factory::TaikoEvmFactory;
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn tx_selection_breaks_on_zk_gas_error_but_keeps_skipping_invalid_txs() {
-        let chain_spec = Arc::new(uzen_chain_spec());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[
                 (BENCH_INVALID_CALLER, 1),
@@ -310,10 +310,10 @@ mod tests {
             ]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
-            uzen_execution_ctx(),
+            unzen_execution_ctx(),
             chain_spec,
             RethReceiptBuilder::default(),
         );

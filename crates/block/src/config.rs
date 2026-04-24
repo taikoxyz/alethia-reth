@@ -105,16 +105,16 @@ fn taiko_blob_excess_gas_and_price(spec: TaikoSpecId) -> Option<BlobExcessGasAnd
         .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 })
 }
 
-/// Normalizes the parent beacon block root for Uzen/Cancun execution contexts.
+/// Normalizes the parent beacon block root for Unzen/Cancun execution contexts.
 ///
-/// Uzen activates Cancun semantics, which require a parent beacon block root for block execution.
+/// Unzen activates Cancun semantics, which require a parent beacon block root for block execution.
 /// Imported payloads can supply an explicit value, but local next-block building falls back to the
-/// zero root when Uzen is active.
+/// zero root when Unzen is active.
 fn normalize_parent_beacon_block_root(
-    is_uzen_active: bool,
+    is_unzen_active: bool,
     parent_beacon_block_root: Option<B256>,
 ) -> Option<B256> {
-    if is_uzen_active { parent_beacon_block_root.or(Some(B256::ZERO)) } else { None }
+    if is_unzen_active { parent_beacon_block_root.or(Some(B256::ZERO)) } else { None }
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
@@ -160,7 +160,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             number: U256::from(header.number()),
             beneficiary: header.beneficiary(),
             timestamp: U256::from(header.timestamp()),
-            difficulty: if self.chain_spec().is_uzen_active(header.timestamp()) {
+            difficulty: if self.chain_spec().is_unzen_active(header.timestamp()) {
                 header.difficulty()
             } else {
                 U256::ZERO
@@ -218,7 +218,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
     ) -> Result<reth_evm::ExecutionCtxFor<'a, Self>, Self::Error> {
-        let is_uzen_active = self.chain_spec().is_uzen_active(block.header().timestamp);
+        let is_unzen_active = self.chain_spec().is_unzen_active(block.header().timestamp);
         let basefee_per_gas = block
             .header()
             .base_fee_per_gas
@@ -230,8 +230,8 @@ impl ConfigureEvm for TaikoEvmConfig {
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas,
             extra_data: block.header().extra_data.clone(),
-            is_uzen_active,
-            expected_difficulty: is_uzen_active.then_some(block.header().difficulty),
+            is_unzen_active,
+            expected_difficulty: is_unzen_active.then_some(block.header().difficulty),
             finalized_block_zk_gas: Default::default(),
         })
     }
@@ -243,15 +243,15 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &SealedHeader,
         ctx: Self::NextBlockEnvCtx,
     ) -> Result<reth_evm::ExecutionCtxFor<'_, Self>, Self::Error> {
-        let is_uzen_active = self.chain_spec().is_uzen_active(ctx.timestamp);
+        let is_unzen_active = self.chain_spec().is_unzen_active(ctx.timestamp);
         Ok(TaikoBlockExecutionCtx {
             parent_hash: parent.hash(),
-            parent_beacon_block_root: normalize_parent_beacon_block_root(is_uzen_active, None),
+            parent_beacon_block_root: normalize_parent_beacon_block_root(is_unzen_active, None),
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
             extra_data: ctx.extra_data,
-            is_uzen_active,
+            is_unzen_active,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         })
@@ -305,18 +305,18 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         &self,
         payload: &'a TaikoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let is_uzen_active = self.chain_spec().is_uzen_active(payload.timestamp());
+        let is_unzen_active = self.chain_spec().is_unzen_active(payload.timestamp());
         Ok(TaikoBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
-                is_uzen_active,
+                is_unzen_active,
                 payload.parent_beacon_block_root(),
             ),
             ommers: &[],
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
-            is_uzen_active,
+            is_unzen_active,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
         })
@@ -373,8 +373,8 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Uzen).active_at_timestamp(timestamp) {
-        TaikoSpecId::UZEN
+    if chain_spec.fork(TaikoHardfork::Unzen).active_at_timestamp(timestamp) {
+        TaikoSpecId::UNZEN
     } else if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) {
         // London is on from genesis for Taiko, so Shasta reduces to the timestamp activation.
         TaikoSpecId::SHASTA
@@ -416,58 +416,58 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn uzen_takes_precedence_over_shasta() {
+    fn unzen_takes_precedence_over_shasta() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
 
         let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
-        assert_eq!(selected, TaikoSpecId::UZEN);
+        assert_eq!(selected, TaikoSpecId::UNZEN);
     }
 
     #[test]
-    fn shasta_remains_active_before_uzen_timestamp() {
+    fn shasta_remains_active_before_unzen_timestamp() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(10));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(10));
 
         let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
         assert_eq!(selected, TaikoSpecId::SHASTA);
     }
 
     #[test]
-    fn uzen_evm_env_sets_zero_blob_excess_gas_and_price() {
+    fn unzen_evm_env_sets_zero_blob_excess_gas_and_price() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
 
         let config = TaikoEvmConfig::new(Arc::new(chain_spec));
         let header =
             Header { number: 1, timestamp: 0, base_fee_per_gas: Some(1), ..Header::default() };
 
-        let env = config.evm_env(&header).expect("uzen env should build");
+        let env = config.evm_env(&header).expect("unzen env should build");
         let blob_env = env
             .block_env
             .blob_excess_gas_and_price
-            .expect("uzen historical env should define blob gas pricing");
+            .expect("unzen historical env should define blob gas pricing");
 
         assert_eq!(blob_env.excess_blob_gas, 0);
         assert_eq!(blob_env.blob_gasprice, 1);
     }
 
     #[test]
-    fn pre_uzen_normalization_discards_supplied_parent_beacon_block_root() {
+    fn pre_unzen_normalization_discards_supplied_parent_beacon_block_root() {
         assert_eq!(normalize_parent_beacon_block_root(false, Some(B256::repeat_byte(0x11))), None);
     }
 
     #[test]
-    fn uzen_normalization_preserves_supplied_parent_beacon_block_root() {
+    fn unzen_normalization_preserves_supplied_parent_beacon_block_root() {
         let root = B256::repeat_byte(0x22);
         assert_eq!(normalize_parent_beacon_block_root(true, Some(root)), Some(root));
     }
 
     #[test]
-    fn uzen_normalization_falls_back_to_zero_root_when_missing() {
+    fn unzen_normalization_falls_back_to_zero_root_when_missing() {
         assert_eq!(normalize_parent_beacon_block_root(true, None), Some(B256::ZERO));
     }
 }

@@ -368,7 +368,7 @@ fn parent_step_depth(depth: usize) -> usize {
     depth.saturating_sub(1)
 }
 
-/// Returns the fixed spawn estimate for the provided Uzen opcode.
+/// Returns the fixed spawn estimate for the provided Unzen opcode.
 fn spawn_estimate(schedule: &'static ZkGasSchedule, opcode: u8) -> u64 {
     match opcode {
         0xf1 => schedule.spawn_estimates.call,
@@ -383,7 +383,7 @@ fn spawn_estimate(schedule: &'static ZkGasSchedule, opcode: u8) -> u64 {
 
 /// Returns the schedule backing a shared meter handle.
 fn meter_schedule(_meter: &SharedZkGasMeter) -> &'static ZkGasSchedule {
-    schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule is available")
+    schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule is available")
 }
 
 /// Charges a completed opcode step against the shared meter.

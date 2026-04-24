@@ -30,17 +30,17 @@ pub const BENCH_SUCCESS_TARGET: Address = Address::with_last_byte(0x21);
 /// Target address for contracts whose execution exceeds the zk gas limit.
 pub const BENCH_LIMIT_TARGET: Address = Address::with_last_byte(0x22);
 
-/// Returns a [`TaikoChainSpec`] with Uzen activated at timestamp 0.
-pub fn uzen_chain_spec() -> TaikoChainSpec {
+/// Returns a [`TaikoChainSpec`] with Unzen activated at timestamp 0.
+pub fn unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-    chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
     chain_spec
 }
 
-/// Returns an [`EvmEnv`] configured for Uzen execution.
-pub fn uzen_evm_env() -> EvmEnv<TaikoSpecId> {
+/// Returns an [`EvmEnv`] configured for Unzen execution.
+pub fn unzen_evm_env() -> EvmEnv<TaikoSpecId> {
     let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
-    env.cfg_env.spec = TaikoSpecId::UZEN;
+    env.cfg_env.spec = TaikoSpecId::UNZEN;
     env.cfg_env.chain_id = 167;
     env.block_env.number = U256::from(1_u64);
     env.block_env.timestamp = U256::from(1_u64);
@@ -48,8 +48,8 @@ pub fn uzen_evm_env() -> EvmEnv<TaikoSpecId> {
     env
 }
 
-/// Returns a [`TaikoBlockExecutionCtx`] for Uzen test blocks.
-pub fn uzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
+/// Returns a [`TaikoBlockExecutionCtx`] for Unzen test blocks.
+pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     TaikoBlockExecutionCtx {
         parent_hash: B256::ZERO,
         parent_beacon_block_root: Some(B256::ZERO),
@@ -57,7 +57,7 @@ pub fn uzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
         withdrawals: None,
         basefee_per_gas: 0,
         extra_data: Bytes::default(),
-        is_uzen_active: true,
+        is_unzen_active: true,
         expected_difficulty: None,
         finalized_block_zk_gas: Default::default(),
     }

@@ -24,20 +24,20 @@ use super::{
 };
 
 #[test]
-fn uzen_schedule_is_selected_only_for_uzen() {
-    assert!(schedule_for(TaikoSpecId::UZEN).is_some());
+fn unzen_schedule_is_selected_only_for_unzen() {
+    assert!(schedule_for(TaikoSpecId::UNZEN).is_some());
     assert!(schedule_for(TaikoSpecId::SHASTA).is_none());
 }
 
 #[test]
-fn uzen_schedule_uses_the_spec_block_limit() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+fn unzen_schedule_uses_the_spec_block_limit() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     assert_eq!(schedule.block_limit, 100_000_000);
 }
 
 #[test]
-fn uzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
 
     assert_eq!(schedule.opcode_multipliers[0x20], 85);
     assert_eq!(schedule.opcode_multipliers[0xf1], 25);
@@ -51,8 +51,8 @@ fn uzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
 }
 
 #[test]
-fn uzen_schedule_uses_spec_spawn_estimates() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+fn unzen_schedule_uses_spec_spawn_estimates() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
 
     assert_eq!(schedule.spawn_estimates.call, 12_500);
     assert_eq!(schedule.spawn_estimates.callcode, 12_500);
@@ -64,7 +64,7 @@ fn uzen_schedule_uses_spec_spawn_estimates() {
 
 #[test]
 fn meter_promotes_committed_tx_usage_into_block_usage() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 3).expect("charge");
@@ -75,7 +75,7 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
 
 #[test]
 fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.opcode_multipliers[0x01])) + 1;
 
@@ -84,7 +84,7 @@ fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
 
 #[test]
 fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.precompile_multipliers[0x01])) + 1;
 
@@ -93,7 +93,7 @@ fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
 
 #[test]
 fn meter_resets_transaction_usage_without_affecting_block_usage() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 2).expect("charge");
@@ -105,7 +105,7 @@ fn meter_resets_transaction_usage_without_affecting_block_usage() {
 
 #[test]
 fn meter_allows_exactly_remaining_block_budget() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
@@ -121,7 +121,7 @@ fn meter_allows_exactly_remaining_block_budget() {
 
 #[test]
 fn meter_rejects_block_budget_plus_one() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
@@ -132,7 +132,7 @@ fn meter_rejects_block_budget_plus_one() {
 
 #[test]
 fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     assert!(matches!(
@@ -174,17 +174,17 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 }
 
 #[test]
-fn uzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
-    let schedule = schedule_for(TaikoSpecId::UZEN).expect("Uzen schedule");
+fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
-        evm_env(TaikoSpecId::UZEN),
+        evm_env(TaikoSpecId::UNZEN),
         StepGasProbeInspector::default(),
     );
 
-    evm.transact(tx_env(100_000)).expect("Uzen tx should execute");
+    evm.transact(tx_env(100_000)).expect("Unzen tx should execute");
 
-    let meter = evm.shared_meter().expect("Uzen should install a shared meter");
+    let meter = evm.shared_meter().expect("Unzen should install a shared meter");
     let meter = meter.lock().expect("meter lock");
     let probe = evm.inspector();
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
@@ -212,13 +212,13 @@ fn uzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 }
 
 #[test]
-fn uzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
+fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
     let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
-        evm_env(TaikoSpecId::UZEN),
+        evm_env(TaikoSpecId::UNZEN),
     );
 
-    let err = evm.transact(tx_env(5_000_000)).expect_err("Uzen tx should abort");
+    let err = evm.transact(tx_env(5_000_000)).expect_err("Unzen tx should abort");
 
     assert!(matches!(
         err,
@@ -229,10 +229,10 @@ fn uzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
 }
 
 #[test]
-fn uzen_default_create_evm_path_is_metered() {
+fn unzen_default_create_evm_path_is_metered() {
     let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
-        evm_env(TaikoSpecId::UZEN),
+        evm_env(TaikoSpecId::UNZEN),
     );
 
     assert!(evm.shared_meter().is_some());
@@ -240,14 +240,14 @@ fn uzen_default_create_evm_path_is_metered() {
 }
 
 #[test]
-fn non_uzen_default_create_evm_path_keeps_metering_disabled() {
+fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
     let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::SHASTA),
     );
 
     assert!(evm.shared_meter().is_none());
-    evm.transact(tx_env(5_000_000)).expect("non-Uzen tx should stay on the legacy path");
+    evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
 }
 
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {

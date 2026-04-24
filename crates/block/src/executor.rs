@@ -525,7 +525,7 @@ mod test {
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
-            uzen_chain_spec, uzen_evm_env, uzen_execution_ctx,
+            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -560,14 +560,14 @@ mod test {
 
     #[test]
     fn executor_discards_limit_exceeded_tx_and_stops_after_it() {
-        let chain_spec = Arc::new(uzen_chain_spec());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         assert_eq!(evm.block_zk_gas_used(), Some(0));
-        let ctx = uzen_execution_ctx();
+        let ctx = unzen_execution_ctx();
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx.clone(),
@@ -600,13 +600,13 @@ mod test {
     #[cfg(feature = "prover")]
     #[test]
     fn execute_block_stops_after_non_anchor_zk_gas_exhaustion() {
-        let chain_spec = Arc::new(uzen_chain_spec());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
-        let ctx = uzen_execution_ctx();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let ctx = unzen_execution_ctx();
         let executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
 
@@ -623,14 +623,14 @@ mod test {
     }
 
     #[test]
-    fn executor_rejects_imported_uzen_block_when_difficulty_mismatches_finalized_zk_gas() {
-        let chain_spec = Arc::new(uzen_chain_spec());
+    fn executor_rejects_imported_unzen_block_when_difficulty_mismatches_finalized_zk_gas() {
+        let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, uzen_evm_env());
-        let mut ctx = uzen_execution_ctx();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let mut ctx = unzen_execution_ctx();
         ctx.expected_difficulty = Some(U256::ZERO);
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx, chain_spec, RethReceiptBuilder::default());
@@ -640,7 +640,7 @@ mod test {
             .expect("transaction should execute successfully");
 
         let err: BlockExecutionError = match executor.finish() {
-            Ok(_) => panic!("imported Uzen blocks must reject difficulty mismatches"),
+            Ok(_) => panic!("imported Unzen blocks must reject difficulty mismatches"),
             Err(err) => err,
         };
         assert!(err.to_string().contains("difficulty"));
@@ -685,7 +685,7 @@ mod test {
                     withdrawals: None,
                     basefee_per_gas: 1,
                     extra_data: Bytes::new(),
-                    is_uzen_active: false,
+                    is_unzen_active: false,
                     expected_difficulty: None,
                     finalized_block_zk_gas: Default::default(),
                 },

@@ -17,8 +17,8 @@ pub enum TaikoSpecId {
     PACAYA,
     /// Shasta hard fork for the Taiko network
     SHASTA,
-    /// Uzen hard fork for the Taiko network
-    UZEN,
+    /// Unzen hard fork for the Taiko network
+    UNZEN,
 }
 
 impl TaikoSpecId {
@@ -26,7 +26,7 @@ impl TaikoSpecId {
     pub const fn into_eth_spec(self) -> SpecId {
         match self {
             Self::GENESIS | Self::ONTAKE | Self::PACAYA | Self::SHASTA => SpecId::SHANGHAI,
-            Self::UZEN => SpecId::OSAKA,
+            Self::UNZEN => SpecId::OSAKA,
         }
     }
 
@@ -52,7 +52,7 @@ impl FromStr for TaikoSpecId {
             name::ONTAKE => Ok(TaikoSpecId::ONTAKE),
             name::PACAYA => Ok(TaikoSpecId::PACAYA),
             name::SHASTA => Ok(TaikoSpecId::SHASTA),
-            name::UZEN => Ok(TaikoSpecId::UZEN),
+            name::UNZEN => Ok(TaikoSpecId::UNZEN),
             _ => Err(UnknownHardfork),
         }
     }
@@ -66,7 +66,7 @@ impl From<TaikoSpecId> for &'static str {
             TaikoSpecId::ONTAKE => name::ONTAKE,
             TaikoSpecId::PACAYA => name::PACAYA,
             TaikoSpecId::SHASTA => name::SHASTA,
-            TaikoSpecId::UZEN => name::UZEN,
+            TaikoSpecId::UNZEN => name::UNZEN,
         }
     }
 }
@@ -81,8 +81,8 @@ pub mod name {
     pub const PACAYA: &str = "Pacaya";
     /// String name for `TaikoSpecId::SHASTA`.
     pub const SHASTA: &str = "Shasta";
-    /// String name for `TaikoSpecId::UZEN`.
-    pub const UZEN: &str = "Uzen";
+    /// String name for `TaikoSpecId::UNZEN`.
+    pub const UNZEN: &str = "Unzen";
 }
 
 #[cfg(test)]
@@ -106,7 +106,7 @@ mod tests {
                 (TaikoSpecId::ONTAKE, true),
                 (TaikoSpecId::PACAYA, true),
                 (TaikoSpecId::SHASTA, false),
-                (TaikoSpecId::UZEN, false),
+                (TaikoSpecId::UNZEN, false),
             ],
         )];
 
@@ -138,9 +138,9 @@ mod tests {
     }
 
     #[test]
-    fn test_uzen_spec_id_mappings() {
-        assert_eq!(TaikoSpecId::from_str(name::UZEN).unwrap(), TaikoSpecId::UZEN);
-        assert_eq!(<&str>::from(TaikoSpecId::UZEN), name::UZEN);
-        assert_eq!(SpecId::from(TaikoSpecId::UZEN), SpecId::OSAKA);
+    fn test_unzen_spec_id_mappings() {
+        assert_eq!(TaikoSpecId::from_str(name::UNZEN).unwrap(), TaikoSpecId::UNZEN);
+        assert_eq!(<&str>::from(TaikoSpecId::UNZEN), name::UNZEN);
+        assert_eq!(SpecId::from(TaikoSpecId::UNZEN), SpecId::OSAKA);
     }
 }

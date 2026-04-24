@@ -210,6 +210,49 @@ fn proof_history_backfill_target(
     (target > latest_stored).then_some(target)
 }
 
+/// Decision for delayed proof-history initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code, reason = "wired into delayed proof-history initialization in a follow-up task")]
+enum DelayedProofHistoryStart {
+    /// No finalized block has been observed yet.
+    WaitForFinalized,
+    /// Local execution has not reached the derived proof-history start block.
+    WaitForExecution {
+        /// First block where proof-history should initialize.
+        start_block: u64,
+    },
+    /// Local execution has reached the derived proof-history start block.
+    Ready {
+        /// First block where proof-history should initialize.
+        start_block: u64,
+    },
+}
+
+/// Returns the first block retained by a finalized proof-history window.
+#[allow(dead_code, reason = "wired into delayed proof-history initialization in a follow-up task")]
+const fn proof_history_window_start_block(finalized_block: u64, window: u64) -> u64 {
+    finalized_block.saturating_sub(window)
+}
+
+/// Computes whether delayed proof-history initialization can start.
+#[allow(dead_code, reason = "wired into delayed proof-history initialization in a follow-up task")]
+fn delayed_proof_history_start(
+    finalized_block: Option<u64>,
+    executed_head: u64,
+    window: u64,
+) -> DelayedProofHistoryStart {
+    let Some(finalized_block) = finalized_block else {
+        return DelayedProofHistoryStart::WaitForFinalized;
+    };
+
+    let start_block = proof_history_window_start_block(finalized_block, window);
+    if executed_head < start_block {
+        DelayedProofHistoryStart::WaitForExecution { start_block }
+    } else {
+        DelayedProofHistoryStart::Ready { start_block }
+    }
+}
+
 /// Taiko proof-history ExEx that keeps OP proofs storage behind locally executed state.
 #[derive(Debug)]
 struct ProofHistoryExEx<Node, Storage>
@@ -1005,6 +1048,40 @@ mod tests {
     #[test]
     fn proof_history_backfill_waits_when_executed_head_has_no_next_parent_state() {
         assert_eq!(proof_history_backfill_target(0, 350_000, 0), None);
+    }
+
+    #[test]
+    fn proof_history_window_start_saturates_at_genesis() {
+        assert_eq!(proof_history_window_start_block(100, 350_000), 0);
+    }
+
+    #[test]
+    fn proof_history_window_start_subtracts_window() {
+        assert_eq!(proof_history_window_start_block(1_000_000, 350_000), 650_000);
+    }
+
+    #[test]
+    fn delayed_proof_history_initialization_waits_without_finalized_head() {
+        assert_eq!(
+            delayed_proof_history_start(None, 900_000, 350_000),
+            DelayedProofHistoryStart::WaitForFinalized
+        );
+    }
+
+    #[test]
+    fn delayed_proof_history_initialization_waits_until_local_execution_reaches_start() {
+        assert_eq!(
+            delayed_proof_history_start(Some(1_000_000), 649_999, 350_000),
+            DelayedProofHistoryStart::WaitForExecution { start_block: 650_000 }
+        );
+    }
+
+    #[test]
+    fn delayed_proof_history_initialization_starts_when_execution_reaches_window_start() {
+        assert_eq!(
+            delayed_proof_history_start(Some(1_000_000), 650_000, 350_000),
+            DelayedProofHistoryStart::Ready { start_block: 650_000 }
+        );
     }
 
     #[test]

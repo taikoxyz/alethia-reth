@@ -80,6 +80,14 @@ pub struct TaikoProofHistoryArgs {
     )]
     pub window: u64,
 
+    /// Delay empty proof-history initialization until the finalized window start is reached.
+    #[arg(
+        long = "proofs-history.backfill-window-only",
+        default_value_t = false,
+        help_heading = "Taiko Proof History"
+    )]
+    pub backfill_window_only: bool,
+
     /// Wall-clock interval between proof-history prune passes.
     #[arg(
         long = "proofs-history.prune-interval",
@@ -311,6 +319,7 @@ mod tests {
             "/tmp/proofs-history",
             "--proofs-history.window",
             "256",
+            "--proofs-history.backfill-window-only",
             "--proofs-history.prune-interval",
             "30s",
             "--proofs-history.verification-interval",
@@ -321,6 +330,7 @@ mod tests {
         assert!(cli.ext.proof_history.enabled);
         assert_eq!(cli.ext.proof_history.storage_path, Some(PathBuf::from("/tmp/proofs-history")));
         assert_eq!(cli.ext.proof_history.window, 256);
+        assert!(cli.ext.proof_history.backfill_window_only);
         assert_eq!(cli.ext.proof_history.prune_interval, Duration::from_secs(30));
         assert_eq!(cli.ext.proof_history.verification_interval, 16);
     }
@@ -333,6 +343,7 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.storage_path.is_none());
         assert_eq!(config.window, 1_296_000);
+        assert!(!config.backfill_window_only);
         assert_eq!(config.prune_interval, Duration::from_secs(15));
         assert_eq!(config.verification_interval, 0);
     }

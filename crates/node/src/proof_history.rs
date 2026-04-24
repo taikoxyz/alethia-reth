@@ -68,6 +68,8 @@ pub struct ProofHistoryConfig {
     pub storage_path: Option<PathBuf>,
     /// Number of recent blocks retained in proof-history storage.
     pub window: u64,
+    /// Whether empty proof-history storage waits until the finalized retention window starts.
+    pub backfill_window_only: bool,
     /// Wall-clock interval between proof-history prune passes.
     pub prune_interval: Duration,
     /// Block interval between proof-history consistency checks; zero disables verification.
@@ -109,6 +111,7 @@ impl ProofHistoryConfig {
             enabled: false,
             storage_path: None,
             window: DEFAULT_PROOF_HISTORY_WINDOW,
+            backfill_window_only: false,
             prune_interval: DEFAULT_PROOF_HISTORY_PRUNE_INTERVAL,
             verification_interval: DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
         }

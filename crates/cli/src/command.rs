@@ -46,6 +46,7 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
             enabled: self.proof_history.enabled,
             storage_path: self.proof_history.storage_path.clone(),
             window: self.proof_history.window,
+            backfill_window_only: self.proof_history.backfill_window_only,
             prune_interval: self.proof_history.prune_interval,
             verification_interval: self.proof_history.verification_interval,
         }

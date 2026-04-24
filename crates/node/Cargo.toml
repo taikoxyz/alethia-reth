@@ -26,6 +26,7 @@ alethia-reth-node-builder = { path = "../node-builder" }
 alethia-reth-payload = { path = "../payload" }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alethia-reth-rpc = { path = "../rpc" }
+alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 eyre = { workspace = true }
@@ -40,8 +41,15 @@ reth-node-builder = { workspace = true }
 reth-node-ethereum = { workspace = true }
 reth-optimism-exex = { workspace = true }
 reth-optimism-trie = { workspace = true, features = ["metrics"] }
+reth-primitives-traits = { workspace = true }
 reth-rpc = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
+reth-storage-api = { workspace = true }
+reth-trie-common = { workspace = true }
+reth-trie-db = { workspace = true }
 serde = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+reth-provider = { workspace = true, features = ["test-utils"] }

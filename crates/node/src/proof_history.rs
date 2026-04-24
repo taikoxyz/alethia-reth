@@ -153,7 +153,6 @@ where
         ctx.node().task_executor().clone(),
     );
     ctx.modules.replace_configured(debug_ext.into_rpc())?;
-
     Ok(())
 }
 

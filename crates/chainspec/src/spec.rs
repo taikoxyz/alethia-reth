@@ -169,18 +169,18 @@ impl TaikoExecutorSpec for TaikoChainSpec {
 
 /// Helper trait for applying Taiko devnet specific overrides.
 pub trait TaikoDevnetConfigExt {
-    /// Returns a cloned [`TaikoChainSpec`] with the Uzen hardfork activation timestamp updated
+    /// Returns a cloned [`TaikoChainSpec`] with the Unzen hardfork activation timestamp updated
     /// when the chainspec targets the Taiko devnet. Returns `None` for other networks.
-    fn clone_with_devnet_uzen_timestamp(&self, timestamp: u64) -> Option<Self>
+    fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized;
 }
 
 impl TaikoDevnetConfigExt for TaikoChainSpec {
-    /// Returns a cloned [`TaikoChainSpec`] with the Uzen hardfork activation timestamp updated
+    /// Returns a cloned [`TaikoChainSpec`] with the Unzen hardfork activation timestamp updated
     /// when the chainspec targets the Taiko devnet. Returns `None` for other networks or when
-    /// `timestamp == 0` (the default devnet config already activates Uzen at genesis).
-    fn clone_with_devnet_uzen_timestamp(&self, timestamp: u64) -> Option<Self>
+    /// `timestamp == 0` (the default devnet config already activates Unzen at genesis).
+    fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized,
     {
@@ -189,7 +189,7 @@ impl TaikoDevnetConfigExt for TaikoChainSpec {
         }
 
         let mut cloned = self.clone();
-        cloned.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(timestamp));
+        cloned.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
         cloned
             .inner
             .hardforks
@@ -209,7 +209,7 @@ impl TaikoDevnetConfigExt for TaikoChainSpec {
         assert_eq!(
             cloned.genesis_hash(),
             TAIKO_DEVNET_GENESIS_HASH_SHANGHAI,
-            "unexpected Taiko devnet genesis hash after Uzen timestamp override",
+            "unexpected Taiko devnet genesis hash after Unzen timestamp override",
         );
 
         Some(cloned)
@@ -246,9 +246,9 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
         self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
 
-    /// Checks if the `Uzen` hardfork is active at the given timestamp.
-    fn is_uzen_active(&self, timestamp: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Uzen).active_at_timestamp(timestamp)
+    /// Checks if the `Unzen` hardfork is active at the given timestamp.
+    fn is_unzen_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Unzen).active_at_timestamp(timestamp)
     }
 }
 
@@ -275,14 +275,14 @@ mod test {
     }
 
     #[test]
-    fn test_mainnet_blob_params_remain_unset_before_uzen() {
+    fn test_mainnet_blob_params_remain_unset_before_unzen() {
         let spec = TAIKO_MAINNET.as_ref();
 
         assert_eq!(spec.blob_params_at_timestamp(0), None);
     }
 
     #[test]
-    fn test_devnet_uzen_exposes_osaka_blob_params_and_blob_base_fee() {
+    fn test_devnet_unzen_exposes_osaka_blob_params_and_blob_base_fee() {
         let spec = TAIKO_DEVNET.as_ref();
         let header = Header {
             timestamp: 0,
@@ -300,14 +300,14 @@ mod test {
     }
 
     #[test]
-    fn test_clone_with_devnet_uzen_timestamp() {
+    fn test_clone_with_devnet_unzen_timestamp() {
         let devnet_spec = (*TAIKO_DEVNET).clone();
         let overridden = devnet_spec
             .as_ref()
-            .clone_with_devnet_uzen_timestamp(42)
+            .clone_with_devnet_unzen_timestamp(42)
             .expect("devnet override should succeed");
         assert_eq!(
-            overridden.taiko_fork_activation(TaikoHardfork::Uzen),
+            overridden.taiko_fork_activation(TaikoHardfork::Unzen),
             ForkCondition::Timestamp(42)
         );
         assert_eq!(
@@ -331,13 +331,13 @@ mod test {
         assert_eq!(overridden.genesis_header().requests_hash, None);
 
         assert!(
-            devnet_spec.as_ref().clone_with_devnet_uzen_timestamp(0).is_none(),
+            devnet_spec.as_ref().clone_with_devnet_unzen_timestamp(0).is_none(),
             "zero timestamp should skip the override"
         );
 
         let mainnet_spec = (*TAIKO_MAINNET).clone();
         assert!(
-            mainnet_spec.as_ref().clone_with_devnet_uzen_timestamp(1).is_none(),
+            mainnet_spec.as_ref().clone_with_devnet_unzen_timestamp(1).is_none(),
             "non-devnet overrides should be ignored"
         );
     }

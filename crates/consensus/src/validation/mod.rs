@@ -139,7 +139,7 @@ where
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
 
-        if !self.chain_spec.is_uzen_active(header.timestamp()) && !header.difficulty().is_zero() {
+        if !self.chain_spec.is_unzen_active(header.timestamp()) && !header.difficulty().is_zero() {
             return Err(ConsensusError::TheMergeDifficultyIsNotZero);
         }
 
@@ -232,13 +232,13 @@ fn validate_zk_gas_post_execution<B, R>(
 where
     B: Block,
 {
-    if !chain_spec.is_uzen_active(block.header().timestamp()) {
+    if !chain_spec.is_unzen_active(block.header().timestamp()) {
         return Ok(());
     }
 
     let body_transaction_count = block.body().transactions().len();
     let committed_receipt_count = receipts.len();
-    // Imported Uzen-or-later blocks are only valid when the canonical body ends exactly at the
+    // Imported Unzen-or-later blocks are only valid when the canonical body ends exactly at the
     // last transaction that execution committed. If zk gas truncated execution earlier, the
     // offending transaction and all later transactions must be absent from the body as well.
     if body_transaction_count == committed_receipt_count {
@@ -246,7 +246,7 @@ where
     }
 
     Err(ConsensusError::Other(format!(
-        "Uzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
+        "Unzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
     )))
 }
 

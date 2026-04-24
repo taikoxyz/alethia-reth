@@ -36,9 +36,9 @@ enum TaikoPayloadValidationError {
     /// The payload contains blob transactions, which Taiko network never accepts.
     #[error("blob transactions are unsupported")]
     BlobTransactionsUnsupported,
-    /// Uzen payloads must carry the original header difficulty through the Taiko sidecar.
-    #[error("missing header difficulty for Uzen payload")]
-    MissingUzenHeaderDifficulty,
+    /// Unzen payloads must carry the original header difficulty through the Taiko sidecar.
+    #[error("missing header difficulty for Unzen payload")]
+    MissingUnzenHeaderDifficulty,
 }
 
 /// Builder for [`TaikoEngineValidator`].
@@ -128,11 +128,11 @@ where
         let TaikoExecutionData { execution_payload, taiko_sidecar } = payload;
 
         let expected_hash = execution_payload.block_hash;
-        let is_uzen_active = self.chain_spec.is_uzen_active(execution_payload.timestamp);
+        let is_unzen_active = self.chain_spec.is_unzen_active(execution_payload.timestamp);
 
-        if is_uzen_active && taiko_sidecar.header_difficulty.is_none() {
+        if is_unzen_active && taiko_sidecar.header_difficulty.is_none() {
             return Err(NewPayloadError::other(
-                TaikoPayloadValidationError::MissingUzenHeaderDifficulty,
+                TaikoPayloadValidationError::MissingUnzenHeaderDifficulty,
             ));
         }
 
@@ -141,10 +141,10 @@ where
         if let Some(header_difficulty) = taiko_sidecar.header_difficulty {
             block.header.difficulty = header_difficulty;
         }
-        block.header.parent_beacon_block_root = is_uzen_active.then_some(B256::ZERO);
-        block.header.blob_gas_used = is_uzen_active.then_some(0);
-        block.header.excess_blob_gas = is_uzen_active.then_some(0);
-        block.header.requests_hash = is_uzen_active.then_some(EMPTY_REQUESTS_HASH);
+        block.header.parent_beacon_block_root = is_unzen_active.then_some(B256::ZERO);
+        block.header.blob_gas_used = is_unzen_active.then_some(0);
+        block.header.excess_blob_gas = is_unzen_active.then_some(0);
+        block.header.requests_hash = is_unzen_active.then_some(EMPTY_REQUESTS_HASH);
         if !taiko_sidecar.tx_hash.is_zero() {
             block.header.transactions_root = taiko_sidecar.tx_hash;
         }
@@ -258,23 +258,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_uzen_payload_without_header_difficulty() {
-        let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
-        let payload = sample_uzen_execution_data(U256::from(7_u64), None, None);
+    fn rejects_unzen_payload_without_header_difficulty() {
+        let validator = TaikoEngineValidator::new(Arc::new(unzen_chain_spec()));
+        let payload = sample_unzen_execution_data(U256::from(7_u64), None, None);
 
         let err =
             <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
                 &validator, payload,
             )
-            .expect_err("Uzen payloads must supply header difficulty explicitly");
+            .expect_err("Unzen payloads must supply header difficulty explicitly");
 
-        assert_eq!(err.to_string(), "missing header difficulty for Uzen payload");
+        assert_eq!(err.to_string(), "missing header difficulty for Unzen payload");
     }
 
     #[test]
-    fn accepts_uzen_payload_when_sidecar_supplies_header_difficulty() {
-        let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
-        let payload = sample_uzen_execution_data(
+    fn accepts_unzen_payload_when_sidecar_supplies_header_difficulty() {
+        let validator = TaikoEngineValidator::new(Arc::new(unzen_chain_spec()));
+        let payload = sample_unzen_execution_data(
             U256::from(7_u64),
             Some(U256::from(7_u64)),
             Some(B256::ZERO),
@@ -292,9 +292,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_uzen_payload_when_validator_infers_parent_beacon_block_root() {
-        let validator = TaikoEngineValidator::new(Arc::new(uzen_chain_spec()));
-        let payload = sample_uzen_execution_data(
+    fn accepts_unzen_payload_when_validator_infers_parent_beacon_block_root() {
+        let validator = TaikoEngineValidator::new(Arc::new(unzen_chain_spec()));
+        let payload = sample_unzen_execution_data(
             U256::from(7_u64),
             Some(U256::from(7_u64)),
             Some(B256::ZERO),
@@ -305,7 +305,7 @@ mod tests {
                 &validator,
                 payload.clone(),
             )
-            .expect("validator should infer parent beacon block root from Uzen activation");
+            .expect("validator should infer parent beacon block root from Unzen activation");
 
         assert_eq!(sealed.hash(), payload.execution_payload.block_hash);
         assert_eq!(sealed.header().parent_beacon_block_root, Some(B256::ZERO));
@@ -314,13 +314,13 @@ mod tests {
         assert_eq!(sealed.header().requests_hash, Some(EMPTY_REQUESTS_HASH));
     }
 
-    fn uzen_chain_spec() -> TaikoChainSpec {
+    fn unzen_chain_spec() -> TaikoChainSpec {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
         chain_spec
     }
 
-    fn sample_uzen_execution_data(
+    fn sample_unzen_execution_data(
         difficulty: U256,
         header_difficulty: Option<U256>,
         parent_beacon_block_root: Option<B256>,

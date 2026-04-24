@@ -15,16 +15,16 @@ use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
 /// Trait implemented by CLI extensions that can tweak Taiko-specific runtime options.
 pub trait TaikoNodeExtArgs {
-    /// Returns the configured devnet Uzen activation timestamp override.
-    fn devnet_uzen_timestamp(&self) -> u64;
+    /// Returns the configured devnet Unzen activation timestamp override.
+    fn devnet_unzen_timestamp(&self) -> u64;
 
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
 }
 
 impl TaikoNodeExtArgs for NoArgs {
-    /// Returns the default devnet Uzen activation timestamp override.
-    fn devnet_uzen_timestamp(&self) -> u64 {
+    /// Returns the default devnet Unzen activation timestamp override.
+    fn devnet_unzen_timestamp(&self) -> u64 {
         0
     }
 
@@ -35,9 +35,9 @@ impl TaikoNodeExtArgs for NoArgs {
 }
 
 impl TaikoNodeExtArgs for TaikoCliExtArgs {
-    /// Returns the configured devnet Uzen activation timestamp override.
-    fn devnet_uzen_timestamp(&self) -> u64 {
-        self.devnet_uzen_timestamp
+    /// Returns the configured devnet Unzen activation timestamp override.
+    fn devnet_unzen_timestamp(&self) -> u64 {
+        self.devnet_unzen_timestamp
     }
 
     /// Returns proof-history configuration derived from parsed Taiko CLI flags.
@@ -141,9 +141,11 @@ where
             storage,
         };
 
-        // Apply Taiko-specific devnet Uzen timestamp override if specified.
-        if let Some(overridden_chain) =
-            node_config.chain.as_ref().clone_with_devnet_uzen_timestamp(ext.devnet_uzen_timestamp())
+        // Apply Taiko-specific devnet Unzen timestamp override if specified.
+        if let Some(overridden_chain) = node_config
+            .chain
+            .as_ref()
+            .clone_with_devnet_unzen_timestamp(ext.devnet_unzen_timestamp())
         {
             node_config.chain = Arc::new(overridden_chain);
         }

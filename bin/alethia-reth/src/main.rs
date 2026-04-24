@@ -6,7 +6,7 @@ use alethia_reth_cli::{
 };
 use alethia_reth_node::{
     TaikoNode,
-    proof_history::{install_proof_history, install_proof_history_debug_rpc},
+    proof_history::{install_proof_history, install_proof_history_rpc},
     rpc::eth::{
         auth::{TaikoAuthExt, TaikoAuthExtApiServer},
         eth::{TaikoExt, TaikoExtApiServer},
@@ -50,7 +50,7 @@ fn main() {
                     ctx.auth_module.merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
 
                     if let Some(proof_history_handle) = proof_history_handle {
-                        install_proof_history_debug_rpc(&mut ctx, proof_history_handle.storage())?;
+                        install_proof_history_rpc(&mut ctx, proof_history_handle.storage())?;
                     }
 
                     Ok(())

@@ -1,7 +1,10 @@
 //! Proof-history sidecar configuration and ExEx wiring for Taiko nodes.
 
 use crate::TaikoNode;
-use alethia_reth_rpc::debug::{TaikoDebugWitnessApiServer, TaikoDebugWitnessExt};
+use alethia_reth_rpc::{
+    debug::{TaikoDebugWitnessApiServer, TaikoDebugWitnessExt},
+    eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
+};
 use eyre::{WrapErr, eyre};
 use reth::{providers::HeaderProvider, tasks::TaskExecutor};
 use reth_db::database_metrics::DatabaseMetrics;
@@ -135,8 +138,8 @@ where
     ))
 }
 
-/// Installs proof-history backed replacements for configured `debug_` witness RPC methods.
-pub fn install_proof_history_debug_rpc<Node, EthApi>(
+/// Installs proof-history backed replacements for configured `eth_` and `debug_` RPC methods.
+pub fn install_proof_history_rpc<Node, EthApi>(
     ctx: &mut RpcContext<'_, Node, EthApi>,
     storage: ProofHistoryStorage,
 ) -> eyre::Result<()>
@@ -146,6 +149,9 @@ where
     Node::Provider:
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {
+    let eth_ext = TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone());
+    ctx.modules.replace_configured(eth_ext.into_rpc())?;
+
     let debug_ext = TaikoDebugWitnessExt::new(
         ctx.node().provider().clone(),
         ctx.registry.eth_api().clone(),

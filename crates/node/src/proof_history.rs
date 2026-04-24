@@ -233,8 +233,6 @@ enum DelayedProofHistoryStart {
     MissedStart {
         /// First block where proof-history should have initialized.
         start_block: u64,
-        /// Current local execution head.
-        executed_head: u64,
     },
     /// Local execution is exactly at the derived proof-history start block.
     Ready {
@@ -259,12 +257,10 @@ fn delayed_proof_history_start(
     };
 
     let start_block = proof_history_window_start_block(finalized_block, window);
-    if executed_head < start_block {
-        DelayedProofHistoryStart::WaitForExecution { start_block }
-    } else if executed_head > start_block {
-        DelayedProofHistoryStart::MissedStart { start_block, executed_head }
-    } else {
-        DelayedProofHistoryStart::Ready { start_block }
+    match executed_head.cmp(&start_block) {
+        std::cmp::Ordering::Less => DelayedProofHistoryStart::WaitForExecution { start_block },
+        std::cmp::Ordering::Equal => DelayedProofHistoryStart::Ready { start_block },
+        std::cmp::Ordering::Greater => DelayedProofHistoryStart::MissedStart { start_block },
     }
 }
 
@@ -332,12 +328,7 @@ where
 {
     /// Runs proof-history indexing until the node shuts down.
     async fn run(mut self) -> eyre::Result<()> {
-        let mut initialized = self.initialize_or_wait()?;
-        let mut sync_target_tx = initialized.then(|| {
-            let sync_target_tx = self.spawn_sync_task();
-            self.spawn_pruner_task();
-            sync_target_tx
-        });
+        let mut sync_target_tx = self.try_start()?;
 
         let collector = LiveTrieCollector::new(
             self.ctx.evm_config().clone(),
@@ -346,12 +337,9 @@ where
         );
 
         while let Some(notification) = self.ctx.notifications.try_next().await? {
-            if !initialized {
-                initialized = self.initialize_or_wait()?;
-                if initialized {
-                    sync_target_tx = Some(self.spawn_sync_task());
-                    self.spawn_pruner_task();
-                } else {
+            if sync_target_tx.is_none() {
+                sync_target_tx = self.try_start()?;
+                if sync_target_tx.is_none() {
                     self.acknowledge_notification(&notification)?;
                     continue;
                 }
@@ -367,24 +355,30 @@ where
         Ok(())
     }
 
-    /// Initializes proof-history storage immediately or waits for the finalized window.
-    fn initialize_or_wait(&self) -> eyre::Result<bool> {
-        if !proof_history_storage_needs_initialization(&self.storage)? {
-            self.ensure_initialized()?;
-            return Ok(true);
+    /// Initializes storage if possible and spawns the sync and pruner tasks on first success.
+    fn try_start(&self) -> eyre::Result<Option<watch::Sender<u64>>> {
+        if !self.initialize_or_wait()? {
+            return Ok(None);
         }
-
-        if !self.backfill_window_only {
-            initialize_proof_history_storage(self.ctx.provider(), self.init_storage.clone())?;
-            self.ensure_initialized()?;
-            return Ok(true);
-        }
-
-        self.try_initialize_from_finalized_window()
+        let sync_target_tx = self.spawn_sync_task();
+        self.spawn_pruner_task();
+        Ok(Some(sync_target_tx))
     }
 
-    /// Attempts delayed initialization once local execution reaches the finalized window start.
-    fn try_initialize_from_finalized_window(&self) -> eyre::Result<bool> {
+    /// Initializes proof-history storage immediately or waits for the finalized window.
+    fn initialize_or_wait(&self) -> eyre::Result<bool> {
+        if proof_history_storage_needs_initialization(&self.storage)? {
+            if self.backfill_window_only && !self.wait_for_finalized_window_start()? {
+                return Ok(false);
+            }
+            initialize_proof_history_storage(self.ctx.provider(), self.init_storage.clone())?;
+        }
+        self.ensure_initialized()?;
+        Ok(true)
+    }
+
+    /// Returns whether local execution is aligned with the finalized proof-history window start.
+    fn wait_for_finalized_window_start(&self) -> eyre::Result<bool> {
         let finalized_block = finalized_block_number(self.ctx.provider())?;
         let executed_head = self.ctx.provider().best_block_number()?;
 
@@ -411,7 +405,7 @@ where
                 );
                 Ok(false)
             }
-            DelayedProofHistoryStart::MissedStart { start_block, executed_head } => {
+            DelayedProofHistoryStart::MissedStart { start_block } => {
                 if self.missed_start_logged.swap(true, Ordering::Relaxed) {
                     debug!(
                         target: "reth::taiko::proof_history",
@@ -439,8 +433,6 @@ where
                     start_block,
                     "initializing empty proof-history storage from finalized window"
                 );
-                initialize_proof_history_storage(self.ctx.provider(), self.init_storage.clone())?;
-                self.ensure_initialized()?;
                 Ok(true)
             }
         }
@@ -1237,7 +1229,7 @@ mod tests {
     fn delayed_proof_history_initialization_reports_missed_start() {
         assert_eq!(
             delayed_proof_history_start(Some(1_000_000), 650_001, 350_000),
-            DelayedProofHistoryStart::MissedStart { start_block: 650_000, executed_head: 650_001 }
+            DelayedProofHistoryStart::MissedStart { start_block: 650_000 }
         );
     }
 

@@ -193,8 +193,8 @@ where
     Storage: OpProofsStore,
 {
     let provider_ro = storage.provider_ro()?;
-    Ok(provider_ro.get_earliest_block_number()?.is_none()
-        || provider_ro.get_latest_block_number()?.is_none())
+    Ok(provider_ro.get_earliest_block_number()?.is_none() ||
+        provider_ro.get_latest_block_number()?.is_none())
 }
 
 /// Safety threshold for automatic proof-history pruning on startup.
@@ -647,8 +647,8 @@ where
 
         let best_block = self.ctx.provider().best_block_number()?;
         let is_sequential = new.tip().number() == latest_stored + 1;
-        let is_near_tip = best_block.saturating_sub(new.tip().number())
-            < PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
+        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
+            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
 
         if is_sequential && is_near_tip {
             for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
@@ -668,15 +668,15 @@ where
         chain: &Chain<Primitives>,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
-        let should_verify = self.verification_interval > 0
-            && block_number.is_multiple_of(self.verification_interval);
+        let should_verify = self.verification_interval > 0 &&
+            block_number.is_multiple_of(self.verification_interval);
 
-        if let Some(block) = chain.blocks().get(&block_number)
-            && let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
+        if let Some(block) = chain.blocks().get(&block_number) &&
+            let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
                 let SortedTrieData { hashed_state, trie_updates } = d.get();
                 (trie_updates, hashed_state)
-            })
-            && !should_verify
+            }) &&
+            !should_verify
         {
             collector.store_block_updates(
                 block.block_with_parent(),
@@ -722,8 +722,8 @@ where
                 ));
             }
 
-            if let Some(block) = new.blocks().get(block_number)
-                && let Some(trie_data) = new.trie_data_at(*block_number)
+            if let Some(block) = new.blocks().get(block_number) &&
+                let Some(trie_data) = new.trie_data_at(*block_number)
             {
                 let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
                 block_updates.push((
@@ -931,8 +931,8 @@ where
         while let Some((hashed_address, storage)) =
             next_dup_entry::<tables::HashedStorages, _>(&mut cursor)?
         {
-            if current_address.is_some_and(|address| address != hashed_address)
-                || current_slots.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
+            if current_address.is_some_and(|address| address != hashed_address) ||
+                current_slots.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
             {
                 let address =
                     current_address.expect("storage batch is only populated after address is set");
@@ -999,8 +999,8 @@ where
         while let Some((hashed_address, entry)) =
             next_dup_entry::<Adapter::StorageTrieTable, _>(&mut cursor)?
         {
-            if current_address.is_some_and(|address| address != hashed_address)
-                || current_nodes.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
+            if current_address.is_some_and(|address| address != hashed_address) ||
+                current_nodes.len() >= PROOF_HISTORY_INITIALIZATION_BATCH_SIZE
             {
                 let address = current_address
                     .expect("storage trie batch is only populated after address is set");

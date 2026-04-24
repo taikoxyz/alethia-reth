@@ -26,16 +26,20 @@ alethia-reth-node-builder = { path = "../node-builder" }
 alethia-reth-payload = { path = "../payload" }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alethia-reth-rpc = { path = "../rpc" }
+alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 eyre = { workspace = true }
+futures-util = { workspace = true }
 reth = { workspace = true }
 reth-db = { workspace = true }
 reth-engine-local = { workspace = true }
 reth-engine-primitives = { workspace = true }
 reth-ethereum = { workspace = true }
 reth-ethereum-primitives = { workspace = true }
+reth-execution-types = { workspace = true }
+reth-exex = { workspace = true }
 reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
 reth-node-ethereum = { workspace = true }

@@ -5,11 +5,16 @@ use alethia_reth_rpc::{
     debug::{TaikoDebugWitnessApiServer, TaikoDebugWitnessExt},
     eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
 };
-use alloy_eips::BlockNumHash;
+use alloy_consensus::BlockHeader;
+use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use alloy_primitives::{B256, U256};
 use eyre::{WrapErr, eyre};
+use futures_util::TryStreamExt;
 use reth::{
-    providers::{BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider},
+    providers::{
+        BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
+        TransactionVariant,
+    },
     tasks::TaskExecutor,
 };
 use reth_db::{
@@ -20,25 +25,30 @@ use reth_db::{
     tables,
     transaction::DbTx,
 };
-use reth_node_api::{FullNodeComponents, NodeAddOns};
+use reth_execution_types::Chain;
+use reth_exex::{ExExContext, ExExEvent, ExExNotification};
+use reth_node_api::{FullNodeComponents, NodeAddOns, NodePrimitives, NodeTypes};
 use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_exex::OpProofsExEx;
 use reth_optimism_trie::{
-    OpProofsStorage, OpProofsStore,
+    OpProofStoragePrunerTask, OpProofsStorage, OpProofsStore,
     api::{InitialStateAnchor, InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO},
     db::{HashedStorageKey, MdbxProofsStorage, StorageTrieKey},
+    live::LiveTrieCollector,
 };
 use reth_primitives_traits::Account;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::StorageSettingsCache;
-use reth_trie_common::{BranchNodeCompact, Nibbles, StoredNibbles};
+use reth_trie_common::{
+    BranchNodeCompact, HashedPostStateSorted, Nibbles, SortedTrieData, StoredNibbles,
+    updates::TrieUpdatesSorted,
+};
 use reth_trie_db::{LegacyKeyAdapter, PackedKeyAdapter, StorageTrieEntryLike, TrieTableAdapter};
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tokio::time::sleep;
-use tracing::info;
+use tokio::{sync::watch, task, time, time::sleep};
+use tracing::{debug, error, info};
 
 /// Default proof-history retention window in blocks.
 const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
@@ -152,12 +162,14 @@ where
             })
             .install_exex("proofs-history", async move |exex_context| {
                 initialize_proof_history_storage(exex_context.provider(), storage_for_init)?;
-                Ok(OpProofsExEx::builder(exex_context, storage_for_exex)
-                    .with_proofs_history_window(config.window)
-                    .with_proofs_history_prune_interval(config.prune_interval)
-                    .with_verification_interval(config.verification_interval)
-                    .build()
-                    .run())
+                Ok(ProofHistoryExEx::new(
+                    exex_context,
+                    storage_for_exex,
+                    config.window,
+                    config.prune_interval,
+                    config.verification_interval,
+                )
+                .run())
             }),
         Some(handle),
     ))
@@ -171,6 +183,391 @@ where
     let provider_ro = storage.provider_ro()?;
     Ok(provider_ro.get_earliest_block_number()?.is_none() ||
         provider_ro.get_latest_block_number()?.is_none())
+}
+
+/// Safety threshold for automatic proof-history pruning on startup.
+const PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS: u64 = 1000;
+
+/// Number of blocks the proof-history sync task executes in one batch.
+const PROOF_HISTORY_SYNC_BATCH_SIZE: usize = 50;
+
+/// Distance from canonical tip where proof-history can process notification data directly.
+const PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD: u64 = 1024;
+
+/// Delay used when proof-history has no locally executable backfill work.
+const PROOF_HISTORY_SYNC_IDLE_SLEEP: Duration = Duration::from_secs(5);
+
+/// Returns the highest block proof-history may backfill without running ahead of execution.
+fn proof_history_backfill_target(
+    latest_stored: u64,
+    requested_target: u64,
+    executed_head: u64,
+) -> Option<u64> {
+    let target = requested_target.min(executed_head);
+    (target > latest_stored).then_some(target)
+}
+
+/// Taiko proof-history ExEx that keeps OP proofs storage behind locally executed state.
+#[derive(Debug)]
+struct ProofHistoryExEx<Node, Storage>
+where
+    Node: FullNodeComponents,
+{
+    /// Reth ExEx context used to receive chain notifications and report finished heights.
+    ctx: ExExContext<Node>,
+    /// Proof-history storage populated by the extension.
+    storage: OpProofsStorage<Storage>,
+    /// Number of recent blocks retained in proof-history storage.
+    proofs_history_window: u64,
+    /// Wall-clock interval between proof-history prune passes.
+    proofs_history_prune_interval: Duration,
+    /// Block interval between full execution verification checks.
+    verification_interval: u64,
+}
+
+impl<Node, Storage> ProofHistoryExEx<Node, Storage>
+where
+    Node: FullNodeComponents,
+{
+    /// Creates a proof-history ExEx with Taiko backfill guards.
+    const fn new(
+        ctx: ExExContext<Node>,
+        storage: OpProofsStorage<Storage>,
+        proofs_history_window: u64,
+        proofs_history_prune_interval: Duration,
+        verification_interval: u64,
+    ) -> Self {
+        Self {
+            ctx,
+            storage,
+            proofs_history_window,
+            proofs_history_prune_interval,
+            verification_interval,
+        }
+    }
+}
+
+impl<Node, Storage, Primitives> ProofHistoryExEx<Node, Storage>
+where
+    Node: FullNodeComponents<Types: NodeTypes<Primitives = Primitives>>,
+    Primitives: NodePrimitives,
+    Storage: OpProofsStore + Clone + 'static,
+{
+    /// Runs proof-history indexing until the node shuts down.
+    async fn run(mut self) -> eyre::Result<()> {
+        self.ensure_initialized()?;
+        let sync_target_tx = self.spawn_sync_task();
+
+        let prune_task = OpProofStoragePrunerTask::new(
+            self.storage.clone(),
+            self.ctx.provider().clone(),
+            self.proofs_history_window,
+            self.proofs_history_prune_interval,
+        );
+        self.ctx
+            .task_executor()
+            .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
+
+        let collector = LiveTrieCollector::new(
+            self.ctx.evm_config().clone(),
+            self.ctx.provider().clone(),
+            &self.storage,
+        );
+
+        while let Some(notification) = self.ctx.notifications.try_next().await? {
+            self.handle_notification(notification, &collector, &sync_target_tx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Verifies the proof-history database is initialized and safe to prune automatically.
+    fn ensure_initialized(&self) -> eyre::Result<()> {
+        let provider_ro = self.storage.provider_ro()?;
+        let earliest_block_number = provider_ro
+            .get_earliest_block_number()?
+            .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
+            .0;
+        let latest_block_number = provider_ro
+            .get_latest_block_number()?
+            .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
+            .0;
+
+        let target_earliest = latest_block_number.saturating_sub(self.proofs_history_window);
+        if target_earliest > earliest_block_number {
+            let blocks_to_prune = target_earliest - earliest_block_number;
+            if blocks_to_prune > PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS {
+                return Err(eyre!(
+                    "configuration requires pruning {} proof-history blocks, which exceeds the safety threshold of {}",
+                    blocks_to_prune,
+                    PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Spawns the guarded proof-history backfill task.
+    fn spawn_sync_task(&self) -> watch::Sender<u64> {
+        let (sync_target_tx, sync_target_rx) = watch::channel(0u64);
+        let task_storage = self.storage.clone();
+        let task_provider = self.ctx.provider().clone();
+        let task_evm_config = self.ctx.evm_config().clone();
+
+        self.ctx.task_executor().spawn_critical_task(
+            "taiko::proof_history::sync_loop",
+            async move {
+                let storage = task_storage.clone();
+                let collector =
+                    LiveTrieCollector::new(task_evm_config, task_provider.clone(), &storage);
+                Self::sync_loop(sync_target_rx, task_storage, task_provider, &collector).await;
+            },
+        );
+
+        sync_target_tx
+    }
+
+    /// Backfills proof-history only through blocks the node has locally executed.
+    async fn sync_loop(
+        mut sync_target_rx: watch::Receiver<u64>,
+        storage: OpProofsStorage<Storage>,
+        provider: Node::Provider,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) {
+        debug!(target: "reth::taiko::proof_history", "starting proof-history sync loop");
+
+        loop {
+            let requested_target = *sync_target_rx.borrow_and_update();
+            let latest = match storage.provider_ro().and_then(|p| p.get_latest_block_number()) {
+                Ok(Some((number, _))) => number,
+                Ok(None) => {
+                    error!(target: "reth::taiko::proof_history", "proof-history sync loop found no stored blocks");
+                    time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                    continue;
+                }
+                Err(error) => {
+                    error!(target: "reth::taiko::proof_history", ?error, "failed to read proof-history latest block");
+                    time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                    continue;
+                }
+            };
+
+            let executed_head = match provider.best_block_number() {
+                Ok(number) => number,
+                Err(error) => {
+                    error!(target: "reth::taiko::proof_history", ?error, "failed to read executed head for proof-history sync");
+                    time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                    continue;
+                }
+            };
+
+            let Some(target) =
+                proof_history_backfill_target(latest, requested_target, executed_head)
+            else {
+                debug!(
+                    target: "reth::taiko::proof_history",
+                    latest,
+                    requested_target,
+                    executed_head,
+                    "proof-history sync waiting for local execution"
+                );
+                time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                continue;
+            };
+
+            if let Err(error) = Self::process_batch(
+                latest,
+                target,
+                &provider,
+                collector,
+                PROOF_HISTORY_SYNC_BATCH_SIZE,
+            ) {
+                error!(target: "reth::taiko::proof_history", ?error, "proof-history batch processing failed");
+                time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+            }
+
+            task::yield_now().await;
+        }
+    }
+
+    /// Processes a bounded batch of canonical blocks into proof-history storage.
+    fn process_batch(
+        start: u64,
+        target: u64,
+        provider: &Node::Provider,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        batch_size: usize,
+    ) -> eyre::Result<()> {
+        let end = (start + batch_size as u64).min(target);
+        debug!(target: "reth::taiko::proof_history", start, end, "processing proof-history batch");
+
+        for block_num in (start + 1)..=end {
+            let block = provider
+                .recovered_block(block_num.into(), TransactionVariant::NoHash)?
+                .ok_or_else(|| eyre!("missing block {block_num}"))?;
+            collector.execute_and_store_block_updates(&block)?;
+        }
+
+        Ok(())
+    }
+
+    /// Handles an ExEx notification and advances proof-history storage or its backfill target.
+    fn handle_notification(
+        &self,
+        notification: ExExNotification<Primitives>,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        sync_target_tx: &watch::Sender<u64>,
+    ) -> eyre::Result<()> {
+        let latest_stored = self
+            .storage
+            .provider_ro()?
+            .get_latest_block_number()?
+            .ok_or_else(|| eyre!("no blocks stored in proof-history storage"))?
+            .0;
+
+        match &notification {
+            ExExNotification::ChainCommitted { new } => {
+                self.handle_chain_committed(new.clone(), latest_stored, collector, sync_target_tx)?
+            }
+            ExExNotification::ChainReorged { old, new } => {
+                self.handle_chain_reorged(old.clone(), new.clone(), latest_stored, collector)?
+            }
+            ExExNotification::ChainReverted { old } => {
+                self.handle_chain_reverted(old.clone(), latest_stored, collector)?
+            }
+        }
+
+        if let Some(committed_chain) = notification.committed_chain() {
+            self.ctx.events.send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Handles a canonical chain commit notification.
+    fn handle_chain_committed(
+        &self,
+        new: Arc<Chain<Primitives>>,
+        latest_stored: u64,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        sync_target_tx: &watch::Sender<u64>,
+    ) -> eyre::Result<()> {
+        if new.tip().number() <= latest_stored {
+            return Ok(());
+        }
+
+        let best_block = self.ctx.provider().best_block_number()?;
+        let is_sequential = new.tip().number() == latest_stored + 1;
+        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
+            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
+
+        if is_sequential && is_near_tip {
+            for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
+                self.process_block(block_number, &new, collector)?;
+            }
+        } else {
+            sync_target_tx.send(new.tip().number())?;
+        }
+
+        Ok(())
+    }
+
+    /// Processes one block from notification trie data when possible, or by execution otherwise.
+    fn process_block(
+        &self,
+        block_number: u64,
+        chain: &Chain<Primitives>,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<()> {
+        let should_verify = self.verification_interval > 0 &&
+            block_number.is_multiple_of(self.verification_interval);
+
+        if let Some(block) = chain.blocks().get(&block_number)
+            && let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
+                let SortedTrieData { hashed_state, trie_updates } = d.get();
+                (trie_updates, hashed_state)
+            })
+                && !should_verify {
+                    collector.store_block_updates(
+                        block.block_with_parent(),
+                        (**trie_updates).clone(),
+                        (**hashed_state).clone(),
+                    )?;
+                    return Ok(());
+                }
+
+        let block = self
+            .ctx
+            .provider()
+            .recovered_block(block_number.into(), TransactionVariant::NoHash)?
+            .ok_or_else(|| eyre!("missing block {block_number} in provider"))?;
+        collector.execute_and_store_block_updates(&block)?;
+        Ok(())
+    }
+
+    /// Handles a canonical chain reorg notification.
+    fn handle_chain_reorged(
+        &self,
+        old: Arc<Chain<Primitives>>,
+        new: Arc<Chain<Primitives>>,
+        latest_stored: u64,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<()> {
+        if old.first().number() > latest_stored {
+            return Ok(());
+        }
+
+        let mut block_updates: Vec<(
+            BlockWithParent,
+            Arc<TrieUpdatesSorted>,
+            Arc<HashedPostStateSorted>,
+        )> = Vec::with_capacity(new.len());
+
+        for block_number in new.blocks().keys() {
+            if old.fork_block() != new.fork_block() {
+                return Err(eyre!(
+                    "proof-history fork blocks do not match: old={:?}, new={:?}",
+                    old.fork_block(),
+                    new.fork_block()
+                ));
+            }
+
+            if let Some(block) = new.blocks().get(block_number)
+                && let Some(trie_data) = new.trie_data_at(*block_number) {
+                    let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+                    block_updates.push((
+                        block.block_with_parent(),
+                        trie_updates.clone(),
+                        hashed_state.clone(),
+                    ));
+                    continue;
+                }
+
+            self.process_block(*block_number, &new, collector)?;
+        }
+
+        if !block_updates.is_empty() {
+            collector.unwind_and_store_block_updates(block_updates)?;
+        }
+
+        Ok(())
+    }
+
+    /// Handles a canonical chain revert notification.
+    fn handle_chain_reverted(
+        &self,
+        old: Arc<Chain<Primitives>>,
+        latest_stored: u64,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<()> {
+        if old.first().number() > latest_stored {
+            return Ok(());
+        }
+
+        collector.unwind_history(old.first().block_with_parent())?;
+        Ok(())
+    }
 }
 
 /// Initializes empty proof-history storage from the node's current canonical state.
@@ -598,6 +995,11 @@ mod tests {
         provider_rw.commit().expect("commit");
 
         assert!(!proof_history_storage_needs_initialization(&storage).unwrap());
+    }
+
+    #[test]
+    fn proof_history_backfill_waits_when_executed_head_has_no_next_parent_state() {
+        assert_eq!(proof_history_backfill_target(0, 350_000, 0), None);
     }
 
     #[test]

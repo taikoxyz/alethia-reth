@@ -9,7 +9,7 @@ use reth_cli_commands::{NodeCommand, launcher::Launcher, node::NoArgs};
 use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 
-use alethia_reth_node::chainspec::spec::TaikoDevnetConfigExt;
+use alethia_reth_node::{chainspec::spec::TaikoDevnetConfigExt, proof_history::ProofHistoryConfig};
 
 use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
@@ -17,6 +17,9 @@ use crate::{TaikoCliExtArgs, tables::TaikoTables};
 pub trait TaikoNodeExtArgs {
     /// Returns the configured devnet Uzen activation timestamp override.
     fn devnet_uzen_timestamp(&self) -> u64;
+
+    /// Returns the configured proof-history sidecar options.
+    fn proof_history_config(&self) -> ProofHistoryConfig;
 }
 
 impl TaikoNodeExtArgs for NoArgs {
@@ -24,12 +27,28 @@ impl TaikoNodeExtArgs for NoArgs {
     fn devnet_uzen_timestamp(&self) -> u64 {
         0
     }
+
+    /// Returns a disabled proof-history configuration for commands without Taiko options.
+    fn proof_history_config(&self) -> ProofHistoryConfig {
+        ProofHistoryConfig::disabled()
+    }
 }
 
 impl TaikoNodeExtArgs for TaikoCliExtArgs {
     /// Returns the configured devnet Uzen activation timestamp override.
     fn devnet_uzen_timestamp(&self) -> u64 {
         self.devnet_uzen_timestamp
+    }
+
+    /// Returns proof-history configuration derived from parsed Taiko CLI flags.
+    fn proof_history_config(&self) -> ProofHistoryConfig {
+        ProofHistoryConfig {
+            enabled: self.proof_history.enabled,
+            storage_path: self.proof_history.storage_path.clone(),
+            window: self.proof_history.window,
+            prune_interval: self.proof_history.prune_interval,
+            verification_interval: self.proof_history.verification_interval,
+        }
     }
 }
 

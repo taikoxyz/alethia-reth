@@ -2,7 +2,7 @@
 
 use crate::spec::TaikoSpecId;
 
-use super::uzen::UZEN_ZK_GAS_SCHEDULE;
+use super::unzen::UNZEN_ZK_GAS_SCHEDULE;
 
 /// Fixed raw-gas estimates for spawn opcodes.
 #[derive(Clone, Copy)]
@@ -37,7 +37,7 @@ pub struct ZkGasSchedule {
 /// Returns the consensus zk gas schedule for the active Taiko fork, when defined.
 pub const fn schedule_for(spec: TaikoSpecId) -> Option<&'static ZkGasSchedule> {
     match spec {
-        TaikoSpecId::UZEN => Some(&UZEN_ZK_GAS_SCHEDULE),
+        TaikoSpecId::UNZEN => Some(&UNZEN_ZK_GAS_SCHEDULE),
         _ => None,
     }
 }

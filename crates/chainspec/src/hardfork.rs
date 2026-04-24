@@ -20,8 +20,8 @@ hardfork!(
       Pacaya,
       /// Shasta protocol upgrade.
       Shasta,
-      /// Uzen protocol upgrade.
-      Uzen,
+      /// Unzen protocol upgrade.
+      Unzen,
   }
 );
 
@@ -52,9 +52,9 @@ pub trait TaikoHardforks: EthereumHardforks {
         self.taiko_fork_activation(TaikoHardfork::Shasta).active_at_timestamp(timestamp)
     }
 
-    /// Convenience method to check if [`TaikoHardfork::Uzen`] is active at the given timestamp.
-    fn is_uzen_active(&self, timestamp: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::Uzen).active_at_timestamp(timestamp)
+    /// Convenience method to check if [`TaikoHardfork::Unzen`] is active at the given timestamp.
+    fn is_unzen_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Unzen).active_at_timestamp(timestamp)
     }
 }
 
@@ -72,7 +72,7 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(538_304)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_775_135_700)),
-        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Unzen.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -82,7 +82,7 @@ pub static TAIKO_HOODI_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_770_296_400)),
-        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Unzen.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -92,7 +92,7 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::Uzen.boxed(), ForkCondition::Timestamp(0)),
+        (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(0)),
     ]))
 });
 
@@ -102,7 +102,7 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::Uzen.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Unzen.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -110,14 +110,14 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
 ) -> Vec<(Box<dyn Hardfork>, ForkCondition)> {
-    // Determine the Ethereum fork activations implied by Uzen. Taiko executes Uzen with Osaka
+    // Determine the Ethereum fork activations implied by Unzen. Taiko executes Unzen with Osaka
     // semantics, and upstream validators still consult the predecessor Cancun/Prague fork flags
-    // for some transaction and payload checks. If Uzen is not present, default to
+    // for some transaction and payload checks. If Unzen is not present, default to
     // `ForkCondition::Never`.
-    let uzen_activation = hardforks
+    let unzen_activation = hardforks
         .iter()
         .find_map(|(fork, condition)| {
-            (fork.name() == TaikoHardfork::Uzen.name()).then_some(*condition)
+            (fork.name() == TaikoHardfork::Unzen.name()).then_some(*condition)
         })
         .unwrap_or(ForkCondition::Never);
 
@@ -144,9 +144,9 @@ fn extend_with_shared_hardforks(
             },
         ),
         (EthereumHardfork::Shanghai.boxed(), ForkCondition::Timestamp(0)),
-        (EthereumHardfork::Cancun.boxed(), uzen_activation),
-        (EthereumHardfork::Prague.boxed(), uzen_activation),
-        (EthereumHardfork::Osaka.boxed(), uzen_activation),
+        (EthereumHardfork::Cancun.boxed(), unzen_activation),
+        (EthereumHardfork::Prague.boxed(), unzen_activation),
+        (EthereumHardfork::Osaka.boxed(), unzen_activation),
     ];
 
     shared_hardforks.extend(hardforks);
@@ -169,10 +169,10 @@ mod test {
     }
 
     #[test]
-    fn test_extend_with_shared_hardforks_sets_osaka_from_uzen_activation() {
+    fn test_extend_with_shared_hardforks_sets_osaka_from_unzen_activation() {
         let forks = extend_with_shared_hardforks(vec![
             (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(1)),
-            (TaikoHardfork::Uzen.boxed(), ForkCondition::Timestamp(123)),
+            (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(123)),
         ]);
 
         let osaka =
@@ -182,10 +182,10 @@ mod test {
     }
 
     #[test]
-    fn test_extend_with_shared_hardforks_sets_cancun_and_prague_from_uzen_activation() {
+    fn test_extend_with_shared_hardforks_sets_cancun_and_prague_from_unzen_activation() {
         let forks = extend_with_shared_hardforks(vec![
             (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(1)),
-            (TaikoHardfork::Uzen.boxed(), ForkCondition::Timestamp(123)),
+            (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(123)),
         ]);
 
         let cancun =

@@ -36,16 +36,16 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub basefee_per_gas: u64,
     /// Block extra data.
     pub extra_data: Bytes,
-    /// Whether Uzen-or-later zk gas rules are active for this block.
-    pub is_uzen_active: bool,
+    /// Whether Unzen-or-later zk gas rules are active for this block.
+    pub is_unzen_active: bool,
     /// Imported-header difficulty expected after recomputing finalized block zk gas.
     pub expected_difficulty: Option<U256>,
-    /// Finalized block zk gas accumulated from fully committed post Uzen transactions.
+    /// Finalized block zk gas accumulated from fully committed post Unzen transactions.
     pub finalized_block_zk_gas: Arc<AtomicU64>,
 }
 
 impl<'a> TaikoBlockExecutionCtx<'a> {
-    /// Stores the finalized block zk gas value that should be written into the Uzen header.
+    /// Stores the finalized block zk gas value that should be written into the Unzen header.
     pub fn set_finalized_block_zk_gas(&self, zk_gas: u64) {
         self.finalized_block_zk_gas.store(zk_gas, Ordering::Relaxed);
     }
@@ -55,7 +55,7 @@ impl<'a> TaikoBlockExecutionCtx<'a> {
         self.finalized_block_zk_gas.load(Ordering::Relaxed)
     }
 
-    /// Returns the imported-header difficulty expected during Uzen validation, if any.
+    /// Returns the imported-header difficulty expected during Unzen validation, if any.
     pub fn expected_difficulty(&self) -> Option<U256> {
         self.expected_difficulty
     }

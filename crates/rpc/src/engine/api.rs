@@ -72,7 +72,7 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
     /// Provider used for DB reads/writes during L1-origin persistence.
     provider: Provider,
-    /// Taiko chain spec used to detect Uzen payloads when preparing `getPayloadV2` responses.
+    /// Taiko chain spec used to detect Unzen payloads when preparing `getPayloadV2` responses.
     chain_spec: Arc<TaikoChainSpec>,
     /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
@@ -126,7 +126,7 @@ where
     }
 
     /// Converts a built payload into the standard V2 envelope, preserving the builder fee unless
-    /// Uzen requires the hash-relevant header difficulty to be carried through `blockValue`.
+    /// Unzen requires the hash-relevant header difficulty to be carried through `blockValue`.
     fn convert_built_payload_to_execution_payload_envelope_v2(
         &self,
         built_payload: EthBuiltPayload,
@@ -271,19 +271,19 @@ where
 
 /// Converts a built payload into the standard V2 execution payload envelope.
 ///
-/// Uzen reuses `blockValue` to transport the hash-relevant header difficulty through the standard
+/// Unzen reuses `blockValue` to transport the hash-relevant header difficulty through the standard
 /// `getPayloadV2` response shape without adding a new wire field.
 fn convert_built_payload_to_execution_payload_envelope_v2(
     chain_spec: &TaikoChainSpec,
     built_payload: EthBuiltPayload,
 ) -> ExecutionPayloadEnvelopeV2 {
     let block = built_payload.block();
-    let is_uzen_active = chain_spec.is_uzen_active(block.header().timestamp);
+    let is_unzen_active = chain_spec.is_unzen_active(block.header().timestamp);
     let header_difficulty = block.header().difficulty;
     let mut envelope = ExecutionPayloadEnvelopeV2::from(built_payload);
 
-    if is_uzen_active {
-        // Consensus rule: Taiko Uzen round-trips the header difficulty through `blockValue` so
+    if is_unzen_active {
+        // Consensus rule: Taiko Unzen round-trips the header difficulty through `blockValue` so
         // the RPC response can carry the hash-relevant field without introducing a new wire field.
         envelope.block_value = header_difficulty;
     }
@@ -304,8 +304,8 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn uzen_payload_overwrites_block_value_with_header_difficulty() {
-        let chain_spec = uzen_chain_spec();
+    fn unzen_payload_overwrites_block_value_with_header_difficulty() {
+        let chain_spec = unzen_chain_spec();
         let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
 
         let envelope = convert_built_payload_to_execution_payload_envelope_v2(
@@ -317,8 +317,8 @@ mod tests {
     }
 
     #[test]
-    fn pre_uzen_payload_preserves_original_block_value() {
-        let chain_spec = pre_uzen_chain_spec();
+    fn pre_unzen_payload_preserves_original_block_value() {
+        let chain_spec = pre_unzen_chain_spec();
         let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
 
         let envelope = convert_built_payload_to_execution_payload_envelope_v2(
@@ -329,26 +329,26 @@ mod tests {
         assert_eq!(envelope.block_value, U256::from(1_u64));
     }
 
-    fn uzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
+    fn unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
         Arc::new(chain_spec)
     }
 
-    fn pre_uzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
+    fn pre_unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Uzen, ForkCondition::Timestamp(10));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(10));
         Arc::new(chain_spec)
     }
 
     fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {
-        let block = sample_uzen_block(difficulty, timestamp);
+        let block = sample_unzen_block(difficulty, timestamp);
         let sealed_block = Arc::new(block.seal_slow());
 
         EthBuiltPayload::new(sealed_block, fees, None, None)
     }
 
-    fn sample_uzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {
+    fn sample_unzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {
         reth_ethereum::Block {
             header: Header {
                 parent_hash: B256::with_last_byte(0x11),

@@ -1,13 +1,13 @@
 //! Fork-scoped zk gas schedules for Taiko consensus.
 
-/// Inspector-side Uzen opcode metering and shared error definitions.
+/// Inspector-side Unzen opcode metering and shared error definitions.
 pub mod adapter;
-/// Checked zk gas accounting for a single Uzen block execution.
+/// Checked zk gas accounting for a single Unzen block execution.
 pub mod meter;
 /// Shared schedule types and fork selection helpers.
 pub mod schedule;
-/// Uzen-specific fixed zk gas schedule data.
-pub mod uzen;
+/// Unzen-specific fixed zk gas schedule data.
+pub mod unzen;
 
 #[cfg(test)]
 mod tests;

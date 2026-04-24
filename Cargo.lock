@@ -236,6 +236,7 @@ dependencies = [
  "alethia-reth-payload",
  "alethia-reth-primitives",
  "alethia-reth-rpc",
+ "alloy-primitives",
  "alloy-rpc-types-eth",
  "eyre",
  "reth",

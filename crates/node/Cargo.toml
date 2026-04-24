@@ -26,6 +26,7 @@ alethia-reth-node-builder = { path = "../node-builder" }
 alethia-reth-payload = { path = "../payload" }
 alethia-reth-primitives = { path = "../primitives", features = ["serde"] }
 alethia-reth-rpc = { path = "../rpc" }
+alloy-primitives = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 eyre = { workspace = true }
 reth = { workspace = true }

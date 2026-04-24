@@ -6,15 +6,21 @@ use alethia_reth_rpc::{
     eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
 };
 use eyre::{WrapErr, eyre};
-use reth::{providers::HeaderProvider, tasks::TaskExecutor};
-use reth_db::database_metrics::DatabaseMetrics;
+use reth::{
+    providers::{BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider},
+    tasks::TaskExecutor,
+};
+use reth_db::{Database, database_metrics::DatabaseMetrics};
 use reth_node_api::{FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
 use reth_optimism_exex::OpProofsExEx;
-use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
+use reth_optimism_trie::{
+    InitializationJob, OpProofsStorage, OpProofsStore, api::OpProofsProviderRO,
+    db::MdbxProofsStorage,
+};
 use reth_rpc_eth_api::helpers::FullEthApi;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -102,6 +108,8 @@ where
     CB: NodeComponentsBuilder<T>,
     AO: NodeAddOns<NodeAdapter<T, CB::Components>> + RethRpcAddOns<NodeAdapter<T, CB::Components>>,
     AO::EthApi: FullEthApi + Send + Sync + 'static,
+    T::Provider: BlockNumReader + DatabaseProviderFactory,
+    <T::DB as Database>::TX: Sync,
 {
     if !config.enabled {
         return Ok((node_builder, None));
@@ -115,6 +123,7 @@ where
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
     let handle = ProofHistoryHandle::new(storage.clone());
     let storage_for_exex = storage.clone();
+    let storage_for_init = Arc::clone(&mdbx);
 
     Ok((
         node_builder
@@ -127,6 +136,7 @@ where
                 Ok(())
             })
             .install_exex("proofs-history", async move |exex_context| {
+                initialize_proof_history_storage(exex_context.provider(), storage_for_init)?;
                 Ok(OpProofsExEx::builder(exex_context, storage_for_exex)
                     .with_proofs_history_window(config.window)
                     .with_proofs_history_prune_interval(config.prune_interval)
@@ -136,6 +146,52 @@ where
             }),
         Some(handle),
     ))
+}
+
+/// Returns whether proof-history storage needs an initial current-state snapshot.
+fn proof_history_storage_needs_initialization<Storage>(storage: &Storage) -> eyre::Result<bool>
+where
+    Storage: OpProofsStore,
+{
+    let provider_ro = storage.provider_ro()?;
+    Ok(provider_ro.get_earliest_block_number()?.is_none() ||
+        provider_ro.get_latest_block_number()?.is_none())
+}
+
+/// Initializes empty proof-history storage from the node's current canonical state.
+fn initialize_proof_history_storage<Provider, Storage>(
+    provider: &Provider,
+    storage: Storage,
+) -> eyre::Result<()>
+where
+    Provider: BlockNumReader + DatabaseProviderFactory,
+    <Provider::DB as Database>::TX: Sync,
+    Storage: OpProofsStore + Send,
+{
+    if !proof_history_storage_needs_initialization(&storage)? {
+        return Ok(());
+    }
+
+    let chain_info = provider.chain_info()?;
+    info!(
+        target: "reth::taiko::proof_history",
+        best_number = chain_info.best_number,
+        best_hash = ?chain_info.best_hash,
+        "initializing proof-history storage from current canonical state"
+    );
+
+    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+    let db_tx = db_provider.into_tx();
+    InitializationJob::new(storage, db_tx).run(chain_info.best_number, chain_info.best_hash)?;
+
+    info!(
+        target: "reth::taiko::proof_history",
+        best_number = chain_info.best_number,
+        best_hash = ?chain_info.best_hash,
+        "proof-history storage initialized"
+    );
+
+    Ok(())
 }
 
 /// Installs proof-history backed replacements for configured `eth_` and `debug_` RPC methods.
@@ -185,6 +241,8 @@ fn spawn_proofs_db_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::B256;
+    use reth_optimism_trie::{InMemoryProofsStorage, OpProofsStore, api::OpProofsProviderRw};
 
     #[test]
     fn disabled_config_has_no_storage_path() {
@@ -200,5 +258,19 @@ mod tests {
         let config = ProofHistoryConfig { enabled: true, ..ProofHistoryConfig::disabled() };
 
         assert!(config.required_storage_path().is_err());
+    }
+
+    #[test]
+    fn proof_history_storage_initialization_check_tracks_empty_storage() {
+        let storage: OpProofsStorage<InMemoryProofsStorage> =
+            InMemoryProofsStorage::default().into();
+
+        assert!(proof_history_storage_needs_initialization(&storage).unwrap());
+
+        let provider_rw = storage.provider_rw().expect("provider_rw");
+        provider_rw.set_earliest_block_number(0, B256::ZERO).expect("set earliest block");
+        provider_rw.commit().expect("commit");
+
+        assert!(!proof_history_storage_needs_initialization(&storage).unwrap());
     }
 }

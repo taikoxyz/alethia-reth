@@ -46,9 +46,16 @@ use reth_trie_common::{
     updates::TrieUpdatesSorted,
 };
 use reth_trie_db::{LegacyKeyAdapter, PackedKeyAdapter, StorageTrieEntryLike, TrieTableAdapter};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{sync::watch, task, time, time::sleep};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Default proof-history retention window in blocks.
 const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
@@ -222,7 +229,14 @@ enum DelayedProofHistoryStart {
         /// First block where proof-history should initialize.
         start_block: u64,
     },
-    /// Local execution has reached the derived proof-history start block.
+    /// Local execution has passed the derived proof-history start block.
+    MissedStart {
+        /// First block where proof-history should have initialized.
+        start_block: u64,
+        /// Current local execution head.
+        executed_head: u64,
+    },
+    /// Local execution is exactly at the derived proof-history start block.
     Ready {
         /// First block where proof-history should initialize.
         start_block: u64,
@@ -247,6 +261,8 @@ fn delayed_proof_history_start(
     let start_block = proof_history_window_start_block(finalized_block, window);
     if executed_head < start_block {
         DelayedProofHistoryStart::WaitForExecution { start_block }
+    } else if executed_head > start_block {
+        DelayedProofHistoryStart::MissedStart { start_block, executed_head }
     } else {
         DelayedProofHistoryStart::Ready { start_block }
     }
@@ -272,6 +288,8 @@ where
     verification_interval: u64,
     /// Whether empty proof-history storage waits for the finalized retention window.
     backfill_window_only: bool,
+    /// Whether a delayed-start miss has already been reported for this ExEx run.
+    missed_start_logged: AtomicBool,
 }
 
 impl<Node, Storage> ProofHistoryExEx<Node, Storage>
@@ -296,6 +314,7 @@ where
             proofs_history_prune_interval,
             verification_interval,
             backfill_window_only,
+            missed_start_logged: AtomicBool::new(false),
         }
     }
 }
@@ -390,6 +409,26 @@ where
                     start_block,
                     "waiting for local execution to reach proof-history window start"
                 );
+                Ok(false)
+            }
+            DelayedProofHistoryStart::MissedStart { start_block, executed_head } => {
+                if self.missed_start_logged.swap(true, Ordering::Relaxed) {
+                    debug!(
+                        target: "reth::taiko::proof_history",
+                        ?finalized_block,
+                        executed_head,
+                        start_block,
+                        "waiting for proof-history window start to match local execution"
+                    );
+                } else {
+                    warn!(
+                        target: "reth::taiko::proof_history",
+                        ?finalized_block,
+                        executed_head,
+                        start_block,
+                        "empty proof-history storage missed the finalized window start; continuing to acknowledge notifications without initializing"
+                    );
+                }
                 Ok(false)
             }
             DelayedProofHistoryStart::Ready { start_block } => {
@@ -1191,6 +1230,14 @@ mod tests {
         assert_eq!(
             delayed_proof_history_start(Some(1_000_000), 649_999, 350_000),
             DelayedProofHistoryStart::WaitForExecution { start_block: 650_000 }
+        );
+    }
+
+    #[test]
+    fn delayed_proof_history_initialization_reports_missed_start() {
+        assert_eq!(
+            delayed_proof_history_start(Some(1_000_000), 650_001, 350_000),
+            DelayedProofHistoryStart::MissedStart { start_block: 650_000, executed_head: 650_001 }
         );
     }
 

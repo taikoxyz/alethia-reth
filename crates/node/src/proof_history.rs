@@ -54,7 +54,9 @@ use reth_trie_db::{
     TrieTableAdapter,
 };
 use std::{
-    path::PathBuf,
+    fs, io,
+    path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -157,6 +159,7 @@ where
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
     let storage_for_exex = storage.clone();
     let storage_for_init = Arc::clone(&mdbx);
+    let historical_init_metadata_path = proof_history_historical_init_metadata_path(&storage_path);
 
     Ok((
         node_builder
@@ -173,10 +176,13 @@ where
                     exex_context,
                     storage_for_exex,
                     storage_for_init,
-                    config.window,
-                    config.prune_interval,
-                    config.verification_interval,
-                    config.backfill_window_only,
+                    ProofHistoryExExConfig {
+                        proofs_history_window: config.window,
+                        proofs_history_prune_interval: config.prune_interval,
+                        verification_interval: config.verification_interval,
+                        backfill_window_only: config.backfill_window_only,
+                        historical_init_metadata_path: Some(historical_init_metadata_path),
+                    },
                 )
                 .run())
             }),
@@ -211,6 +217,144 @@ const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs
 
 /// Number of proof-history blocks pruned in one pruning transaction.
 const PROOF_HISTORY_PRUNE_BATCH_SIZE: u64 = 200;
+
+/// File stored beside the proof-history MDBX database to validate historical init resume targets.
+const PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE: &str = "taiko-historical-init-target";
+
+/// Returns the metadata file path used to validate in-progress historical initialization.
+fn proof_history_historical_init_metadata_path(storage_path: &Path) -> PathBuf {
+    storage_path.join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE)
+}
+
+/// Metadata that identifies the historical initialization source state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistoricalInitMetadata {
+    /// Historical proof-history start block being initialized.
+    start_block: BlockNumHash,
+    /// Canonical source block used to rewind the node state into the historical start block.
+    target_block: BlockNumHash,
+}
+
+impl HistoricalInitMetadata {
+    /// Encodes metadata as a small line-oriented text file.
+    fn encode(self) -> String {
+        format!(
+            "version=1\nstart_number={}\nstart_hash={:?}\ntarget_number={}\ntarget_hash={:?}\n",
+            self.start_block.number,
+            self.start_block.hash,
+            self.target_block.number,
+            self.target_block.hash
+        )
+    }
+
+    /// Decodes metadata written by [`Self::encode`].
+    fn decode(contents: &str) -> eyre::Result<Self> {
+        let mut version = None;
+        let mut start_number = None;
+        let mut start_hash = None;
+        let mut target_number = None;
+        let mut target_hash = None;
+
+        for line in contents.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(eyre!("invalid historical init metadata line: {line:?}"));
+            };
+
+            match key {
+                "version" => version = Some(value),
+                "start_number" => {
+                    start_number = Some(value.parse::<u64>().wrap_err("invalid start_number")?)
+                }
+                "start_hash" => {
+                    start_hash = Some(B256::from_str(value).wrap_err("invalid start_hash")?)
+                }
+                "target_number" => {
+                    target_number = Some(value.parse::<u64>().wrap_err("invalid target_number")?)
+                }
+                "target_hash" => {
+                    target_hash = Some(B256::from_str(value).wrap_err("invalid target_hash")?)
+                }
+                unknown => {
+                    return Err(eyre!("unknown historical init metadata key: {unknown}"));
+                }
+            }
+        }
+
+        if version != Some("1") {
+            return Err(eyre!("unsupported historical init metadata version"));
+        }
+
+        Ok(Self {
+            start_block: BlockNumHash::new(
+                start_number.ok_or_else(|| eyre!("missing start_number"))?,
+                start_hash.ok_or_else(|| eyre!("missing start_hash"))?,
+            ),
+            target_block: BlockNumHash::new(
+                target_number.ok_or_else(|| eyre!("missing target_number"))?,
+                target_hash.ok_or_else(|| eyre!("missing target_hash"))?,
+            ),
+        })
+    }
+}
+
+/// Writes historical initialization metadata before creating the OP storage anchor.
+fn write_historical_init_metadata(
+    path: &Path,
+    metadata: HistoricalInitMetadata,
+) -> eyre::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).wrap_err_with(|| {
+            format!("failed to create historical init metadata directory at {parent:?}")
+        })?;
+    }
+    fs::write(path, metadata.encode())
+        .wrap_err_with(|| format!("failed to write historical init metadata at {path:?}"))
+}
+
+/// Reads historical initialization metadata if it exists.
+fn read_historical_init_metadata(path: &Path) -> eyre::Result<Option<HistoricalInitMetadata>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => HistoricalInitMetadata::decode(&contents).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .wrap_err_with(|| format!("failed to read historical init metadata at {path:?}")),
+    }
+}
+
+/// Removes historical initialization metadata after successful initialization.
+fn remove_historical_init_metadata(path: &Path) -> eyre::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .wrap_err_with(|| format!("failed to remove historical init metadata at {path:?}")),
+    }
+}
+
+/// Validates that in-progress historical initialization is resuming the same source state.
+fn validate_historical_init_metadata_file(
+    metadata_path: Option<&Path>,
+    expected_metadata: HistoricalInitMetadata,
+) -> eyre::Result<()> {
+    let Some(path) = metadata_path else {
+        return Err(eyre!(
+            "in-progress historical proof-history initialization cannot resume without target metadata"
+        ));
+    };
+    let Some(stored_metadata) = read_historical_init_metadata(path)? else {
+        return Err(eyre!(
+            "missing historical proof-history initialization metadata at {path:?}; wipe proof-history storage and restart initialization"
+        ));
+    };
+
+    if stored_metadata != expected_metadata {
+        return Err(eyre!(
+            "historical proof-history initialization target changed: stored={stored_metadata:?} current={expected_metadata:?}; wipe proof-history storage and restart initialization"
+        ));
+    }
+
+    Ok(())
+}
 
 /// Returns the highest block proof-history may backfill without running ahead of execution.
 fn proof_history_backfill_target(
@@ -283,6 +427,21 @@ fn delayed_proof_history_start(
     }
 }
 
+/// Runtime settings passed into the proof-history ExEx.
+#[derive(Debug)]
+struct ProofHistoryExExConfig {
+    /// Number of recent blocks retained in proof-history storage.
+    proofs_history_window: u64,
+    /// Wall-clock interval between proof-history prune passes.
+    proofs_history_prune_interval: Duration,
+    /// Block interval between full execution verification checks.
+    verification_interval: u64,
+    /// Whether empty proof-history storage waits for the finalized retention window.
+    backfill_window_only: bool,
+    /// Sidecar file that records historical initialization target metadata.
+    historical_init_metadata_path: Option<PathBuf>,
+}
+
 /// Taiko proof-history ExEx that keeps OP proofs storage behind locally executed state.
 #[derive(Debug)]
 struct ProofHistoryExEx<Node, Storage>
@@ -295,14 +454,8 @@ where
     storage: OpProofsStorage<Storage>,
     /// Raw proof-history storage handle used for the initial current-state snapshot.
     init_storage: Storage,
-    /// Number of recent blocks retained in proof-history storage.
-    proofs_history_window: u64,
-    /// Wall-clock interval between proof-history prune passes.
-    proofs_history_prune_interval: Duration,
-    /// Block interval between full execution verification checks.
-    verification_interval: u64,
-    /// Whether empty proof-history storage waits for the finalized retention window.
-    backfill_window_only: bool,
+    /// Runtime settings that govern proof-history retention and startup behavior.
+    config: ProofHistoryExExConfig,
     /// Whether a delayed-start miss has already been reported for this ExEx run.
     missed_start_logged: AtomicBool,
     /// Serializes proof-history writers across live notifications, background sync, and pruning.
@@ -318,19 +471,13 @@ where
         ctx: ExExContext<Node>,
         storage: OpProofsStorage<Storage>,
         init_storage: Storage,
-        proofs_history_window: u64,
-        proofs_history_prune_interval: Duration,
-        verification_interval: u64,
-        backfill_window_only: bool,
+        config: ProofHistoryExExConfig,
     ) -> Self {
         Self {
             ctx,
             storage,
             init_storage,
-            proofs_history_window,
-            proofs_history_prune_interval,
-            verification_interval,
-            backfill_window_only,
+            config,
             missed_start_logged: AtomicBool::new(false),
             write_lock: Arc::new(Mutex::new(())),
         }
@@ -409,7 +556,7 @@ where
     /// Initializes proof-history storage immediately or waits for the finalized window.
     fn initialize_or_wait(&self) -> eyre::Result<bool> {
         if proof_history_storage_needs_initialization(&self.storage)? {
-            let action = if self.backfill_window_only {
+            let action = if self.config.backfill_window_only {
                 self.finalized_window_initialization_action()?
             } else {
                 ProofHistoryInitializationAction::CurrentState
@@ -427,6 +574,7 @@ where
                 } => initialize_historical_proof_history_storage(
                     self.ctx.provider(),
                     self.init_storage.clone(),
+                    self.config.historical_init_metadata_path.as_deref(),
                     start_block,
                     target_block,
                 )?,
@@ -446,7 +594,7 @@ where
         match delayed_proof_history_start(
             finalized_block,
             executed_head,
-            self.proofs_history_window,
+            self.config.proofs_history_window,
         ) {
             DelayedProofHistoryStart::WaitForFinalized => {
                 debug!(
@@ -514,7 +662,7 @@ where
             .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
             .0;
 
-        let target_earliest = latest_block_number.saturating_sub(self.proofs_history_window);
+        let target_earliest = latest_block_number.saturating_sub(self.config.proofs_history_window);
         if target_earliest > earliest_block_number {
             let blocks_to_prune = target_earliest - earliest_block_number;
             if blocks_to_prune > PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS {
@@ -546,11 +694,11 @@ where
         let pruner = OpProofStoragePruner::new(
             self.storage.clone(),
             self.ctx.provider().clone(),
-            self.proofs_history_window,
+            self.config.proofs_history_window,
             PROOF_HISTORY_PRUNE_BATCH_SIZE,
         );
-        let prune_interval = self.proofs_history_prune_interval;
-        let retention_window = self.proofs_history_window;
+        let prune_interval = self.config.proofs_history_prune_interval;
+        let retention_window = self.config.proofs_history_window;
         let write_lock = self.write_lock.clone();
 
         self.ctx
@@ -769,8 +917,8 @@ where
         chain: &Chain<Primitives>,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
-        let should_verify = self.verification_interval > 0 &&
-            block_number.is_multiple_of(self.verification_interval);
+        let should_verify = self.config.verification_interval > 0 &&
+            block_number.is_multiple_of(self.config.verification_interval);
 
         if let Some(block) = chain.blocks().get(&block_number) &&
             let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
@@ -910,6 +1058,7 @@ where
 fn initialize_historical_proof_history_storage<Provider, Storage>(
     provider: &Provider,
     storage: Storage,
+    metadata_path: Option<&Path>,
     start_block: u64,
     target_block: u64,
 ) -> eyre::Result<()>
@@ -940,12 +1089,17 @@ where
         .sealed_header(start_block)?
         .ok_or_else(|| eyre!("missing proof-history anchor header {start_block}"))?;
     let anchor = BlockNumHash::new(start_block, anchor_header.hash());
+    let target_header = db_provider
+        .sealed_header(target_block)?
+        .ok_or_else(|| eyre!("missing proof-history target header {target_block}"))?;
+    let target = BlockNumHash::new(target_block, target_header.hash());
 
     info!(
         target: "reth::taiko::proof_history",
         start_block,
         target_block,
         anchor_hash = ?anchor.hash,
+        target_hash = ?target.hash,
         "initializing proof-history storage from historical canonical state"
     );
 
@@ -962,14 +1116,18 @@ where
     if storage_v2 {
         init_job.run_historical_with_adapter::<PackedKeyAdapter>(
             anchor,
+            target,
             anchor_header.state_root(),
             historical_post_state,
+            metadata_path,
         )?;
     } else {
         init_job.run_historical_with_adapter::<LegacyKeyAdapter>(
             anchor,
+            target,
             anchor_header.state_root(),
             historical_post_state,
+            metadata_path,
         )?;
     }
 
@@ -1082,8 +1240,10 @@ where
     fn run_historical_with_adapter<Adapter>(
         &self,
         block: BlockNumHash,
+        target_block: BlockNumHash,
         state_root: B256,
         hashed_state: HashedPostStateSorted,
+        metadata_path: Option<&Path>,
     ) -> eyre::Result<()>
     where
         Adapter: TrieTableAdapter,
@@ -1105,7 +1265,10 @@ where
         let overlay =
             HistoricalAnchorOverlay { hashed_state, trie_updates: trie_updates.into_sorted() };
 
-        let Some(anchor) = self.prepare_anchor(block)? else { return Ok(()) };
+        let metadata = HistoricalInitMetadata { start_block: block, target_block };
+        let Some(anchor) = self.prepare_historical_anchor(block, metadata_path, metadata)? else {
+            return Ok(());
+        };
 
         self.initialize_hashed_accounts_with_overlay(anchor.latest_hashed_account_key, &overlay)?;
         self.initialize_hashed_storages_with_overlay(anchor.latest_hashed_storage_key, &overlay)?;
@@ -1118,7 +1281,18 @@ where
             &overlay,
         )?;
 
-        self.commit_initial_state()
+        self.commit_initial_state()?;
+        if let Some(path) = metadata_path &&
+            let Err(error) = remove_historical_init_metadata(path)
+        {
+            error!(
+                target: "reth::taiko::proof_history",
+                ?error,
+                metadata_path = ?path,
+                "failed to remove historical proof-history initialization metadata"
+            );
+        }
+        Ok(())
     }
 
     /// Loads or initializes the proof-history anchor for `block`, returning `None` when
@@ -1140,6 +1314,44 @@ where
                 Ok(Some(anchor))
             }
         }
+    }
+
+    /// Loads or initializes a historical proof-history anchor and validates the resume target.
+    fn prepare_historical_anchor(
+        &self,
+        block: BlockNumHash,
+        metadata_path: Option<&Path>,
+        expected_metadata: HistoricalInitMetadata,
+    ) -> eyre::Result<Option<InitialStateAnchor>> {
+        let init_provider = self.storage.initialization_provider()?;
+        let anchor = init_provider.initial_state_anchor()?;
+
+        match anchor.status {
+            InitialStateStatus::Completed => Ok(None),
+            InitialStateStatus::NotStarted => {
+                if let Some(path) = metadata_path {
+                    write_historical_init_metadata(path, expected_metadata)?;
+                }
+                init_provider.set_initial_state_anchor(block)?;
+                OpProofsInitProvider::commit(init_provider)?;
+                Ok(Some(anchor))
+            }
+            InitialStateStatus::InProgress => {
+                self.validate_anchor_block(&anchor, block.number, block.hash)?;
+                self.validate_historical_init_metadata(metadata_path, expected_metadata)?;
+                drop(init_provider);
+                Ok(Some(anchor))
+            }
+        }
+    }
+
+    /// Validates that historical initialization is resuming the same source state.
+    fn validate_historical_init_metadata(
+        &self,
+        metadata_path: Option<&Path>,
+        expected_metadata: HistoricalInitMetadata,
+    ) -> eyre::Result<()> {
+        validate_historical_init_metadata_file(metadata_path, expected_metadata)
     }
 
     /// Marks proof-history initialization as completed and commits.
@@ -1651,6 +1863,42 @@ mod tests {
             delayed_proof_history_start(Some(1_000_000), 650_000, 350_000),
             DelayedProofHistoryStart::Ready { start_block: 650_000 }
         );
+    }
+
+    #[test]
+    fn historical_init_metadata_round_trips() {
+        let metadata = HistoricalInitMetadata {
+            start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
+            target_block: BlockNumHash::new(1_000_000, B256::with_last_byte(2)),
+        };
+
+        assert_eq!(HistoricalInitMetadata::decode(&metadata.encode()).unwrap(), metadata);
+    }
+
+    #[test]
+    fn historical_init_metadata_validation_rejects_target_mismatch() {
+        let unique =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir()
+            .join(format!("alethia-reth-proof-history-metadata-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
+
+        let stored = HistoricalInitMetadata {
+            start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
+            target_block: BlockNumHash::new(1_000_000, B256::with_last_byte(2)),
+        };
+        let current = HistoricalInitMetadata {
+            start_block: stored.start_block,
+            target_block: BlockNumHash::new(999_999, B256::with_last_byte(3)),
+        };
+
+        write_historical_init_metadata(&path, stored).unwrap();
+        let error =
+            validate_historical_init_metadata_file(Some(&path), current).unwrap_err().to_string();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(error.contains("initialization target changed"));
     }
 
     #[test]

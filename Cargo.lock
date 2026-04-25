@@ -253,7 +253,6 @@ dependencies = [
  "reth-node-api",
  "reth-node-builder",
  "reth-node-ethereum",
- "reth-optimism-exex",
  "reth-optimism-trie",
  "reth-primitives-traits",
  "reth-provider",
@@ -399,13 +398,11 @@ dependencies = [
  "reth-provider",
  "reth-revm",
  "reth-rpc",
- "reth-rpc-api",
  "reth-rpc-builder",
  "reth-rpc-convert",
  "reth-rpc-engine-api",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
- "reth-tasks",
  "reth-trie-common",
  "serde",
  "serde_json",
@@ -8355,25 +8352,6 @@ dependencies = [
  "reth-engine-primitives",
  "reth-payload-primitives",
  "reth-primitives-traits",
-]
-
-[[package]]
-name = "reth-optimism-exex"
-version = "1.11.3"
-source = "git+https://github.com/ethereum-optimism/optimism?rev=bcf489eaca2218e5063ca2d188a25f9c83ccd3f3#bcf489eaca2218e5063ca2d188a25f9c83ccd3f3"
-dependencies = [
- "alloy-consensus",
- "alloy-eips 2.0.0",
- "eyre",
- "futures-util",
- "reth-execution-types",
- "reth-exex",
- "reth-node-api",
- "reth-optimism-trie",
- "reth-provider",
- "reth-trie",
- "tokio",
- "tracing",
 ]
 
 [[package]]

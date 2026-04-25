@@ -13,9 +13,7 @@ use reth_provider::HeaderProvider;
 use reth_revm::{State, database::StateProviderDatabase, witness::ExecutionWitnessRecord};
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
-use reth_tasks::TaskExecutor;
 use reth_trie_common::ExecutionWitnessMode;
-use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 /// Maximum number of concurrent proof-history witness requests.
@@ -43,40 +41,8 @@ pub trait TaikoDebugWitnessApi {
 }
 
 /// `debug_` namespace overrides that use proof-history state for witness generation.
-#[derive(Debug, Clone)]
-pub struct TaikoDebugWitnessExt<Eth, Storage, Provider> {
-    /// Shared implementation state for cheap RPC handler cloning.
-    inner: Arc<TaikoDebugWitnessExtInner<Eth, Storage, Provider>>,
-}
-
-impl<Eth, Storage, Provider> TaikoDebugWitnessExt<Eth, Storage, Provider>
-where
-    Eth: FullEthApi + Send + Sync + 'static,
-    Storage: OpProofsStore + Clone + 'static,
-    Provider: HeaderProvider + Clone + Send + Sync + 'static,
-    Provider::Header: BlockHeader + alloy_rlp::Encodable,
-{
-    /// Creates a new proof-history backed debug witness override.
-    pub fn new(
-        provider: Provider,
-        eth_api: Eth,
-        storage: OpProofsStorage<Storage>,
-        task_spawner: TaskExecutor,
-    ) -> Self {
-        Self {
-            inner: Arc::new(TaikoDebugWitnessExtInner::new(
-                provider,
-                eth_api,
-                storage,
-                task_spawner,
-            )),
-        }
-    }
-}
-
-/// Shared implementation state for [`TaikoDebugWitnessExt`].
 #[derive(Debug)]
-struct TaikoDebugWitnessExtInner<Eth, Storage, Provider> {
+pub struct TaikoDebugWitnessExt<Eth, Storage, Provider> {
     /// Provider used to fetch ancestor block headers for the returned witness.
     provider: Provider,
     /// Ethereum RPC API used to load blocks, state, and the EVM configuration.
@@ -87,20 +53,15 @@ struct TaikoDebugWitnessExtInner<Eth, Storage, Provider> {
     semaphore: Semaphore,
 }
 
-impl<Eth, Storage, Provider> TaikoDebugWitnessExtInner<Eth, Storage, Provider>
+impl<Eth, Storage, Provider> TaikoDebugWitnessExt<Eth, Storage, Provider>
 where
     Eth: FullEthApi + Send + Sync + 'static,
     Storage: OpProofsStore + Clone + 'static,
     Provider: HeaderProvider + Clone + Send + Sync + 'static,
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
 {
-    /// Creates a new shared debug witness implementation.
-    fn new(
-        provider: Provider,
-        eth_api: Eth,
-        storage: OpProofsStorage<Storage>,
-        _task_spawner: TaskExecutor,
-    ) -> Self {
+    /// Creates a new proof-history backed debug witness override.
+    pub fn new(provider: Provider, eth_api: Eth, storage: OpProofsStorage<Storage>) -> Self {
         Self {
             provider,
             state_provider_factory: ProofHistoryStateProviderFactory::new(eth_api.clone(), storage),
@@ -131,7 +92,7 @@ where
         let block_executor = self.eth_api.evm_config().executor(db);
         let mut witness_record = ExecutionWitnessRecord::default();
 
-        let _ = block_executor
+        block_executor
             .execute_with_state_closure(&block, |statedb: &State<_>| {
                 witness_record.record_executed_state(statedb, mode);
             })
@@ -158,9 +119,8 @@ where
         block: BlockNumberOrTag,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit = self.inner.semaphore.acquire().await;
-        self.inner
-            .execution_witness_for_id(block.into(), mode.unwrap_or_default())
+        let _permit = self.semaphore.acquire().await;
+        self.execution_witness_for_id(block.into(), mode.unwrap_or_default())
             .await
             .map_err(Into::into)
     }
@@ -171,9 +131,8 @@ where
         hash: B256,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit = self.inner.semaphore.acquire().await;
-        self.inner
-            .execution_witness_for_id(hash.into(), mode.unwrap_or_default())
+        let _permit = self.semaphore.acquire().await;
+        self.execution_witness_for_id(hash.into(), mode.unwrap_or_default())
             .await
             .map_err(Into::into)
     }

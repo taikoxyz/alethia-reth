@@ -43,7 +43,6 @@ reth-exex = { workspace = true }
 reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
 reth-node-ethereum = { workspace = true }
-reth-optimism-exex = { workspace = true }
 reth-optimism-trie = { workspace = true, features = ["metrics"] }
 reth-primitives-traits = { workspace = true }
 reth-rpc = { workspace = true }

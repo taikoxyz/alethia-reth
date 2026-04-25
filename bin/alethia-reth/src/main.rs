@@ -30,7 +30,7 @@ fn main() {
         async move |builder, ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
             let node_builder = builder.node(TaikoNode);
-            let (node_builder, proof_history_handle) =
+            let (node_builder, proof_history_storage) =
                 install_proof_history(node_builder, ext_args.proof_history_config())?;
             let handle = node_builder
                 .extend_rpc_modules(move |mut ctx| {
@@ -49,8 +49,8 @@ fn main() {
                     );
                     ctx.auth_module.merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
 
-                    if let Some(proof_history_handle) = proof_history_handle {
-                        install_proof_history_rpc(&mut ctx, proof_history_handle.storage())?;
+                    if let Some(storage) = proof_history_storage {
+                        install_proof_history_rpc(&mut ctx, storage)?;
                     }
 
                     Ok(())

@@ -33,7 +33,7 @@ use reth_node_builder::{
     rpc::{RethRpcAddOns, RpcContext},
 };
 use reth_optimism_trie::{
-    OpProofStoragePrunerTask, OpProofsStorage, OpProofsStore,
+    OpProofStoragePruner, OpProofsStorage, OpProofsStore,
     api::{InitialStateAnchor, InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO},
     db::{HashedStorageKey, MdbxProofsStorage, StorageTrieKey},
     live::LiveTrieCollector,
@@ -61,7 +61,11 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::watch, task, time, time::sleep};
+use tokio::{
+    sync::{Mutex, watch},
+    task,
+    time::{self, MissedTickBehavior, sleep},
+};
 use tracing::{debug, error, info};
 
 /// Default proof-history retention window in blocks.
@@ -202,6 +206,12 @@ const PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD: u64 = 1024;
 /// Delay used when proof-history has no locally executable backfill work.
 const PROOF_HISTORY_SYNC_IDLE_SLEEP: Duration = Duration::from_secs(5);
 
+/// Delay used while waiting for delayed proof-history initialization to become possible.
+const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Number of proof-history blocks pruned in one pruning transaction.
+const PROOF_HISTORY_PRUNE_BATCH_SIZE: u64 = 200;
+
 /// Returns the highest block proof-history may backfill without running ahead of execution.
 fn proof_history_backfill_target(
     latest_stored: u64,
@@ -295,6 +305,8 @@ where
     backfill_window_only: bool,
     /// Whether a delayed-start miss has already been reported for this ExEx run.
     missed_start_logged: AtomicBool,
+    /// Serializes proof-history writers across live notifications, background sync, and pruning.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl<Node, Storage> ProofHistoryExEx<Node, Storage>
@@ -302,7 +314,7 @@ where
     Node: FullNodeComponents,
 {
     /// Creates a proof-history ExEx with Taiko backfill guards.
-    const fn new(
+    fn new(
         ctx: ExExContext<Node>,
         storage: OpProofsStorage<Storage>,
         init_storage: Storage,
@@ -320,6 +332,7 @@ where
             verification_interval,
             backfill_window_only,
             missed_start_logged: AtomicBool::new(false),
+            write_lock: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -343,6 +356,8 @@ where
     /// Runs proof-history indexing until the node shuts down.
     async fn run(mut self) -> eyre::Result<()> {
         let mut sync_target_tx = self.try_start()?;
+        let mut retry_interval = time::interval(PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL);
+        retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         let collector = LiveTrieCollector::new(
             self.ctx.evm_config().clone(),
@@ -350,20 +365,32 @@ where
             &self.storage,
         );
 
-        while let Some(notification) = self.ctx.notifications.try_next().await? {
-            if sync_target_tx.is_none() {
-                sync_target_tx = self.try_start()?;
-                if sync_target_tx.is_none() {
-                    self.acknowledge_notification(&notification)?;
-                    continue;
+        loop {
+            tokio::select! {
+                maybe_notification = self.ctx.notifications.try_next() => {
+                    let Some(notification) = maybe_notification? else {
+                        break;
+                    };
+
+                    if sync_target_tx.is_none() {
+                        sync_target_tx = self.try_start()?;
+                        if sync_target_tx.is_none() {
+                            self.acknowledge_notification(&notification)?;
+                            continue;
+                        }
+                    }
+
+                    self.handle_notification(
+                        notification,
+                        &collector,
+                        sync_target_tx.as_ref().expect("initialized proof-history ExEx has a sync target"),
+                    )
+                    .await?;
+                }
+                _ = retry_interval.tick(), if sync_target_tx.is_none() => {
+                    sync_target_tx = self.try_start()?;
                 }
             }
-
-            self.handle_notification(
-                notification,
-                &collector,
-                sync_target_tx.as_ref().expect("initialized proof-history ExEx has a sync target"),
-            )?;
         }
 
         Ok(())
@@ -516,15 +543,44 @@ where
 
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
-        let prune_task = OpProofStoragePrunerTask::new(
+        let pruner = OpProofStoragePruner::new(
             self.storage.clone(),
             self.ctx.provider().clone(),
             self.proofs_history_window,
-            self.proofs_history_prune_interval,
+            PROOF_HISTORY_PRUNE_BATCH_SIZE,
         );
+        let prune_interval = self.proofs_history_prune_interval;
+        let retention_window = self.proofs_history_window;
+        let write_lock = self.write_lock.clone();
+
         self.ctx
             .task_executor()
-            .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
+            .spawn_with_graceful_shutdown_signal(move |mut signal| {
+                Box::pin(async move {
+                    info!(
+                        target: "reth::taiko::proof_history",
+                        window = retention_window,
+                        interval_secs = prune_interval.as_secs(),
+                        "starting proof-history pruner task"
+                    );
+
+                    let mut interval = time::interval(prune_interval);
+                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+                    loop {
+                        tokio::select! {
+                            _ = &mut signal => {
+                                info!(target: "reth::taiko::proof_history", "proof-history pruner task stopped");
+                                break;
+                            }
+                            _ = interval.tick() => {
+                                let _write_guard = write_lock.lock().await;
+                                pruner.run();
+                            }
+                        }
+                    }
+                })
+            });
     }
 
     /// Spawns the guarded proof-history backfill task.
@@ -533,6 +589,7 @@ where
         let task_storage = self.storage.clone();
         let task_provider = self.ctx.provider().clone();
         let task_evm_config = self.ctx.evm_config().clone();
+        let task_write_lock = self.write_lock.clone();
 
         self.ctx.task_executor().spawn_critical_task(
             "taiko::proof_history::sync_loop",
@@ -540,7 +597,14 @@ where
                 let storage = task_storage.clone();
                 let collector =
                     LiveTrieCollector::new(task_evm_config, task_provider.clone(), &storage);
-                Self::sync_loop(sync_target_rx, task_storage, task_provider, &collector).await;
+                Self::sync_loop(
+                    sync_target_rx,
+                    task_storage,
+                    task_provider,
+                    &collector,
+                    task_write_lock,
+                )
+                .await;
             },
         );
 
@@ -553,20 +617,22 @@ where
         storage: OpProofsStorage<Storage>,
         provider: Node::Provider,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        write_lock: Arc<Mutex<()>>,
     ) {
         debug!(target: "reth::taiko::proof_history", "starting proof-history sync loop");
 
         loop {
             let requested_target = *sync_target_rx.borrow_and_update();
+            let write_guard = write_lock.lock().await;
             let latest = match storage.provider_ro().and_then(|p| p.get_latest_block_number()) {
                 Ok(Some((number, _))) => number,
                 Ok(None) => {
-                    error!(target: "reth::taiko::proof_history", "proof-history sync loop found no stored blocks");
-                    time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
-                    continue;
+                    error!(target: "reth::taiko::proof_history", "proof-history sync loop found no stored blocks; stopping sync loop");
+                    return;
                 }
                 Err(error) => {
                     error!(target: "reth::taiko::proof_history", ?error, "failed to read proof-history latest block");
+                    drop(write_guard);
                     time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
                     continue;
                 }
@@ -576,6 +642,7 @@ where
                 Ok(number) => number,
                 Err(error) => {
                     error!(target: "reth::taiko::proof_history", ?error, "failed to read executed head for proof-history sync");
+                    drop(write_guard);
                     time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
                     continue;
                 }
@@ -591,17 +658,21 @@ where
                     executed_head,
                     "proof-history sync waiting for local execution"
                 );
+                drop(write_guard);
                 time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
                 continue;
             };
 
-            if let Err(error) = Self::process_batch(
+            let batch_result = Self::process_batch(
                 latest,
                 target,
                 &provider,
                 collector,
                 PROOF_HISTORY_SYNC_BATCH_SIZE,
-            ) {
+            );
+            drop(write_guard);
+
+            if let Err(error) = batch_result {
                 error!(target: "reth::taiko::proof_history", ?error, "proof-history batch processing failed");
                 time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
             }
@@ -632,12 +703,13 @@ where
     }
 
     /// Handles an ExEx notification and advances proof-history storage or its backfill target.
-    fn handle_notification(
+    async fn handle_notification(
         &self,
         notification: ExExNotification<Primitives>,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
         sync_target_tx: &watch::Sender<u64>,
     ) -> eyre::Result<()> {
+        let _write_guard = self.write_lock.lock().await;
         let latest_stored = self
             .storage
             .provider_ro()?

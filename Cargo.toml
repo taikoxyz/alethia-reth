@@ -132,7 +132,6 @@ reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f", default-features = false }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f" }
 
-reth-optimism-exex = { git = "https://github.com/ethereum-optimism/optimism", rev = "bcf489eaca2218e5063ca2d188a25f9c83ccd3f3", package = "reth-optimism-exex", default-features = false }
 reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", rev = "bcf489eaca2218e5063ca2d188a25f9c83ccd3f3", package = "reth-optimism-trie", default-features = false, features = ["serde-bincode-compat"] }
 
 # revm

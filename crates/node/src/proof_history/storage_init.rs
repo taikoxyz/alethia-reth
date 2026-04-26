@@ -1,6 +1,6 @@
 //! Proof-history storage bootstrap, metadata, and window-start state machine.
 
-use super::ProofHistoryInitializationJob;
+use super::init::ProofHistoryInitializationJob;
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
 use alloy_primitives::B256;

@@ -113,10 +113,13 @@ where
             return Ok(());
         };
 
-        self.initialize_hashed_accounts(anchor.latest_hashed_account_key)?;
-        self.initialize_hashed_storages(anchor.latest_hashed_storage_key)?;
-        self.initialize_storage_trie::<Adapter>(anchor.latest_storage_trie_key)?;
-        self.initialize_account_trie::<Adapter>(anchor.latest_account_trie_key)?;
+        self.initialize_hashed_accounts_filtered(anchor.latest_hashed_account_key, |_| true)?;
+        self.initialize_hashed_storages_filtered(anchor.latest_hashed_storage_key, |_, _| true)?;
+        self.initialize_storage_trie_filtered::<Adapter>(
+            anchor.latest_storage_trie_key,
+            |_, _| true,
+        )?;
+        self.initialize_account_trie_filtered::<Adapter>(anchor.latest_account_trie_key, |_| true)?;
 
         self.commit_initial_state()
     }
@@ -223,20 +226,11 @@ where
             }
             InitialStateStatus::InProgress => {
                 self.validate_anchor_block(&anchor, block.number, block.hash)?;
-                self.validate_historical_init_metadata(metadata_path, expected_metadata)?;
+                validate_historical_init_metadata_file(metadata_path, expected_metadata)?;
                 drop(init_provider);
                 Ok(Some(anchor))
             }
         }
-    }
-
-    /// Validates that historical initialization is resuming the same source state.
-    fn validate_historical_init_metadata(
-        &self,
-        metadata_path: Option<&Path>,
-        expected_metadata: HistoricalInitMetadata,
-    ) -> eyre::Result<()> {
-        validate_historical_init_metadata_file(metadata_path, expected_metadata)
     }
 
     /// Marks proof-history initialization as completed and commits.
@@ -269,11 +263,6 @@ where
         }
 
         Ok(())
-    }
-
-    /// Copies hashed account leaves from the node database into proof-history storage.
-    fn initialize_hashed_accounts(&self, start_key: Option<B256>) -> eyre::Result<()> {
-        self.initialize_hashed_accounts_filtered(start_key, |_| true)
     }
 
     /// Copies historical hashed account leaves, replacing current rows with overlay rows.
@@ -314,11 +303,6 @@ where
             }
         }
         self.store_hashed_accounts(batch)
-    }
-
-    /// Copies hashed storage leaves from the node database into proof-history storage.
-    fn initialize_hashed_storages(&self, start_key: Option<HashedStorageKey>) -> eyre::Result<()> {
-        self.initialize_hashed_storages_filtered(start_key, |_, _| true)
     }
 
     /// Copies historical hashed storage leaves, replacing current rows with overlay rows.
@@ -383,14 +367,6 @@ where
         Ok(())
     }
 
-    /// Copies account trie branches from the node database into proof-history storage.
-    fn initialize_account_trie<Adapter>(&self, start_key: Option<StoredNibbles>) -> eyre::Result<()>
-    where
-        Adapter: TrieTableAdapter,
-    {
-        self.initialize_account_trie_filtered::<Adapter>(start_key, |_| true)
-    }
-
     /// Copies historical account trie branches, replacing current rows with overlay rows.
     fn initialize_account_trie_with_overlay<Adapter>(
         &self,
@@ -437,17 +413,6 @@ where
             }
         }
         self.store_account_branches(batch)
-    }
-
-    /// Copies storage trie branches from the node database into proof-history storage.
-    fn initialize_storage_trie<Adapter>(
-        &self,
-        start_key: Option<StorageTrieKey>,
-    ) -> eyre::Result<()>
-    where
-        Adapter: TrieTableAdapter,
-    {
-        self.initialize_storage_trie_filtered::<Adapter>(start_key, |_, _| true)
     }
 
     /// Copies historical storage trie branches, replacing current rows with overlay rows.

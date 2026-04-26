@@ -1,9 +1,12 @@
 #![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
 #![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Rust Taiko node (alethia-reth) binary executable.
-use alethia_reth_cli::{TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs};
+use alethia_reth_cli::{
+    TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs, command::TaikoNodeExtArgs,
+};
 use alethia_reth_node::{
     TaikoNode,
+    proof_history::{install_proof_history, install_proof_history_rpc},
     rpc::eth::{
         auth::{TaikoAuthExt, TaikoAuthExtApiServer},
         eth::{TaikoExt, TaikoExtApiServer},
@@ -24,11 +27,13 @@ fn main() {
     }
 
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
-        async move |builder, _ext_args| {
+        async move |builder, ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
-            let handle = builder
-                .node(TaikoNode)
-                .extend_rpc_modules(move |ctx| {
+            let node_builder = builder.node(TaikoNode);
+            let (node_builder, proof_history_storage) =
+                install_proof_history(node_builder, ext_args.proof_history_config())?;
+            let handle = node_builder
+                .extend_rpc_modules(move |mut ctx| {
                     let provider = ctx.node().provider().clone();
 
                     // Extend the RPC modules with `taiko_` namespace RPCs extensions.
@@ -43,6 +48,10 @@ fn main() {
                         ctx.node().evm_config().clone(),
                     );
                     ctx.auth_module.merge_auth_methods(taiko_auth_rpc_ext.into_rpc())?;
+
+                    if let Some(storage) = proof_history_storage {
+                        install_proof_history_rpc(&mut ctx, storage)?;
+                    }
 
                     Ok(())
                 })

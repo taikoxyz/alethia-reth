@@ -1,5 +1,7 @@
 //! Taiko block executor integrating anchor pre-execution and tx filtering.
-use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt, transaction::Recovered};
+#[cfg(feature = "prover")]
+use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
     FromRecoveredTx, FromTxWithEncoded, RecoveredTx,

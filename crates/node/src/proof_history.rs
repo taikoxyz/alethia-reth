@@ -39,6 +39,7 @@ use reth_optimism_trie::{
     live::LiveTrieCollector,
 };
 use reth_primitives_traits::Account;
+use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
@@ -54,7 +55,7 @@ use reth_trie_db::{
     TrieTableAdapter,
 };
 use std::{
-    fs, io,
+    fs, io, panic,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -70,6 +71,18 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
+/// Converts blocking-task join failures into errors while preserving panics as panics.
+fn blocking_join_result<T>(
+    result: Result<T, task::JoinError>,
+    task_name: &'static str,
+) -> eyre::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_panic() => panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(eyre!("{task_name} failed to join: {error}")),
+    }
+}
+
 /// Default proof-history retention window in blocks.
 const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
 
@@ -77,7 +90,7 @@ const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
 const DEFAULT_PROOF_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Default interval, in blocks, between proof-history consistency checks.
-const DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL: u64 = 0;
+const DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL: u64 = 1024;
 
 /// Configuration for the optional proof-history execution extension.
 #[derive(Debug, Clone)]
@@ -548,7 +561,8 @@ where
         if !self.initialize_or_wait()? {
             return Ok(None);
         }
-        let sync_target_tx = self.spawn_sync_task();
+        let initial_sync_target = self.ctx.provider().best_block_number()?;
+        let sync_target_tx = self.spawn_sync_task(initial_sync_target);
         self.spawn_pruner_task();
         Ok(Some(sync_target_tx))
     }
@@ -691,12 +705,12 @@ where
 
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
-        let pruner = OpProofStoragePruner::new(
+        let pruner = Arc::new(OpProofStoragePruner::new(
             self.storage.clone(),
             self.ctx.provider().clone(),
             self.config.proofs_history_window,
             PROOF_HISTORY_PRUNE_BATCH_SIZE,
-        );
+        ));
         let prune_interval = self.config.proofs_history_prune_interval;
         let retention_window = self.config.proofs_history_window;
         let write_lock = self.write_lock.clone();
@@ -723,7 +737,34 @@ where
                             }
                             _ = interval.tick() => {
                                 let _write_guard = write_lock.lock().await;
-                                pruner.run();
+                                let pruner = pruner.clone();
+                                let mut prune_task = task::spawn_blocking(move || pruner.run());
+                                tokio::select! {
+                                    result = &mut prune_task => {
+                                        if let Err(error) = blocking_join_result(result, "proof-history pruner worker") {
+                                            error!(
+                                                target: "reth::taiko::proof_history",
+                                                ?error,
+                                                "proof-history pruner task failed to join blocking worker"
+                                            );
+                                        }
+                                    }
+                                    _ = &mut signal => {
+                                        info!(
+                                            target: "reth::taiko::proof_history",
+                                            "shutdown requested while proof-history prune is running; waiting for prune to finish"
+                                        );
+                                        if let Err(error) = blocking_join_result(prune_task.await, "proof-history pruner worker") {
+                                            error!(
+                                                target: "reth::taiko::proof_history",
+                                                ?error,
+                                                "proof-history pruner task failed to join blocking worker during shutdown"
+                                            );
+                                        }
+                                        info!(target: "reth::taiko::proof_history", "proof-history pruner task stopped");
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -732,8 +773,8 @@ where
     }
 
     /// Spawns the guarded proof-history backfill task.
-    fn spawn_sync_task(&self) -> watch::Sender<u64> {
-        let (sync_target_tx, sync_target_rx) = watch::channel(0u64);
+    fn spawn_sync_task(&self, initial_sync_target: u64) -> watch::Sender<u64> {
+        let (sync_target_tx, sync_target_rx) = watch::channel(initial_sync_target);
         let task_storage = self.storage.clone();
         let task_provider = self.ctx.provider().clone();
         let task_evm_config = self.ctx.evm_config().clone();
@@ -742,14 +783,11 @@ where
         self.ctx.task_executor().spawn_critical_task(
             "taiko::proof_history::sync_loop",
             async move {
-                let storage = task_storage.clone();
-                let collector =
-                    LiveTrieCollector::new(task_evm_config, task_provider.clone(), &storage);
                 Self::sync_loop(
                     sync_target_rx,
                     task_storage,
                     task_provider,
-                    &collector,
+                    task_evm_config,
                     task_write_lock,
                 )
                 .await;
@@ -764,7 +802,7 @@ where
         mut sync_target_rx: watch::Receiver<u64>,
         storage: OpProofsStorage<Storage>,
         provider: Node::Provider,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        evm_config: Node::Evm,
         write_lock: Arc<Mutex<()>>,
     ) {
         debug!(target: "reth::taiko::proof_history", "starting proof-history sync loop");
@@ -785,6 +823,18 @@ where
                     continue;
                 }
             };
+
+            if latest >= requested_target {
+                drop(write_guard);
+                if sync_target_rx.changed().await.is_err() {
+                    debug!(
+                        target: "reth::taiko::proof_history",
+                        "proof-history sync target sender dropped; stopping sync loop"
+                    );
+                    return;
+                }
+                continue;
+            }
 
             let executed_head = match provider.best_block_number() {
                 Ok(number) => number,
@@ -811,13 +861,28 @@ where
                 continue;
             };
 
-            let batch_result = Self::process_batch(
-                latest,
-                target,
-                &provider,
-                collector,
-                PROOF_HISTORY_SYNC_BATCH_SIZE,
-            );
+            let batch_provider = provider.clone();
+            let batch_storage = storage.clone();
+            let batch_evm_config = evm_config.clone();
+            // Each block write commits independently; if this batch fails part-way through, the
+            // next loop rereads `latest` and resumes after the last committed block.
+            let batch_task = task::spawn_blocking(move || {
+                let collector_storage = batch_storage.clone();
+                let collector = LiveTrieCollector::new(
+                    batch_evm_config,
+                    batch_provider.clone(),
+                    &collector_storage,
+                );
+                Self::process_batch(
+                    latest,
+                    target,
+                    &batch_provider,
+                    &collector,
+                    PROOF_HISTORY_SYNC_BATCH_SIZE,
+                )
+            });
+            let batch_result = blocking_join_result(batch_task.await, "proof-history batch worker")
+                .and_then(|result| result);
             drop(write_guard);
 
             if let Err(error) = batch_result {
@@ -1728,14 +1793,14 @@ where
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {
     let eth_ext = TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone());
-    ctx.modules.replace_configured(eth_ext.into_rpc())?;
+    ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
 
     let debug_ext = TaikoDebugWitnessExt::new(
         ctx.node().provider().clone(),
         ctx.registry.eth_api().clone(),
         storage,
     );
-    ctx.modules.replace_configured(debug_ext.into_rpc())?;
+    ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Debug, debug_ext.into_rpc())?;
     Ok(())
 }
 
@@ -1877,12 +1942,8 @@ mod tests {
 
     #[test]
     fn historical_init_metadata_validation_rejects_target_mismatch() {
-        let unique =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("alethia-reth-proof-history-metadata-{}-{unique}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
 
         let stored = HistoricalInitMetadata {
             start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
@@ -1897,7 +1958,6 @@ mod tests {
         let error =
             validate_historical_init_metadata_file(Some(&path), current).unwrap_err().to_string();
 
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(error.contains("initialization target changed"));
     }
 

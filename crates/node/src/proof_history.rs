@@ -717,8 +717,9 @@ where
 
         self.ctx
             .task_executor()
-            .spawn_with_graceful_shutdown_signal(move |mut signal| {
-                Box::pin(async move {
+            .spawn_critical_with_graceful_shutdown_signal(
+                "taiko::proof_history::pruner",
+                move |mut signal| Box::pin(async move {
                     info!(
                         target: "reth::taiko::proof_history",
                         window = retention_window,
@@ -750,6 +751,10 @@ where
                                         }
                                     }
                                     _ = &mut signal => {
+                                        // `spawn_blocking` workers cannot be aborted, so wait for
+                                        // the prune to finish to avoid tearing down a write txn
+                                        // mid-flight. A deeper fix would need a cancel-aware
+                                        // pruner API or smaller prune chunks.
                                         info!(
                                             target: "reth::taiko::proof_history",
                                             "shutdown requested while proof-history prune is running; waiting for prune to finish"
@@ -769,7 +774,7 @@ where
                         }
                     }
                 })
-            });
+            );
     }
 
     /// Spawns the guarded proof-history backfill task.

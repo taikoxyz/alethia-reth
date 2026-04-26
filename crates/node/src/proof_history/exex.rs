@@ -655,6 +655,14 @@ where
             return Ok(());
         }
 
+        if old.fork_block() != new.fork_block() {
+            return Err(eyre!(
+                "proof-history fork blocks do not match: old={:?}, new={:?}",
+                old.fork_block(),
+                new.fork_block()
+            ));
+        }
+
         let mut block_updates: Vec<(
             BlockWithParent,
             Arc<TrieUpdatesSorted>,
@@ -662,27 +670,24 @@ where
         )> = Vec::with_capacity(new.len());
 
         for block_number in new.blocks().keys() {
-            if old.fork_block() != new.fork_block() {
-                return Err(eyre!(
-                    "proof-history fork blocks do not match: old={:?}, new={:?}",
-                    old.fork_block(),
-                    new.fork_block()
-                ));
-            }
-
-            if let Some(block) = new.blocks().get(block_number) &&
-                let Some(trie_data) = new.trie_data_at(*block_number)
-            {
-                let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
-                block_updates.push((
-                    block.block_with_parent(),
-                    trie_updates.clone(),
-                    hashed_state.clone(),
-                ));
-                continue;
-            }
-
-            self.process_block(*block_number, &new, collector)?;
+            let Some(block) = new.blocks().get(block_number) else { continue };
+            let Some(trie_data) = new.trie_data_at(*block_number) else {
+                // Missing trie data on at least one new block: fall back to
+                // unwinding the old branch first, then re-process all new
+                // blocks individually so executions read post-unwind parent
+                // state instead of stale old-branch state.
+                collector.unwind_history(old.first().block_with_parent())?;
+                for block_number in new.blocks().keys() {
+                    self.process_block(*block_number, &new, collector)?;
+                }
+                return Ok(());
+            };
+            let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+            block_updates.push((
+                block.block_with_parent(),
+                trie_updates.clone(),
+                hashed_state.clone(),
+            ));
         }
 
         if !block_updates.is_empty() {

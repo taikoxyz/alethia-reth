@@ -18,7 +18,7 @@ use std::{
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use reth_revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::l1sload::{get_anchor_block_id, get_l1_origin_block_id};
 
@@ -91,6 +91,16 @@ static L1_STATICCALL_RPC_SERVED_CALLS: LazyLock<Mutex<Vec<L1StaticCallRecord>>> 
 
 /// Insert a value into the L1 staticcall cache.
 /// The cache key uses `keccak256(calldata)` so variable-length calldata maps to a fixed-size key.
+///
+/// **Oversized inputs are silently dropped** (with a high-visibility `error!` log).
+/// The read path enforces the same `MAX_RETURN_DATA_SIZE` ceiling and would surface
+/// the violation as a `PrecompileError` later, but failing fast at insertion is
+/// strictly safer: it prevents memory waste, makes the misbehaving caller obvious
+/// in logs, and stops a too-large value from ever reaching cache where it would
+/// surprise the next reader with a cache-hit-then-reject failure mode. Returning
+/// `Result` from the setter would be a public-API break for raiko (and would only
+/// shift the failure surface), so we drop here and let the (eventual) read miss
+/// produce the normal "fetcher / witness verify failed" path.
 pub fn set_l1_staticcall_value(
     target: Address,
     block_number: u64,
@@ -99,6 +109,18 @@ pub fn set_l1_staticcall_value(
     result: Vec<u8>,
     is_reverted: bool,
 ) {
+    if result.len() > MAX_RETURN_DATA_SIZE {
+        // High-visibility because this should never happen in correct upstream
+        // code — surge-raiko trims to the same ceiling before invoking the setter.
+        // If this fires, the caller is buggy; fail loudly in logs but don't panic.
+        error!(
+            "L1STATICCALL: refusing to cache oversized return data — target={target:?} \
+             block={block_number} bytes={} (cap={})",
+            result.len(),
+            MAX_RETURN_DATA_SIZE,
+        );
+        return;
+    }
     let calldata_hash = keccak256(calldata);
     let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
     cache.insert((target, block_number, calldata_hash), (gas_used, result, is_reverted));
@@ -218,9 +240,9 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
     // Block-range validation uses only `l1_origin_block_id` for the `[l1origin − 256, l1origin]`
-    // window. `_anchor_block_id` participates only in the `l1origin < anchor` invariant check
-    // — the underscore prefix signals that anchor is *not* a bound of the lookback window.
-    let _anchor_block_id = match get_anchor_block_id() {
+    // window. `anchor_block_id` participates only in the `l1origin < anchor` invariant check
+    // and is *not* a bound of the lookback window.
+    let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
         None => {
             warn!("L1STATICCALL: anchor block ID not set");
@@ -235,7 +257,7 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         }
     };
 
-    if l1_origin_block_id < _anchor_block_id {
+    if l1_origin_block_id < anchor_block_id {
         return Err(PrecompileError::Other(
             "Invalid L1STATICCALL context: l1origin < anchor".into(),
         ));
@@ -244,7 +266,7 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     if requested_block > l1_origin_block_id {
         debug!(
             "L1STATICCALL: rejected block {} > l1origin {} (anchor={})",
-            requested_block, l1_origin_block_id, _anchor_block_id
+            requested_block, l1_origin_block_id, anchor_block_id
         );
         return Err(PrecompileError::Other(
             "Requested block number is after the L1 origin block".into(),
@@ -389,8 +411,14 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         ));
     }
 
-    // `total_gas` may exceed `gas_limit`; revm applies the final OOG check after the
-    // precompile returns its reported gas usage.
+    // `total_gas` may exceed `gas_limit`; we deliberately *do not* clamp here.
+    // revm reads our reported `gas_used` and OOG-halts the calling frame in
+    // `Interpreter::gas_recharge` if the consumed gas exceeds the remaining
+    // budget — surfacing the same `OutOfGas` error a contract would have seen
+    // on direct execution. Clamping here would silently truncate the gas
+    // accounting and let an underfunded call appear to succeed (with a
+    // partial / zero-gas charge) while still consuming all of `gas_limit`.
+    // Test: `test_l1staticcall_l1_gas_alone_oog_when_exceeding_limit`.
     let total_gas = static_gas + l1_gas;
     debug!(
         "L1STATICCALL: success target={:?} block={} return_len={} l1_gas={} total_gas={}",
@@ -1179,5 +1207,80 @@ mod tests {
         set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((0, vec![0xBB], false)));
         let out = l1staticcall_run(&input, 1_000_000).expect("recovered fetcher should succeed");
         assert_eq!(out.bytes.as_ref(), &[0xBB]);
+    }
+
+    // ───────────────────────────────────────────────
+    // Review-comment regression guards (A1, A3 from #43)
+    // ───────────────────────────────────────────────
+
+    /// A1: oversized return data is silently dropped at the setter rather than
+    /// poisoning the cache. Rationale lives on the setter doc-comment — this test
+    /// pins the behavior so a refactor can't accidentally let oversized values
+    /// through (which would surface much later as a confusing read-side error).
+    #[test]
+    #[serial]
+    fn test_set_l1_staticcall_value_drops_oversized_return_data() {
+        reset_all();
+        let target = Address::from([0x1Au8; 20]);
+        let calldata = vec![0xAA, 0xBB];
+
+        // Try to insert a value that is exactly one byte over the cap — must be
+        // dropped silently. The cache lookup below proves nothing was stored.
+        let oversized = vec![0xCDu8; MAX_RETURN_DATA_SIZE + 1];
+        set_l1_staticcall_value(target, 100, &calldata, 0, oversized, false);
+
+        assert!(
+            get_l1_staticcall_value(target, 100, &calldata).is_none(),
+            "oversized return data must NOT enter the cache"
+        );
+
+        // Inserting an at-cap value must succeed (boundary sanity) — proves the
+        // guard rejects strictly above the limit, not at it.
+        let at_cap = vec![0xEFu8; MAX_RETURN_DATA_SIZE];
+        set_l1_staticcall_value(target, 200, &calldata, 0, at_cap.clone(), false);
+        let stored = get_l1_staticcall_value(target, 200, &calldata)
+            .expect("at-cap return data must be stored");
+        assert_eq!(stored.0, 0);
+        assert_eq!(stored.1.len(), MAX_RETURN_DATA_SIZE);
+        assert!(!stored.2);
+    }
+
+    /// A3: when `l1_gas` alone exceeds the precompile's remaining budget, the
+    /// precompile still returns its true `total_gas` rather than clamping to
+    /// `gas_limit`. revm reads the reported gas usage and OOG-halts the calling
+    /// frame; the precompile's `Result::Ok` does not mask the OOG.
+    #[test]
+    #[serial]
+    fn test_l1staticcall_l1_gas_alone_oog_when_exceeding_limit() {
+        reset_all();
+        set_anchor_block_id(100);
+        set_l1_origin_block_id(100);
+
+        // Pre-populate the cache with a large l1_gas the call body returns.
+        let target = Address::from([0xC0u8; 20]);
+        let calldata = vec![0x01];
+        let huge_l1_gas: u64 = 10_000_000;
+        set_l1_staticcall_value(target, 100, &calldata, huge_l1_gas, vec![0xAA], false);
+
+        // Build the precompile input.
+        let mut input = Vec::with_capacity(53);
+        input.extend_from_slice(target.as_slice());
+        input.extend_from_slice(&U256::from(100u64).to_be_bytes::<32>());
+        input.extend_from_slice(&calldata);
+
+        // Call with a gas_limit that's clearly less than huge_l1_gas. The
+        // precompile must still return Ok(total_gas) so revm can do the OOG
+        // accounting itself; revm halts the *caller* frame, not the precompile.
+        let limit: u64 = 100_000;
+        let result = l1staticcall_run(&input, limit).expect("precompile returns reported gas");
+        assert!(
+            result.gas_used > limit,
+            "precompile must report true total_gas ({}) — exceeds limit ({}) so revm OOG-halts caller",
+            result.gas_used,
+            limit
+        );
+        // The bytes are still the cached return value: clamp would have been a
+        // silent change in observable behavior, not just gas accounting.
+        assert_eq!(result.bytes.as_ref(), &[0xAA]);
     }
 }

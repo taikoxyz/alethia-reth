@@ -162,9 +162,9 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     let block_number = B256::from_slice(&input[52..84]);
 
     // Block-range validation uses only `l1_origin_block_id` for the `[l1origin − 256, l1origin]`
-    // window. `_anchor_block_id` participates only in the `l1origin < anchor` invariant check
-    // — the underscore prefix signals that anchor is *not* a bound of the lookback window.
-    let _anchor_block_id = match get_anchor_block_id() {
+    // window. `anchor_block_id` participates only in the `l1origin < anchor` invariant check
+    // and is *not* a bound of the lookback window.
+    let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
         None => {
             warn!("L1SLOAD: anchor block ID not set");
@@ -179,7 +179,7 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         }
     };
 
-    if l1_origin_block_id < _anchor_block_id {
+    if l1_origin_block_id < anchor_block_id {
         return Err(PrecompileError::Other("Invalid L1SLOAD context: l1origin < anchor".into()));
     }
 
@@ -191,7 +191,7 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     if requested_block > l1_origin_block_id {
         debug!(
             "L1SLOAD: rejected block {} > l1origin {} (anchor={})",
-            requested_block, l1_origin_block_id, _anchor_block_id
+            requested_block, l1_origin_block_id, anchor_block_id
         );
         return Err(PrecompileError::Other(
             "Requested block number is after the L1 origin block".into(),
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1sload_fails_without_anchor_block_id() {
+    fn test_l1sload_fails_withoutanchor_block_id() {
         clear_l1_storage();
 
         let input = create_test_input(100);
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_anchor_block_id_context() {
+    fn testanchor_block_id_context() {
         clear_l1_storage();
 
         // Verify context is initially empty

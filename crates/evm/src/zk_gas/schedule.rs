@@ -2,7 +2,12 @@
 
 use crate::spec::TaikoSpecId;
 
-use super::unzen::UNZEN_ZK_GAS_SCHEDULE;
+use super::unzen::{MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE};
+
+/// EVM chain id for the Taiko Masaya network. Sourced from
+/// `crates/chainspec/src/genesis/masaya.json`. The chainspec test suite already
+/// pins the genesis hash for this chain id, which guards against drift.
+pub const TAIKO_MASAYA_CHAIN_ID: u64 = 167_011;
 
 /// Fixed raw-gas estimates for spawn opcodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,10 +39,16 @@ pub struct ZkGasSchedule {
     pub spawn_estimates: SpawnEstimates,
 }
 
-/// Returns the consensus zk gas schedule for the active Taiko fork, when defined.
-pub const fn schedule_for(spec: TaikoSpecId) -> Option<&'static ZkGasSchedule> {
+/// Returns the consensus zk gas schedule for the active Taiko fork on the given chain, when
+/// defined. Masaya runs Unzen with a 10× higher block budget than Devnet/Hoodi/Mainnet; all
+/// other chains share the default Unzen schedule.
+pub const fn schedule_for(spec: TaikoSpecId, chain_id: u64) -> Option<&'static ZkGasSchedule> {
     match spec {
-        TaikoSpecId::UNZEN => Some(&UNZEN_ZK_GAS_SCHEDULE),
+        TaikoSpecId::UNZEN => Some(if chain_id == TAIKO_MASAYA_CHAIN_ID {
+            &MASAYA_UNZEN_ZK_GAS_SCHEDULE
+        } else {
+            &UNZEN_ZK_GAS_SCHEDULE
+        }),
         _ => None,
     }
 }

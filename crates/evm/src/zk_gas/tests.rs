@@ -20,25 +20,48 @@ use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
-    schedule::schedule_for,
+    schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
     unzen::{MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE},
 };
 
 #[test]
 fn unzen_schedule_is_selected_only_for_unzen() {
-    assert!(schedule_for(TaikoSpecId::UNZEN).is_some());
-    assert!(schedule_for(TaikoSpecId::SHASTA).is_none());
+    assert!(schedule_for(TaikoSpecId::UNZEN, 167).is_some());
+    assert!(schedule_for(TaikoSpecId::SHASTA, 167).is_none());
+}
+
+#[test]
+fn schedule_for_returns_masaya_schedule_on_masaya_chain_id() {
+    let schedule =
+        schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Unzen schedule");
+    assert_eq!(schedule.block_limit, 1_000_000_000);
+    assert!(std::ptr::eq(schedule, &MASAYA_UNZEN_ZK_GAS_SCHEDULE));
+}
+
+#[test]
+fn schedule_for_returns_default_schedule_on_non_masaya_chain_ids() {
+    for chain_id in [1u64, 167u64, 167_010u64, 167_009u64] {
+        let schedule = schedule_for(TaikoSpecId::UNZEN, chain_id).expect("Unzen schedule");
+        assert_eq!(schedule.block_limit, 100_000_000);
+        assert!(std::ptr::eq(schedule, &UNZEN_ZK_GAS_SCHEDULE));
+    }
+}
+
+#[test]
+fn schedule_for_returns_none_for_pre_unzen_regardless_of_chain_id() {
+    assert!(schedule_for(TaikoSpecId::SHASTA, TAIKO_MASAYA_CHAIN_ID).is_none());
+    assert!(schedule_for(TaikoSpecId::SHASTA, 167).is_none());
 }
 
 #[test]
 fn unzen_schedule_uses_the_spec_block_limit() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     assert_eq!(schedule.block_limit, 100_000_000);
 }
 
 #[test]
 fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
 
     assert_eq!(schedule.opcode_multipliers[0x20], 85);
     assert_eq!(schedule.opcode_multipliers[0xf1], 25);
@@ -53,7 +76,7 @@ fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
 
 #[test]
 fn unzen_schedule_uses_spec_spawn_estimates() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
 
     assert_eq!(schedule.spawn_estimates.call, 12_500);
     assert_eq!(schedule.spawn_estimates.callcode, 12_500);
@@ -100,7 +123,7 @@ fn masaya_unzen_schedule_pins_spec_opcode_and_precompile_multipliers() {
 
 #[test]
 fn meter_promotes_committed_tx_usage_into_block_usage() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 3).expect("charge");
@@ -111,7 +134,7 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
 
 #[test]
 fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.opcode_multipliers[0x01])) + 1;
 
@@ -120,7 +143,7 @@ fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
 
 #[test]
 fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.precompile_multipliers[0x01])) + 1;
 
@@ -129,7 +152,7 @@ fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
 
 #[test]
 fn meter_resets_transaction_usage_without_affecting_block_usage() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 2).expect("charge");
@@ -141,7 +164,7 @@ fn meter_resets_transaction_usage_without_affecting_block_usage() {
 
 #[test]
 fn meter_allows_exactly_remaining_block_budget() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
@@ -157,7 +180,7 @@ fn meter_allows_exactly_remaining_block_budget() {
 
 #[test]
 fn meter_rejects_block_budget_plus_one() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
@@ -168,7 +191,7 @@ fn meter_rejects_block_budget_plus_one() {
 
 #[test]
 fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     assert!(matches!(
@@ -179,7 +202,7 @@ fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
 
 #[test]
 fn meter_exposes_its_schedule() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let meter = ZkGasMeter::new(schedule);
 
     assert!(std::ptr::eq(meter.schedule(), schedule));
@@ -219,7 +242,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 
 #[test]
 fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),

@@ -30,11 +30,11 @@ pub const ZK_GAS_LIMIT_ERR: &str = "zk gas limit exceeded";
 /// Shared zk gas meter handle used by both the inspector and wrapped precompiles.
 pub type SharedZkGasMeter = Arc<Mutex<ZkGasMeter<'static>>>;
 
-/// Returns a freshly initialized shared meter handle for the requested spec when metering is
-/// active.
-pub fn shared_meter_for_spec(spec: TaikoSpecId) -> Option<SharedZkGasMeter> {
+/// Returns a freshly initialized shared meter handle for the requested spec and chain when
+/// metering is active.
+pub fn shared_meter_for_spec(spec: TaikoSpecId, chain_id: u64) -> Option<SharedZkGasMeter> {
     // Returning `None` keeps the inspector on its zero-overhead pass-through path.
-    schedule_for(spec).map(|schedule| Arc::new(Mutex::new(ZkGasMeter::new(schedule))))
+    schedule_for(spec, chain_id).map(|schedule| Arc::new(Mutex::new(ZkGasMeter::new(schedule))))
 }
 
 /// Composite inspector that meters zk gas before delegating to an inner inspector.
@@ -382,8 +382,8 @@ fn spawn_estimate(schedule: &'static ZkGasSchedule, opcode: u8) -> u64 {
 }
 
 /// Returns the schedule backing a shared meter handle.
-fn meter_schedule(_meter: &SharedZkGasMeter) -> &'static ZkGasSchedule {
-    schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule is available")
+fn meter_schedule(meter: &SharedZkGasMeter) -> &'static ZkGasSchedule {
+    lock_meter(meter).schedule()
 }
 
 /// Charges a completed opcode step against the shared meter.

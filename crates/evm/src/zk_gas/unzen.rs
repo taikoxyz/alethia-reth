@@ -34,11 +34,11 @@ const fn unzen_schedule_with_block_limit(block_limit: u64) -> ZkGasSchedule {
 }
 
 /// Default Unzen zk gas schedule used by Devnet, Hoodi, and Mainnet.
-pub const UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
+pub static UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
     unzen_schedule_with_block_limit(BLOCK_ZK_GAS_LIMIT);
 
 /// Unzen zk gas schedule used by the Taiko Masaya network with a 10× higher block budget.
-pub const MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
+pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
     unzen_schedule_with_block_limit(MASAYA_BLOCK_ZK_GAS_LIMIT);
 
 /// Returns the fixed Unzen opcode multiplier table with fail-safe defaults for unlisted opcodes.

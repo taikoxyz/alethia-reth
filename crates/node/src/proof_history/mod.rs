@@ -5,7 +5,9 @@ mod exex;
 mod init;
 mod storage_init;
 
-pub use config::ProofHistoryConfig;
+pub use config::{
+    DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
+};
 use exex::{ProofHistoryExEx, ProofHistoryExExConfig};
 use storage_init::proof_history_historical_init_metadata_path;
 

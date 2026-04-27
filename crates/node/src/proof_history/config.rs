@@ -4,13 +4,13 @@ use eyre::eyre;
 use std::{path::PathBuf, time::Duration};
 
 /// Default proof-history retention window in blocks.
-const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
+pub const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
 
 /// Default interval between proof-history prune passes.
 const DEFAULT_PROOF_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Default interval, in blocks, between proof-history consistency checks.
-const DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL: u64 = 1024;
+pub const DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL: u64 = 1024;
 
 /// Configuration for the optional proof-history execution extension.
 #[derive(Debug, Clone)]

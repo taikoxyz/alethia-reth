@@ -22,15 +22,15 @@ use tracing::info;
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
-    TaikoNode, consensus::validation::TaikoBeaconConsensus, node_builder::ProviderTaikoBlockReader,
+    TaikoNode,
+    consensus::validation::TaikoBeaconConsensus,
+    node_builder::ProviderTaikoBlockReader,
+    proof_history::{DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW},
 };
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
 
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
-
-/// Default block interval between proof-history consistency checks.
-const DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL: u64 = 1024;
 
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
@@ -78,7 +78,7 @@ pub struct TaikoProofHistoryArgs {
     #[arg(
         long = "proofs-history.window",
         value_name = "BLOCKS",
-        default_value_t = 1_296_000u64,
+        default_value_t = DEFAULT_PROOF_HISTORY_WINDOW,
         help_heading = "Taiko Proof History"
     )]
     pub window: u64,
@@ -270,7 +270,9 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, TaikoCliExtArgs};
+    use super::{
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
+    };
     use crate::command::TaikoNodeExtArgs;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -345,7 +347,7 @@ mod tests {
 
         assert!(!config.enabled);
         assert!(config.storage_path.is_none());
-        assert_eq!(config.window, 1_296_000);
+        assert_eq!(config.window, DEFAULT_PROOF_HISTORY_WINDOW);
         assert!(!config.backfill_window_only);
         assert_eq!(config.prune_interval, Duration::from_secs(15));
         assert_eq!(config.verification_interval, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL);

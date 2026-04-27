@@ -32,8 +32,7 @@ fn unzen_schedule_is_selected_only_for_unzen() {
 
 #[test]
 fn schedule_for_returns_masaya_schedule_on_masaya_chain_id() {
-    let schedule =
-        schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Unzen schedule");
     assert_eq!(schedule.block_limit, 1_000_000_000);
     assert!(std::ptr::eq(schedule, &MASAYA_UNZEN_ZK_GAS_SCHEDULE));
 }
@@ -102,10 +101,7 @@ fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
         UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers,
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers
     );
-    assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates
-    );
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.spawn_estimates, MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates);
 }
 
 #[test]
@@ -310,10 +306,7 @@ fn unzen_default_create_evm_path_is_metered() {
 fn factory_installs_masaya_schedule_when_chain_id_is_masaya() {
     let mut env = evm_env(TaikoSpecId::UNZEN);
     env.cfg_env.chain_id = TAIKO_MASAYA_CHAIN_ID;
-    let evm = TaikoEvmFactory.create_evm(
-        db_with_contract(limit_exceeding_keccak_bytecode()),
-        env,
-    );
+    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
     let meter = evm.shared_meter().expect("Masaya schedule should install a shared meter");
     let meter = meter.lock().expect("meter lock");
 
@@ -324,10 +317,7 @@ fn factory_installs_masaya_schedule_when_chain_id_is_masaya() {
 #[test]
 fn factory_installs_default_schedule_when_chain_id_is_not_masaya() {
     let env = evm_env(TaikoSpecId::UNZEN); // helper sets chain_id = 167 (not Masaya)
-    let evm = TaikoEvmFactory.create_evm(
-        db_with_contract(limit_exceeding_keccak_bytecode()),
-        env,
-    );
+    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
     let meter = evm.shared_meter().expect("default Unzen schedule should install a shared meter");
     let meter = meter.lock().expect("meter lock");
 

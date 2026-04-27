@@ -165,11 +165,7 @@ mod test {
 
         for (name, make_spec, expected_chain_id) in cases {
             let spec = make_spec();
-            assert_eq!(
-                spec.inner.chain.id(),
-                expected_chain_id,
-                "chain id mismatch for {name}",
-            );
+            assert_eq!(spec.inner.chain.id(), expected_chain_id, "chain id mismatch for {name}",);
         }
     }
 }

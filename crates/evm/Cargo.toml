@@ -11,9 +11,15 @@ path = "src/lib.rs"
 [features]
 default = ["std"]
 serde = ["dep:serde"]
-std = ["alethia-reth-primitives/std", "reth-evm/std", "reth-revm/std"]
+std = [
+    "alethia-reth-chainspec/std",
+    "alethia-reth-primitives/std",
+    "reth-evm/std",
+    "reth-revm/std",
+]
 
 [dependencies]
+alethia-reth-chainspec = { path = "../chainspec", default-features = false }
 alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-evm = { workspace = true }
 alloy-primitives = { workspace = true }

@@ -43,6 +43,18 @@ pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
 pub const TAIKO_MASAYA_GENESIS_HASH: B256 =
     b256!("0xeef96dc254e1ac4a0044b116e38b16dface1a153d9299c056552898a43f8513e");
 
+/// EVM chain id for the Taiko Devnet network.
+pub const TAIKO_DEVNET_CHAIN_ID: u64 = 167_001;
+
+/// EVM chain id for the Taiko Hoodi network.
+pub const TAIKO_HOODI_CHAIN_ID: u64 = 167_013;
+
+/// EVM chain id for the Taiko Mainnet network.
+pub const TAIKO_MAINNET_CHAIN_ID: u64 = 167_000;
+
+/// EVM chain id for the Taiko Masaya network.
+pub const TAIKO_MASAYA_CHAIN_ID: u64 = 167_011;
+
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_mainnet_chain_spec().into());
@@ -157,10 +169,26 @@ mod test {
         // edited. The genesis HEADER hash does not depend on the chain id, so the genesis hash
         // tests above do not catch chain-id changes — pin them here explicitly.
         let cases = [
-            ("devnet", make_taiko_devnet_chain_spec as fn() -> TaikoChainSpec, 167_001u64),
-            ("taiko-hoodi", make_taiko_hoodi_chain_spec as fn() -> TaikoChainSpec, 167_013u64),
-            ("mainnet", make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec, 167_000u64),
-            ("masaya", make_taiko_masaya_chain_spec as fn() -> TaikoChainSpec, 167_011u64),
+            (
+                "devnet",
+                make_taiko_devnet_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_DEVNET_CHAIN_ID,
+            ),
+            (
+                "taiko-hoodi",
+                make_taiko_hoodi_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_HOODI_CHAIN_ID,
+            ),
+            (
+                "mainnet",
+                make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_MAINNET_CHAIN_ID,
+            ),
+            (
+                "masaya",
+                make_taiko_masaya_chain_spec as fn() -> TaikoChainSpec,
+                TAIKO_MASAYA_CHAIN_ID,
+            ),
         ];
 
         for (name, make_spec, expected_chain_id) in cases {

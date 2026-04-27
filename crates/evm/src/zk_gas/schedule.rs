@@ -4,11 +4,7 @@ use crate::spec::TaikoSpecId;
 
 use super::unzen::{MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE};
 
-/// EVM chain id for the Taiko Masaya network. Sourced from
-/// `crates/chainspec/src/genesis/masaya.json`. The chainspec test
-/// `test_taiko_genesis_chain_ids_are_pinned` asserts that the JSON value matches
-/// `167_011`, so this constant cannot silently drift from the chainspec.
-pub const TAIKO_MASAYA_CHAIN_ID: u64 = 167_011;
+pub use alethia_reth_chainspec::TAIKO_MASAYA_CHAIN_ID;
 
 /// Fixed raw-gas estimates for spawn opcodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

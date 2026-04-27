@@ -54,6 +54,17 @@ fn blocking_join_result<T>(
     }
 }
 
+/// Logs a join failure from the proof-history pruner worker, preserving panics.
+fn log_prune_join_result(result: Result<(), task::JoinError>) {
+    if let Err(error) = blocking_join_result(result, "proof-history pruner worker") {
+        error!(
+            target: "reth::taiko::proof_history",
+            ?error,
+            "proof-history pruner task failed to join blocking worker"
+        );
+    }
+}
+
 /// Number of blocks the proof-history sync task executes in one batch.
 const PROOF_HISTORY_SYNC_BATCH_SIZE: usize = 50;
 
@@ -163,18 +174,14 @@ where
 
                     if sync_target_tx.is_none() {
                         sync_target_tx = self.try_start()?;
-                        if sync_target_tx.is_none() {
-                            self.acknowledge_notification(&notification)?;
-                            continue;
-                        }
                     }
 
-                    self.handle_notification(
-                        notification,
-                        &collector,
-                        sync_target_tx.as_ref().expect("initialized proof-history ExEx has a sync target"),
-                    )
-                    .await?;
+                    let Some(target_tx) = sync_target_tx.as_ref() else {
+                        self.acknowledge_notification(&notification)?;
+                        continue;
+                    };
+
+                    self.handle_notification(notification, &collector, target_tx).await?;
                 }
                 _ = retry_interval.tick(), if sync_target_tx.is_none() => {
                     sync_target_tx = self.try_start()?;
@@ -370,15 +377,7 @@ where
                                 let pruner = pruner.clone();
                                 let mut prune_task = task::spawn_blocking(move || pruner.run());
                                 tokio::select! {
-                                    result = &mut prune_task => {
-                                        if let Err(error) = blocking_join_result(result, "proof-history pruner worker") {
-                                            error!(
-                                                target: "reth::taiko::proof_history",
-                                                ?error,
-                                                "proof-history pruner task failed to join blocking worker"
-                                            );
-                                        }
-                                    }
+                                    result = &mut prune_task => log_prune_join_result(result),
                                     _ = &mut signal => {
                                         // `spawn_blocking` workers cannot be aborted, so wait for
                                         // the prune to finish to avoid tearing down a write txn
@@ -388,13 +387,7 @@ where
                                             target: "reth::taiko::proof_history",
                                             "shutdown requested while proof-history prune is running; waiting for prune to finish"
                                         );
-                                        if let Err(error) = blocking_join_result(prune_task.await, "proof-history pruner worker") {
-                                            error!(
-                                                target: "reth::taiko::proof_history",
-                                                ?error,
-                                                "proof-history pruner task failed to join blocking worker during shutdown"
-                                            );
-                                        }
+                                        log_prune_join_result(prune_task.await);
                                         info!(target: "reth::taiko::proof_history", "proof-history pruner task stopped");
                                         break;
                                     }
@@ -566,25 +559,23 @@ where
 
         match &notification {
             ExExNotification::ChainCommitted { new } => {
-                self.handle_chain_committed(new.clone(), latest_stored, collector, sync_target_tx)?
+                self.handle_chain_committed(new, latest_stored, collector, sync_target_tx)?
             }
             ExExNotification::ChainReorged { old, new } => {
-                self.handle_chain_reorged(old.clone(), new.clone(), latest_stored, collector)?
+                self.handle_chain_reorged(old, new, latest_stored, collector)?
             }
             ExExNotification::ChainReverted { old } => {
-                self.handle_chain_reverted(old.clone(), latest_stored, collector)?
+                self.handle_chain_reverted(old, latest_stored, collector)?
             }
         }
 
-        self.acknowledge_notification(&notification)?;
-
-        Ok(())
+        self.acknowledge_notification(&notification)
     }
 
     /// Handles a canonical chain commit notification.
     fn handle_chain_committed(
         &self,
-        new: Arc<Chain<Primitives>>,
+        new: &Chain<Primitives>,
         latest_stored: u64,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
         sync_target_tx: &watch::Sender<u64>,
@@ -600,7 +591,7 @@ where
 
         if is_sequential && is_near_tip {
             for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
-                self.process_block(block_number, &new, collector)?;
+                self.process_block(block_number, new, collector)?;
             }
         } else {
             sync_target_tx.send(new.tip().number())?;
@@ -619,13 +610,11 @@ where
         let should_verify = self.config.verification_interval > 0 &&
             block_number.is_multiple_of(self.config.verification_interval);
 
-        if let Some(block) = chain.blocks().get(&block_number) &&
-            let Some((trie_updates, hashed_state)) = chain.trie_data_at(block_number).map(|d| {
-                let SortedTrieData { hashed_state, trie_updates } = d.get();
-                (trie_updates, hashed_state)
-            }) &&
-            !should_verify
+        if !should_verify &&
+            let Some(block) = chain.blocks().get(&block_number) &&
+            let Some(trie_data) = chain.trie_data_at(block_number)
         {
+            let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
             collector.store_block_updates(
                 block.block_with_parent(),
                 (**trie_updates).clone(),
@@ -646,8 +635,8 @@ where
     /// Handles a canonical chain reorg notification.
     fn handle_chain_reorged(
         &self,
-        old: Arc<Chain<Primitives>>,
-        new: Arc<Chain<Primitives>>,
+        old: &Chain<Primitives>,
+        new: &Chain<Primitives>,
         latest_stored: u64,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
@@ -669,8 +658,7 @@ where
             Arc<HashedPostStateSorted>,
         )> = Vec::with_capacity(new.len());
 
-        for block_number in new.blocks().keys() {
-            let Some(block) = new.blocks().get(block_number) else { continue };
+        for (block_number, block) in new.blocks() {
             let Some(trie_data) = new.trie_data_at(*block_number) else {
                 // Missing trie data on at least one new block: fall back to
                 // unwinding the old branch first, then re-process all new
@@ -678,7 +666,7 @@ where
                 // state instead of stale old-branch state.
                 collector.unwind_history(old.first().block_with_parent())?;
                 for block_number in new.blocks().keys() {
-                    self.process_block(*block_number, &new, collector)?;
+                    self.process_block(*block_number, new, collector)?;
                 }
                 return Ok(());
             };
@@ -700,7 +688,7 @@ where
     /// Handles a canonical chain revert notification.
     fn handle_chain_reverted(
         &self,
-        old: Arc<Chain<Primitives>>,
+        old: &Chain<Primitives>,
         latest_stored: u64,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {

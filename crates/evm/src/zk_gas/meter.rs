@@ -45,6 +45,11 @@ impl<'a> ZkGasMeter<'a> {
         self.block_zk_gas_used
     }
 
+    /// Returns the consensus schedule that backs this meter.
+    pub const fn schedule(&self) -> &'a ZkGasSchedule {
+        self.schedule
+    }
+
     /// Returns the in-flight zk gas accumulated for the current transaction.
     pub const fn tx_zk_gas_used(&self) -> u64 {
         self.tx_zk_gas_used

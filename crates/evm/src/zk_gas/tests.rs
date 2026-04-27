@@ -141,6 +141,14 @@ fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
     ));
 }
 
+#[test]
+fn meter_exposes_its_schedule() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let meter = ZkGasMeter::new(schedule);
+
+    assert!(std::ptr::eq(meter.schedule(), schedule));
+}
+
 #[derive(Default, Debug)]
 struct StepGasProbeInspector {
     gas_remaining: u64,

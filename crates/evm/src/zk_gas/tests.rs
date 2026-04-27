@@ -80,29 +80,22 @@ fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers
     );
     assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.call,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.call
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates
     );
-    assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.callcode,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.callcode
-    );
-    assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.delegatecall,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.delegatecall
-    );
-    assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.staticcall,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.staticcall
-    );
-    assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create
-    );
-    assert_eq!(
-        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create2,
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create2
-    );
+}
+
+#[test]
+fn masaya_unzen_schedule_pins_spec_opcode_and_precompile_multipliers() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20], 85);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xf1], 25);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xfe], 0);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xac], u16::MAX);
+
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05], 1363);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x01], 81);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x04], 2);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x14], u16::MAX);
 }
 
 #[test]

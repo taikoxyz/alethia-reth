@@ -5,7 +5,7 @@ use crate::spec::TaikoSpecId;
 use super::unzen::UNZEN_ZK_GAS_SCHEDULE;
 
 /// Fixed raw-gas estimates for spawn opcodes.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpawnEstimates {
     /// Fixed raw-gas estimate for `CALL`.
     pub call: u64,
@@ -22,7 +22,7 @@ pub struct SpawnEstimates {
 }
 
 /// Consensus-owned zk gas schedule for a Taiko fork.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ZkGasSchedule {
     /// Maximum zk gas permitted across a single block.
     pub block_limit: u64,

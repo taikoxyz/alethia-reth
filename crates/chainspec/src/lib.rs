@@ -150,4 +150,26 @@ mod test {
             assert_eq!(expected_hash, computed_hash, "genesis hash mismatch for {name}");
         }
     }
+
+    #[test]
+    fn test_taiko_genesis_chain_ids_are_pinned() {
+        // Chain ids are part of consensus and must not silently drift if a genesis JSON is
+        // edited. The genesis HEADER hash does not depend on the chain id, so the genesis hash
+        // tests above do not catch chain-id changes — pin them here explicitly.
+        let cases = [
+            ("devnet", make_taiko_devnet_chain_spec as fn() -> TaikoChainSpec, 167_001u64),
+            ("taiko-hoodi", make_taiko_hoodi_chain_spec as fn() -> TaikoChainSpec, 167_013u64),
+            ("mainnet", make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec, 167_000u64),
+            ("masaya", make_taiko_masaya_chain_spec as fn() -> TaikoChainSpec, 167_011u64),
+        ];
+
+        for (name, make_spec, expected_chain_id) in cases {
+            let spec = make_spec();
+            assert_eq!(
+                spec.inner.chain.id(),
+                expected_chain_id,
+                "chain id mismatch for {name}",
+            );
+        }
+    }
 }

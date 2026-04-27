@@ -21,6 +21,7 @@ use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
     schedule::schedule_for,
+    unzen::{MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE},
 };
 
 #[test]
@@ -60,6 +61,48 @@ fn unzen_schedule_uses_spec_spawn_estimates() {
     assert_eq!(schedule.spawn_estimates.staticcall, 3_500);
     assert_eq!(schedule.spawn_estimates.create, 37_000);
     assert_eq!(schedule.spawn_estimates.create2, 44_500);
+}
+
+#[test]
+fn masaya_unzen_schedule_uses_one_billion_block_limit() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.block_limit, 1_000_000_000);
+    assert_eq!(MASAYA_BLOCK_ZK_GAS_LIMIT, 1_000_000_000);
+}
+
+#[test]
+fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.call,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.call
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.callcode,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.callcode
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.delegatecall,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.delegatecall
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.staticcall,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.staticcall
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create2,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create2
+    );
 }
 
 #[test]

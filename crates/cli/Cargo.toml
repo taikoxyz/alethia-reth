@@ -19,6 +19,7 @@ alloy-consensus = { workspace = true }
 alloy-hardforks = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 eyre = { workspace = true }
+humantime = { workspace = true }
 reth = { workspace = true }
 reth-cli = { workspace = true }
 reth-cli-commands = { workspace = true }

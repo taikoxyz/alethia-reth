@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
 #![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! CLI entrypoints and command wiring for the Alethia Taiko node.
-use std::{fmt, sync::Arc};
+use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_consensus::Header;
 use clap::Parser;
@@ -22,7 +22,10 @@ use tracing::info;
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
-    TaikoNode, consensus::validation::TaikoBeaconConsensus, node_builder::ProviderTaikoBlockReader,
+    TaikoNode,
+    consensus::validation::TaikoBeaconConsensus,
+    node_builder::ProviderTaikoBlockReader,
+    proof_history::{DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW},
 };
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
@@ -41,6 +44,10 @@ pub use parser::TaikoChainSpecParser;
 /// Additional Taiko CLI arguments layered on top of the base CLI.
 #[derive(Debug, clap::Args)]
 pub struct TaikoCliExtArgs {
+    /// Proof-history sidecar configuration.
+    #[command(flatten)]
+    pub proof_history: TaikoProofHistoryArgs,
+
     /// Override the devnet Unzen hardfork activation timestamp (`0` keeps the embedded value).
     #[arg(
         long = "devnet-unzen-timestamp",
@@ -50,6 +57,58 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_unzen_timestamp: u64,
+}
+
+/// CLI arguments controlling the optional proof-history sidecar.
+#[derive(Debug, Clone, clap::Args)]
+pub struct TaikoProofHistoryArgs {
+    /// Enable proof-history indexing and pruning.
+    #[arg(long = "proofs-history", default_value_t = false, help_heading = "Taiko Proof History")]
+    pub enabled: bool,
+
+    /// Filesystem path for the proof-history MDBX database.
+    #[arg(
+        long = "proofs-history.storage-path",
+        value_name = "PATH",
+        help_heading = "Taiko Proof History"
+    )]
+    pub storage_path: Option<PathBuf>,
+
+    /// Number of recent blocks retained in proof-history storage.
+    #[arg(
+        long = "proofs-history.window",
+        value_name = "BLOCKS",
+        default_value_t = DEFAULT_PROOF_HISTORY_WINDOW,
+        help_heading = "Taiko Proof History"
+    )]
+    pub window: u64,
+
+    /// Delay empty proof-history initialization until the finalized window start is reached.
+    #[arg(
+        long = "proofs-history.backfill-window-only",
+        default_value_t = false,
+        help_heading = "Taiko Proof History"
+    )]
+    pub backfill_window_only: bool,
+
+    /// Wall-clock interval between proof-history prune passes.
+    #[arg(
+        long = "proofs-history.prune-interval",
+        value_name = "DURATION",
+        default_value = "15s",
+        value_parser = humantime::parse_duration,
+        help_heading = "Taiko Proof History"
+    )]
+    pub prune_interval: Duration,
+
+    /// Block interval between proof-history consistency checks; zero disables verification.
+    #[arg(
+        long = "proofs-history.verification-interval",
+        value_name = "BLOCKS",
+        default_value_t = DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
+        help_heading = "Taiko Proof History"
+    )]
+    pub verification_interval: u64,
 }
 
 /// The main alethia-reth cli interface.
@@ -203,11 +262,18 @@ impl<
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
+    use std::{
+        path::PathBuf,
+        sync::{Mutex, OnceLock},
+        time::Duration,
+    };
 
     use clap::Parser;
 
-    use super::TaikoCliExtArgs;
+    use super::{
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
+    };
+    use crate::command::TaikoNodeExtArgs;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -247,6 +313,54 @@ mod tests {
         unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_UNZEN_TIMESTAMP") };
 
         assert_eq!(cli.ext.devnet_unzen_timestamp, 42);
+    }
+
+    #[test]
+    fn test_parse_proof_history_flags() {
+        let cli = TestCli::try_parse_from([
+            "alethia-reth",
+            "--proofs-history",
+            "--proofs-history.storage-path",
+            "/tmp/proofs-history",
+            "--proofs-history.window",
+            "256",
+            "--proofs-history.backfill-window-only",
+            "--proofs-history.prune-interval",
+            "30s",
+            "--proofs-history.verification-interval",
+            "16",
+        ])
+        .expect("proof-history args should parse");
+
+        assert!(cli.ext.proof_history.enabled);
+        assert_eq!(cli.ext.proof_history.storage_path, Some(PathBuf::from("/tmp/proofs-history")));
+        assert_eq!(cli.ext.proof_history.window, 256);
+        assert!(cli.ext.proof_history.backfill_window_only);
+        assert_eq!(cli.ext.proof_history.prune_interval, Duration::from_secs(30));
+        assert_eq!(cli.ext.proof_history.verification_interval, 16);
+    }
+
+    #[test]
+    fn test_default_proof_history_config_is_disabled() {
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
+        let config = cli.ext.proof_history_config();
+
+        assert!(!config.enabled);
+        assert!(config.storage_path.is_none());
+        assert_eq!(config.window, DEFAULT_PROOF_HISTORY_WINDOW);
+        assert!(!config.backfill_window_only);
+        assert_eq!(config.prune_interval, Duration::from_secs(15));
+        assert_eq!(config.verification_interval, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL);
+    }
+
+    #[test]
+    fn test_enabled_proof_history_config_without_path_returns_storage_error() {
+        let cli = TestCli::try_parse_from(["alethia-reth", "--proofs-history"])
+            .expect("proof-history can be enabled without parser-level storage validation");
+        let config = cli.ext.proof_history_config();
+
+        assert!(config.enabled);
+        assert!(config.required_storage_path().is_err());
     }
 
     #[test]

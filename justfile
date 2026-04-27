@@ -1,4 +1,4 @@
-toolchain := "1.93.1"
+toolchain := "1.94.0"
 fmt_toolchain := "nightly"
 
 fmt:

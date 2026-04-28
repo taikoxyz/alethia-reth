@@ -2,10 +2,12 @@
 
 use crate::spec::TaikoSpecId;
 
-use super::unzen::UNZEN_ZK_GAS_SCHEDULE;
+use super::unzen::{MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE};
+
+pub use alethia_reth_chainspec::TAIKO_MASAYA_CHAIN_ID;
 
 /// Fixed raw-gas estimates for spawn opcodes.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpawnEstimates {
     /// Fixed raw-gas estimate for `CALL`.
     pub call: u64,
@@ -22,7 +24,7 @@ pub struct SpawnEstimates {
 }
 
 /// Consensus-owned zk gas schedule for a Taiko fork.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ZkGasSchedule {
     /// Maximum zk gas permitted across a single block.
     pub block_limit: u64,
@@ -34,10 +36,16 @@ pub struct ZkGasSchedule {
     pub spawn_estimates: SpawnEstimates,
 }
 
-/// Returns the consensus zk gas schedule for the active Taiko fork, when defined.
-pub const fn schedule_for(spec: TaikoSpecId) -> Option<&'static ZkGasSchedule> {
+/// Returns the consensus zk gas schedule for the active Taiko fork on the given chain, when
+/// defined. Masaya runs Unzen with a 10× higher block budget than Devnet/Hoodi/Mainnet; all
+/// other chains share the default Unzen schedule.
+pub const fn schedule_for(spec: TaikoSpecId, chain_id: u64) -> Option<&'static ZkGasSchedule> {
     match spec {
-        TaikoSpecId::UNZEN => Some(&UNZEN_ZK_GAS_SCHEDULE),
+        TaikoSpecId::UNZEN => Some(if chain_id == TAIKO_MASAYA_CHAIN_ID {
+            &MASAYA_UNZEN_ZK_GAS_SCHEDULE
+        } else {
+            &UNZEN_ZK_GAS_SCHEDULE
+        }),
         _ => None,
     }
 }

@@ -20,24 +20,47 @@ use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
-    schedule::schedule_for,
+    schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
+    unzen::{MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE},
 };
 
 #[test]
 fn unzen_schedule_is_selected_only_for_unzen() {
-    assert!(schedule_for(TaikoSpecId::UNZEN).is_some());
-    assert!(schedule_for(TaikoSpecId::SHASTA).is_none());
+    assert!(schedule_for(TaikoSpecId::UNZEN, 167).is_some());
+    assert!(schedule_for(TaikoSpecId::SHASTA, 167).is_none());
+}
+
+#[test]
+fn schedule_for_returns_masaya_schedule_on_masaya_chain_id() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Unzen schedule");
+    assert_eq!(schedule.block_limit, 1_000_000_000);
+    assert!(std::ptr::eq(schedule, &MASAYA_UNZEN_ZK_GAS_SCHEDULE));
+}
+
+#[test]
+fn schedule_for_returns_default_schedule_on_non_masaya_chain_ids() {
+    for chain_id in [1u64, 167u64, 167_010u64, 167_009u64] {
+        let schedule = schedule_for(TaikoSpecId::UNZEN, chain_id).expect("Unzen schedule");
+        assert_eq!(schedule.block_limit, 100_000_000);
+        assert!(std::ptr::eq(schedule, &UNZEN_ZK_GAS_SCHEDULE));
+    }
+}
+
+#[test]
+fn schedule_for_returns_none_for_pre_unzen_regardless_of_chain_id() {
+    assert!(schedule_for(TaikoSpecId::SHASTA, TAIKO_MASAYA_CHAIN_ID).is_none());
+    assert!(schedule_for(TaikoSpecId::SHASTA, 167).is_none());
 }
 
 #[test]
 fn unzen_schedule_uses_the_spec_block_limit() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     assert_eq!(schedule.block_limit, 100_000_000);
 }
 
 #[test]
 fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
 
     assert_eq!(schedule.opcode_multipliers[0x20], 85);
     assert_eq!(schedule.opcode_multipliers[0xf1], 25);
@@ -52,7 +75,7 @@ fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
 
 #[test]
 fn unzen_schedule_uses_spec_spawn_estimates() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
 
     assert_eq!(schedule.spawn_estimates.call, 12_500);
     assert_eq!(schedule.spawn_estimates.callcode, 12_500);
@@ -63,8 +86,40 @@ fn unzen_schedule_uses_spec_spawn_estimates() {
 }
 
 #[test]
+fn masaya_unzen_schedule_uses_one_billion_block_limit() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.block_limit, 1_000_000_000);
+    assert_eq!(MASAYA_BLOCK_ZK_GAS_LIMIT, 1_000_000_000);
+}
+
+#[test]
+fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers,
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers
+    );
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.spawn_estimates, MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates);
+}
+
+#[test]
+fn masaya_unzen_schedule_pins_spec_opcode_and_precompile_multipliers() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20], 85);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xf1], 25);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xfe], 0);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xac], u16::MAX);
+
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05], 1363);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x01], 81);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x04], 2);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x14], u16::MAX);
+}
+
+#[test]
 fn meter_promotes_committed_tx_usage_into_block_usage() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 3).expect("charge");
@@ -75,7 +130,7 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
 
 #[test]
 fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.opcode_multipliers[0x01])) + 1;
 
@@ -84,7 +139,7 @@ fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
 
 #[test]
 fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
     let raw_gas = (u64::MAX / u64::from(schedule.precompile_multipliers[0x01])) + 1;
 
@@ -93,7 +148,7 @@ fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
 
 #[test]
 fn meter_resets_transaction_usage_without_affecting_block_usage() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0x01, 2).expect("charge");
@@ -105,7 +160,7 @@ fn meter_resets_transaction_usage_without_affecting_block_usage() {
 
 #[test]
 fn meter_allows_exactly_remaining_block_budget() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
@@ -121,7 +176,7 @@ fn meter_allows_exactly_remaining_block_budget() {
 
 #[test]
 fn meter_rejects_block_budget_plus_one() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
@@ -132,13 +187,21 @@ fn meter_rejects_block_budget_plus_one() {
 
 #[test]
 fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
 
     assert!(matches!(
         meter.charge_precompile(0x01, schedule.block_limit),
         Err(ZkGasOutcome::LimitExceeded)
     ));
+}
+
+#[test]
+fn meter_exposes_its_schedule() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let meter = ZkGasMeter::new(schedule);
+
+    assert!(std::ptr::eq(meter.schedule(), schedule));
 }
 
 #[derive(Default, Debug)]
@@ -175,7 +238,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 
 #[test]
 fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
-    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
@@ -237,6 +300,29 @@ fn unzen_default_create_evm_path_is_metered() {
 
     assert!(evm.shared_meter().is_some());
     assert!(evm.transact(tx_env(5_000_000)).is_err());
+}
+
+#[test]
+fn factory_installs_masaya_schedule_when_chain_id_is_masaya() {
+    let mut env = evm_env(TaikoSpecId::UNZEN);
+    env.cfg_env.chain_id = TAIKO_MASAYA_CHAIN_ID;
+    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
+    let meter = evm.shared_meter().expect("Masaya schedule should install a shared meter");
+    let meter = meter.lock().expect("meter lock");
+
+    assert!(std::ptr::eq(meter.schedule(), &MASAYA_UNZEN_ZK_GAS_SCHEDULE));
+    assert_eq!(meter.schedule().block_limit, 1_000_000_000);
+}
+
+#[test]
+fn factory_installs_default_schedule_when_chain_id_is_not_masaya() {
+    let env = evm_env(TaikoSpecId::UNZEN); // helper sets chain_id = 167 (not Masaya)
+    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
+    let meter = evm.shared_meter().expect("default Unzen schedule should install a shared meter");
+    let meter = meter.lock().expect("meter lock");
+
+    assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));
+    assert_eq!(meter.schedule().block_limit, 100_000_000);
 }
 
 #[test]

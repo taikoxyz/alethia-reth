@@ -48,7 +48,7 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
-        let meter = shared_meter_for_spec(spec_id);
+        let meter = shared_meter_for_spec(spec_id, input.cfg_env.chain_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
@@ -69,7 +69,7 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
-        let meter = shared_meter_for_spec(spec_id);
+        let meter = shared_meter_for_spec(spec_id, input.cfg_env.chain_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)

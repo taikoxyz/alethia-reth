@@ -239,7 +239,11 @@ where
         &self,
     ) -> eyre::Result<ProofHistoryInitializationAction> {
         let finalized_block = finalized_block_number(self.ctx.provider())?;
-        let executed_head = self.ctx.provider().best_block_number()?;
+        // Use the on-disk best block as `executed_head` so that the historical-init target header
+        // and reverse changesets are guaranteed to be persisted. The in-memory canonical tip from
+        // `provider().best_block_number()` can outpace disk by up to `engine.persistence-threshold`
+        // blocks, which previously caused the historical init to panic on a missing target header.
+        let executed_head = self.ctx.provider().database_provider_ro()?.best_block_number()?;
 
         match delayed_proof_history_start(
             finalized_block,

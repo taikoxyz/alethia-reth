@@ -1,4 +1,4 @@
-//! Proof-history sidecar configuration and ExEx wiring for Taiko nodes.
+//! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
 mod exex;
@@ -8,7 +8,7 @@ mod storage_init;
 pub use config::{
     DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
-use exex::{ProofHistoryExEx, ProofHistoryExExConfig};
+use exex::{ProofHistorySidecar, ProofHistorySidecarConfig};
 use storage_init::proof_history_historical_init_metadata_path;
 
 use crate::TaikoNode;
@@ -18,7 +18,10 @@ use alethia_reth_rpc::{
 };
 use eyre::WrapErr;
 use reth::{
-    providers::{BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider},
+    providers::{
+        BlockHashReader, BlockNumReader, BlockReader, CanonStateSubscriptions, DBProvider,
+        DatabaseProviderFactory, HeaderProvider,
+    },
     tasks::TaskExecutor,
 };
 use reth_db::{Database, database_metrics::DatabaseMetrics};
@@ -47,7 +50,7 @@ pub type ProofHistoryInstallResult<T, CB, AO> = eyre::Result<(
     Option<ProofHistoryStorage>,
 )>;
 
-/// Installs the proof-history ExEx and proof database metrics task on a Taiko node builder.
+/// Installs the proof-history sidecar and proof database metrics task on a Taiko node builder.
 pub fn install_proof_history<T, CB, AO>(
     node_builder: WithLaunchContext<NodeBuilderWithComponents<T, CB, AO>>,
     config: ProofHistoryConfig,
@@ -57,7 +60,11 @@ where
     CB: NodeComponentsBuilder<T>,
     AO: NodeAddOns<NodeAdapter<T, CB::Components>> + RethRpcAddOns<NodeAdapter<T, CB::Components>>,
     AO::EthApi: FullEthApi + Send + Sync + 'static,
-    T::Provider: BlockNumReader + DatabaseProviderFactory,
+    T::Provider: BlockHashReader
+        + BlockNumReader
+        + BlockReader
+        + CanonStateSubscriptions
+        + DatabaseProviderFactory,
     <T::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
         + ChainStateBlockReader
         + ChangeSetReader
@@ -77,35 +84,44 @@ where
             format!("failed to create proof-history MDBX at {storage_path:?}")
         })?);
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
-    let storage_for_exex = storage.clone();
+    let storage_for_sidecar = storage.clone();
     let storage_for_init = Arc::clone(&mdbx);
     let historical_init_metadata_path = proof_history_historical_init_metadata_path(&storage_path);
 
     Ok((
-        node_builder
-            .on_node_started(move |node| {
-                spawn_proofs_db_metrics(
-                    node.task_executor,
-                    mdbx,
-                    node.config.metrics.push_gateway_interval,
-                );
-                Ok(())
-            })
-            .install_exex("proofs-history", async move |exex_context| {
-                Ok(ProofHistoryExEx::new(
-                    exex_context,
-                    storage_for_exex,
-                    storage_for_init,
-                    ProofHistoryExExConfig {
-                        proofs_history_window: config.window,
-                        proofs_history_prune_interval: config.prune_interval,
-                        verification_interval: config.verification_interval,
-                        backfill_window_only: config.backfill_window_only,
-                        historical_init_metadata_path: Some(historical_init_metadata_path),
-                    },
-                )
-                .run())
-            }),
+        node_builder.on_node_started(move |node| {
+            let task_executor = node.task_executor.clone();
+            spawn_proofs_db_metrics(
+                task_executor.clone(),
+                mdbx,
+                node.config.metrics.push_gateway_interval,
+            );
+            let sidecar = ProofHistorySidecar::<NodeAdapter<T, CB::Components>, _>::new(
+                node.provider,
+                node.evm_config,
+                task_executor.clone(),
+                storage_for_sidecar,
+                storage_for_init,
+                ProofHistorySidecarConfig {
+                    proofs_history_window: config.window,
+                    proofs_history_prune_interval: config.prune_interval,
+                    verification_interval: config.verification_interval,
+                    backfill_window_only: config.backfill_window_only,
+                    historical_init_metadata_path: Some(historical_init_metadata_path),
+                },
+            );
+            task_executor.spawn_critical_with_graceful_shutdown_signal(
+                "taiko::proof_history::sidecar",
+                move |shutdown| {
+                    Box::pin(async move {
+                        if let Err(error) = sidecar.run(shutdown).await {
+                            panic!("proof-history sidecar crashed: {error}");
+                        }
+                    })
+                },
+            );
+            Ok(())
+        }),
         Some(storage),
     ))
 }

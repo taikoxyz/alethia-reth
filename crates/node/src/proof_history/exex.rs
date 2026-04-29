@@ -1,4 +1,4 @@
-//! Proof-history execution extension: notification handling, sync loop, pruner task.
+//! Proof-history sidecar: notification handling, sync loop, pruner task.
 
 use super::storage_init::{
     DelayedProofHistoryStart, PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
@@ -7,16 +7,20 @@ use super::storage_init::{
     proof_history_backfill_target, proof_history_storage_needs_initialization,
 };
 use alloy_consensus::BlockHeader;
-use alloy_eips::eip1898::BlockWithParent;
+use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
+use alloy_primitives::B256;
 use eyre::eyre;
-use futures_util::TryStreamExt;
-use reth::providers::{
-    BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
-    TransactionVariant,
+use reth::{
+    providers::{
+        BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification,
+        CanonStateSubscriptions, DBProvider, DatabaseProviderFactory, HeaderProvider,
+        TransactionVariant,
+    },
+    tasks::{TaskExecutor, shutdown::GracefulShutdown},
 };
 use reth_db::Database;
 use reth_execution_types::Chain;
-use reth_exex::{ExExContext, ExExEvent, ExExNotification};
+use reth_exex::ExExNotification;
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
     OpProofStoragePruner, OpProofsStorage, OpProofsStore, api::OpProofsProviderRO,
@@ -36,11 +40,11 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{Mutex, watch},
+    sync::{Mutex, broadcast, watch},
     task,
     time::{self, MissedTickBehavior},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Converts blocking-task join failures into errors while preserving panics as panics.
 fn blocking_join_result<T>(
@@ -80,9 +84,77 @@ const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs
 /// Number of proof-history blocks pruned in one pruning transaction.
 const PROOF_HISTORY_PRUNE_BATCH_SIZE: u64 = 200;
 
-/// Runtime settings passed into the proof-history ExEx.
+/// Converts canonical notifications into the ExEx notification shape used internally.
+fn canonical_notification_to_exex<Primitives>(
+    notification: CanonStateNotification<Primitives>,
+) -> ExExNotification<Primitives>
+where
+    Primitives: NodePrimitives,
+{
+    match notification {
+        CanonStateNotification::Commit { new } => ExExNotification::ChainCommitted { new },
+        CanonStateNotification::Reorg { old, new } if new.is_empty() => {
+            ExExNotification::ChainReverted { old }
+        }
+        CanonStateNotification::Reorg { old, new } => ExExNotification::ChainReorged { old, new },
+    }
+}
+
+/// Startup reconciliation action for existing proof-history storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProofHistoryStartupAction {
+    /// Proof-history storage has no complete retained range and needs the normal initialization
+    /// path.
+    Uninitialized,
+    /// Stored proof-history bounds match canonical state and can be served as-is.
+    Ready,
+    /// Stored proof-history must be unwound to its retained earliest block before syncing forward.
+    UnwindToEarliest {
+        /// Earliest retained proof-history block that still matches canonical state.
+        earliest: BlockNumHash,
+    },
+}
+
+/// Determines how proof-history storage should be reconciled against canonical block hashes.
+pub(super) fn proof_history_startup_action(
+    earliest: Option<(u64, B256)>,
+    latest: Option<(u64, B256)>,
+    canonical_best: u64,
+    canonical_earliest_hash: Option<B256>,
+    canonical_latest_hash: Option<B256>,
+) -> eyre::Result<ProofHistoryStartupAction> {
+    let (Some((earliest_number, earliest_hash)), Some((latest_number, latest_hash))) =
+        (earliest, latest)
+    else {
+        return Ok(ProofHistoryStartupAction::Uninitialized);
+    };
+
+    if earliest_number > latest_number {
+        return Err(eyre!(
+            "proof-history storage has earliest block {earliest_number} after latest block {latest_number}"
+        ));
+    }
+
+    if latest_number <= canonical_best &&
+        canonical_latest_hash.is_some_and(|canonical_hash| canonical_hash == latest_hash)
+    {
+        return Ok(ProofHistoryStartupAction::Ready);
+    }
+
+    if canonical_earliest_hash.is_some_and(|canonical_hash| canonical_hash == earliest_hash) {
+        return Ok(ProofHistoryStartupAction::UnwindToEarliest {
+            earliest: BlockNumHash::new(earliest_number, earliest_hash),
+        });
+    }
+
+    Err(eyre!(
+        "proof-history earliest stored block {earliest_number} hash {earliest_hash:?} is not canonical"
+    ))
+}
+
+/// Runtime settings passed into the proof-history sidecar.
 #[derive(Debug)]
-pub(super) struct ProofHistoryExExConfig {
+pub(super) struct ProofHistorySidecarConfig {
     /// Number of recent blocks retained in proof-history storage.
     pub(super) proofs_history_window: u64,
     /// Wall-clock interval between proof-history prune passes.
@@ -95,39 +167,47 @@ pub(super) struct ProofHistoryExExConfig {
     pub(super) historical_init_metadata_path: Option<PathBuf>,
 }
 
-/// Taiko proof-history ExEx that keeps OP proofs storage behind locally executed state.
+/// Taiko proof-history sidecar that keeps OP proofs storage behind locally executed state.
 #[derive(Debug)]
-pub(super) struct ProofHistoryExEx<Node, Storage>
+pub(super) struct ProofHistorySidecar<Node, Storage>
 where
     Node: FullNodeComponents,
 {
-    /// Reth ExEx context used to receive chain notifications and report finished heights.
-    ctx: ExExContext<Node>,
+    /// Canonical provider used for state notifications and block reads.
+    provider: Node::Provider,
+    /// EVM configuration used to execute blocks for proof-history updates.
+    evm_config: Node::Evm,
+    /// Task executor used to spawn critical proof-history workers.
+    task_executor: TaskExecutor,
     /// Proof-history storage populated by the extension.
     storage: OpProofsStorage<Storage>,
     /// Raw proof-history storage handle used for the initial current-state snapshot.
     init_storage: Storage,
     /// Runtime settings that govern proof-history retention and startup behavior.
-    config: ProofHistoryExExConfig,
-    /// Whether a delayed-start miss has already been reported for this ExEx run.
+    config: ProofHistorySidecarConfig,
+    /// Whether a delayed-start miss has already been reported for this sidecar run.
     missed_start_logged: AtomicBool,
     /// Serializes proof-history writers across live notifications, background sync, and pruning.
     write_lock: Arc<Mutex<()>>,
 }
 
-impl<Node, Storage> ProofHistoryExEx<Node, Storage>
+impl<Node, Storage> ProofHistorySidecar<Node, Storage>
 where
     Node: FullNodeComponents,
 {
-    /// Creates a proof-history ExEx with Taiko backfill guards.
+    /// Creates a proof-history sidecar with Taiko backfill guards.
     pub(super) fn new(
-        ctx: ExExContext<Node>,
+        provider: Node::Provider,
+        evm_config: Node::Evm,
+        task_executor: TaskExecutor,
         storage: OpProofsStorage<Storage>,
         init_storage: Storage,
-        config: ProofHistoryExExConfig,
+        config: ProofHistorySidecarConfig,
     ) -> Self {
         Self {
-            ctx,
+            provider,
+            evm_config,
+            task_executor,
             storage,
             init_storage,
             config,
@@ -137,10 +217,14 @@ where
     }
 }
 
-impl<Node, Storage, Primitives> ProofHistoryExEx<Node, Storage>
+impl<Node, Storage, Primitives> ProofHistorySidecar<Node, Storage>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = Primitives>>,
-    Node::Provider: BlockNumReader + DatabaseProviderFactory,
+    Node::Provider: BlockHashReader
+        + BlockNumReader
+        + BlockReader
+        + CanonStateSubscriptions
+        + DatabaseProviderFactory,
     <Node::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
         + ChainStateBlockReader
         + ChangeSetReader
@@ -154,37 +238,57 @@ where
     Storage: OpProofsStore + Clone + Send + 'static,
 {
     /// Runs proof-history indexing until the node shuts down.
-    pub(super) async fn run(mut self) -> eyre::Result<()> {
-        let mut sync_target_tx = self.try_start()?;
+    pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
+        let collector =
+            LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
+        let mut notifications = self.provider.subscribe_to_canonical_state();
+        let mut sync_target_tx = self.try_start(&collector)?;
         let mut retry_interval = time::interval(PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL);
         retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let collector = LiveTrieCollector::new(
-            self.ctx.evm_config().clone(),
-            self.ctx.provider().clone(),
-            &self.storage,
-        );
-
         loop {
             tokio::select! {
-                maybe_notification = self.ctx.notifications.try_next() => {
-                    let Some(notification) = maybe_notification? else {
-                        break;
+                notification = notifications.recv() => {
+                    let notification = match notification {
+                        Ok(notification) => notification,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(
+                                target: "reth::taiko::proof_history",
+                                skipped,
+                                "proof-history sidecar lagged canonical notifications; reconciling storage"
+                            );
+                            // Replace the lagged receiver before reconciliation. The old
+                            // receiver's retained suffix is no longer useful after storage is
+                            // reconciled, and the fresh receiver buffers commits published while
+                            // recovery advances the sync target to canonical best.
+                            notifications = self.provider.subscribe_to_canonical_state();
+                            if let Some(target_tx) = sync_target_tx.as_ref() {
+                                self.recover_from_lag(&collector, target_tx).await?;
+                            } else {
+                                sync_target_tx = self.try_start(&collector)?;
+                            }
+                            continue;
+                        }
                     };
-
                     if sync_target_tx.is_none() {
-                        sync_target_tx = self.try_start()?;
+                        sync_target_tx = self.try_start(&collector)?;
                     }
 
                     let Some(target_tx) = sync_target_tx.as_ref() else {
-                        self.acknowledge_notification(&notification)?;
                         continue;
                     };
 
-                    self.handle_notification(notification, &collector, target_tx).await?;
+                    self.handle_notification(
+                        canonical_notification_to_exex(notification),
+                        &collector,
+                        target_tx,
+                    )
+                    .await?;
                 }
+                _ = &mut shutdown => break,
                 _ = retry_interval.tick(), if sync_target_tx.is_none() => {
-                    sync_target_tx = self.try_start()?;
+                    sync_target_tx = self.try_start(&collector)?;
                 }
             }
         }
@@ -192,15 +296,115 @@ where
         Ok(())
     }
 
-    /// Initializes storage if possible and spawns the sync and pruner tasks on first success.
-    fn try_start(&self) -> eyre::Result<Option<watch::Sender<u64>>> {
-        if !self.initialize_or_wait()? {
+    /// Reconciles storage if possible and spawns the sync and pruner tasks on first success.
+    fn try_start(
+        &self,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<Option<watch::Sender<u64>>> {
+        if !self.reconcile_or_wait(collector)? {
             return Ok(None);
         }
-        let initial_sync_target = self.ctx.provider().best_block_number()?;
+        let initial_sync_target = self.provider.best_block_number()?;
         let sync_target_tx = self.spawn_sync_task(initial_sync_target);
         self.spawn_pruner_task();
         Ok(Some(sync_target_tx))
+    }
+
+    /// Reconciles proof-history storage after missing canonical notifications.
+    async fn recover_from_lag(
+        &self,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        sync_target_tx: &watch::Sender<u64>,
+    ) -> eyre::Result<()> {
+        let _write_guard = self.write_lock.lock().await;
+        if !self.reconcile_or_wait(collector)? {
+            return Err(eyre!(
+                "proof-history storage became uninitialized after sync workers started"
+            ));
+        }
+        let target = self.provider.best_block_number()?;
+        sync_target_tx.send(target)?;
+        Ok(())
+    }
+
+    /// Reconciles current proof-history bounds against the canonical database.
+    fn reconcile_or_wait(
+        &self,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<bool> {
+        match self.startup_action()? {
+            ProofHistoryStartupAction::Uninitialized => self.initialize_or_wait(),
+            ProofHistoryStartupAction::Ready => {
+                self.ensure_initialized()?;
+                Ok(true)
+            }
+            ProofHistoryStartupAction::UnwindToEarliest { earliest } => {
+                self.unwind_to_earliest(collector, earliest)?;
+                self.ensure_initialized()?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Computes the reconciliation action for the current proof-history storage bounds.
+    fn startup_action(&self) -> eyre::Result<ProofHistoryStartupAction> {
+        let provider_ro = self.storage.provider_ro()?;
+        let earliest = provider_ro.get_earliest_block_number()?;
+        let latest = provider_ro.get_latest_block_number()?;
+        let canonical_best = self.provider.best_block_number()?;
+        let canonical_earliest_hash =
+            earliest.map(|(number, _)| self.provider.block_hash(number)).transpose()?.flatten();
+        let canonical_latest_hash = latest
+            .filter(|(number, _)| *number <= canonical_best)
+            .map(|(number, _)| self.provider.block_hash(number))
+            .transpose()?
+            .flatten();
+
+        proof_history_startup_action(
+            earliest,
+            latest,
+            canonical_best,
+            canonical_earliest_hash,
+            canonical_latest_hash,
+        )
+    }
+
+    /// Unwinds proof-history storage so its latest retained block is the canonical earliest block.
+    fn unwind_to_earliest(
+        &self,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        earliest: BlockNumHash,
+    ) -> eyre::Result<()> {
+        let latest = self
+            .storage
+            .provider_ro()?
+            .get_latest_block_number()?
+            .ok_or_else(|| eyre!("no latest proof-history block to unwind"))?
+            .0;
+        if latest <= earliest.number {
+            return Ok(());
+        }
+
+        info!(
+            target: "reth::taiko::proof_history",
+            latest,
+            earliest = earliest.number,
+            "unwinding proof-history storage to retained canonical earliest block"
+        );
+
+        let unwind_block_number = earliest
+            .number
+            .checked_add(1)
+            .ok_or_else(|| eyre!("cannot unwind proof-history beyond u64::MAX block"))?;
+        let unwind_block_hash = self
+            .provider
+            .block_hash(unwind_block_number)?
+            .ok_or_else(|| eyre!("missing proof-history unwind block {unwind_block_number}"))?;
+        collector.unwind_history(BlockWithParent::new(
+            earliest.hash,
+            BlockNumHash::new(unwind_block_number, unwind_block_hash),
+        ))?;
+        Ok(())
     }
 
     /// Initializes proof-history storage immediately or waits for the finalized window.
@@ -214,15 +418,14 @@ where
 
             match action {
                 ProofHistoryInitializationAction::Wait => return Ok(false),
-                ProofHistoryInitializationAction::CurrentState => initialize_proof_history_storage(
-                    self.ctx.provider(),
-                    self.init_storage.clone(),
-                )?,
+                ProofHistoryInitializationAction::CurrentState => {
+                    initialize_proof_history_storage(&self.provider, self.init_storage.clone())?
+                }
                 ProofHistoryInitializationAction::HistoricalWindow {
                     start_block,
                     target_block,
                 } => initialize_historical_proof_history_storage(
-                    self.ctx.provider(),
+                    &self.provider,
                     self.init_storage.clone(),
                     self.config.historical_init_metadata_path.as_deref(),
                     start_block,
@@ -238,12 +441,12 @@ where
     fn finalized_window_initialization_action(
         &self,
     ) -> eyre::Result<ProofHistoryInitializationAction> {
-        let finalized_block = finalized_block_number(self.ctx.provider())?;
+        let finalized_block = finalized_block_number(&self.provider)?;
         // Use the on-disk best block as `executed_head` so that the historical-init target header
         // and reverse changesets are guaranteed to be persisted. The in-memory canonical tip from
         // `provider().best_block_number()` can outpace disk by up to `engine.persistence-threshold`
         // blocks, which previously caused the historical init to panic on a missing target header.
-        let executed_head = self.ctx.provider().database_provider_ro()?.best_block_number()?;
+        let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
 
         match delayed_proof_history_start(
             finalized_block,
@@ -331,23 +534,11 @@ where
         Ok(())
     }
 
-    /// Acknowledges committed ExEx notifications without proof-history processing.
-    fn acknowledge_notification(
-        &self,
-        notification: &ExExNotification<Primitives>,
-    ) -> eyre::Result<()> {
-        if let Some(committed_chain) = notification.committed_chain() {
-            self.ctx.events.send(ExExEvent::FinishedHeight(committed_chain.tip().num_hash()))?;
-        }
-
-        Ok(())
-    }
-
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
         let pruner = Arc::new(OpProofStoragePruner::new(
             self.storage.clone(),
-            self.ctx.provider().clone(),
+            self.provider.clone(),
             self.config.proofs_history_window,
             PROOF_HISTORY_PRUNE_BATCH_SIZE,
         ));
@@ -355,8 +546,7 @@ where
         let retention_window = self.config.proofs_history_window;
         let write_lock = self.write_lock.clone();
 
-        self.ctx
-            .task_executor()
+        self.task_executor
             .spawn_critical_with_graceful_shutdown_signal(
                 "taiko::proof_history::pruner",
                 move |mut signal| Box::pin(async move {
@@ -407,23 +597,20 @@ where
     fn spawn_sync_task(&self, initial_sync_target: u64) -> watch::Sender<u64> {
         let (sync_target_tx, sync_target_rx) = watch::channel(initial_sync_target);
         let task_storage = self.storage.clone();
-        let task_provider = self.ctx.provider().clone();
-        let task_evm_config = self.ctx.evm_config().clone();
+        let task_provider = self.provider.clone();
+        let task_evm_config = self.evm_config.clone();
         let task_write_lock = self.write_lock.clone();
 
-        self.ctx.task_executor().spawn_critical_task(
-            "taiko::proof_history::sync_loop",
-            async move {
-                Self::sync_loop(
-                    sync_target_rx,
-                    task_storage,
-                    task_provider,
-                    task_evm_config,
-                    task_write_lock,
-                )
-                .await;
-            },
-        );
+        self.task_executor.spawn_critical_task("taiko::proof_history::sync_loop", async move {
+            Self::sync_loop(
+                sync_target_rx,
+                task_storage,
+                task_provider,
+                task_evm_config,
+                task_write_lock,
+            )
+            .await;
+        });
 
         sync_target_tx
     }
@@ -533,7 +720,7 @@ where
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
         batch_size: usize,
     ) -> eyre::Result<()> {
-        let end = (start + batch_size as u64).min(target);
+        let end = start.saturating_add(batch_size as u64).min(target);
         debug!(target: "reth::taiko::proof_history", start, end, "processing proof-history batch");
 
         for block_num in (start + 1)..=end {
@@ -546,7 +733,7 @@ where
         Ok(())
     }
 
-    /// Handles an ExEx notification and advances proof-history storage or its backfill target.
+    /// Handles a canonical notification and advances proof-history storage or its backfill target.
     async fn handle_notification(
         &self,
         notification: ExExNotification<Primitives>,
@@ -573,7 +760,7 @@ where
             }
         }
 
-        self.acknowledge_notification(&notification)
+        Ok(())
     }
 
     /// Handles a canonical chain commit notification.
@@ -588,7 +775,7 @@ where
             return Ok(());
         }
 
-        let best_block = self.ctx.provider().best_block_number()?;
+        let best_block = self.provider.best_block_number()?;
         let is_sequential = new.tip().number() == latest_stored + 1;
         let is_near_tip = best_block.saturating_sub(new.tip().number()) <
             PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
@@ -628,8 +815,7 @@ where
         }
 
         let block = self
-            .ctx
-            .provider()
+            .provider
             .recovered_block(block_number.into(), TransactionVariant::NoHash)?
             .ok_or_else(|| eyre!("missing block {block_number} in provider"))?;
         collector.execute_and_store_block_updates(&block)?;
@@ -702,5 +888,100 @@ where
 
         collector.unwind_history(old.first().block_with_parent())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ProofHistoryStartupAction, canonical_notification_to_exex, proof_history_startup_action,
+    };
+    use alloy_eips::BlockNumHash;
+    use alloy_primitives::B256;
+    use reth::providers::CanonStateNotification;
+    use reth_ethereum_primitives::EthPrimitives;
+    use reth_execution_types::Chain;
+    use reth_exex::ExExNotification;
+    use std::sync::Arc;
+
+    fn hash(byte: u8) -> B256 {
+        B256::with_last_byte(byte)
+    }
+
+    #[test]
+    fn proof_history_startup_action_ready_when_latest_is_canonical() {
+        let action = proof_history_startup_action(
+            Some((10, hash(10))),
+            Some((20, hash(20))),
+            20,
+            Some(hash(10)),
+            Some(hash(20)),
+        )
+        .expect("canonical latest should be ready");
+
+        assert_eq!(action, ProofHistoryStartupAction::Ready);
+    }
+
+    #[test]
+    fn proof_history_startup_action_unwinds_when_latest_mismatches_and_earliest_is_canonical() {
+        let action = proof_history_startup_action(
+            Some((10, hash(10))),
+            Some((20, hash(21))),
+            20,
+            Some(hash(10)),
+            Some(hash(20)),
+        )
+        .expect("canonical earliest should allow retained-window rewind");
+
+        assert_eq!(
+            action,
+            ProofHistoryStartupAction::UnwindToEarliest {
+                earliest: BlockNumHash::new(10, hash(10))
+            }
+        );
+    }
+
+    #[test]
+    fn proof_history_startup_action_unwinds_when_latest_is_ahead_and_earliest_is_canonical() {
+        let action = proof_history_startup_action(
+            Some((10, hash(10))),
+            Some((25, hash(25))),
+            20,
+            Some(hash(10)),
+            None,
+        )
+        .expect("canonical earliest should allow rewind when latest is ahead");
+
+        assert_eq!(
+            action,
+            ProofHistoryStartupAction::UnwindToEarliest {
+                earliest: BlockNumHash::new(10, hash(10))
+            }
+        );
+    }
+
+    #[test]
+    fn proof_history_startup_action_errors_when_earliest_is_noncanonical() {
+        let error = proof_history_startup_action(
+            Some((10, hash(11))),
+            Some((20, hash(21))),
+            20,
+            Some(hash(10)),
+            Some(hash(20)),
+        )
+        .expect_err("noncanonical earliest must not be served");
+
+        assert!(error.to_string().contains("earliest stored block"));
+    }
+
+    #[test]
+    fn canonical_notification_to_exex_maps_empty_reorg_to_revert() {
+        let old = Arc::new(Chain::<EthPrimitives>::default());
+        let notification: CanonStateNotification<EthPrimitives> =
+            CanonStateNotification::Reorg { old: old.clone(), new: Arc::new(Chain::default()) };
+
+        let converted = canonical_notification_to_exex(notification);
+
+        assert_eq!(converted, ExExNotification::ChainReverted { old });
     }
 }

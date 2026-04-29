@@ -620,13 +620,13 @@ mod tests {
                 ]),
             ),
             trie_updates: TrieUpdatesSorted::new(
-                vec![(account_path.clone(), None)],
+                vec![(account_path, None)],
                 B256Map::from_iter([
                     (
                         storage,
                         StorageTrieUpdatesSorted {
                             is_deleted: false,
-                            storage_nodes: vec![(storage_path.clone(), Some(branch))],
+                            storage_nodes: vec![(storage_path, Some(branch))],
                         },
                     ),
                     (

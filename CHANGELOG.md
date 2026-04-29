@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.1](https://github.com/taikoxyz/alethia-reth/compare/v1.1.0...v1.1.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **node:** decouple sidecar from reth exex wal ([#174](https://github.com/taikoxyz/alethia-reth/issues/174)) ([0ed31d9](https://github.com/taikoxyz/alethia-reth/commit/0ed31d96e91b5c7c37ab8a952c01e88ec7349e23))
+* **proof-history:** decouple sidecar from reth exex wal ([0ed31d9](https://github.com/taikoxyz/alethia-reth/commit/0ed31d96e91b5c7c37ab8a952c01e88ec7349e23))
+* **proof-history:** use on-disk tip for historical init target ([4701f7c](https://github.com/taikoxyz/alethia-reth/commit/4701f7ccc6842eaa4c6e9c6a39970e2fd2181657))
+* **rpc:** use on-disk tip for historical init target ([#171](https://github.com/taikoxyz/alethia-reth/issues/171)) ([4701f7c](https://github.com/taikoxyz/alethia-reth/commit/4701f7ccc6842eaa4c6e9c6a39970e2fd2181657))
+
+
+### Chores
+
+* **deps-dev:** sync Cargo.lock to 1.1.0 and drop redundant clones ([#173](https://github.com/taikoxyz/alethia-reth/issues/173)) ([a6782fe](https://github.com/taikoxyz/alethia-reth/commit/a6782fe948f86fdf9b13a2f3f5f1a89f00d1c9c9))
+* sync Cargo.lock to 1.1.0 and drop redundant clones ([a6782fe](https://github.com/taikoxyz/alethia-reth/commit/a6782fe948f86fdf9b13a2f3f5f1a89f00d1c9c9))
+
 ## [1.1.0](https://github.com/taikoxyz/alethia-reth/compare/v1.0.0...v1.1.0) (2026-04-28)
 
 

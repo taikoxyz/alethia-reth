@@ -2,7 +2,7 @@
 //!
 //! **Global-state invariant.** The storage cache, fetcher, anchor / l1-origin context, and
 //! RPC-served-calls set are process-global `LazyLock<Mutex<_>>`. They are safe only when the
-//! host drives the precompile single-threaded with one `(anchor, l1origin)` context at a time —
+//! host drives the precompile single-threaded with one `(anchor, l1_max_anchor)` context at a time —
 //! the normal preflight and ZK-guest pattern. Running two different contexts concurrently will
 //! silently cross-contaminate cache hits.
 //!
@@ -29,7 +29,7 @@ const L1SLOAD_PER_LOAD_GAS: u64 = 2000;
 /// total 84 bytes
 const EXPECTED_INPUT_LENGTH: usize = 84;
 
-/// Maximum number of L1 blocks to look back from L1 origin
+/// Maximum number of L1 blocks to look back from the L1 max-anchor block.
 const L1SLOAD_MAX_BLOCK_LOOKBACK: u64 = 256;
 
 /// Type alias for the L1 storage cache map.
@@ -40,10 +40,19 @@ type L1StorageCache = HashMap<(Address, B256, B256), B256>;
 static L1_STORAGE_CACHE: LazyLock<Mutex<L1StorageCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Current anchor block ID context for L1SLOAD operations (stored as u64 for range checking)
+/// Current anchor block ID context for L1SLOAD operations (stored as u64 for range checking).
+///
+/// Sourced from the L2 anchor tx's `Checkpoint.blockNumber` field (`anchorV4` in Shasta /
+/// `anchorV4WithSignalSlots` in RealTime). Identical semantics in both forks.
 static CURRENT_ANCHOR_BLOCK_ID: LazyLock<Mutex<Option<u64>>> = LazyLock::new(|| Mutex::new(None));
-/// Current L1 origin block ID context for L1SLOAD operations (upper bound for forward reads).
-static CURRENT_L1_ORIGIN_BLOCK_ID: LazyLock<Mutex<Option<u64>>> =
+/// Current L1 max-anchor block ID context for L1SLOAD operations (upper bound of the
+/// `[N − 256, N]` lookback window).
+///
+/// In Shasta this is the proposal's `originBlockNumber`; in RealTime it's the proposal's
+/// `maxAnchorBlockNumber`. Both fields play the same structural role — an on-chain-verified
+/// L1 block number that anchors the prover's trust window. Renamed from `CURRENT_L1_ORIGIN_BLOCK_ID`
+/// (Shasta-era name) to disambiguate now that two forks contribute the value.
+static CURRENT_L1_MAX_ANCHOR_BLOCK_ID: LazyLock<Mutex<Option<u64>>> =
     LazyLock::new(|| Mutex::new(None));
 
 /// Callback function type for fetching L1 storage values via RPC.
@@ -76,16 +85,20 @@ pub(crate) fn get_anchor_block_id() -> Option<u64> {
     *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned")
 }
 
-/// Set the L1 origin block ID context.
-pub fn set_l1_origin_block_id(l1_origin_block_id: u64) {
-    let mut ctx =
-        CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned");
-    *ctx = Some(l1_origin_block_id);
+/// Set the L1 max-anchor block ID context (`originBlockNumber` in Shasta or
+/// `maxAnchorBlockNumber` in RealTime — same role).
+pub fn set_l1_max_anchor_block_id(l1_max_anchor_block_id: u64) {
+    let mut ctx = CURRENT_L1_MAX_ANCHOR_BLOCK_ID
+        .lock()
+        .expect("CURRENT_L1_MAX_ANCHOR_BLOCK_ID mutex poisoned");
+    *ctx = Some(l1_max_anchor_block_id);
 }
 
-/// Reads the current L1 origin block ID from global context.
-pub(crate) fn get_l1_origin_block_id() -> Option<u64> {
-    *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned")
+/// Reads the current L1 max-anchor block ID from global context.
+pub(crate) fn get_l1_max_anchor_block_id() -> Option<u64> {
+    *CURRENT_L1_MAX_ANCHOR_BLOCK_ID
+        .lock()
+        .expect("CURRENT_L1_MAX_ANCHOR_BLOCK_ID mutex poisoned")
 }
 
 /// Insert a value into the L1 storage cache.
@@ -103,7 +116,9 @@ pub fn set_l1_storage_value(
 pub fn clear_l1_storage() {
     L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned").clear();
     *CURRENT_ANCHOR_BLOCK_ID.lock().expect("CURRENT_ANCHOR_BLOCK_ID mutex poisoned") = None;
-    *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned") = None;
+    *CURRENT_L1_MAX_ANCHOR_BLOCK_ID
+        .lock()
+        .expect("CURRENT_L1_MAX_ANCHOR_BLOCK_ID mutex poisoned") = None;
     clear_l1_rpc_fetcher();
     clear_l1_rpc_served_calls();
 }
@@ -161,9 +176,10 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
     let storage_key = B256::from_slice(&input[20..52]);
     let block_number = B256::from_slice(&input[52..84]);
 
-    // Block-range validation uses only `l1_origin_block_id` for the `[l1origin − 256, l1origin]`
-    // window. `anchor_block_id` participates only in the `l1origin < anchor` invariant check
-    // and is *not* a bound of the lookback window.
+    // Block-range validation uses only `l1_max_anchor_block_id` for the
+    // `[l1_max_anchor − 256, l1_max_anchor]` window. `anchor_block_id` participates only
+    // in the `l1_max_anchor < anchor` invariant check and is *not* a bound of the lookback
+    // window.
     let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
         None => {
@@ -171,16 +187,18 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
-    let l1_origin_block_id = match get_l1_origin_block_id() {
+    let l1_max_anchor_block_id = match get_l1_max_anchor_block_id() {
         Some(id) => id,
         None => {
-            warn!("L1SLOAD: L1 origin block ID not set");
-            return Err(PrecompileError::Other("L1 origin block ID not set".into()));
+            warn!("L1SLOAD: L1 max-anchor block ID not set");
+            return Err(PrecompileError::Other("L1 max-anchor block ID not set".into()));
         }
     };
 
-    if l1_origin_block_id < anchor_block_id {
-        return Err(PrecompileError::Other("Invalid L1SLOAD context: l1origin < anchor".into()));
+    if l1_max_anchor_block_id < anchor_block_id {
+        return Err(PrecompileError::Other(
+            "Invalid L1SLOAD context: l1_max_anchor < anchor".into(),
+        ));
     }
 
     let block_number_u256 = U256::from_be_bytes(block_number.0);
@@ -188,23 +206,23 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .try_into()
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
-    if requested_block > l1_origin_block_id {
+    if requested_block > l1_max_anchor_block_id {
         debug!(
-            "L1SLOAD: rejected block {} > l1origin {} (anchor={})",
-            requested_block, l1_origin_block_id, anchor_block_id
+            "L1SLOAD: rejected block {} > l1_max_anchor {} (anchor={})",
+            requested_block, l1_max_anchor_block_id, anchor_block_id
         );
         return Err(PrecompileError::Other(
-            "Requested block number is after the L1 origin block".into(),
+            "Requested block number is after the L1 max-anchor block".into(),
         ));
     }
 
-    if l1_origin_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
+    if l1_max_anchor_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
         debug!(
-            "L1SLOAD: rejected block {} too old (l1origin={}, lookback={})",
-            requested_block, l1_origin_block_id, L1SLOAD_MAX_BLOCK_LOOKBACK
+            "L1SLOAD: rejected block {} too old (l1_max_anchor={}, lookback={})",
+            requested_block, l1_max_anchor_block_id, L1SLOAD_MAX_BLOCK_LOOKBACK
         );
         return Err(PrecompileError::Other(
-            "Requested block number exceeds max lookback from L1 origin".into(),
+            "Requested block number exceeds max lookback from L1 max-anchor block".into(),
         ));
     }
 
@@ -278,14 +296,14 @@ mod tests {
     }
 
     /// Helper function to setup storage cache with test data
-    fn setup_test_storage(anchor: u64, l1_origin: u64, block: u64) -> (Address, B256, B256, B256) {
+    fn setup_test_storage(anchor: u64, l1_max_anchor: u64, block: u64) -> (Address, B256, B256, B256) {
         let address = Address::from(TEST_ADDRESS);
         let key = B256::from(TEST_STORAGE_KEY);
         let block_num = block_number_b256(block);
         let value = B256::from(TEST_STORAGE_VALUE);
 
         set_anchor_block_id(anchor);
-        set_l1_origin_block_id(l1_origin);
+        set_l1_max_anchor_block_id(l1_max_anchor);
         set_l1_storage_value(address, key, block_num, value);
         (address, key, block_num, value)
     }
@@ -295,7 +313,7 @@ mod tests {
     fn test_l1sload_rejects_invalid_input_lengths() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         // Test input too short (52 bytes - old format)
         let short_input = Bytes::from(vec![0u8; 52]);
@@ -324,7 +342,7 @@ mod tests {
     fn test_l1sload_fails_without_cached_storage() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let input = create_test_input(100);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -338,9 +356,9 @@ mod tests {
         clear_l1_storage();
 
         let anchor = 100u64;
-        let l1_origin = 100u64;
+        let l1_max_anchor = 100u64;
         let block = 100u64;
-        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_max_anchor, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -372,7 +390,7 @@ mod tests {
     fn test_l1sload_fails_with_insufficient_gas() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let input = Bytes::from(create_test_input(100));
         let result = l1sload_run(&input, INSUFFICIENT_GAS);
@@ -382,30 +400,30 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1sload_rejects_block_after_l1_origin() {
+    fn test_l1sload_rejects_block_after_l1_max_anchor() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(110);
+        set_l1_max_anchor_block_id(110);
 
-        // Request block 111 which is after l1origin block 110
+        // Request block 111 which is after l1_max_anchor block 110
         let input = create_test_input(111);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_err(), "Should reject block number after l1origin");
+        assert!(result.is_err(), "Should reject block number after l1_max_anchor");
     }
 
     #[test]
     #[serial]
-    fn test_l1sload_accepts_block_between_anchor_and_l1origin() {
+    fn test_l1sload_accepts_block_between_anchor_and_l1_max_anchor() {
         clear_l1_storage();
 
         let anchor = 100u64;
-        let l1_origin = 120u64;
+        let l1_max_anchor = 120u64;
         let block = 115u64;
-        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_max_anchor, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_ok(), "Should accept forward block up to l1origin");
+        assert!(result.is_ok(), "Should accept forward block up to l1_max_anchor");
         assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
     }
 
@@ -414,12 +432,12 @@ mod tests {
     fn test_l1sload_rejects_block_beyond_lookback() {
         clear_l1_storage();
         set_anchor_block_id(900);
-        set_l1_origin_block_id(1000);
+        set_l1_max_anchor_block_id(1000);
 
-        // Request block 1000 - 257 = 743. Distance from l1origin: 257 > 256
+        // Request block 1000 - 257 = 743. Distance from l1_max_anchor: 257 > 256
         let input = create_test_input(1000 - L1SLOAD_MAX_BLOCK_LOOKBACK - 1);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_err(), "Should reject block beyond max lookback from l1origin");
+        assert!(result.is_err(), "Should reject block beyond max lookback from l1_max_anchor");
     }
 
     #[test]
@@ -428,24 +446,24 @@ mod tests {
         clear_l1_storage();
 
         let anchor = 200u64;
-        let l1_origin = 250u64;
-        let block = 150u64; // 100 blocks before l1origin, within 256 lookback
-        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let l1_max_anchor = 250u64;
+        let block = 150u64; // 100 blocks before l1_max_anchor, within 256 lookback
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_max_anchor, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_ok(), "Should succeed for block within lookback range from l1origin");
+        assert!(result.is_ok(), "Should succeed for block within lookback range from l1_max_anchor");
         assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
     }
 
     #[test]
     #[serial]
-    fn test_l1sload_rejects_block_near_anchor_but_far_from_l1origin() {
+    fn test_l1sload_rejects_block_near_anchor_but_far_from_l1_max_anchor() {
         clear_l1_storage();
 
-        // anchor=100, l1origin=500. Block 100 is at anchor but 400 blocks from l1origin.
+        // anchor=100, l1_max_anchor=500. Block 100 is at anchor but 400 blocks from l1_max_anchor.
         set_anchor_block_id(100);
-        set_l1_origin_block_id(500);
+        set_l1_max_anchor_block_id(500);
         let block_num = block_number_b256(100);
         set_l1_storage_value(
             Address::from(TEST_ADDRESS),
@@ -456,7 +474,7 @@ mod tests {
 
         let input = create_test_input(100);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_err(), "Block at anchor should be rejected when too far from l1origin");
+        assert!(result.is_err(), "Block at anchor should be rejected when too far from l1_max_anchor");
     }
 
     #[test]
@@ -497,20 +515,20 @@ mod tests {
 
         // Verify context is initially empty
         assert!(get_anchor_block_id().is_none(), "Context should be empty initially");
-        assert!(get_l1_origin_block_id().is_none(), "L1 origin context should be empty initially");
+        assert!(get_l1_max_anchor_block_id().is_none(), "L1 max-anchor context should be empty initially");
 
         set_anchor_block_id(42);
-        set_l1_origin_block_id(50);
+        set_l1_max_anchor_block_id(50);
         assert_eq!(get_anchor_block_id(), Some(42), "Should retrieve the set anchor block ID");
         assert_eq!(
-            get_l1_origin_block_id(),
+            get_l1_max_anchor_block_id(),
             Some(50),
             "Should retrieve the set l1 origin block ID"
         );
 
         clear_l1_storage();
         assert!(get_anchor_block_id().is_none(), "Context should be cleared");
-        assert!(get_l1_origin_block_id().is_none(), "L1 origin context should be cleared");
+        assert!(get_l1_max_anchor_block_id().is_none(), "L1 max-anchor context should be cleared");
     }
 
     #[test]
@@ -545,7 +563,7 @@ mod tests {
     fn test_l1sload_rpc_fallback_records_served_calls() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let address = Address::from(TEST_ADDRESS);
         let key = B256::from(TEST_STORAGE_KEY);
@@ -577,7 +595,7 @@ mod tests {
     fn test_clear_l1_storage_clears_rpc_fallback_state() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let input = Bytes::from(create_test_input(100));
         let fallback_value = B256::from([11u8; 32]);
@@ -607,11 +625,11 @@ mod tests {
     fn test_l1sload_exact_lookback_boundary() {
         clear_l1_storage();
 
-        // Block exactly at lookback limit: l1origin - 256
+        // Block exactly at lookback limit: l1_max_anchor - 256
         let anchor = 700u64;
-        let l1_origin = 1000u64;
-        let block = l1_origin - L1SLOAD_MAX_BLOCK_LOOKBACK; // 744
-        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let l1_max_anchor = 1000u64;
+        let block = l1_max_anchor - L1SLOAD_MAX_BLOCK_LOOKBACK; // 744
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_max_anchor, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -621,18 +639,18 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1sload_exact_l1_origin() {
+    fn test_l1sload_exact_l1_max_anchor() {
         clear_l1_storage();
 
-        // Request exactly at l1_origin — should succeed
+        // Request exactly at l1_max_anchor — should succeed
         let anchor = 100u64;
-        let l1_origin = 200u64;
+        let l1_max_anchor = 200u64;
         let block = 200u64;
-        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_max_anchor, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_ok(), "Block at exact l1origin should succeed");
+        assert!(result.is_ok(), "Block at exact l1_max_anchor should succeed");
         assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
     }
 
@@ -661,11 +679,11 @@ mod tests {
     fn test_l1sload_zero_block_number() {
         clear_l1_storage();
 
-        // Block 0 with l1origin at 100 — distance is 100, within 256 lookback
+        // Block 0 with l1_max_anchor at 100 — distance is 100, within 256 lookback
         let anchor = 0u64;
-        let l1_origin = 100u64;
+        let l1_max_anchor = 100u64;
         let block = 0u64;
-        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_origin, block);
+        let (_, _, _, expected_value) = setup_test_storage(anchor, l1_max_anchor, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
@@ -678,7 +696,7 @@ mod tests {
     fn test_l1sload_same_key_different_blocks() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(110);
+        set_l1_max_anchor_block_id(110);
 
         let address = Address::from(TEST_ADDRESS);
         let key = B256::from(TEST_STORAGE_KEY);
@@ -704,7 +722,7 @@ mod tests {
     fn test_l1sload_zero_storage_value() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         // Store B256::ZERO explicitly — should return zeros, not error
         let address = Address::from(TEST_ADDRESS);
@@ -722,7 +740,7 @@ mod tests {
     fn test_l1sload_rpc_fallback_error_propagates() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         set_l1_rpc_fetcher(|_, _, _| Err("L1 node unavailable".to_string()));
 
@@ -738,48 +756,48 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1sload_anchor_equals_l1origin() {
+    fn test_l1sload_anchor_equals_l1_max_anchor() {
         clear_l1_storage();
 
-        // anchor == l1origin is the simplest valid case
+        // anchor == l1_max_anchor is the simplest valid case
         let block = 100u64;
         let (_, _, _, expected_value) = setup_test_storage(block, block, block);
         let input = create_test_input(block);
 
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_ok(), "anchor == l1origin == requested should succeed");
+        assert!(result.is_ok(), "anchor == l1_max_anchor == requested should succeed");
         assert_eq!(result.unwrap().bytes.as_ref(), &expected_value.0);
     }
 
     #[test]
     #[serial]
-    fn test_l1sload_l1origin_less_than_anchor_rejected() {
+    fn test_l1sload_l1_max_anchor_less_than_anchor_rejected() {
         clear_l1_storage();
         set_anchor_block_id(200);
-        set_l1_origin_block_id(100); // l1origin < anchor — invalid
+        set_l1_max_anchor_block_id(100); // l1_max_anchor < anchor — invalid
 
         let input = create_test_input(100);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
-        assert!(result.is_err(), "l1origin < anchor should be rejected");
+        assert!(result.is_err(), "l1_max_anchor < anchor should be rejected");
         let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(err_msg.contains("l1origin < anchor"), "Expected context error: {err_msg}");
+        assert!(err_msg.contains("l1_max_anchor < anchor"), "Expected context error: {err_msg}");
     }
 
     #[test]
     #[serial]
-    fn test_l1sload_fails_without_l1_origin_block_id() {
+    fn test_l1sload_fails_without_l1_max_anchor_block_id() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        // Deliberately do NOT set l1_origin_block_id
+        // Deliberately do NOT set l1_max_anchor_block_id
 
         let input = create_test_input(100);
         let result = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS);
 
-        assert!(result.is_err(), "Should fail when L1 origin block ID is not set");
+        assert!(result.is_err(), "Should fail when L1 max-anchor block ID is not set");
         let err_msg = format!("{:?}", result.unwrap_err());
         assert!(
-            err_msg.contains("L1 origin block ID not set"),
-            "Expected missing l1_origin error: {err_msg}"
+            err_msg.contains("L1 max-anchor block ID not set"),
+            "Expected missing l1_max_anchor error: {err_msg}"
         );
     }
 
@@ -788,7 +806,7 @@ mod tests {
     fn test_l1sload_multiple_rpc_calls_tracked() {
         clear_l1_storage();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(110);
+        set_l1_max_anchor_block_id(110);
 
         let val1 = B256::from([0x11u8; 32]);
         let val2 = B256::from([0x22u8; 32]);

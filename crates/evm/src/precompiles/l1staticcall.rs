@@ -2,8 +2,8 @@
 //!
 //! **Global-state invariant.** The cache, fetcher, and RPC-served-calls list are process-global
 //! `LazyLock<Mutex<_>>`. They are safe only when the host drives the precompile single-threaded
-//! with one `(anchor, l1origin)` context at a time — the normal preflight and ZK-guest pattern.
-//! Running two different `(anchor, l1origin)` contexts concurrently will silently cross-contaminate
+//! with one `(anchor, l1_max_anchor)` context at a time — the normal preflight and ZK-guest pattern.
+//! Running two different `(anchor, l1_max_anchor)` contexts concurrently will silently cross-contaminate
 //! cache hits.
 //!
 //! **Cache lifecycle.** There is no automatic eviction. The caller (surge-raiko) must invoke
@@ -20,7 +20,7 @@ use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use reth_revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tracing::{debug, error, info, trace, warn};
 
-use super::l1sload::{get_anchor_block_id, get_l1_origin_block_id};
+use super::l1sload::{get_anchor_block_id, get_l1_max_anchor_block_id};
 
 /// Fixed gas cost for an L1STATICCALL precompile call.
 const L1STATICCALL_FIXED_GAS: u64 = 2000;
@@ -36,7 +36,7 @@ const MIN_INPUT_LENGTH: usize = 52;
 /// Maximum size of return data from an L1STATICCALL (24 KB).
 const MAX_RETURN_DATA_SIZE: usize = 24576;
 
-/// Maximum number of L1 blocks to look back from L1 origin.
+/// Maximum number of L1 blocks to look back from the L1 max-anchor block.
 const L1STATICCALL_MAX_BLOCK_LOOKBACK: u64 = 256;
 
 /// Maximum gas limit passed to L1 `debug_traceCall`.
@@ -126,7 +126,7 @@ pub fn set_l1_staticcall_value(
     cache.insert((target, block_number, calldata_hash), (gas_used, result, is_reverted));
 }
 
-/// Clear the L1STATICCALL cache only (does NOT clear the shared anchor/l1origin context).
+/// Clear the L1STATICCALL cache only (does NOT clear the shared anchor/l1_max_anchor context).
 pub fn clear_l1_staticcall_cache() {
     let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
     let prior = cache.len();
@@ -239,8 +239,8 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
         .try_into()
         .map_err(|_| PrecompileError::Other("Block number too large".into()))?;
 
-    // Block-range validation uses only `l1_origin_block_id` for the `[l1origin − 256, l1origin]`
-    // window. `anchor_block_id` participates only in the `l1origin < anchor` invariant check
+    // Block-range validation uses only `l1_max_anchor_block_id` for the `[l1_max_anchor − 256, l1_max_anchor]`
+    // window. `anchor_block_id` participates only in the `l1_max_anchor < anchor` invariant check
     // and is *not* a bound of the lookback window.
     let anchor_block_id = match get_anchor_block_id() {
         Some(id) => id,
@@ -249,37 +249,37 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
             return Err(PrecompileError::Other("Anchor block ID not set".into()));
         }
     };
-    let l1_origin_block_id = match get_l1_origin_block_id() {
+    let l1_max_anchor_block_id = match get_l1_max_anchor_block_id() {
         Some(id) => id,
         None => {
-            warn!("L1STATICCALL: L1 origin block ID not set");
-            return Err(PrecompileError::Other("L1 origin block ID not set".into()));
+            warn!("L1STATICCALL: L1 max-anchor block ID not set");
+            return Err(PrecompileError::Other("L1 max-anchor block ID not set".into()));
         }
     };
 
-    if l1_origin_block_id < anchor_block_id {
+    if l1_max_anchor_block_id < anchor_block_id {
         return Err(PrecompileError::Other(
-            "Invalid L1STATICCALL context: l1origin < anchor".into(),
+            "Invalid L1STATICCALL context: l1_max_anchor < anchor".into(),
         ));
     }
 
-    if requested_block > l1_origin_block_id {
+    if requested_block > l1_max_anchor_block_id {
         debug!(
-            "L1STATICCALL: rejected block {} > l1origin {} (anchor={})",
-            requested_block, l1_origin_block_id, anchor_block_id
+            "L1STATICCALL: rejected block {} > l1_max_anchor {} (anchor={})",
+            requested_block, l1_max_anchor_block_id, anchor_block_id
         );
         return Err(PrecompileError::Other(
-            "Requested block number is after the L1 origin block".into(),
+            "Requested block number is after the L1 max-anchor block".into(),
         ));
     }
 
-    if l1_origin_block_id - requested_block > L1STATICCALL_MAX_BLOCK_LOOKBACK {
+    if l1_max_anchor_block_id - requested_block > L1STATICCALL_MAX_BLOCK_LOOKBACK {
         debug!(
-            "L1STATICCALL: rejected block {} too old (l1origin={}, lookback={})",
-            requested_block, l1_origin_block_id, L1STATICCALL_MAX_BLOCK_LOOKBACK
+            "L1STATICCALL: rejected block {} too old (l1_max_anchor={}, lookback={})",
+            requested_block, l1_max_anchor_block_id, L1STATICCALL_MAX_BLOCK_LOOKBACK
         );
         return Err(PrecompileError::Other(
-            "Requested block number exceeds max lookback from L1 origin".into(),
+            "Requested block number exceeds max lookback from L1 max-anchor block".into(),
         ));
     }
 
@@ -435,7 +435,7 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64) -> PrecompileResult {
 mod tests {
     use super::*;
     use crate::precompiles::l1sload::{
-        clear_l1_storage, set_anchor_block_id, set_l1_origin_block_id,
+        clear_l1_storage, set_anchor_block_id, set_l1_max_anchor_block_id,
     };
     use serial_test::serial;
 
@@ -463,9 +463,9 @@ mod tests {
             + L1STATICCALL_PER_BYTE_CALLDATA_GAS * (extra_calldata_bytes as u64)
     }
 
-    /// Reset all L1STATICCALL-specific state AND the shared anchor/l1origin context.
+    /// Reset all L1STATICCALL-specific state AND the shared anchor/l1_max_anchor context.
     fn reset_all() {
-        clear_l1_storage(); // clears anchor, l1origin, l1sload cache, l1sload rpc state
+        clear_l1_storage(); // clears anchor, l1_max_anchor, l1sload cache, l1sload rpc state
         clear_l1_staticcall_cache();
         clear_l1_staticcall_rpc_fetcher();
         clear_l1_staticcall_rpc_served_calls();
@@ -478,7 +478,7 @@ mod tests {
     fn test_l1staticcall_rejects_short_input() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         // 51 bytes — one byte short of minimum
         let short = vec![0u8; MIN_INPUT_LENGTH - 1];
@@ -491,7 +491,7 @@ mod tests {
     fn test_l1staticcall_accepts_exact_min_input() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let input = create_min_input(100);
         assert_eq!(input.len(), 52, "Minimum input should be exactly 52 bytes");
@@ -509,7 +509,7 @@ mod tests {
     fn test_l1staticcall_accepts_variable_length_input() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
         let target = Address::from(TEST_ADDRESS);
 
         for extra_len in [1, 4, 32, 100, 256] {
@@ -546,16 +546,16 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1staticcall_fails_without_l1_origin() {
+    fn test_l1staticcall_fails_without_l1_max_anchor() {
         reset_all();
         set_anchor_block_id(100);
-        // Do NOT set l1_origin
+        // Do NOT set l1_max_anchor_block_id
 
         let input = create_min_input(100);
         let result = l1staticcall_run(&input, expected_gas(0));
-        assert!(result.is_err(), "Should fail without L1 origin block ID");
+        assert!(result.is_err(), "Should fail without L1 max-anchor block ID");
         let msg = format!("{:?}", result.unwrap_err());
-        assert!(msg.contains("L1 origin block ID not set"), "Got: {msg}");
+        assert!(msg.contains("L1 max-anchor block ID not set"), "Got: {msg}");
     }
 
     // ── Cache miss without RPC ────────────────────────────────────────
@@ -565,7 +565,7 @@ mod tests {
     fn test_l1staticcall_fails_without_cached_value() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let input = create_min_input(100);
         let result = l1staticcall_run(&input, expected_gas(0));
@@ -579,7 +579,7 @@ mod tests {
     fn test_l1staticcall_succeeds_with_cached_value() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0x01, 0x02, 0x03, 0x04];
@@ -602,7 +602,7 @@ mod tests {
     fn test_l1staticcall_gas_calculation_varies_by_calldata_length() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
         let target = Address::from(TEST_ADDRESS);
 
         // 0 extra bytes
@@ -630,7 +630,7 @@ mod tests {
     fn test_l1staticcall_fails_with_insufficient_gas() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let input = create_min_input(100);
         let min_gas = expected_gas(0);
@@ -648,23 +648,23 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1staticcall_rejects_block_after_l1_origin() {
+    fn test_l1staticcall_rejects_block_after_l1_max_anchor() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(110);
+        set_l1_max_anchor_block_id(110);
 
-        // Request block 111 which is after l1origin 110
+        // Request block 111 which is after l1_max_anchor 110
         let input = create_min_input(111);
         let result = l1staticcall_run(&input, expected_gas(0));
-        assert!(result.is_err(), "Should reject block after l1origin");
+        assert!(result.is_err(), "Should reject block after l1_max_anchor");
     }
 
     #[test]
     #[serial]
-    fn test_l1staticcall_accepts_block_between_anchor_and_l1origin() {
+    fn test_l1staticcall_accepts_block_between_anchor_and_l1_max_anchor() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(120);
+        set_l1_max_anchor_block_id(120);
 
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0x11];
@@ -673,7 +673,7 @@ mod tests {
 
         let input = create_test_input(115, &calldata);
         let result = l1staticcall_run(&input, expected_gas(calldata.len()));
-        assert!(result.is_ok(), "Should accept block between anchor and l1origin");
+        assert!(result.is_ok(), "Should accept block between anchor and l1_max_anchor");
         assert_eq!(result.unwrap().bytes.as_ref(), &return_data);
     }
 
@@ -682,12 +682,12 @@ mod tests {
     fn test_l1staticcall_rejects_block_beyond_lookback() {
         reset_all();
         set_anchor_block_id(700);
-        set_l1_origin_block_id(1000);
+        set_l1_max_anchor_block_id(1000);
 
-        // Block 1000 - 257 = 743. Distance from l1origin: 257 > 256
+        // Block 1000 - 257 = 743. Distance from l1_max_anchor: 257 > 256
         let input = create_min_input(1000 - L1STATICCALL_MAX_BLOCK_LOOKBACK - 1);
         let result = l1staticcall_run(&input, expected_gas(0));
-        assert!(result.is_err(), "Should reject block beyond max lookback from l1origin");
+        assert!(result.is_err(), "Should reject block beyond max lookback from l1_max_anchor");
     }
 
     #[test]
@@ -695,7 +695,7 @@ mod tests {
     fn test_l1staticcall_exact_lookback_boundary() {
         reset_all();
         set_anchor_block_id(700);
-        set_l1_origin_block_id(1000);
+        set_l1_max_anchor_block_id(1000);
 
         let block = 1000 - L1STATICCALL_MAX_BLOCK_LOOKBACK; // 744
         let target = Address::from(TEST_ADDRESS);
@@ -708,10 +708,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1staticcall_exact_l1_origin() {
+    fn test_l1staticcall_exact_l1_max_anchor() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(200);
+        set_l1_max_anchor_block_id(200);
 
         let target = Address::from(TEST_ADDRESS);
         let return_data = vec![0x42];
@@ -719,7 +719,7 @@ mod tests {
 
         let input = create_min_input(200);
         let result = l1staticcall_run(&input, expected_gas(0));
-        assert!(result.is_ok(), "Block at exact l1origin should succeed");
+        assert!(result.is_ok(), "Block at exact l1_max_anchor should succeed");
         assert_eq!(result.unwrap().bytes.as_ref(), &return_data);
     }
 
@@ -730,7 +730,7 @@ mod tests {
     fn test_l1staticcall_cache_key_includes_calldata_hash() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         let calldata_a = vec![0xAA; 4];
@@ -758,7 +758,7 @@ mod tests {
     fn test_l1staticcall_variable_length_return_data() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
         let target = Address::from(TEST_ADDRESS);
 
         // Empty return data
@@ -789,7 +789,7 @@ mod tests {
     fn test_l1staticcall_rpc_fallback_records_served_calls() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0xCA, 0xFE];
@@ -832,7 +832,7 @@ mod tests {
     fn test_l1staticcall_rpc_fallback_error_propagates() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         set_l1_staticcall_rpc_fetcher(|_, _, _, _| Err("L1 node unavailable".to_string()));
 
@@ -848,7 +848,7 @@ mod tests {
     fn test_l1staticcall_multiple_rpc_calls_tracked() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(110);
+        set_l1_max_anchor_block_id(110);
 
         set_l1_staticcall_rpc_fetcher(|_, bn, _, cd| {
             let mut ret = vec![0u8; 4];
@@ -879,7 +879,7 @@ mod tests {
     fn test_l1staticcall_clear_cache_operations() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         set_l1_staticcall_value(target, 100, &[0x01], 0, vec![0xFF], false);
@@ -896,9 +896,9 @@ mod tests {
         let result = l1staticcall_run(&input, expected_gas(1));
         assert!(result.is_err(), "Should fail after cache is cleared");
 
-        // Verify anchor/l1origin context is NOT cleared by clear_l1_staticcall_cache
+        // Verify anchor/l1_max_anchor context is NOT cleared by clear_l1_staticcall_cache
         assert!(get_anchor_block_id().is_some(), "Anchor should survive cache clear");
-        assert!(get_l1_origin_block_id().is_some(), "L1 origin should survive cache clear");
+        assert!(get_l1_max_anchor_block_id().is_some(), "L1 max-anchor should survive cache clear");
 
         // Test served calls clear
         set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((0, vec![0x99], false)));
@@ -923,32 +923,32 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1staticcall_anchor_equals_l1origin() {
+    fn test_l1staticcall_anchor_equals_l1_max_anchor() {
         reset_all();
         let block = 100u64;
         set_anchor_block_id(block);
-        set_l1_origin_block_id(block);
+        set_l1_max_anchor_block_id(block);
 
         let target = Address::from(TEST_ADDRESS);
         set_l1_staticcall_value(target, block, &[], 0, vec![0x01], false);
 
         let input = create_min_input(block);
         let result = l1staticcall_run(&input, expected_gas(0));
-        assert!(result.is_ok(), "anchor == l1origin == requested should succeed");
+        assert!(result.is_ok(), "anchor == l1_max_anchor == requested should succeed");
     }
 
     #[test]
     #[serial]
-    fn test_l1staticcall_l1origin_less_than_anchor_rejected() {
+    fn test_l1staticcall_l1_max_anchor_less_than_anchor_rejected() {
         reset_all();
         set_anchor_block_id(200);
-        set_l1_origin_block_id(100); // l1origin < anchor — invalid
+        set_l1_max_anchor_block_id(100); // l1_max_anchor < anchor — invalid
 
         let input = create_min_input(100);
         let result = l1staticcall_run(&input, expected_gas(0));
-        assert!(result.is_err(), "l1origin < anchor should be rejected");
+        assert!(result.is_err(), "l1_max_anchor < anchor should be rejected");
         let msg = format!("{:?}", result.unwrap_err());
-        assert!(msg.contains("l1origin < anchor"), "Got: {msg}");
+        assert!(msg.contains("l1_max_anchor < anchor"), "Got: {msg}");
     }
 
     #[test]
@@ -956,7 +956,7 @@ mod tests {
     fn test_l1staticcall_max_return_data_size() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
 
@@ -984,7 +984,7 @@ mod tests {
     fn test_l1staticcall_zero_block_number() {
         reset_all();
         set_anchor_block_id(0);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         set_l1_staticcall_value(target, 0, &[], 0, vec![0x00], false);
@@ -999,7 +999,7 @@ mod tests {
     fn test_l1staticcall_same_target_different_calldata() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         let calldata1 = vec![0x01, 0x02];
@@ -1031,7 +1031,7 @@ mod tests {
     fn test_l1staticcall_charges_dynamic_gas_from_cache() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let target = Address::from(TEST_ADDRESS);
         let l1_gas = 50_000u64;
@@ -1051,7 +1051,7 @@ mod tests {
     fn test_l1staticcall_charges_dynamic_gas_from_rpc() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let l1_gas = 50_000u64;
         let return_data = vec![0xBE, 0xEF];
@@ -1078,7 +1078,7 @@ mod tests {
     fn test_l1staticcall_gas_within_limit_succeeds() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let l1_gas = 25_000u64;
         let return_data = vec![0x12, 0x34];
@@ -1099,7 +1099,7 @@ mod tests {
     fn test_l1staticcall_l1_gas_clamped_at_gas_cap() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         let huge_l1_gas = 1_000_000_000u64;
         set_l1_staticcall_rpc_fetcher(move |_, _, _gl, _| Ok((huge_l1_gas, vec![0x01], false)));
@@ -1121,7 +1121,7 @@ mod tests {
     fn test_l1staticcall_reverted_result_returns_error() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((50_000, vec![], true)));
 
@@ -1152,7 +1152,7 @@ mod tests {
 
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         // Fetcher sleeps so a second thread would block on the lock if the lock were still held.
         set_l1_staticcall_rpc_fetcher(|_, _, _, _| {
@@ -1190,7 +1190,7 @@ mod tests {
 
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         // Install a panicking fetcher.
         set_l1_staticcall_rpc_fetcher(|_, _, _, _| {
@@ -1254,7 +1254,7 @@ mod tests {
     fn test_l1staticcall_l1_gas_alone_oog_when_exceeding_limit() {
         reset_all();
         set_anchor_block_id(100);
-        set_l1_origin_block_id(100);
+        set_l1_max_anchor_block_id(100);
 
         // Pre-populate the cache with a large l1_gas the call body returns.
         let target = Address::from([0xC0u8; 20]);

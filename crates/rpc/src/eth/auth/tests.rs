@@ -2,6 +2,7 @@ use super::{
     lookup::{MAX_BACKWARD_SCAN_BLOCKS, max_backward_scan_blocks},
     *,
 };
+use alethia_reth_chainspec::TAIKO_MAINNET;
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
@@ -56,6 +57,13 @@ fn anchor_v4_input() -> Bytes {
 
 /// Builds a ProviderFactory wired with both reth and Taiko tables for lookup tests.
 fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
+    create_taiko_test_provider_factory_with_chain_spec(MAINNET.clone())
+}
+
+/// Builds a ProviderFactory wired with both reth and Taiko tables for the provided chain spec.
+fn create_taiko_test_provider_factory_with_chain_spec(
+    chain_spec: Arc<reth_ethereum::chainspec::ChainSpec>,
+) -> ProviderFactory<MockNodeTypesWithDB> {
     struct TaikoTables;
 
     impl TableSet for TaikoTables {
@@ -81,7 +89,7 @@ fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> 
     let db = Arc::new(TempDatabase::new(db, path));
     ProviderFactory::new(
         db,
-        MAINNET.clone(),
+        chain_spec,
         StaticFileProvider::read_write(static_dir.keep()).expect("static file provider"),
         RocksDBBuilder::new(&rocksdb_dir)
             .with_default_tables()
@@ -501,6 +509,32 @@ fn returns_last_certain_l1_origin_from_mapping() {
         .expect("l1 origin should exist");
     assert_eq!(resolved.block_id, block_id);
     assert_eq!(resolved.l1_block_height, Some(U256::from(3u64)));
+}
+
+#[test]
+/// Filters batch lookup results when the block is before the network threshold.
+fn filters_batch_lookup_results_below_network_threshold() {
+    let batch_id = U256::from(1u64);
+    let block_id = U256::from(2u64);
+    let genesis_header = Header { number: 0, gas_limit: 1_000_000, ..Default::default() };
+
+    let factory =
+        create_taiko_test_provider_factory_with_chain_spec(Arc::new(TAIKO_MAINNET.inner.clone()));
+    let mut provider_rw = factory.provider_rw().expect("provider rw");
+    let genesis_block = genesis_header.clone().into_block(BlockBody::default());
+    let genesis_recovered = RecoveredBlock::new_unhashed(genesis_block, vec![]);
+    provider_rw.insert_block(&genesis_recovered).expect("insert genesis block");
+    {
+        let tx = provider_rw.tx_mut();
+        tx.put::<BatchToLastBlock>(batch_id.to(), block_id.to()).expect("insert batch mapping");
+    }
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, genesis_header);
+    let raw_resolved = api.read_cached_last_block_number_by_batch_id(batch_id).unwrap();
+
+    assert_eq!(raw_resolved, Some(block_id));
+    assert_eq!(api.filter_batch_lookup_block_number(raw_resolved), None);
 }
 
 #[test]

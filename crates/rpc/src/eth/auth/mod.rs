@@ -17,7 +17,9 @@ use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::ConfigureEngineEvm;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
-use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory, StateProviderFactory};
+use reth_provider::{
+    BlockReaderIdExt, ChainSpecProvider, DBProvider, DatabaseProviderFactory, StateProviderFactory,
+};
 use reth_revm::{State, database::StateProviderDatabase};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
@@ -159,6 +161,7 @@ where
     Eth: RpcConvert<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
     Provider: DatabaseProviderFactory
         + BlockReaderIdExt<Header = alloy_consensus::Header>
+        + ChainSpecProvider
         + StateProviderFactory
         + 'static,
     Evm: ConfigureEngineEvm<
@@ -219,19 +222,27 @@ where
 
     /// Retrieves the last L1 origin for the given batch ID.
     async fn last_l1_origin_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<RpcL1Origin>> {
-        let block_id = self.resolve_last_block_number_by_batch_id(batch_id)?;
+        let Some(block_id) = self.filter_batch_lookup_block_number(Some(
+            self.resolve_last_block_number_by_batch_id(batch_id)?,
+        )) else {
+            return Ok(None);
+        };
 
         self.read_l1_origin_by_block_id(block_id)
     }
 
     /// Retrieves the last block ID for the given batch ID.
     async fn last_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>> {
-        Ok(Some(self.resolve_last_block_number_by_batch_id(batch_id)?))
+        Ok(self.filter_batch_lookup_block_number(Some(
+            self.resolve_last_block_number_by_batch_id(batch_id)?,
+        )))
     }
 
     /// Retrieves the cached last block ID for the given batch ID without fallback scanning.
     async fn last_certain_block_id_by_batch_id(&self, batch_id: U256) -> RpcResult<Option<U256>> {
-        self.read_cached_last_block_number_by_batch_id(batch_id)
+        Ok(self.filter_batch_lookup_block_number(
+            self.read_cached_last_block_number_by_batch_id(batch_id)?,
+        ))
     }
 
     /// Retrieves the cached L1 origin for the given batch ID without fallback scanning.
@@ -240,6 +251,9 @@ where
         batch_id: U256,
     ) -> RpcResult<Option<RpcL1Origin>> {
         let Some(block_id) = self.read_cached_last_block_number_by_batch_id(batch_id)? else {
+            return Ok(None);
+        };
+        let Some(block_id) = self.filter_batch_lookup_block_number(Some(block_id)) else {
             return Ok(None);
         };
 

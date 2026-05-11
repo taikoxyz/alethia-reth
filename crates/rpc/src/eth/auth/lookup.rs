@@ -4,13 +4,17 @@ use alloy_consensus::{BlockHeader as _, Transaction as _};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::U256;
 use jsonrpsee::core::RpcResult;
+use reth::chainspec::EthChainSpec;
 use reth_db_api::{DatabaseError, transaction::DbTx};
 use reth_node_api::Block;
 use reth_primitives_traits::BlockBody as _;
-use reth_provider::{BlockReaderIdExt, DBProvider, DatabaseProviderFactory};
+use reth_provider::{BlockReaderIdExt, ChainSpecProvider, DBProvider, DatabaseProviderFactory};
 use reth_rpc_eth_types::EthApiError;
 
 use crate::eth::error::{TaikoApiError, internal_eth_error};
+use alethia_reth_chainspec::{
+    TAIKO_DEVNET_CHAIN_ID, TAIKO_HOODI_CHAIN_ID, TAIKO_MAINNET_CHAIN_ID, TAIKO_MASAYA_CHAIN_ID,
+};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{BatchToLastBlock, StoredL1OriginTable};
 use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
@@ -36,6 +40,11 @@ pub(super) const MAX_BACKWARD_SCAN_BLOCKS: u64 = 192 * 21_600;
 /// Shorter backward scan limit for test execution.
 const TEST_MAX_BACKWARD_SCAN_BLOCKS: u64 = 64;
 
+/// Mainnet block number of the last Pacaya block accepted by batch lookup RPCs.
+const TAIKO_MAINNET_LAST_PACAYA_BATCH_LOOKUP_BLOCK: u64 = 4_990_434;
+/// Hoodi block number of the last Pacaya block accepted by batch lookup RPCs.
+const TAIKO_HOODI_LAST_PACAYA_BATCH_LOOKUP_BLOCK: u64 = 3_951_005;
+
 /// Returns the scan limit, using the test override when enabled.
 pub(super) fn max_backward_scan_blocks() -> u64 {
     #[cfg(test)]
@@ -50,7 +59,7 @@ pub(super) fn max_backward_scan_blocks() -> u64 {
 
 impl<Pool, Eth, Evm, Provider> TaikoAuthExt<Pool, Eth, Evm, Provider>
 where
-    Provider: DatabaseProviderFactory + BlockReaderIdExt,
+    Provider: DatabaseProviderFactory + BlockReaderIdExt + ChainSpecProvider,
 {
     /// Reads the cached last block number for a batch ID from the database mapping only.
     pub(super) fn read_cached_last_block_number_by_batch_id(
@@ -69,6 +78,26 @@ where
         }
 
         Ok(None)
+    }
+
+    /// Removes resolved block numbers below this network's last Pacaya block threshold.
+    pub(super) fn filter_batch_lookup_block_number(
+        &self,
+        block_number: Option<U256>,
+    ) -> Option<U256> {
+        block_number.filter(|block_number| {
+            !self.batch_lookup_result_below_last_pacaya_block_id(*block_number)
+        })
+    }
+
+    /// Returns `true` when a resolved batch lookup block is before the network threshold.
+    fn batch_lookup_result_below_last_pacaya_block_id(&self, block_number: U256) -> bool {
+        let chain_id = self.provider.chain_spec().chain().id();
+        let Some(threshold) = batch_lookup_last_pacaya_block_threshold(chain_id) else {
+            return false;
+        };
+
+        block_number < threshold
     }
 
     /// Checks if a database error indicates a missing table or key.
@@ -223,5 +252,15 @@ where
             .get::<StoredL1OriginTable>(block_id.to())
             .map_err(internal_eth_error)?
             .map(|origin| origin.into_rpc()))
+    }
+}
+
+/// Returns the last Pacaya block threshold for networks that need batch lookup filtering.
+fn batch_lookup_last_pacaya_block_threshold(chain_id: u64) -> Option<U256> {
+    match chain_id {
+        TAIKO_MAINNET_CHAIN_ID => Some(U256::from(TAIKO_MAINNET_LAST_PACAYA_BATCH_LOOKUP_BLOCK)),
+        TAIKO_HOODI_CHAIN_ID => Some(U256::from(TAIKO_HOODI_LAST_PACAYA_BATCH_LOOKUP_BLOCK)),
+        TAIKO_DEVNET_CHAIN_ID | TAIKO_MASAYA_CHAIN_ID => None,
+        _ => None,
     }
 }

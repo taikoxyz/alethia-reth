@@ -297,7 +297,7 @@ fn returns_uncertain_when_match_at_head_without_mapping() {
 #[test]
 /// Verifies the production lookback limit constant.
 fn uses_expected_lookback_limit_constant() {
-    assert_eq!(MAX_BACKWARD_SCAN_BLOCKS, 192 * 21_600);
+    assert_eq!(MAX_BACKWARD_SCAN_BLOCKS, 768 * 21_600);
 }
 
 #[test]

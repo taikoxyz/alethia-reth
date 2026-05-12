@@ -35,7 +35,7 @@ enum LastBlockSearchResult {
 }
 
 /// Maximum number of blocks to scan backwards when resolving a batch ID.
-pub(super) const MAX_BACKWARD_SCAN_BLOCKS: u64 = 192 * 21_600;
+pub(super) const MAX_BACKWARD_SCAN_BLOCKS: u64 = 768 * 21_600;
 #[cfg(test)]
 /// Shorter backward scan limit for test execution.
 const TEST_MAX_BACKWARD_SCAN_BLOCKS: u64 = 64;

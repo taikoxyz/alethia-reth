@@ -144,6 +144,45 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
 }
 
 #[test]
+fn meter_charge_tx_intrinsic_adds_schedule_value_to_in_flight_tx() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_tx_intrinsic().expect("intrinsic should fit");
+    assert_eq!(meter.tx_zk_gas_used(), schedule.tx_intrinsic_zk_gas);
+    assert_eq!(meter.block_zk_gas_used(), 0);
+
+    meter.commit_transaction().expect("commit");
+    assert_eq!(meter.block_zk_gas_used(), schedule.tx_intrinsic_zk_gas);
+}
+
+#[test]
+fn meter_charge_tx_intrinsic_is_noop_on_masaya_schedule() {
+    let schedule =
+        schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Masaya Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_tx_intrinsic().expect("zero charge always fits");
+    assert_eq!(meter.tx_zk_gas_used(), 0);
+}
+
+#[test]
+fn meter_charge_tx_intrinsic_returns_limit_exceeded_when_remaining_budget_is_too_small() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    // Fill the block budget to within (intrinsic - 1) of the limit so the next intrinsic
+    // charge alone would bust it. CREATE has a multiplier of 1, which makes the arithmetic
+    // trivial.
+    let prefill = schedule.block_limit - schedule.tx_intrinsic_zk_gas + 1;
+    assert_eq!(u64::from(schedule.opcode_multipliers[0xf0]), 1);
+    meter.charge_opcode(0xf0, prefill).expect("prefill");
+    meter.commit_transaction().expect("commit prefill");
+
+    assert!(matches!(meter.charge_tx_intrinsic(), Err(ZkGasOutcome::LimitExceeded)));
+}
+
+#[test]
 fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
     let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);

@@ -74,6 +74,15 @@ impl<'a> ZkGasMeter<'a> {
         self.charge_amount(charge)
     }
 
+    /// Charges the fixed per-transaction intrinsic zk gas defined by the active schedule.
+    ///
+    /// Mirrors `TX_INTRINSIC_ZK_GAS` from the Unzen zk gas spec: the charge accumulates into the
+    /// in-flight transaction total and is only promoted into the block total when the transaction
+    /// commits. A schedule value of `0` (Masaya) makes this a no-op.
+    pub fn charge_tx_intrinsic(&mut self) -> Result<(), ZkGasOutcome> {
+        self.charge_amount(self.schedule.tx_intrinsic_zk_gas)
+    }
+
     /// Applies a checked zk gas charge against the current transaction and block budget.
     fn charge_amount(&mut self, charge: u64) -> Result<(), ZkGasOutcome> {
         let next_tx = self.tx_zk_gas_used.checked_add(charge).ok_or(ZkGasOutcome::LimitExceeded)?;

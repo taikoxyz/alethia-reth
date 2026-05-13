@@ -28,6 +28,10 @@ pub struct SpawnEstimates {
 pub struct ZkGasSchedule {
     /// Maximum zk gas permitted across a single block.
     pub block_limit: u64,
+    /// Fixed zk gas charged once per block transaction before opcode or precompile
+    /// metering begins. Set to `0` on chains whose Unzen activation predates this
+    /// field, to preserve historical block consensus.
+    pub tx_intrinsic_zk_gas: u64,
     /// Per-opcode proving-cost multipliers indexed by opcode byte.
     pub opcode_multipliers: [u16; 256],
     /// Per-precompile proving-cost multipliers indexed by low-byte address.

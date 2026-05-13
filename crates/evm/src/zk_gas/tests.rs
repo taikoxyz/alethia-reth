@@ -21,7 +21,10 @@ use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
     schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
-    unzen::{MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE},
+    unzen::{
+        MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS, MASAYA_UNZEN_ZK_GAS_SCHEDULE,
+        TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE,
+    },
 };
 
 #[test]
@@ -89,6 +92,18 @@ fn unzen_schedule_uses_spec_spawn_estimates() {
 fn masaya_unzen_schedule_uses_one_billion_block_limit() {
     assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.block_limit, 1_000_000_000);
     assert_eq!(MASAYA_BLOCK_ZK_GAS_LIMIT, 1_000_000_000);
+}
+
+#[test]
+fn unzen_schedule_pins_default_tx_intrinsic_zk_gas_at_243_000() {
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.tx_intrinsic_zk_gas, 243_000);
+    assert_eq!(TX_INTRINSIC_ZK_GAS, 243_000);
+}
+
+#[test]
+fn masaya_unzen_schedule_pins_tx_intrinsic_zk_gas_at_zero() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.tx_intrinsic_zk_gas, 0);
+    assert_eq!(MASAYA_TX_INTRINSIC_ZK_GAS, 0);
 }
 
 #[test]

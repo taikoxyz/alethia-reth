@@ -11,15 +11,29 @@ pub const BLOCK_ZK_GAS_LIMIT: u64 = 100_000_000;
 /// Maximum zk gas permitted within a single Unzen block on the Taiko Masaya network.
 pub const MASAYA_BLOCK_ZK_GAS_LIMIT: u64 = 1_000_000_000;
 
+/// Fixed zk gas charged once per block transaction on Devnet, Hoodi, and Mainnet Unzen.
+///
+/// Value sourced from <https://github.com/taikoxyz/taiko-mono/pull/21669>; covers the proving
+/// cost of per-transaction sender ecrecovery.
+pub const TX_INTRINSIC_ZK_GAS: u64 = 243_000;
+
+/// Fixed zk gas charged once per block transaction on the Taiko Masaya network.
+///
+/// Pinned at `0` because Masaya activated Unzen before [taikoxyz/taiko-mono#21669] landed;
+/// adopting the non-zero value retroactively would break consensus on already-finalized
+/// blocks (their `difficulty` header equals the finalized block zk gas).
+pub const MASAYA_TX_INTRINSIC_ZK_GAS: u64 = 0;
+
 /// Fail-safe multiplier used for any opcode or precompile missing from the Unzen table.
 const FAILSAFE_MULTIPLIER: u16 = u16::MAX;
 
-/// Builds an Unzen-shaped zk gas schedule with the requested block limit. Opcode multipliers,
-/// precompile multipliers, and spawn estimates are identical across all networks; only the
-/// block budget differs.
-const fn unzen_schedule_with_block_limit(block_limit: u64) -> ZkGasSchedule {
+/// Builds an Unzen-shaped zk gas schedule with the requested block limit and per-transaction
+/// intrinsic charge. Opcode multipliers, precompile multipliers, and spawn estimates are
+/// identical across all networks; only the block budget and intrinsic charge differ.
+const fn unzen_schedule_with(block_limit: u64, tx_intrinsic_zk_gas: u64) -> ZkGasSchedule {
     ZkGasSchedule {
         block_limit,
+        tx_intrinsic_zk_gas,
         opcode_multipliers: unzen_opcode_multipliers(),
         precompile_multipliers: unzen_precompile_multipliers(),
         spawn_estimates: SpawnEstimates {
@@ -35,11 +49,12 @@ const fn unzen_schedule_with_block_limit(block_limit: u64) -> ZkGasSchedule {
 
 /// Default Unzen zk gas schedule used by Devnet, Hoodi, and Mainnet.
 pub static UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
-    unzen_schedule_with_block_limit(BLOCK_ZK_GAS_LIMIT);
+    unzen_schedule_with(BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS);
 
-/// Unzen zk gas schedule used by the Taiko Masaya network with a 10× higher block budget.
+/// Unzen zk gas schedule used by the Taiko Masaya network with a 10× higher block budget and
+/// a zero intrinsic charge that preserves consensus on already-finalized blocks.
 pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
-    unzen_schedule_with_block_limit(MASAYA_BLOCK_ZK_GAS_LIMIT);
+    unzen_schedule_with(MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS);
 
 /// Returns the fixed Unzen opcode multiplier table with fail-safe defaults for unlisted opcodes.
 const fn unzen_opcode_multipliers() -> [u16; 256] {

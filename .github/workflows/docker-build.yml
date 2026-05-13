@@ -7,7 +7,8 @@ on:
     types: [published]
 
 env:
-  REGISTRY_IMAGE: us-docker.pkg.dev/evmchain/images/alethia-reth
+  REGISTRY_IMAGE_ALETHIA: us-docker.pkg.dev/evmchain/images/alethia-reth
+  REGISTRY_IMAGE_TAIKO: us-docker.pkg.dev/evmchain/images/taiko-reth
 
 permissions:
   contents: read
@@ -42,7 +43,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: |
+            ${{ env.REGISTRY_IMAGE_ALETHIA }}
+            ${{ env.REGISTRY_IMAGE_TAIKO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -59,7 +62,8 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: |
+            type=image,"name=${{ env.REGISTRY_IMAGE_ALETHIA }},${{ env.REGISTRY_IMAGE_TAIKO }}",push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
@@ -69,8 +73,8 @@ jobs:
 
       - name: Prepare platform pair
         run: |
-          platform=${{ matrix.platform }}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
       - name: Upload digest
         uses: actions/upload-artifact@v4
@@ -106,7 +110,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_IMAGE }}
+          images: |
+            ${{ env.REGISTRY_IMAGE_ALETHIA }}
+            ${{ env.REGISTRY_IMAGE_TAIKO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -117,8 +123,37 @@ jobs:
             type=raw,value=nightly,enable={{is_default_branch}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
-      - name: Create manifest list and push
+      - name: Create manifest lists and push
         working-directory: /tmp/digests
+        env:
+          IMAGES: |-
+            ${{ env.REGISTRY_IMAGE_ALETHIA }}
+            ${{ env.REGISTRY_IMAGE_TAIKO }}
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+          set -euo pipefail
+          shopt -s nullglob
+          digests=( * )
+          shopt -u nullglob
+          if [ ${#digests[@]} -eq 0 ]; then
+            echo "No digest files found in /tmp/digests; cannot compose manifest lists." >&2
+            exit 1
+          fi
+          while IFS= read -r image; do
+            [ -z "$image" ] && continue
+            tags=$(jq -cr --arg img "$image" \
+              '.tags | map(select(startswith($img + ":"))) | map("-t " + .) | join(" ")' \
+              <<< "$DOCKER_METADATA_OUTPUT_JSON")
+            if [ -z "$tags" ]; then
+              echo "No tags resolved for $image; skipping." >&2
+              continue
+            fi
+            sources=""
+            for d in "${digests[@]}"; do
+              sources+="${image}@sha256:${d} "
+            done
+            echo "Composing manifest list for ${image}:"
+            echo "  tags:    $tags"
+            echo "  sources: $sources"
+            # shellcheck disable=SC2086
+            docker buildx imagetools create $tags $sources
+          done <<< "$IMAGES"

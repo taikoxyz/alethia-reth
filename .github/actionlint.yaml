@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - arc-runner-set
+    - arc-runner-set-arm64

@@ -63,15 +63,28 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     }
 }
 
-/// Builds a recovered legacy transaction targeting `to` from `caller`.
+/// Builds a recovered legacy transaction targeting `to` from `caller`, defaulting to the
+/// Devnet chain id (`167`).
 pub fn recovered_tx(
     caller: Address,
     to: Address,
     nonce: u64,
     gas_price: u64,
 ) -> Recovered<TransactionSigned> {
+    recovered_tx_with_chain_id(caller, to, nonce, gas_price, 167)
+}
+
+/// Builds a recovered legacy transaction targeting `to` from `caller` with an explicit chain id,
+/// so tests can submit transactions against the Masaya chain id (`167_011`) and others.
+pub fn recovered_tx_with_chain_id(
+    caller: Address,
+    to: Address,
+    nonce: u64,
+    gas_price: u64,
+    chain_id: u64,
+) -> Recovered<TransactionSigned> {
     let tx = TxLegacy {
-        chain_id: Some(ChainId::from(167_u64)),
+        chain_id: Some(ChainId::from(chain_id)),
         nonce,
         gas_price: gas_price.into(),
         gas_limit: 5_000_000,

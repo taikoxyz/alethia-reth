@@ -21,7 +21,10 @@ use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
     schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
-    unzen::{MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE},
+    unzen::{
+        MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS, MASAYA_UNZEN_ZK_GAS_SCHEDULE,
+        TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE,
+    },
 };
 
 #[test]
@@ -92,6 +95,18 @@ fn masaya_unzen_schedule_uses_one_billion_block_limit() {
 }
 
 #[test]
+fn unzen_schedule_pins_default_tx_intrinsic_zk_gas_at_243_000() {
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.tx_intrinsic_zk_gas, 243_000);
+    assert_eq!(TX_INTRINSIC_ZK_GAS, 243_000);
+}
+
+#[test]
+fn masaya_unzen_schedule_pins_tx_intrinsic_zk_gas_at_zero() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.tx_intrinsic_zk_gas, 0);
+    assert_eq!(MASAYA_TX_INTRINSIC_ZK_GAS, 0);
+}
+
+#[test]
 fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
     assert_eq!(
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
@@ -126,6 +141,45 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
     meter.commit_transaction().expect("commit");
 
     assert_eq!(meter.block_zk_gas_used(), 3 * u64::from(schedule.opcode_multipliers[0x01]));
+}
+
+#[test]
+fn meter_charge_tx_intrinsic_adds_schedule_value_to_in_flight_tx() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_tx_intrinsic().expect("intrinsic should fit");
+    assert_eq!(meter.tx_zk_gas_used(), schedule.tx_intrinsic_zk_gas);
+    assert_eq!(meter.block_zk_gas_used(), 0);
+
+    meter.commit_transaction().expect("commit");
+    assert_eq!(meter.block_zk_gas_used(), schedule.tx_intrinsic_zk_gas);
+}
+
+#[test]
+fn meter_charge_tx_intrinsic_is_noop_on_masaya_schedule() {
+    let schedule =
+        schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Masaya Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_tx_intrinsic().expect("zero charge always fits");
+    assert_eq!(meter.tx_zk_gas_used(), 0);
+}
+
+#[test]
+fn meter_charge_tx_intrinsic_returns_limit_exceeded_when_remaining_budget_is_too_small() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    // Fill the block budget to within (intrinsic - 1) of the limit so the next intrinsic
+    // charge alone would bust it. CREATE has a multiplier of 1, which makes the arithmetic
+    // trivial.
+    let prefill = schedule.block_limit - schedule.tx_intrinsic_zk_gas + 1;
+    assert_eq!(u64::from(schedule.opcode_multipliers[0xf0]), 1);
+    meter.charge_opcode(0xf0, prefill).expect("prefill");
+    meter.commit_transaction().expect("commit prefill");
+
+    assert!(matches!(meter.charge_tx_intrinsic(), Err(ZkGasOutcome::LimitExceeded)));
 }
 
 #[test]
@@ -323,6 +377,30 @@ fn factory_installs_default_schedule_when_chain_id_is_not_masaya() {
 
     assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));
     assert_eq!(meter.schedule().block_limit, 100_000_000);
+}
+
+#[test]
+fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
+    use crate::alloy::TaikoZkGasEvm;
+
+    let evm = TaikoEvmFactory
+        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
+
+    evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
+    let meter = evm.shared_meter().expect("Unzen schedule installs a meter");
+    let meter = meter.lock().expect("meter lock");
+    assert_eq!(meter.tx_zk_gas_used(), meter.schedule().tx_intrinsic_zk_gas);
+}
+
+#[test]
+fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
+    use crate::alloy::TaikoZkGasEvm;
+
+    let evm = TaikoEvmFactory
+        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::SHASTA));
+
+    assert!(evm.shared_meter().is_none());
+    evm.charge_tx_intrinsic_zk_gas().expect("disabled metering should be a no-op");
 }
 
 #[test]

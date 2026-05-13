@@ -80,6 +80,11 @@ pub trait TaikoZkGasEvm {
 
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
+
+    /// Charges the fixed per-transaction intrinsic zk gas defined by the active schedule.
+    ///
+    /// Returns `Ok(())` when the EVM has no shared meter installed (pre-Unzen specs).
+    fn charge_tx_intrinsic_zk_gas(&self) -> Result<(), ZkGasOutcome>;
 }
 
 impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
@@ -108,6 +113,14 @@ where
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64> {
         self.shared_meter().map(|meter| lock_meter(&meter).block_zk_gas_used())
+    }
+
+    /// Charges the fixed per-transaction intrinsic zk gas through the shared meter.
+    fn charge_tx_intrinsic_zk_gas(&self) -> Result<(), ZkGasOutcome> {
+        let Some(meter) = self.shared_meter() else {
+            return Ok(());
+        };
+        lock_meter(&meter).charge_tx_intrinsic()
     }
 }
 

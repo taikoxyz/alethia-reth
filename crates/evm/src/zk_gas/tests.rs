@@ -383,10 +383,8 @@ fn factory_installs_default_schedule_when_chain_id_is_not_masaya() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let evm = TaikoEvmFactory.create_evm(
-        db_with_contract(staticcall_identity_bytecode()),
-        evm_env(TaikoSpecId::UNZEN),
-    );
+    let evm = TaikoEvmFactory
+        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
     let meter = evm.shared_meter().expect("Unzen schedule installs a meter");
@@ -398,10 +396,8 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let evm = TaikoEvmFactory.create_evm(
-        db_with_contract(staticcall_identity_bytecode()),
-        evm_env(TaikoSpecId::SHASTA),
-    );
+    let evm = TaikoEvmFactory
+        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.shared_meter().is_none());
     evm.charge_tx_intrinsic_zk_gas().expect("disabled metering should be a no-op");

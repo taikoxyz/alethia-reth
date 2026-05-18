@@ -530,10 +530,7 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
 /// Builds bytecode that executes `count` JUMPDEST opcodes in sequence, then STOPs.
 /// Useful for stressing the hot path on a cheap opcode.
 fn jumpdest_loop_bytecode(count: usize) -> Bytecode {
-    let mut bytes = Vec::with_capacity(count + 1);
-    for _ in 0..count {
-        bytes.push(opcode::JUMPDEST);
-    }
+    let mut bytes = vec![opcode::JUMPDEST; count];
     bytes.push(opcode::STOP);
     Bytecode::new_raw(Bytes::from(bytes))
 }

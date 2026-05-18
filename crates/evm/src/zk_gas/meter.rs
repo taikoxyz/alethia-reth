@@ -19,6 +19,56 @@ pub struct ZkGasMeter<'a> {
     tx_zk_gas_used: u64,
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module, reason = "test-only helper module used by impls below")]
+mod test_recorder {
+    use std::cell::RefCell;
+
+    /// One recorded interaction with the zk gas meter.
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub enum ChargeCall {
+        /// `ZkGasMeter::charge_opcode(opcode, raw_gas)`.
+        Opcode { opcode: u8, raw_gas: u64 },
+        /// `ZkGasMeter::charge_precompile(addr_low_byte, gas_used)`.
+        Precompile { addr_low_byte: u8, gas_used: u64 },
+        /// `ZkGasMeter::charge_tx_intrinsic()`.
+        TxIntrinsic,
+        /// `ZkGasMeter::reset_transaction()`.
+        ResetTx,
+        /// `ZkGasMeter::commit_transaction()`.
+        CommitTx,
+    }
+
+    thread_local! {
+        static RECORDER: RefCell<Option<Vec<ChargeCall>>> = const { RefCell::new(None) };
+    }
+
+    /// Installs an empty recorder for the current thread, discarding any prior recording.
+    pub fn install() {
+        RECORDER.with(|r| *r.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Removes and returns the current recording, leaving the thread without a recorder.
+    pub fn take() -> Option<Vec<ChargeCall>> {
+        RECORDER.with(|r| r.borrow_mut().take())
+    }
+
+    /// Pushes one call into the active recorder, if any is installed.
+    pub fn record(call: ChargeCall) {
+        RECORDER.with(|r| {
+            if let Some(v) = r.borrow_mut().as_mut() {
+                v.push(call);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) use test_recorder::{
+    ChargeCall, install as install_charge_recorder, record as record_charge,
+    take as take_charge_recording,
+};
+
 impl<'a> ZkGasMeter<'a> {
     /// Creates a new meter for the provided consensus schedule.
     pub const fn new(schedule: &'a ZkGasSchedule) -> Self {
@@ -105,52 +155,3 @@ impl<'a> ZkGasMeter<'a> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod test_recorder {
-    use std::cell::RefCell;
-
-    /// One recorded interaction with the zk gas meter.
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    pub enum ChargeCall {
-        /// `ZkGasMeter::charge_opcode(opcode, raw_gas)`.
-        Opcode { opcode: u8, raw_gas: u64 },
-        /// `ZkGasMeter::charge_precompile(addr_low_byte, gas_used)`.
-        Precompile { addr_low_byte: u8, gas_used: u64 },
-        /// `ZkGasMeter::charge_tx_intrinsic()`.
-        TxIntrinsic,
-        /// `ZkGasMeter::reset_transaction()`.
-        ResetTx,
-        /// `ZkGasMeter::commit_transaction()`.
-        CommitTx,
-    }
-
-    thread_local! {
-        static RECORDER: RefCell<Option<Vec<ChargeCall>>> = const { RefCell::new(None) };
-    }
-
-    /// Installs an empty recorder for the current thread, discarding any prior recording.
-    pub fn install() {
-        RECORDER.with(|r| *r.borrow_mut() = Some(Vec::new()));
-    }
-
-    /// Removes and returns the current recording, leaving the thread without a recorder.
-    pub fn take() -> Option<Vec<ChargeCall>> {
-        RECORDER.with(|r| r.borrow_mut().take())
-    }
-
-    /// Pushes one call into the active recorder, if any is installed.
-    pub fn record(call: ChargeCall) {
-        RECORDER.with(|r| {
-            if let Some(v) = r.borrow_mut().as_mut() {
-                v.push(call);
-            }
-        });
-    }
-}
-
-#[cfg(test)]
-pub(crate) use test_recorder::{
-    ChargeCall, install as install_charge_recorder, record as record_charge,
-    take as take_charge_recording,
-};

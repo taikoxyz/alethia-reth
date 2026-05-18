@@ -56,13 +56,23 @@ impl<'a> ZkGasMeter<'a> {
     }
 
     /// Charges zk gas for a single opcode execution.
+    ///
+    /// Adds the schedule's `zk_gas_metering_overhead` on top of `raw_gas * multiplier` so the
+    /// charge accounts for the proving cost of the metering hook itself. A schedule overhead
+    /// of `0` (Masaya) makes the addition a no-op.
     pub fn charge_opcode(&mut self, opcode: u8, raw_gas: u64) -> Result<(), ZkGasOutcome> {
         let multiplier = u64::from(self.schedule.opcode_multipliers[usize::from(opcode)]);
-        let charge = raw_gas.checked_mul(multiplier).ok_or(ZkGasOutcome::LimitExceeded)?;
+        let charge = raw_gas
+            .checked_mul(multiplier)
+            .and_then(|product| product.checked_add(self.schedule.zk_gas_metering_overhead))
+            .ok_or(ZkGasOutcome::LimitExceeded)?;
         self.charge_amount(charge)
     }
 
     /// Charges zk gas for a single precompile execution.
+    ///
+    /// Adds the schedule's `zk_gas_metering_overhead` on top of `gas_used * multiplier` for the
+    /// same reason as `charge_opcode`.
     pub fn charge_precompile(
         &mut self,
         address_low_byte: u8,
@@ -70,7 +80,10 @@ impl<'a> ZkGasMeter<'a> {
     ) -> Result<(), ZkGasOutcome> {
         let multiplier =
             u64::from(self.schedule.precompile_multipliers[usize::from(address_low_byte)]);
-        let charge = gas_used.checked_mul(multiplier).ok_or(ZkGasOutcome::LimitExceeded)?;
+        let charge = gas_used
+            .checked_mul(multiplier)
+            .and_then(|product| product.checked_add(self.schedule.zk_gas_metering_overhead))
+            .ok_or(ZkGasOutcome::LimitExceeded)?;
         self.charge_amount(charge)
     }
 

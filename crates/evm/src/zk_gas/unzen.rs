@@ -24,16 +24,37 @@ pub const TX_INTRINSIC_ZK_GAS: u64 = 243_000;
 /// blocks (their `difficulty` header equals the finalized block zk gas).
 pub const MASAYA_TX_INTRINSIC_ZK_GAS: u64 = 0;
 
+/// Fixed zk gas charged once per opcode execution and once per precompile call on Devnet,
+/// Hoodi, and Mainnet Unzen.
+///
+/// Value sourced from <https://github.com/taikoxyz/taiko-mono/pull/21695>; covers the proving
+/// cost of the zk gas metering hook itself.
+pub const ZK_GAS_METERING_OVERHEAD: u64 = 90;
+
+/// Fixed zk gas charged once per opcode execution and once per precompile call on the Taiko
+/// Masaya network.
+///
+/// Pinned at `0` because Masaya activated Unzen before [taikoxyz/taiko-mono#21695] landed;
+/// adopting the non-zero value retroactively would break consensus on already-finalized
+/// blocks (their `difficulty` header equals the finalized block zk gas).
+pub const MASAYA_ZK_GAS_METERING_OVERHEAD: u64 = 0;
+
 /// Fail-safe multiplier used for any opcode or precompile missing from the Unzen table.
 const FAILSAFE_MULTIPLIER: u16 = u16::MAX;
 
-/// Builds an Unzen-shaped zk gas schedule with the requested block limit and per-transaction
-/// intrinsic charge. Opcode multipliers, precompile multipliers, and spawn estimates are
-/// identical across all networks; only the block budget and intrinsic charge differ.
-const fn unzen_schedule_with(block_limit: u64, tx_intrinsic_zk_gas: u64) -> ZkGasSchedule {
+/// Builds an Unzen-shaped zk gas schedule with the requested block limit, per-transaction
+/// intrinsic charge, and per-metering-hook overhead. Opcode multipliers, precompile
+/// multipliers, and spawn estimates are identical across all networks; only the block budget,
+/// intrinsic charge, and metering overhead differ.
+const fn unzen_schedule_with(
+    block_limit: u64,
+    tx_intrinsic_zk_gas: u64,
+    zk_gas_metering_overhead: u64,
+) -> ZkGasSchedule {
     ZkGasSchedule {
         block_limit,
         tx_intrinsic_zk_gas,
+        zk_gas_metering_overhead,
         opcode_multipliers: unzen_opcode_multipliers(),
         precompile_multipliers: unzen_precompile_multipliers(),
         spawn_estimates: SpawnEstimates {
@@ -49,12 +70,16 @@ const fn unzen_schedule_with(block_limit: u64, tx_intrinsic_zk_gas: u64) -> ZkGa
 
 /// Default Unzen zk gas schedule used by Devnet, Hoodi, and Mainnet.
 pub static UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
-    unzen_schedule_with(BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS);
+    unzen_schedule_with(BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS, ZK_GAS_METERING_OVERHEAD);
 
-/// Unzen zk gas schedule used by the Taiko Masaya network with a 10× higher block budget and
-/// a zero intrinsic charge that preserves consensus on already-finalized blocks.
-pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule =
-    unzen_schedule_with(MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS);
+/// Unzen zk gas schedule used by the Taiko Masaya network with a 10× higher block budget, a
+/// zero intrinsic charge, and a zero metering overhead — all of which preserve consensus on
+/// already-finalized blocks.
+pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
+    MASAYA_BLOCK_ZK_GAS_LIMIT,
+    MASAYA_TX_INTRINSIC_ZK_GAS,
+    MASAYA_ZK_GAS_METERING_OVERHEAD,
+);
 
 /// Returns the fixed Unzen opcode multiplier table with fail-safe defaults for unlisted opcodes.
 const fn unzen_opcode_multipliers() -> [u16; 256] {

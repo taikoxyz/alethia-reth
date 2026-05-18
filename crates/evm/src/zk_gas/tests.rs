@@ -23,7 +23,8 @@ use super::{
     schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
     unzen::{
         MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS, MASAYA_UNZEN_ZK_GAS_SCHEDULE,
-        TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE,
+        MASAYA_ZK_GAS_METERING_OVERHEAD, TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE,
+        ZK_GAS_METERING_OVERHEAD,
     },
 };
 
@@ -107,6 +108,18 @@ fn masaya_unzen_schedule_pins_tx_intrinsic_zk_gas_at_zero() {
 }
 
 #[test]
+fn unzen_schedule_pins_default_zk_gas_metering_overhead_at_90() {
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.zk_gas_metering_overhead, 90);
+    assert_eq!(ZK_GAS_METERING_OVERHEAD, 90);
+}
+
+#[test]
+fn masaya_unzen_schedule_pins_zk_gas_metering_overhead_at_zero() {
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.zk_gas_metering_overhead, 0);
+    assert_eq!(MASAYA_ZK_GAS_METERING_OVERHEAD, 0);
+}
+
+#[test]
 fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
     assert_eq!(
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
@@ -140,7 +153,58 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
     meter.charge_opcode(0x01, 3).expect("charge");
     meter.commit_transaction().expect("commit");
 
-    assert_eq!(meter.block_zk_gas_used(), 3 * u64::from(schedule.opcode_multipliers[0x01]));
+    assert_eq!(
+        meter.block_zk_gas_used(),
+        3 * u64::from(schedule.opcode_multipliers[0x01]) + schedule.zk_gas_metering_overhead
+    );
+}
+
+#[test]
+fn meter_charge_opcode_adds_metering_overhead_on_default_unzen() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_opcode(0x01, 3).expect("charge");
+
+    assert_eq!(
+        meter.tx_zk_gas_used(),
+        3 * u64::from(schedule.opcode_multipliers[0x01]) + ZK_GAS_METERING_OVERHEAD
+    );
+}
+
+#[test]
+fn meter_charge_opcode_has_no_metering_overhead_on_masaya() {
+    let schedule =
+        schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Masaya Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_opcode(0x01, 3).expect("charge");
+
+    assert_eq!(meter.tx_zk_gas_used(), 3 * u64::from(schedule.opcode_multipliers[0x01]));
+}
+
+#[test]
+fn meter_charge_precompile_adds_metering_overhead_on_default_unzen() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_precompile(0x04, 18).expect("charge");
+
+    assert_eq!(
+        meter.tx_zk_gas_used(),
+        18 * u64::from(schedule.precompile_multipliers[0x04]) + ZK_GAS_METERING_OVERHEAD
+    );
+}
+
+#[test]
+fn meter_charge_precompile_has_no_metering_overhead_on_masaya() {
+    let schedule =
+        schedule_for(TaikoSpecId::UNZEN, TAIKO_MASAYA_CHAIN_ID).expect("Masaya Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_precompile(0x04, 18).expect("charge");
+
+    assert_eq!(meter.tx_zk_gas_used(), 18 * u64::from(schedule.precompile_multipliers[0x04]));
 }
 
 #[test]
@@ -172,11 +236,12 @@ fn meter_charge_tx_intrinsic_returns_limit_exceeded_when_remaining_budget_is_too
     let mut meter = ZkGasMeter::new(schedule);
 
     // Fill the block budget to within (intrinsic - 1) of the limit so the next intrinsic
-    // charge alone would bust it. CREATE has a multiplier of 1, which makes the arithmetic
-    // trivial.
-    let prefill = schedule.block_limit - schedule.tx_intrinsic_zk_gas + 1;
+    // charge alone would bust it. CREATE has a multiplier of 1, so `charge_opcode(0xf0, raw)`
+    // charges `raw + overhead` against the budget.
     assert_eq!(u64::from(schedule.opcode_multipliers[0xf0]), 1);
-    meter.charge_opcode(0xf0, prefill).expect("prefill");
+    let prefill_raw =
+        schedule.block_limit - schedule.tx_intrinsic_zk_gas + 1 - schedule.zk_gas_metering_overhead;
+    meter.charge_opcode(0xf0, prefill_raw).expect("prefill");
     meter.commit_transaction().expect("commit prefill");
 
     assert!(matches!(meter.charge_tx_intrinsic(), Err(ZkGasOutcome::LimitExceeded)));
@@ -216,13 +281,19 @@ fn meter_resets_transaction_usage_without_affecting_block_usage() {
 fn meter_allows_exactly_remaining_block_budget() {
     let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
+    let overhead = schedule.zk_gas_metering_overhead;
 
-    meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
+    // CREATE has multiplier=1, so `charge_opcode(0xf0, raw)` charges `raw + overhead`. Land
+    // exactly one `overhead`-sized charge short of the block limit so a second call can fill
+    // the remainder without leftover bytes the overhead can't reach.
+    assert_eq!(u64::from(schedule.opcode_multipliers[0xf0]), 1);
+    let first_raw = schedule.block_limit - overhead.checked_mul(2).expect("non-overflowing");
+    meter.charge_opcode(0xf0, first_raw).expect("prefill");
     meter.commit_transaction().expect("commit");
 
-    assert_eq!(meter.block_zk_gas_used(), schedule.block_limit - 1);
+    assert_eq!(meter.block_zk_gas_used(), schedule.block_limit - overhead);
 
-    meter.charge_opcode(0xf0, 1).expect("remaining budget");
+    meter.charge_opcode(0xf0, 0).expect("remaining budget");
     meter.commit_transaction().expect("commit");
 
     assert_eq!(meter.block_zk_gas_used(), schedule.block_limit);
@@ -232,8 +303,12 @@ fn meter_allows_exactly_remaining_block_budget() {
 fn meter_rejects_block_budget_plus_one() {
     let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
+    let overhead = schedule.zk_gas_metering_overhead;
 
-    meter.charge_opcode(0xf0, schedule.block_limit - 1).expect("prefill");
+    // Pre-fill to block_limit - 1 zk gas; `charge_opcode(0xf0, raw)` charges `raw + overhead`.
+    assert_eq!(u64::from(schedule.opcode_multipliers[0xf0]), 1);
+    let prefill_raw = schedule.block_limit - 1 - overhead;
+    meter.charge_opcode(0xf0, prefill_raw).expect("prefill");
     meter.commit_transaction().expect("commit");
 
     assert!(matches!(meter.charge_opcode(0xf0, 2), Err(ZkGasOutcome::LimitExceeded)));
@@ -305,23 +380,21 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let probe = evm.inspector();
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
-    let expected = probe.step_costs.iter().fold(
-        u64::from(schedule.precompile_multipliers[0x04]) * precompile_gas_used,
-        |acc, (opcode, step_gas)| {
-            let raw_gas = if *opcode == opcode::STATICCALL {
-                schedule.spawn_estimates.staticcall
-            } else {
-                *step_gas
-            };
-            acc + raw_gas * u64::from(schedule.opcode_multipliers[*opcode as usize])
-        },
-    );
-    let naive_expected = probe.step_costs.iter().fold(
-        u64::from(schedule.precompile_multipliers[0x04]) * precompile_gas_used,
-        |acc, (opcode, step_gas)| {
-            acc + (*step_gas * u64::from(schedule.opcode_multipliers[*opcode as usize]))
-        },
-    );
+    let overhead = schedule.zk_gas_metering_overhead;
+    let precompile_charge =
+        u64::from(schedule.precompile_multipliers[0x04]) * precompile_gas_used + overhead;
+    let expected = probe.step_costs.iter().fold(precompile_charge, |acc, (opcode, step_gas)| {
+        let raw_gas = if *opcode == opcode::STATICCALL {
+            schedule.spawn_estimates.staticcall
+        } else {
+            *step_gas
+        };
+        acc + raw_gas * u64::from(schedule.opcode_multipliers[*opcode as usize]) + overhead
+    });
+    let naive_expected =
+        probe.step_costs.iter().fold(precompile_charge, |acc, (opcode, step_gas)| {
+            acc + (*step_gas * u64::from(schedule.opcode_multipliers[*opcode as usize])) + overhead
+        });
 
     assert_eq!(meter.tx_zk_gas_used(), expected);
     assert_ne!(meter.tx_zk_gas_used(), naive_expected);

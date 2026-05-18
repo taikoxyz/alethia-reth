@@ -32,6 +32,11 @@ pub struct ZkGasSchedule {
     /// metering begins. Set to `0` on chains whose Unzen activation predates this
     /// field, to preserve historical block consensus.
     pub tx_intrinsic_zk_gas: u64,
+    /// Fixed zk gas charged on every opcode execution and every precompile call, on top of
+    /// `raw_gas * multiplier`. Covers the proving cost of the zk gas metering hook itself.
+    /// Set to `0` on chains whose Unzen activation predates this field, to preserve
+    /// historical block consensus.
+    pub zk_gas_metering_overhead: u64,
     /// Per-opcode proving-cost multipliers indexed by opcode byte.
     pub opcode_multipliers: [u16; 256],
     /// Per-precompile proving-cost multipliers indexed by low-byte address.

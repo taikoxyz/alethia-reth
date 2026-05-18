@@ -1,0 +1,9 @@
+opcode 0x60 raw_gas=3
+opcode 0x60 raw_gas=3
+opcode 0x60 raw_gas=3
+opcode 0x60 raw_gas=3
+opcode 0x60 raw_gas=3
+opcode 0x61 raw_gas=3
+opcode 0xfa raw_gas=3500
+precompile 0x04 gas_used=15
+opcode 0x00 raw_gas=0

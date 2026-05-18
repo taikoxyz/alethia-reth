@@ -19,13 +19,57 @@ use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
-    meter::{ZkGasMeter, ZkGasOutcome},
+    meter::{ChargeCall, ZkGasMeter, ZkGasOutcome, install_charge_recorder, take_charge_recording},
     schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
     unzen::{
         MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS, MASAYA_UNZEN_ZK_GAS_SCHEDULE,
         TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE,
     },
 };
+
+/// Formats a recording deterministically, one call per line.
+fn format_recording(recording: &[ChargeCall]) -> String {
+    let mut out = String::new();
+    for call in recording {
+        match call {
+            ChargeCall::Opcode { opcode, raw_gas } => {
+                out.push_str(&format!("opcode 0x{opcode:02x} raw_gas={raw_gas}\n"));
+            }
+            ChargeCall::Precompile { addr_low_byte, gas_used } => {
+                out.push_str(&format!("precompile 0x{addr_low_byte:02x} gas_used={gas_used}\n"));
+            }
+            ChargeCall::TxIntrinsic => out.push_str("tx_intrinsic\n"),
+            ChargeCall::ResetTx => out.push_str("reset_tx\n"),
+            ChargeCall::CommitTx => out.push_str("commit_tx\n"),
+        }
+    }
+    out
+}
+
+/// Asserts that `recording` matches the golden fixture for `name`.
+///
+/// Set `UPDATE_GOLDEN=1` to write the recording to disk instead of comparing.
+fn assert_golden_recording(name: &str, recording: &[ChargeCall]) {
+    let path = format!("{}/src/zk_gas/golden/{name}.txt", env!("CARGO_MANIFEST_DIR"));
+    let serialized = format_recording(recording);
+
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &serialized).unwrap_or_else(|e| panic!("write golden {path}: {e}"));
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing golden {path}: {e}\n\
+             Generate it by running with UPDATE_GOLDEN=1"
+        )
+    });
+    assert_eq!(
+        serialized, expected,
+        "recording for `{name}` differs from golden fixture at {path}\n\
+         To accept the new recording: UPDATE_GOLDEN=1 cargo nextest run -p alethia-reth-evm {name}"
+    );
+}
 
 #[test]
 fn unzen_schedule_is_selected_only_for_unzen() {
@@ -483,4 +527,65 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::KECCAK256,
         opcode::STOP,
     ]))
+}
+
+/// Builds bytecode that executes `count` JUMPDEST opcodes in sequence, then STOPs.
+/// Useful for stressing the hot path on a cheap opcode.
+fn jumpdest_loop_bytecode(count: usize) -> Bytecode {
+    let mut bytes = Vec::with_capacity(count + 1);
+    for _ in 0..count {
+        bytes.push(opcode::JUMPDEST);
+    }
+    bytes.push(opcode::STOP);
+    Bytecode::new_raw(Bytes::from(bytes))
+}
+
+#[test]
+fn golden_staticcall_identity_unzen() {
+    install_charge_recorder();
+    let mut evm = TaikoEvmFactory
+        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    evm.transact(tx_env(100_000)).expect("tx should execute");
+    let recording = take_charge_recording().expect("recorder installed");
+    assert_golden_recording("staticcall_identity_unzen", &recording);
+}
+
+#[test]
+fn golden_jumpdest_loop_unzen() {
+    install_charge_recorder();
+    let mut evm = TaikoEvmFactory
+        .create_evm(db_with_contract(jumpdest_loop_bytecode(64)), evm_env(TaikoSpecId::UNZEN));
+    evm.transact(tx_env(100_000)).expect("tx should execute");
+    let recording = take_charge_recording().expect("recorder installed");
+    assert_golden_recording("jumpdest_loop_unzen", &recording);
+}
+
+#[test]
+fn golden_keccak_limit_exceeded_unzen() {
+    install_charge_recorder();
+    let mut evm = TaikoEvmFactory.create_evm(
+        db_with_contract(limit_exceeding_keccak_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+    );
+    let _ = evm.transact(tx_env(5_000_000));
+    let recording = take_charge_recording().expect("recorder installed");
+    assert_golden_recording("keccak_limit_exceeded_unzen", &recording);
+}
+
+#[test]
+fn golden_staticcall_identity_masaya() {
+    install_charge_recorder();
+    let mut env = evm_env(TaikoSpecId::UNZEN);
+    env.cfg_env.chain_id = TAIKO_MASAYA_CHAIN_ID;
+    let mut evm = TaikoEvmFactory.create_evm(db_with_contract(staticcall_identity_bytecode()), env);
+    let tx = TxEnv::builder()
+        .caller(BENCH_CALLER)
+        .kind(TxKind::Call(BENCH_TARGET))
+        .chain_id(Some(TAIKO_MASAYA_CHAIN_ID))
+        .gas_limit(100_000)
+        .build()
+        .unwrap();
+    evm.transact(tx).expect("tx should execute");
+    let recording = take_charge_recording().expect("recorder installed");
+    assert_golden_recording("staticcall_identity_masaya", &recording);
 }

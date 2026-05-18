@@ -27,10 +27,11 @@ pub const ZK_GAS_LIMIT_ERR: &str = "zk gas limit exceeded";
 
 /// Upper bound on the EVM call-frame depth recorded by the inspector.
 ///
-/// revm's `CALL_STACK_LIMIT` is 1024 and is enforced as `depth > CALL_STACK_LIMIT`,
-/// so the maximum `depth` argument the inspector ever sees is 1025. We size the
-/// per-depth arrays at 1026 so direct indexing is safe at every reachable depth
-/// without sacrificing the per-opcode bounds-check-free hot path.
+/// revm's `CALL_STACK_LIMIT` is 1024 and is enforced as `depth > CALL_STACK_LIMIT`
+/// against the child's depth in `make_call_frame`, so the deepest legal frame has
+/// `journal().depth() == 1024`. Direct indexing of `0..=1024` needs 1025 slots; we
+/// size the per-depth arrays at 1026 to keep one safety slot and preserve the
+/// per-opcode bounds-check-free hot path.
 const MAX_CALL_DEPTH: usize = 1026;
 
 /// Composite inspector that meters zk gas before delegating to an inner inspector.

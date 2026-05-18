@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.2.0](https://github.com/taikoxyz/alethia-reth/compare/v1.1.0...v1.2.0) (2026-05-18)
+
+
+### Features
+
+* **eth:** gate batch lookup results by network ([#177](https://github.com/taikoxyz/alethia-reth/issues/177)) ([9afd71f](https://github.com/taikoxyz/alethia-reth/commit/9afd71f4ccc3fc17d8e4c6fb0d61025cbaa6f480))
+* **evm:** add `TX_INTRINSIC_ZK_GAS` to Unzen zk gas accounting ([#180](https://github.com/taikoxyz/alethia-reth/issues/180)) ([faee735](https://github.com/taikoxyz/alethia-reth/commit/faee735b7386cbdf93839bc070cc693b590408f2))
+
+
+### Bug Fixes
+
+* **hoodi:** disable unzen fork ([61ca8d0](https://github.com/taikoxyz/alethia-reth/commit/61ca8d0d6d1b324fbcd38a034e6e5689a1ff778e))
+* **node:** decouple sidecar from reth exex wal ([#174](https://github.com/taikoxyz/alethia-reth/issues/174)) ([0ed31d9](https://github.com/taikoxyz/alethia-reth/commit/0ed31d96e91b5c7c37ab8a952c01e88ec7349e23))
+* **proof-history:** decouple sidecar from reth exex wal ([0ed31d9](https://github.com/taikoxyz/alethia-reth/commit/0ed31d96e91b5c7c37ab8a952c01e88ec7349e23))
+* **proof-history:** use on-disk tip for historical init target ([4701f7c](https://github.com/taikoxyz/alethia-reth/commit/4701f7ccc6842eaa4c6e9c6a39970e2fd2181657))
+* **rpc:** use on-disk tip for historical init target ([#171](https://github.com/taikoxyz/alethia-reth/issues/171)) ([4701f7c](https://github.com/taikoxyz/alethia-reth/commit/4701f7ccc6842eaa4c6e9c6a39970e2fd2181657))
+
+
+### Chores
+
+* **auth:** increase batch lookup window ([#178](https://github.com/taikoxyz/alethia-reth/issues/178)) ([85ba463](https://github.com/taikoxyz/alethia-reth/commit/85ba463c26a47677ee5ae83afbce5b99c16fee55))
+* **chainspec:** disable Hoodi Unzen fork ([#181](https://github.com/taikoxyz/alethia-reth/issues/181)) ([61ca8d0](https://github.com/taikoxyz/alethia-reth/commit/61ca8d0d6d1b324fbcd38a034e6e5689a1ff778e))
+* **chainspec:** set Hoodi Unzen fork time to `2026-05-21 13:00 UTC` ([#176](https://github.com/taikoxyz/alethia-reth/issues/176)) ([2ebe77c](https://github.com/taikoxyz/alethia-reth/commit/2ebe77c3afaae3992270186d4d026e97b4c62e4c))
+* **deps-dev:** sync Cargo.lock to 1.1.0 and drop redundant clones ([#173](https://github.com/taikoxyz/alethia-reth/issues/173)) ([a6782fe](https://github.com/taikoxyz/alethia-reth/commit/a6782fe948f86fdf9b13a2f3f5f1a89f00d1c9c9))
+* sync Cargo.lock to 1.1.0 and drop redundant clones ([a6782fe](https://github.com/taikoxyz/alethia-reth/commit/a6782fe948f86fdf9b13a2f3f5f1a89f00d1c9c9))
+
+
+### Performance Improvements
+
+* **evm:** drop `Arc<Mutex<ZkGasMeter>>` from hot path ([#182](https://github.com/taikoxyz/alethia-reth/issues/182)) ([e42910b](https://github.com/taikoxyz/alethia-reth/commit/e42910b4f4e189a9fa32b57b293b5e660afc4e37))
+
+
+### Workflow
+
+* **docker-build:** publish taiko-reth alongside alethia-reth ([12553e4](https://github.com/taikoxyz/alethia-reth/commit/12553e4bcdf97196bd079fced618b3e77ee88cd4))
+* **repo:** publish taiko-reth alongside alethia-reth ([#179](https://github.com/taikoxyz/alethia-reth/issues/179)) ([12553e4](https://github.com/taikoxyz/alethia-reth/commit/12553e4bcdf97196bd079fced618b3e77ee88cd4))
+
 ## [1.1.0](https://github.com/taikoxyz/alethia-reth/compare/v1.0.0...v1.1.0) (2026-04-28)
 
 

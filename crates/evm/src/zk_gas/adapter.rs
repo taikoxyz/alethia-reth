@@ -25,6 +25,13 @@ use super::{
 /// Dedicated custom error string emitted when zk gas accounting exceeds the block limit.
 pub const ZK_GAS_LIMIT_ERR: &str = "zk gas limit exceeded";
 
+/// Maximum EVM call depth supported by the inspector's per-depth bookkeeping.
+///
+/// Matches revm's `CALL_STACK_LIMIT`, so a fixed-size array indexed by journal depth
+/// is always large enough and avoids `Vec` bounds-check + conditional resize on the
+/// `Inspector::step` hot path.
+const MAX_CALL_DEPTH: usize = 1024;
+
 /// Composite inspector that meters zk gas before delegating to an inner inspector.
 pub struct ZkGasInspector<I> {
     /// User-provided or factory-provided inner inspector.
@@ -230,9 +237,9 @@ struct ZkGasMeteringState {
     /// Owned checked meter that holds the schedule and accumulated usage.
     meter: ZkGasMeter<'static>,
     /// Per-frame in-flight opcode step state keyed by journal depth.
-    pending_steps: Vec<Option<PendingStep>>,
+    pending_steps: [Option<PendingStep>; MAX_CALL_DEPTH],
     /// Completed CALL/CREATE-family steps waiting for spawn information before charging.
-    deferred_steps: Vec<Option<FinishedStep>>,
+    deferred_steps: [Option<FinishedStep>; MAX_CALL_DEPTH],
 }
 
 impl ZkGasMeteringState {
@@ -240,14 +247,13 @@ impl ZkGasMeteringState {
     fn new(schedule: &'static ZkGasSchedule) -> Self {
         Self {
             meter: ZkGasMeter::new(schedule),
-            pending_steps: Vec::new(),
-            deferred_steps: Vec::new(),
+            pending_steps: [const { None }; MAX_CALL_DEPTH],
+            deferred_steps: [const { None }; MAX_CALL_DEPTH],
         }
     }
 
     /// Records the opcode and gas snapshot for the current frame depth.
     fn begin_step(&mut self, depth: usize, opcode: u8, gas_remaining: u64) {
-        self.ensure_depth(depth);
         // Any previous pending step at this depth must already have been consumed by `step_end`.
         self.pending_steps[depth] = Some(PendingStep { opcode, gas_remaining, spawned: false });
     }
@@ -283,7 +289,6 @@ impl ZkGasMeteringState {
     /// Stores a finished spawn opcode until frame-resolution hooks can determine its raw gas
     /// source.
     fn defer_step(&mut self, depth: usize, step: FinishedStep) {
-        self.ensure_depth(depth);
         // There should be at most one unresolved spawn step per frame depth at a time.
         self.deferred_steps[depth] = Some(step);
     }
@@ -307,16 +312,6 @@ impl ZkGasMeteringState {
         let raw_gas =
             if step.spawned { spawn_estimate(step.schedule, step.opcode) } else { step.step_gas };
         self.meter.charge_opcode(step.opcode, raw_gas)
-    }
-
-    /// Ensures the per-depth vectors can store state for `depth`.
-    fn ensure_depth(&mut self, depth: usize) {
-        if self.pending_steps.len() <= depth {
-            self.pending_steps.resize_with(depth + 1, || None);
-        }
-        if self.deferred_steps.len() <= depth {
-            self.deferred_steps.resize_with(depth + 1, || None);
-        }
     }
 
     /// Marks pending or deferred spawn steps when the opcode matches the expected family.

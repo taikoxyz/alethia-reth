@@ -65,11 +65,17 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     }
 
     /// Returns a reference to the active zk gas meter, if metering is enabled.
+    ///
+    /// Returns `None` when the active spec/chain combination has no zk gas schedule
+    /// (pre-Unzen specs).
     pub fn meter(&self) -> Option<&ZkGasMeter<'static>> {
         self.inner.inner.inspector.meter()
     }
 
     /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
+    ///
+    /// Returns `None` when the active spec/chain combination has no zk gas schedule
+    /// (pre-Unzen specs).
     pub fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
         self.inner.inner.inspector.meter_mut()
     }

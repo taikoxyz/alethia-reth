@@ -51,12 +51,18 @@ impl<I> ZkGasInspector<I> {
     }
 
     /// Returns a reference to the active zk gas meter, if metering is enabled.
-    pub fn meter(&self) -> Option<&ZkGasMeter<'static>> {
+    ///
+    /// Returns `None` when the active spec/chain combination has no zk gas schedule
+    /// (pre-Unzen specs).
+    pub(crate) fn meter(&self) -> Option<&ZkGasMeter<'static>> {
         self.metering.as_ref().map(|state| &state.meter)
     }
 
     /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
-    pub fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
+    ///
+    /// Returns `None` when the active spec/chain combination has no zk gas schedule
+    /// (pre-Unzen specs).
+    pub(crate) fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
         self.metering.as_mut().map(|state| &mut state.meter)
     }
 }
@@ -126,7 +132,7 @@ where
         }
 
         // Ordinary opcodes can be charged immediately from their measured interpreter gas cost.
-        if let Err(ZkGasOutcome::LimitExceeded) = charge_finished_step(&mut metering.meter, step) {
+        if let Err(ZkGasOutcome::LimitExceeded) = metering.charge_finished_step(step) {
             set_custom_error(context);
             interp.halt_fatal();
         }
@@ -219,7 +225,7 @@ where
     }
 }
 
-/// Per-inspector metering state shared across opcode callbacks.
+/// Per-inspector metering state carried across opcode callbacks.
 struct ZkGasMeteringState {
     /// Owned checked meter that holds the schedule and accumulated usage.
     meter: ZkGasMeter<'static>,
@@ -284,14 +290,23 @@ impl ZkGasMeteringState {
 
     /// Charges and clears every deferred spawn opcode.
     fn flush_deferred_steps(&mut self) -> Result<(), ZkGasOutcome> {
-        for deferred in &mut self.deferred_steps {
-            if let Some(step) = deferred.take() {
+        for index in 0..self.deferred_steps.len() {
+            if let Some(step) = self.deferred_steps[index].take() {
                 // `take()` clears the slot first so partial progress is preserved if charging
                 // returns `LimitExceeded`.
-                charge_finished_step(&mut self.meter, step)?;
+                self.charge_finished_step(step)?;
             }
         }
         Ok(())
+    }
+
+    /// Charges a completed opcode step against the active meter.
+    fn charge_finished_step(&mut self, step: FinishedStep) -> Result<(), ZkGasOutcome> {
+        // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
+        // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
+        let raw_gas =
+            if step.spawned { spawn_estimate(step.schedule, step.opcode) } else { step.step_gas };
+        self.meter.charge_opcode(step.opcode, raw_gas)
     }
 
     /// Ensures the per-depth vectors can store state for `depth`.
@@ -376,18 +391,6 @@ fn spawn_estimate(schedule: &'static ZkGasSchedule, opcode: u8) -> u64 {
         0xf5 => schedule.spawn_estimates.create2,
         _ => unreachable!("spawn estimate requested for non-spawn opcode: {opcode:#x}"),
     }
-}
-
-/// Charges a completed opcode step against the meter.
-fn charge_finished_step(
-    meter: &mut ZkGasMeter<'static>,
-    step: FinishedStep,
-) -> Result<(), ZkGasOutcome> {
-    // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
-    // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
-    let raw_gas =
-        if step.spawned { spawn_estimate(step.schedule, step.opcode) } else { step.step_gas };
-    meter.charge_opcode(step.opcode, raw_gas)
 }
 
 /// Sets the dedicated custom zk gas limit error on the EVM context when none is present yet.

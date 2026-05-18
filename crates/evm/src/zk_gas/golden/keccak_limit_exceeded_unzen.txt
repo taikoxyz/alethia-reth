@@ -1,3 +1,0 @@
-opcode 0x60 raw_gas=3
-opcode 0x62 raw_gas=3
-opcode 0x20 raw_gas=2195623

@@ -143,7 +143,7 @@ where
 
     /// Discards any in-flight zk gas for the current transaction while preserving the committed
     /// block total.
-    fn reset_current_transaction_zk_gas(&self)
+    fn reset_current_transaction_zk_gas(&mut self)
     where
         Evm: TaikoZkGasEvm,
     {

@@ -6,8 +6,6 @@
 //! 3. Either charge immediately, or defer charging until `call_end` / `create_end` confirms whether
 //!    a spawn opcode actually opened child work.
 
-use std::sync::{Arc, Mutex, MutexGuard};
-
 use reth_revm::{
     Inspector,
     context::{ContextError, ContextTr, JournalTr},
@@ -17,25 +15,15 @@ use reth_revm::{
     },
 };
 
-use crate::{alloy::TaikoEvmContext, spec::TaikoSpecId};
+use crate::alloy::TaikoEvmContext;
 
 use super::{
     meter::{ZkGasMeter, ZkGasOutcome},
-    schedule::{ZkGasSchedule, schedule_for},
+    schedule::ZkGasSchedule,
 };
 
 /// Dedicated custom error string emitted when zk gas accounting exceeds the block limit.
 pub const ZK_GAS_LIMIT_ERR: &str = "zk gas limit exceeded";
-
-/// Shared zk gas meter handle used by both the inspector and wrapped precompiles.
-pub type SharedZkGasMeter = Arc<Mutex<ZkGasMeter<'static>>>;
-
-/// Returns a freshly initialized shared meter handle for the requested spec and chain when
-/// metering is active.
-pub fn shared_meter_for_spec(spec: TaikoSpecId, chain_id: u64) -> Option<SharedZkGasMeter> {
-    // Returning `None` keeps the inspector on its zero-overhead pass-through path.
-    schedule_for(spec, chain_id).map(|schedule| Arc::new(Mutex::new(ZkGasMeter::new(schedule))))
-}
 
 /// Composite inspector that meters zk gas before delegating to an inner inspector.
 pub struct ZkGasInspector<I> {
@@ -46,9 +34,9 @@ pub struct ZkGasInspector<I> {
 }
 
 impl<I> ZkGasInspector<I> {
-    /// Creates a new composite inspector around `inner` and the optional shared meter handle.
-    pub fn new(inner: I, meter: Option<SharedZkGasMeter>) -> Self {
-        let metering = meter.map(ZkGasMeteringState::new);
+    /// Creates a new composite inspector around `inner` and the optional zk gas schedule.
+    pub fn new(inner: I, schedule: Option<&'static ZkGasSchedule>) -> Self {
+        let metering = schedule.map(ZkGasMeteringState::new);
         Self { inner, metering }
     }
 
@@ -62,9 +50,14 @@ impl<I> ZkGasInspector<I> {
         &mut self.inner
     }
 
-    /// Returns the shared meter handle when zk gas metering is active for this inspector.
-    pub fn shared_meter(&self) -> Option<SharedZkGasMeter> {
-        self.metering.as_ref().map(|state| Arc::clone(&state.meter))
+    /// Returns a reference to the active zk gas meter, if metering is enabled.
+    pub fn meter(&self) -> Option<&ZkGasMeter<'static>> {
+        self.metering.as_ref().map(|state| &state.meter)
+    }
+
+    /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
+    pub fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
+        self.metering.as_mut().map(|state| &mut state.meter)
     }
 }
 
@@ -133,7 +126,7 @@ where
         }
 
         // Ordinary opcodes can be charged immediately from their measured interpreter gas cost.
-        if let Err(ZkGasOutcome::LimitExceeded) = charge_finished_step(&metering.meter, step) {
+        if let Err(ZkGasOutcome::LimitExceeded) = charge_finished_step(&mut metering.meter, step) {
             set_custom_error(context);
             interp.halt_fatal();
         }
@@ -184,7 +177,7 @@ where
                 let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
                 let address_low_byte = inputs.bytecode_address.as_slice()[19];
                 if let Err(ZkGasOutcome::LimitExceeded) =
-                    lock_meter(&metering.meter).charge_precompile(address_low_byte, gas_used)
+                    metering.meter.charge_precompile(address_low_byte, gas_used)
                 {
                     set_custom_error(context);
                 }
@@ -228,8 +221,8 @@ where
 
 /// Per-inspector metering state shared across opcode callbacks.
 struct ZkGasMeteringState {
-    /// Shared checked meter that owns the schedule and accumulated usage.
-    meter: SharedZkGasMeter,
+    /// Owned checked meter that holds the schedule and accumulated usage.
+    meter: ZkGasMeter<'static>,
     /// Per-frame in-flight opcode step state keyed by journal depth.
     pending_steps: Vec<Option<PendingStep>>,
     /// Completed CALL/CREATE-family steps waiting for spawn information before charging.
@@ -237,9 +230,13 @@ struct ZkGasMeteringState {
 }
 
 impl ZkGasMeteringState {
-    /// Creates new per-inspector state around the provided shared meter.
-    fn new(meter: SharedZkGasMeter) -> Self {
-        Self { meter, pending_steps: Vec::new(), deferred_steps: Vec::new() }
+    /// Creates new per-inspector state for the provided schedule.
+    fn new(schedule: &'static ZkGasSchedule) -> Self {
+        Self {
+            meter: ZkGasMeter::new(schedule),
+            pending_steps: Vec::new(),
+            deferred_steps: Vec::new(),
+        }
     }
 
     /// Records the opcode and gas snapshot for the current frame depth.
@@ -270,7 +267,7 @@ impl ZkGasMeteringState {
         Some(FinishedStep {
             // The schedule is stored on the finished record so later deferred charging does not
             // have to rediscover it from surrounding callback context.
-            schedule: meter_schedule(&self.meter),
+            schedule: self.meter.schedule(),
             opcode: pending.opcode,
             step_gas: pending.gas_remaining.saturating_sub(gas_remaining),
             spawned: pending.spawned,
@@ -291,7 +288,7 @@ impl ZkGasMeteringState {
             if let Some(step) = deferred.take() {
                 // `take()` clears the slot first so partial progress is preserved if charging
                 // returns `LimitExceeded`.
-                charge_finished_step(&self.meter, step)?;
+                charge_finished_step(&mut self.meter, step)?;
             }
         }
         Ok(())
@@ -336,7 +333,7 @@ struct PendingStep {
 /// Completed metering record for a single opcode step.
 #[derive(Clone, Copy)]
 struct FinishedStep {
-    /// Consensus-owned schedule backing the shared meter.
+    /// Consensus-owned schedule backing the meter.
     schedule: &'static ZkGasSchedule,
     /// Opcode byte that was just executed.
     opcode: u8,
@@ -381,18 +378,16 @@ fn spawn_estimate(schedule: &'static ZkGasSchedule, opcode: u8) -> u64 {
     }
 }
 
-/// Returns the schedule backing a shared meter handle.
-fn meter_schedule(meter: &SharedZkGasMeter) -> &'static ZkGasSchedule {
-    lock_meter(meter).schedule()
-}
-
-/// Charges a completed opcode step against the shared meter.
-fn charge_finished_step(meter: &SharedZkGasMeter, step: FinishedStep) -> Result<(), ZkGasOutcome> {
+/// Charges a completed opcode step against the meter.
+fn charge_finished_step(
+    meter: &mut ZkGasMeter<'static>,
+    step: FinishedStep,
+) -> Result<(), ZkGasOutcome> {
     // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
     // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
     let raw_gas =
         if step.spawned { spawn_estimate(step.schedule, step.opcode) } else { step.step_gas };
-    lock_meter(meter).charge_opcode(step.opcode, raw_gas)
+    meter.charge_opcode(step.opcode, raw_gas)
 }
 
 /// Sets the dedicated custom zk gas limit error on the EVM context when none is present yet.
@@ -401,9 +396,4 @@ fn set_custom_error<CTX: ContextTr>(context: &mut CTX) {
     if err_slot.is_ok() {
         *err_slot = Err(ContextError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
     }
-}
-
-/// Locks the shared meter while recovering cleanly from poison.
-pub(crate) fn lock_meter(meter: &SharedZkGasMeter) -> MutexGuard<'_, ZkGasMeter<'static>> {
-    meter.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

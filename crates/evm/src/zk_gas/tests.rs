@@ -301,8 +301,7 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 
     evm.transact(tx_env(100_000)).expect("Unzen tx should execute");
 
-    let meter = evm.shared_meter().expect("Unzen should install a shared meter");
-    let meter = meter.lock().expect("meter lock");
+    let meter = evm.meter().expect("Unzen should install a meter");
     let probe = evm.inspector();
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
@@ -342,7 +341,7 @@ fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
         reth_revm::context::result::EVMError::Custom(message)
             if message == ZK_GAS_LIMIT_ERR
     ));
-    assert!(evm.shared_meter().is_some());
+    assert!(evm.meter().is_some());
 }
 
 #[test]
@@ -352,7 +351,7 @@ fn unzen_default_create_evm_path_is_metered() {
         evm_env(TaikoSpecId::UNZEN),
     );
 
-    assert!(evm.shared_meter().is_some());
+    assert!(evm.meter().is_some());
     assert!(evm.transact(tx_env(5_000_000)).is_err());
 }
 
@@ -361,8 +360,7 @@ fn factory_installs_masaya_schedule_when_chain_id_is_masaya() {
     let mut env = evm_env(TaikoSpecId::UNZEN);
     env.cfg_env.chain_id = TAIKO_MASAYA_CHAIN_ID;
     let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
-    let meter = evm.shared_meter().expect("Masaya schedule should install a shared meter");
-    let meter = meter.lock().expect("meter lock");
+    let meter = evm.meter().expect("Masaya schedule should install a meter");
 
     assert!(std::ptr::eq(meter.schedule(), &MASAYA_UNZEN_ZK_GAS_SCHEDULE));
     assert_eq!(meter.schedule().block_limit, 1_000_000_000);
@@ -372,8 +370,7 @@ fn factory_installs_masaya_schedule_when_chain_id_is_masaya() {
 fn factory_installs_default_schedule_when_chain_id_is_not_masaya() {
     let env = evm_env(TaikoSpecId::UNZEN); // helper sets chain_id = 167 (not Masaya)
     let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
-    let meter = evm.shared_meter().expect("default Unzen schedule should install a shared meter");
-    let meter = meter.lock().expect("meter lock");
+    let meter = evm.meter().expect("default Unzen schedule should install a meter");
 
     assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));
     assert_eq!(meter.schedule().block_limit, 100_000_000);
@@ -383,12 +380,11 @@ fn factory_installs_default_schedule_when_chain_id_is_not_masaya() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
-    let meter = evm.shared_meter().expect("Unzen schedule installs a meter");
-    let meter = meter.lock().expect("meter lock");
+    let meter = evm.meter().expect("Unzen schedule installs a meter");
     assert_eq!(meter.tx_zk_gas_used(), meter.schedule().tx_intrinsic_zk_gas);
 }
 
@@ -396,10 +392,10 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
-    assert!(evm.shared_meter().is_none());
+    assert!(evm.meter().is_none());
     evm.charge_tx_intrinsic_zk_gas().expect("disabled metering should be a no-op");
 }
 
@@ -410,7 +406,7 @@ fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
         evm_env(TaikoSpecId::SHASTA),
     );
 
-    assert!(evm.shared_meter().is_none());
+    assert!(evm.meter().is_none());
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
 }
 

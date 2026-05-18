@@ -24,8 +24,8 @@ use crate::{
     handler::get_treasury_address,
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::{SharedZkGasMeter, ZkGasInspector, lock_meter},
-        meter::ZkGasOutcome,
+        adapter::ZkGasInspector,
+        meter::{ZkGasMeter, ZkGasOutcome},
     },
 };
 
@@ -64,27 +64,38 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
         &mut self.inner.inner.ctx
     }
 
-    /// Returns the shared zk gas meter when this wrapper has metering enabled.
-    pub fn shared_meter(&self) -> Option<SharedZkGasMeter> {
-        self.inner.inner.inspector.shared_meter()
+    /// Returns a reference to the active zk gas meter, if metering is enabled.
+    ///
+    /// Returns `None` when the active spec/chain combination has no zk gas schedule
+    /// (pre-Unzen specs).
+    pub fn meter(&self) -> Option<&ZkGasMeter<'static>> {
+        self.inner.inner.inspector.meter()
+    }
+
+    /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
+    ///
+    /// Returns `None` when the active spec/chain combination has no zk gas schedule
+    /// (pre-Unzen specs).
+    pub fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
+        self.inner.inner.inspector.meter_mut()
     }
 }
 
-/// EVM extension trait for reading and mutating shared zk gas meter state.
+/// EVM extension trait for reading and mutating the zk gas meter state.
 pub trait TaikoZkGasEvm {
     /// Discards any in-flight zk gas recorded for the current transaction.
-    fn reset_transaction_zk_gas(&self);
+    fn reset_transaction_zk_gas(&mut self);
 
     /// Commits the current transaction's zk gas into the block total and returns the new total.
-    fn commit_transaction_zk_gas(&self) -> Result<Option<u64>, ZkGasOutcome>;
+    fn commit_transaction_zk_gas(&mut self) -> Result<Option<u64>, ZkGasOutcome>;
 
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
     /// Charges the fixed per-transaction intrinsic zk gas defined by the active schedule.
     ///
-    /// Returns `Ok(())` when the EVM has no shared meter installed (pre-Unzen specs).
-    fn charge_tx_intrinsic_zk_gas(&self) -> Result<(), ZkGasOutcome>;
+    /// Returns `Ok(())` when the EVM has no meter installed (pre-Unzen specs).
+    fn charge_tx_intrinsic_zk_gas(&mut self) -> Result<(), ZkGasOutcome>;
 }
 
 impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
@@ -94,33 +105,32 @@ where
     P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
 {
     /// Discards any in-flight zk gas recorded for the current transaction.
-    fn reset_transaction_zk_gas(&self) {
-        if let Some(meter) = self.shared_meter() {
-            lock_meter(&meter).reset_transaction();
+    fn reset_transaction_zk_gas(&mut self) {
+        if let Some(meter) = self.meter_mut() {
+            meter.reset_transaction();
         }
     }
 
     /// Commits the current transaction's zk gas into the block total and returns the new total.
-    fn commit_transaction_zk_gas(&self) -> Result<Option<u64>, ZkGasOutcome> {
-        let Some(meter) = self.shared_meter() else {
+    fn commit_transaction_zk_gas(&mut self) -> Result<Option<u64>, ZkGasOutcome> {
+        let Some(meter) = self.meter_mut() else {
             return Ok(None);
         };
-        let mut meter = lock_meter(&meter);
         meter.commit_transaction()?;
         Ok(Some(meter.block_zk_gas_used()))
     }
 
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64> {
-        self.shared_meter().map(|meter| lock_meter(&meter).block_zk_gas_used())
+        self.meter().map(|m| m.block_zk_gas_used())
     }
 
-    /// Charges the fixed per-transaction intrinsic zk gas through the shared meter.
-    fn charge_tx_intrinsic_zk_gas(&self) -> Result<(), ZkGasOutcome> {
-        let Some(meter) = self.shared_meter() else {
+    /// Charges the fixed per-transaction intrinsic zk gas through the meter.
+    fn charge_tx_intrinsic_zk_gas(&mut self) -> Result<(), ZkGasOutcome> {
+        let Some(meter) = self.meter_mut() else {
             return Ok(());
         };
-        lock_meter(&meter).charge_tx_intrinsic()
+        meter.charge_tx_intrinsic()
     }
 }
 

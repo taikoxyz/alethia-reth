@@ -130,7 +130,7 @@ where
         BlockExecutionError::other(ZkGasLimitExceeded)
     }
 
-    /// Synchronizes the finalized zk gas total from the shared EVM meter into the execution
+    /// Synchronizes the finalized zk gas total from the EVM meter into the execution
     /// context that the assembler later reads.
     fn sync_finalized_block_zk_gas(&self)
     where
@@ -143,7 +143,7 @@ where
 
     /// Discards any in-flight zk gas for the current transaction while preserving the committed
     /// block total.
-    fn reset_current_transaction_zk_gas(&self)
+    fn reset_current_transaction_zk_gas(&mut self)
     where
         Evm: TaikoZkGasEvm,
     {

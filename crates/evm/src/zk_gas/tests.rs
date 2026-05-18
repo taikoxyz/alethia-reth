@@ -1,5 +1,7 @@
 //! Tests for fork-scoped zk gas schedule selection.
 
+use std::fmt::Write as _;
+
 use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
 use reth_revm::{
     Inspector,
@@ -33,14 +35,14 @@ fn format_recording(recording: &[ChargeCall]) -> String {
     for call in recording {
         match call {
             ChargeCall::Opcode { opcode, raw_gas } => {
-                out.push_str(&format!("opcode 0x{opcode:02x} raw_gas={raw_gas}\n"));
+                writeln!(out, "opcode 0x{opcode:02x} raw_gas={raw_gas}").unwrap();
             }
             ChargeCall::Precompile { addr_low_byte, gas_used } => {
-                out.push_str(&format!("precompile 0x{addr_low_byte:02x} gas_used={gas_used}\n"));
+                writeln!(out, "precompile 0x{addr_low_byte:02x} gas_used={gas_used}").unwrap();
             }
-            ChargeCall::TxIntrinsic => out.push_str("tx_intrinsic\n"),
-            ChargeCall::ResetTx => out.push_str("reset_tx\n"),
-            ChargeCall::CommitTx => out.push_str("commit_tx\n"),
+            ChargeCall::TxIntrinsic => writeln!(out, "tx_intrinsic").unwrap(),
+            ChargeCall::ResetTx => writeln!(out, "reset_tx").unwrap(),
+            ChargeCall::CommitTx => writeln!(out, "commit_tx").unwrap(),
         }
     }
     out
@@ -542,10 +544,18 @@ fn jumpdest_loop_bytecode(count: usize) -> Bytecode {
 
 #[test]
 fn golden_staticcall_identity_unzen() {
+    use crate::alloy::TaikoZkGasEvm;
+
     install_charge_recorder();
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    // Mirror what `TaikoBlockExecutor::try_execute` drives around `evm.transact`,
+    // so the recording exercises the full lifecycle (`ResetTx`, `TxIntrinsic`,
+    // opcode/precompile charges, `CommitTx`).
+    evm.reset_transaction_zk_gas();
+    evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
     evm.transact(tx_env(100_000)).expect("tx should execute");
+    evm.commit_transaction_zk_gas().expect("commit should fit");
     let recording = take_charge_recording().expect("recorder installed");
     assert_golden_recording("staticcall_identity_unzen", &recording);
 }
@@ -574,6 +584,8 @@ fn golden_keccak_limit_exceeded_unzen() {
 
 #[test]
 fn golden_staticcall_identity_masaya() {
+    use crate::alloy::TaikoZkGasEvm;
+
     install_charge_recorder();
     let mut env = evm_env(TaikoSpecId::UNZEN);
     env.cfg_env.chain_id = TAIKO_MASAYA_CHAIN_ID;
@@ -585,7 +597,13 @@ fn golden_staticcall_identity_masaya() {
         .gas_limit(100_000)
         .build()
         .unwrap();
+    // Mirror what `TaikoBlockExecutor::try_execute` drives around `evm.transact`,
+    // so the recording exercises the full lifecycle. On the Masaya schedule the
+    // intrinsic charge itself is zero, but the recorder still observes the call.
+    evm.reset_transaction_zk_gas();
+    evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
     evm.transact(tx).expect("tx should execute");
+    evm.commit_transaction_zk_gas().expect("commit should fit");
     let recording = take_charge_recording().expect("recorder installed");
     assert_golden_recording("staticcall_identity_masaya", &recording);
 }

@@ -97,12 +97,17 @@ where
         context: &mut TaikoEvmContext<DB>,
     ) {
         if let Some(metering) = &mut self.metering {
-            // Spawn opcodes are charged one callback later, once the runtime tells us whether
-            // they actually opened a child frame or hit a precompile.
-            if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
-                set_custom_error(context);
-                interp.halt_fatal();
-                return;
+            // Skip the per-opcode flush scan when no spawn is pending — by the
+            // `has_deferred_work` invariant this is equivalent to running the
+            // loop and finding all-None slots.
+            if metering.has_deferred_work {
+                // Spawn opcodes are charged one callback later, once the runtime tells us
+                // whether they actually opened a child frame or hit a precompile.
+                if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
+                    set_custom_error(context);
+                    interp.halt_fatal();
+                    return;
+                }
             }
             // Snapshot the opcode and remaining gas before the interpreter mutates frame state.
             metering.begin_step(
@@ -242,6 +247,11 @@ struct ZkGasMeteringState {
     pending_steps: [Option<PendingStep>; MAX_CALL_DEPTH],
     /// Completed CALL/CREATE-family steps waiting for spawn information before charging.
     deferred_steps: [Option<FinishedStep>; MAX_CALL_DEPTH],
+    /// `true` when at least one slot in `deferred_steps` is `Some`. Lets `step()`
+    /// skip the per-opcode `flush_deferred_steps` scan when no spawn is pending.
+    /// Invariant maintained by `defer_step` (sets) and `flush_deferred_steps`
+    /// (clears on full-drain Ok).
+    has_deferred_work: bool,
     /// Highest journal depth ever observed in this state's lifetime.
     /// Bounds the work done by `flush_deferred_steps` so it stays proportional to
     /// the actual call depth a transaction reaches, not the array capacity.
@@ -255,6 +265,7 @@ impl ZkGasMeteringState {
             meter: ZkGasMeter::new(schedule),
             pending_steps: [const { None }; MAX_CALL_DEPTH],
             deferred_steps: [const { None }; MAX_CALL_DEPTH],
+            has_deferred_work: false,
             max_active_depth: 0,
         }
     }
@@ -301,12 +312,19 @@ impl ZkGasMeteringState {
     fn defer_step(&mut self, depth: usize, step: FinishedStep) {
         // There should be at most one unresolved spawn step per frame depth at a time.
         self.deferred_steps[depth] = Some(step);
+        self.has_deferred_work = true;
         if depth > self.max_active_depth {
             self.max_active_depth = depth;
         }
     }
 
     /// Charges and clears every deferred spawn opcode.
+    ///
+    /// On `Err(LimitExceeded)`, the loop exits early via `?` *before* clearing
+    /// the flag — leftover `Some` slots remain tracked. The inspector halts the
+    /// transaction immediately after, so the residual state is observable only
+    /// to the next transaction, which will see `has_deferred_work == true` and
+    /// re-run flush (matching pre-change behavior).
     fn flush_deferred_steps(&mut self) -> Result<(), ZkGasOutcome> {
         for index in 0..=self.max_active_depth {
             if let Some(step) = self.deferred_steps[index].take() {
@@ -315,6 +333,7 @@ impl ZkGasMeteringState {
                 self.charge_finished_step(step)?;
             }
         }
+        self.has_deferred_work = false;
         Ok(())
     }
 
@@ -406,5 +425,42 @@ fn set_custom_error<CTX: ContextTr>(context: &mut CTX) {
     let err_slot = context.error();
     if err_slot.is_ok() {
         *err_slot = Err(ContextError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
+    }
+}
+
+/// Test-only helpers for `ZkGasMeteringState` so unit tests can exercise the
+/// invariants without going through the full REVM execution machinery.
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use super::*;
+
+    pub(crate) struct TestableMeteringState(ZkGasMeteringState);
+
+    impl TestableMeteringState {
+        pub(crate) fn new(schedule: &'static ZkGasSchedule) -> Self {
+            Self(ZkGasMeteringState::new(schedule))
+        }
+
+        pub(crate) fn has_deferred_work(&self) -> bool {
+            self.0.has_deferred_work
+        }
+
+        /// Inserts a synthetic deferred step at the given depth. The opcode byte
+        /// determines whether the matching `mark_*` predicate would mark it.
+        pub(crate) fn defer_call_at_depth(&mut self, depth: usize, opcode: u8) {
+            self.0.defer_step(
+                depth,
+                FinishedStep {
+                    schedule: self.0.meter.schedule(),
+                    opcode,
+                    step_gas: 0,
+                    spawned: true,
+                },
+            );
+        }
+
+        pub(crate) fn flush_for_test(&mut self) -> Result<(), ZkGasOutcome> {
+            self.0.flush_deferred_steps()
+        }
     }
 }

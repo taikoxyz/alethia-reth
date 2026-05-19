@@ -516,6 +516,31 @@ fn meter_commit_transaction_refreshes_tx_budget() {
 }
 
 #[test]
+fn metering_state_has_deferred_work_tracks_deferred_slot_occupancy() {
+    use super::adapter::test_helpers::TestableMeteringState;
+
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut state = TestableMeteringState::new(schedule);
+
+    // Initial: no deferred work.
+    assert!(!state.has_deferred_work());
+
+    // After defer_step at depth 0: flag is true.
+    state.defer_call_at_depth(0, 0xf1); // 0xf1 = CALL
+    assert!(state.has_deferred_work());
+
+    // After flush_deferred_steps drains successfully: flag is false again.
+    state.flush_for_test().expect("flush ok");
+    assert!(!state.has_deferred_work());
+
+    // Defer at a deeper frame and verify it still tracks correctly.
+    state.defer_call_at_depth(3, 0xf0); // 0xf0 = CREATE
+    assert!(state.has_deferred_work());
+    state.flush_for_test().expect("flush ok");
+    assert!(!state.has_deferred_work());
+}
+
+#[test]
 fn meter_charge_amount_matches_reference_oracle_across_edge_cases() {
     // Reference oracle: literal transcription of the pre-D charge_amount semantics.
     // Returns the same (Result, post-state tx_zk_gas_used) tuple the new impl must produce.

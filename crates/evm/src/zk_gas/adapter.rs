@@ -243,8 +243,10 @@ where
 struct ZkGasMeteringState {
     /// Owned checked meter that holds the schedule and accumulated usage.
     meter: ZkGasMeter<'static>,
-    /// Per-frame in-flight opcode step state keyed by journal depth.
-    pending_steps: [Option<PendingStep>; MAX_CALL_DEPTH],
+    /// In-flight opcode step state. Only one slot is live at a time because REVM
+    /// executes one opcode per `step` → `step_end` window. The tuple's first
+    /// element is the journal depth at which the pending step was captured.
+    pending: Option<(usize, PendingStep)>,
     /// Completed CALL/CREATE-family steps waiting for spawn information before charging.
     deferred_steps: [Option<FinishedStep>; MAX_CALL_DEPTH],
     /// `true` when at least one slot in `deferred_steps` is `Some`. Lets `step()`
@@ -263,7 +265,7 @@ impl ZkGasMeteringState {
     fn new(schedule: &'static ZkGasSchedule) -> Self {
         Self {
             meter: ZkGasMeter::new(schedule),
-            pending_steps: [const { None }; MAX_CALL_DEPTH],
+            pending: None,
             deferred_steps: [const { None }; MAX_CALL_DEPTH],
             has_deferred_work: false,
             max_active_depth: 0,
@@ -272,8 +274,16 @@ impl ZkGasMeteringState {
 
     /// Records the opcode and gas snapshot for the current frame depth.
     fn begin_step(&mut self, depth: usize, opcode: u8, gas_remaining: u64) {
-        // Any previous pending step at this depth must already have been consumed by `step_end`.
-        self.pending_steps[depth] = Some(PendingStep { opcode, gas_remaining, spawned: false });
+        // By the single-slot invariant: when `step` fires, the previous
+        // opcode's `step_end` must have already cleared `pending`. If this
+        // assertion ever fires in debug builds, REVM has changed its inspector
+        // callback ordering — pause and re-audit.
+        debug_assert!(
+            self.pending.is_none(),
+            "pending step from depth={:?} was not consumed by previous step_end",
+            self.pending.as_ref().map(|(d, _)| *d),
+        );
+        self.pending = Some((depth, PendingStep { opcode, gas_remaining, spawned: false }));
         if depth > self.max_active_depth {
             self.max_active_depth = depth;
         }
@@ -296,7 +306,13 @@ impl ZkGasMeteringState {
 
     /// Finalizes the current step state and returns the completed metering record.
     fn finish_step(&mut self, depth: usize, gas_remaining: u64) -> Option<FinishedStep> {
-        let pending = self.pending_steps.get_mut(depth)?.take()?;
+        let (pending_depth, pending) = self.pending.take()?;
+        if pending_depth != depth {
+            // Unreachable under REVM's documented callback contract — discard
+            // rather than mischarge if the invariant ever breaks.
+            debug_assert!(false, "pending depth {pending_depth} != step_end depth {depth}",);
+            return None;
+        }
         Some(FinishedStep {
             // The schedule is stored on the finished record so later deferred charging does not
             // have to rediscover it from surrounding callback context.
@@ -348,7 +364,8 @@ impl ZkGasMeteringState {
 
     /// Marks pending or deferred spawn steps when the opcode matches the expected family.
     fn mark_spawn(&mut self, depth: usize, predicate: fn(u8) -> bool) {
-        if let Some(Some(pending)) = self.pending_steps.get_mut(depth) &&
+        if let Some((pending_depth, pending)) = &mut self.pending &&
+            *pending_depth == depth &&
             predicate(pending.opcode)
         {
             pending.spawned = true;
@@ -445,6 +462,10 @@ pub(crate) mod test_helpers {
             self.0.has_deferred_work
         }
 
+        pub(crate) fn has_pending(&self) -> bool {
+            self.0.pending.is_some()
+        }
+
         /// Inserts a synthetic deferred step at the given depth. The opcode byte
         /// determines whether the matching `mark_*` predicate would mark it.
         pub(crate) fn defer_call_at_depth(&mut self, depth: usize, opcode: u8) {
@@ -457,6 +478,21 @@ pub(crate) mod test_helpers {
                     spawned: true,
                 },
             );
+        }
+
+        pub(crate) fn begin_step_for_test(&mut self, depth: usize, opcode: u8, gas: u64) {
+            self.0.begin_step(depth, opcode, gas);
+        }
+
+        /// Returns `(opcode, step_gas)` for the finished step at `depth`, or
+        /// `None` if no pending step matches. Avoids exposing the private
+        /// `FinishedStep` type to the sibling `tests` module.
+        pub(crate) fn finish_step_for_test(
+            &mut self,
+            depth: usize,
+            gas_remaining: u64,
+        ) -> Option<(u8, u64)> {
+            self.0.finish_step(depth, gas_remaining).map(|s| (s.opcode, s.step_gas))
         }
 
         pub(crate) fn flush_for_test(&mut self) -> Result<(), ZkGasOutcome> {

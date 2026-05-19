@@ -541,6 +541,52 @@ fn metering_state_has_deferred_work_tracks_deferred_slot_occupancy() {
 }
 
 #[test]
+fn metering_state_pending_returns_to_none_after_each_finish_step() {
+    use super::adapter::test_helpers::TestableMeteringState;
+
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut state = TestableMeteringState::new(schedule);
+
+    assert!(!state.has_pending());
+
+    // Begin a step at depth 0, finish it — pending must be cleared.
+    state.begin_step_for_test(0, 0x01, 1_000); // ADD, 1000 gas remaining
+    assert!(state.has_pending());
+    let (opcode, step_gas) = state.finish_step_for_test(0, 997).expect("step pair");
+    assert_eq!(opcode, 0x01);
+    assert_eq!(step_gas, 3);
+    assert!(!state.has_pending());
+
+    // Begin a step at depth 5 — pending tracks the depth.
+    state.begin_step_for_test(5, 0x60, 500); // PUSH1
+    assert!(state.has_pending());
+    let (_opcode, step_gas) = state.finish_step_for_test(5, 497).expect("step pair at depth 5");
+    assert_eq!(step_gas, 3);
+    assert!(!state.has_pending());
+}
+
+#[test]
+fn metering_state_finish_step_at_mismatched_depth_returns_none_or_panics() {
+    use super::adapter::test_helpers::TestableMeteringState;
+
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut state = TestableMeteringState::new(schedule);
+
+    state.begin_step_for_test(2, 0x01, 1_000);
+    // Defensive path: in debug builds the assertion fires (panic), in release
+    // it returns None. Both behaviors are acceptable — the only requirement is
+    // that no `FinishedStep` is returned for a depth mismatch.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.finish_step_for_test(3, 997)
+    }));
+    match result {
+        Ok(None) => {} // release-build path
+        Err(_) => {}   // debug-build panic path
+        Ok(Some(_)) => panic!("mismatched depth must not yield a FinishedStep"),
+    }
+}
+
+#[test]
 fn meter_charge_amount_matches_reference_oracle_across_edge_cases() {
     // Reference oracle: literal transcription of the pre-D charge_amount semantics.
     // Returns the same (Result, post-state tx_zk_gas_used) tuple the new impl must produce.

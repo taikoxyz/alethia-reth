@@ -480,3 +480,95 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::STOP,
     ]))
 }
+
+#[test]
+fn meter_initial_tx_budget_equals_schedule_block_limit() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let meter = ZkGasMeter::new(schedule);
+
+    assert_eq!(meter.tx_budget(), schedule.block_limit);
+}
+
+#[test]
+fn meter_reset_transaction_refreshes_tx_budget() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    meter.charge_opcode(0x01, 2).expect("charge add");
+    meter.commit_transaction().expect("commit");
+
+    let committed = meter.block_zk_gas_used();
+    meter.reset_transaction();
+
+    assert_eq!(meter.tx_budget(), schedule.block_limit - committed);
+}
+
+#[test]
+fn meter_commit_transaction_refreshes_tx_budget() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+
+    // ADD: opcode 0x01, multiplier 12 ⇒ raw_gas=5 charges 60 zk gas.
+    meter.charge_opcode(0x01, 5).expect("charge add");
+    meter.commit_transaction().expect("commit");
+
+    assert_eq!(meter.tx_budget(), schedule.block_limit - 60);
+}
+
+#[test]
+fn meter_charge_amount_matches_reference_oracle_across_edge_cases() {
+    // Reference oracle: literal transcription of the pre-D charge_amount semantics.
+    // Returns the same (Result, post-state tx_zk_gas_used) tuple the new impl must produce.
+    fn reference_charge(
+        block_zk_gas_used: u64,
+        tx_zk_gas_used: u64,
+        block_limit: u64,
+        charge: u64,
+    ) -> (Result<(), ZkGasOutcome>, u64) {
+        let Some(next_tx) = tx_zk_gas_used.checked_add(charge) else {
+            return (Err(ZkGasOutcome::LimitExceeded), tx_zk_gas_used);
+        };
+        let Some(projected) = block_zk_gas_used.checked_add(next_tx) else {
+            return (Err(ZkGasOutcome::LimitExceeded), tx_zk_gas_used);
+        };
+        if projected > block_limit {
+            return (Err(ZkGasOutcome::LimitExceeded), tx_zk_gas_used);
+        }
+        (Ok(()), next_tx)
+    }
+
+    let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+    let block_limit = schedule.block_limit;
+
+    let cases: &[(u64, u64, u64)] = &[
+        (0, 0, 0),
+        (0, 0, 1),
+        (0, 0, block_limit),
+        (0, 0, block_limit + 1),
+        (0, 0, u64::MAX),
+        (0, u64::MAX - 1, 100),
+        (0, u64::MAX, 1),
+        (block_limit, 0, u64::MAX - block_limit + 1),
+        (block_limit / 2, block_limit / 2, 1),
+        (block_limit - 1, 0, 2),
+        (block_limit / 4, block_limit / 4, block_limit / 4),
+        (0, 0, block_limit - 1),
+        (10, 90, block_limit - 100),
+    ];
+
+    for &(b, t, c) in cases {
+        let (expected_result, expected_tx) = reference_charge(b, t, block_limit, c);
+
+        let mut meter = ZkGasMeter::new(schedule);
+        meter.force_state_for_test(b, t);
+
+        let actual_result = meter.charge_amount_for_test(c);
+        let actual_tx = meter.tx_zk_gas_used();
+
+        assert_eq!(
+            (actual_result, actual_tx),
+            (expected_result, expected_tx),
+            "mismatch for (b={b}, t={t}, c={c})",
+        );
+    }
+}

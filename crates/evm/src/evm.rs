@@ -3,12 +3,18 @@ use alloy_primitives::Address;
 use reth_revm::{
     context::{ContextError, ContextTr, Evm as RevmEvm, FrameStack},
     handler::{
-        EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, PrecompileProvider,
-        instructions::EthInstructions,
+        EthFrame, EvmTr, FrameInitOrResult, FrameResult, FrameTr, ItemOrResult, PrecompileProvider,
+        instructions::{EthInstructions, InstructionProvider},
     },
-    interpreter::{InterpreterResult, interpreter::EthInterpreter},
+    interpreter::{FrameInput, InterpreterResult, interpreter::EthInterpreter},
 };
 use revm_database_interface::Database;
+
+use crate::zk_gas::{
+    meter::{ZkGasMeter, ZkGasOutcome},
+    runtime::{run_metered_plain, set_custom_error},
+    schedule::ZkGasSchedule,
+};
 
 /// Custom EVM for Taiko, we extend the RevmEvm with
 /// [`TaikoEvmExtraContext`] to provide additional context
@@ -19,6 +25,8 @@ pub struct TaikoEvm<CTX, INSP, P> {
         RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, P, EthFrame<EthInterpreter>>,
     /// Optional per-block context captured from pre-executed anchor system calls.
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
+    /// Production-path zk gas meter used when execution does not need an external inspector.
+    zk_gas_meter: Option<ZkGasMeter<'static>>,
 }
 
 impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
@@ -32,7 +40,23 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
-        Self { inner, extra_execution_ctx: None }
+        Self { inner, extra_execution_ctx: None, zk_gas_meter: None }
+    }
+
+    /// Installs a production-path zk gas meter for the provided schedule.
+    pub fn with_zk_gas_schedule(mut self, schedule: Option<&'static ZkGasSchedule>) -> Self {
+        self.zk_gas_meter = schedule.map(ZkGasMeter::new);
+        self
+    }
+
+    /// Returns the production-path zk gas meter, if one is installed.
+    pub(crate) const fn zk_gas_meter(&self) -> Option<&ZkGasMeter<'static>> {
+        self.zk_gas_meter.as_ref()
+    }
+
+    /// Returns the mutable production-path zk gas meter, if one is installed.
+    pub(crate) fn zk_gas_meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
+        self.zk_gas_meter.as_mut()
     }
 
     #[inline]
@@ -114,7 +138,48 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
-        self.inner.frame_init(frame_input)
+        let precompile_metering = match &frame_input.frame_input {
+            FrameInput::Call(inputs) => {
+                Some((inputs.gas_limit, inputs.bytecode_address.as_slice()[19]))
+            }
+            FrameInput::Create(_) | FrameInput::Empty => None,
+        };
+
+        let is_first_init = self.inner.frame_stack.index().is_none();
+        let new_frame = if is_first_init {
+            self.inner.frame_stack.start_init()
+        } else {
+            self.inner.frame_stack.get_next()
+        };
+
+        let result = Self::Frame::init_with_context(
+            new_frame,
+            &mut self.inner.ctx,
+            &mut self.inner.precompiles,
+            frame_input,
+        )?;
+
+        if let ItemOrResult::Result(FrameResult::Call(outcome)) = &result &&
+            outcome.was_precompile_called &&
+            let Some((gas_limit, address_low_byte)) = precompile_metering &&
+            let Some(meter) = self.zk_gas_meter.as_mut()
+        {
+            let gas_used = gas_limit.saturating_sub(outcome.result.gas.remaining());
+            if let Err(ZkGasOutcome::LimitExceeded) =
+                meter.charge_precompile(address_low_byte, gas_used)
+            {
+                set_custom_error(&mut self.inner.ctx);
+            }
+        }
+
+        Ok(result.map_item(|token| {
+            if is_first_init {
+                unsafe { self.inner.frame_stack.end_init(token) };
+            } else {
+                unsafe { self.inner.frame_stack.push(token) };
+            }
+            self.inner.frame_stack.get()
+        }))
     }
 
     /// Run the frame from the top of the stack. Returns the frame init or result.
@@ -126,7 +191,26 @@ where
         FrameInitOrResult<Self::Frame>,
         ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
-        self.inner.frame_run()
+        let Some(meter) = self.zk_gas_meter.as_mut() else {
+            return self.inner.frame_run();
+        };
+
+        let frame = self.inner.frame_stack.get();
+        let context = &mut self.inner.ctx;
+        let instructions = &mut self.inner.instruction;
+
+        let action = run_metered_plain(
+            context,
+            &mut frame.interpreter,
+            instructions.instruction_table(),
+            meter,
+        );
+
+        frame.process_next_action(context, action).inspect(|i| {
+            if i.is_result() {
+                frame.set_finished(true);
+            }
+        })
     }
 
     /// Returns the result of the frame to the caller. Frame is popped from the frame stack.

@@ -69,7 +69,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Returns `None` when the active spec/chain combination has no zk gas schedule
     /// (pre-Unzen specs).
     pub fn meter(&self) -> Option<&ZkGasMeter<'static>> {
-        self.inner.inner.inspector.meter()
+        self.inner.zk_gas_meter().or_else(|| self.inner.inner.inspector.meter())
     }
 
     /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
@@ -77,7 +77,11 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Returns `None` when the active spec/chain combination has no zk gas schedule
     /// (pre-Unzen specs).
     pub fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
-        self.inner.inner.inspector.meter_mut()
+        if self.inner.zk_gas_meter().is_some() {
+            self.inner.zk_gas_meter_mut()
+        } else {
+            self.inner.inner.inspector.meter_mut()
+        }
     }
 }
 
@@ -358,6 +362,12 @@ where
     ///
     /// See also [`EvmFactory::create_evm_with_inspector`].
     fn set_inspector_enabled(&mut self, enabled: bool) {
+        // `create_evm` installs zk-gas on the production TaikoEvm wrapper and keeps the inner
+        // inspector unmetered. Enabling the NoOp inspector would route around that production
+        // meter, so only EVMs built through `create_evm_with_inspector` may switch to inspect mode.
+        if enabled && self.inner.zk_gas_meter().is_some() {
+            return;
+        }
         self.inspect = enabled;
     }
 

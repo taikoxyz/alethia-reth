@@ -5,6 +5,7 @@ use reth_revm::{
     Inspector,
     context::TxEnv,
     db::InMemoryDB,
+    inspector::NoOpInspector,
     interpreter::{
         CallInputs, CallOutcome, Interpreter, interpreter::EthInterpreter, interpreter_types::Jumps,
     },
@@ -210,6 +211,7 @@ fn meter_resets_transaction_usage_without_affecting_block_usage() {
 
     assert_eq!(meter.tx_zk_gas_used(), 0);
     assert_eq!(meter.block_zk_gas_used(), 0);
+    meter.charge_opcode(0xf0, schedule.block_limit).expect("reset should restore full budget");
 }
 
 #[test]
@@ -328,6 +330,46 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 }
 
 #[test]
+fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
+    let mut production_evm = TaikoEvmFactory
+        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    production_evm.transact(tx_env(100_000)).expect("production path should execute");
+    let production_zk_gas =
+        production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
+
+    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(staticcall_identity_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    inspector_evm.transact(tx_env(100_000)).expect("inspector path should execute");
+    let inspector_zk_gas =
+        inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
+
+    assert_eq!(production_zk_gas, inspector_zk_gas);
+}
+
+#[test]
+fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
+    let mut production_evm = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    production_evm.transact(tx_env(100_000)).expect("production path should execute");
+    let production_zk_gas =
+        production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
+
+    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(simple_arithmetic_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    inspector_evm.transact(tx_env(100_000)).expect("inspector path should execute");
+    let inspector_zk_gas =
+        inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
+
+    assert_eq!(production_zk_gas, inspector_zk_gas);
+}
+
+#[test]
 fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
     let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
@@ -353,6 +395,23 @@ fn unzen_default_create_evm_path_is_metered() {
 
     assert!(evm.meter().is_some());
     assert!(evm.transact(tx_env(5_000_000)).is_err());
+}
+
+#[test]
+fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
+    let mut evm = TaikoEvmFactory.create_evm(
+        db_with_contract(limit_exceeding_keccak_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+    );
+
+    evm.enable_inspector();
+    let err = evm.transact(tx_env(5_000_000)).expect_err("Unzen tx should stay metered");
+
+    assert!(matches!(
+        err,
+        reth_revm::context::result::EVMError::Custom(message)
+            if message == ZK_GAS_LIMIT_ERR
+    ));
 }
 
 #[test]
@@ -477,6 +536,17 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         0x00,
         0x00,
         opcode::KECCAK256,
+        opcode::STOP,
+    ]))
+}
+
+fn simple_arithmetic_bytecode() -> Bytecode {
+    Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH1,
+        0x01,
+        opcode::PUSH1,
+        0x02,
+        opcode::ADD,
         opcode::STOP,
     ]))
 }

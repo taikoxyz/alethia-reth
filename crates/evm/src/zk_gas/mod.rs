@@ -4,6 +4,8 @@
 pub mod adapter;
 /// Checked zk gas accounting for a single Unzen block execution.
 pub mod meter;
+/// Production interpreter-side zk gas metering.
+pub mod runtime;
 /// Shared schedule types and fork selection helpers.
 pub mod schedule;
 /// Unzen-specific fixed zk gas schedule data.

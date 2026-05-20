@@ -49,17 +49,16 @@ impl EvmFactory for TaikoEvmFactory {
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
         let schedule = schedule_for(spec_id, input.cfg_env.chain_id);
-        let inspect = schedule.is_some();
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
-            .build_mainnet_with_inspector(ZkGasInspector::new(NoOpInspector {}, schedule))
+            .build_mainnet_with_inspector(ZkGasInspector::new(NoOpInspector {}, None))
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), inspect)
+        TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false)
     }
 
     /// Creates a new instance of an EVM with an inspector.

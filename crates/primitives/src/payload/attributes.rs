@@ -151,7 +151,7 @@ pub struct TaikoBlockMetadata {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct RpcL1Origin {
     /// The number of the L2 block.
-    #[cfg_attr(feature = "serde", serde(rename = "blockID"))]
+    #[cfg_attr(feature = "serde", serde(alias = "blockID"))]
     pub block_id: U256,
     /// The hash of the L2 block.
     pub l2_block_hash: B256,
@@ -160,7 +160,7 @@ pub struct RpcL1Origin {
     /// The hash of the L1 block that included the L2 block.
     pub l1_block_hash: Option<B256>,
     /// The ID of the build payload arguments.
-    #[cfg_attr(feature = "serde", serde(rename = "buildPayloadArgsID"))]
+    #[cfg_attr(feature = "serde", serde(alias = "buildPayloadArgsID"))]
     pub build_payload_args_id: [u8; 8],
     /// Indicates if the L2 block was included as a forced inclusion.
     pub is_forced_inclusion: bool,

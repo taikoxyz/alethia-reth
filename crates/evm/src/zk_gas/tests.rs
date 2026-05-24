@@ -66,15 +66,15 @@ fn unzen_schedule_uses_the_spec_block_limit() {
 fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
     let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
 
-    assert_eq!(schedule.opcode_multipliers[0x20], 85);
-    assert_eq!(schedule.opcode_multipliers[0xf1], 25);
-    assert_eq!(schedule.opcode_multipliers[0xfe], 0);
-    assert_eq!(schedule.opcode_multipliers[0xac], u16::MAX);
+    assert_eq!(schedule.opcode_multipliers[0x20], 31); // keccak256
+    assert_eq!(schedule.opcode_multipliers[0xf1], 20); // call
+    assert_eq!(schedule.opcode_multipliers[0xfe], 0); // invalid (terminal)
+    assert_eq!(schedule.opcode_multipliers[0xac], u16::MAX); // unlisted -> failsafe
 
-    assert_eq!(schedule.precompile_multipliers[0x05], 1363);
-    assert_eq!(schedule.precompile_multipliers[0x01], 81);
-    assert_eq!(schedule.precompile_multipliers[0x04], 2);
-    assert_eq!(schedule.precompile_multipliers[0x14], u16::MAX);
+    assert_eq!(schedule.precompile_multipliers[0x05], 923); // modexp
+    assert_eq!(schedule.precompile_multipliers[0x01], 47); // ecrecover
+    assert_eq!(schedule.precompile_multipliers[0x04], 6); // identity
+    assert_eq!(schedule.precompile_multipliers[0x14], u16::MAX); // unlisted -> failsafe
 }
 
 #[test]
@@ -108,15 +108,17 @@ fn masaya_unzen_schedule_pins_tx_intrinsic_zk_gas_at_zero() {
 }
 
 #[test]
-fn masaya_and_default_unzen_schedules_share_opcode_and_precompile_tables() {
-    assert_eq!(
+fn masaya_unzen_schedule_freezes_pre_recalibration_multipliers() {
+    // PR #21720 recalibrates the default tables but Masaya stays frozen, so they must now differ.
+    assert_ne!(
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers
     );
-    assert_eq!(
+    assert_ne!(
         UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers,
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers
     );
+    // Spawn estimates were not recalibrated, so they remain identical across networks.
     assert_eq!(UNZEN_ZK_GAS_SCHEDULE.spawn_estimates, MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates);
 }
 
@@ -376,7 +378,7 @@ fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
         evm_env(TaikoSpecId::UNZEN),
     );
 
-    let err = evm.transact(tx_env(5_000_000)).expect_err("Unzen tx should abort");
+    let err = evm.transact(tx_env(16_000_000)).expect_err("Unzen tx should abort");
 
     assert!(matches!(
         err,
@@ -394,7 +396,7 @@ fn unzen_default_create_evm_path_is_metered() {
     );
 
     assert!(evm.meter().is_some());
-    assert!(evm.transact(tx_env(5_000_000)).is_err());
+    assert!(evm.transact(tx_env(16_000_000)).is_err());
 }
 
 #[test]
@@ -405,7 +407,7 @@ fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
     );
 
     evm.enable_inspector();
-    let err = evm.transact(tx_env(5_000_000)).expect_err("Unzen tx should stay metered");
+    let err = evm.transact(tx_env(16_000_000)).expect_err("Unzen tx should stay metered");
 
     assert!(matches!(
         err,
@@ -460,10 +462,8 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
 
 #[test]
 fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
-    let mut evm = TaikoEvmFactory.create_evm(
-        db_with_contract(limit_exceeding_keccak_bytecode()),
-        evm_env(TaikoSpecId::SHASTA),
-    );
+    let mut evm = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
@@ -528,11 +528,14 @@ fn staticcall_identity_bytecode() -> Bytecode {
 }
 
 fn limit_exceeding_keccak_bytecode() -> Bytecode {
+    // Hash 0x18_0000 (1.5 MiB) of zero memory from offset 0x20. Sized so the metered KECCAK256
+    // cost busts the 100M Unzen block zk gas limit even after the #21720 recalibration lowered the
+    // keccak256 opcode multiplier (85 -> 31).
     Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,
         0x20,
         opcode::PUSH3,
-        0x10,
+        0x18,
         0x00,
         0x00,
         opcode::KECCAK256,

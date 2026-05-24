@@ -109,7 +109,8 @@ fn masaya_unzen_schedule_pins_tx_intrinsic_zk_gas_at_zero() {
 
 #[test]
 fn masaya_unzen_schedule_freezes_pre_recalibration_multipliers() {
-    // The recalibration changes the default tables but Masaya stays frozen, so they must now differ.
+    // The recalibration changes the default tables but Masaya stays frozen, so they must now
+    // differ.
     assert_ne!(
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers

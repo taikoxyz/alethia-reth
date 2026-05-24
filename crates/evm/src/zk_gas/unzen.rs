@@ -1,13 +1,11 @@
 //! Fixed Unzen zk gas schedule constants copied from the approved protocol spec.
 //!
 //! The default schedule (Devnet / Hoodi / Mainnet) uses the recalibrated opcode and precompile
-//! multipliers from [taiko-mono#21720]. The Masaya schedule keeps the prior multipliers frozen to
-//! preserve consensus on its already-finalized Unzen blocks.
+//! multipliers. The Masaya schedule keeps the prior multipliers frozen to preserve consensus on
+//! its already-finalized Unzen blocks.
 //!
 //! Source:
 //! <https://github.com/taikoxyz/taiko-mono/blob/main/packages/protocol/docs/zk_gas_spec.md>
-//!
-//! [taiko-mono#21720]: https://github.com/taikoxyz/taiko-mono/pull/21720
 
 use super::schedule::{SpawnEstimates, ZkGasSchedule};
 
@@ -59,7 +57,7 @@ const fn unzen_schedule_with(
 }
 
 /// Default Unzen zk gas schedule used by Devnet, Hoodi, and Mainnet, with the recalibrated
-/// taiko-mono#21720 multipliers.
+/// multipliers.
 pub static UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
     BLOCK_ZK_GAS_LIMIT,
     TX_INTRINSIC_ZK_GAS,
@@ -68,8 +66,8 @@ pub static UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
 );
 
 /// Unzen zk gas schedule used by the Taiko Masaya network: a 10× higher block budget, a zero
-/// intrinsic charge, and multipliers frozen at pre-#21720 values to preserve consensus on
-/// already-finalized blocks.
+/// intrinsic charge, and multipliers frozen at their pre-recalibration values to preserve
+/// consensus on already-finalized blocks.
 pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
     MASAYA_BLOCK_ZK_GAS_LIMIT,
     MASAYA_TX_INTRINSIC_ZK_GAS,
@@ -77,7 +75,7 @@ pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
     masaya_unzen_precompile_multipliers(),
 );
 
-/// Returns the frozen Masaya Unzen opcode multiplier table, pinned at the pre-#21720 values.
+/// Returns the frozen Masaya Unzen opcode multiplier table, pinned at the pre-recalibration values.
 ///
 /// Recalibrating these retroactively would break consensus on Masaya's already-finalized Unzen
 /// blocks (their `difficulty` header equals the finalized block zk gas), so they stay frozen —
@@ -236,7 +234,8 @@ const fn masaya_unzen_opcode_multipliers() -> [u16; 256] {
     array
 }
 
-/// Returns the frozen Masaya Unzen precompile multiplier table, pinned at the pre-#21720 values.
+/// Returns the frozen Masaya Unzen precompile multiplier table, pinned at the pre-recalibration
+/// values.
 ///
 /// Frozen for the same consensus reason as [`masaya_unzen_opcode_multipliers`].
 const fn masaya_unzen_precompile_multipliers() -> [u16; 256] {
@@ -261,10 +260,8 @@ const fn masaya_unzen_precompile_multipliers() -> [u16; 256] {
     array
 }
 
-/// Returns the recalibrated Unzen opcode multiplier table from [taiko-mono#21720], with fail-safe
-/// defaults for unlisted opcodes.
-///
-/// [taiko-mono#21720]: https://github.com/taikoxyz/taiko-mono/pull/21720
+/// Returns the recalibrated Unzen opcode multiplier table, with fail-safe defaults for unlisted
+/// opcodes.
 const fn unzen_opcode_multipliers() -> [u16; 256] {
     let mut array = [FAILSAFE_MULTIPLIER; 256];
     array[0x00] = 0; // stop
@@ -419,10 +416,8 @@ const fn unzen_opcode_multipliers() -> [u16; 256] {
     array
 }
 
-/// Returns the recalibrated Unzen precompile multiplier table from [taiko-mono#21720], with
-/// fail-safe defaults for unlisted entries.
-///
-/// [taiko-mono#21720]: https://github.com/taikoxyz/taiko-mono/pull/21720
+/// Returns the recalibrated Unzen precompile multiplier table, with fail-safe defaults for unlisted
+/// entries.
 const fn unzen_precompile_multipliers() -> [u16; 256] {
     let mut array = [FAILSAFE_MULTIPLIER; 256];
     array[0x01] = 47; // ecrecover

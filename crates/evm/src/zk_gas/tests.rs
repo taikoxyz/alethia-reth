@@ -109,7 +109,7 @@ fn masaya_unzen_schedule_pins_tx_intrinsic_zk_gas_at_zero() {
 
 #[test]
 fn masaya_unzen_schedule_freezes_pre_recalibration_multipliers() {
-    // PR #21720 recalibrates the default tables but Masaya stays frozen, so they must now differ.
+    // The recalibration changes the default tables but Masaya stays frozen, so they must now differ.
     assert_ne!(
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers,
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers
@@ -540,7 +540,7 @@ fn staticcall_identity_bytecode() -> Bytecode {
 
 fn limit_exceeding_keccak_bytecode() -> Bytecode {
     // Hash 0x18_0000 (1.5 MiB) of zero memory from offset 0x20. Sized so the metered KECCAK256
-    // cost busts the 100M Unzen block zk gas limit even after the #21720 recalibration lowered the
+    // cost busts the 100M Unzen block zk gas limit even after the recalibration lowered the
     // keccak256 opcode multiplier (85 -> 31).
     Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,

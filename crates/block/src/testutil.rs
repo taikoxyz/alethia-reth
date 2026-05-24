@@ -144,8 +144,8 @@ pub fn arithmetic_bytecode() -> Bytecode {
 ///
 /// Hashes a 64 KiB memory region in an infinite loop so the accumulated metered KECCAK256 cost
 /// busts the 100M Unzen block zk gas limit within the per-tx EVM gas budget, even after the
-/// #21720 recalibration lowered the keccak256 opcode multiplier (85 -> 31). The interpreter-path
-/// meter aborts with the zk gas limit error before the loop runs out of EVM gas.
+/// recalibration lowered the keccak256 opcode multiplier (85 -> 31). The interpreter-path meter
+/// aborts with the zk gas limit error before the loop runs out of EVM gas.
 pub fn limit_exceeding_keccak_bytecode() -> Bytecode {
     Bytecode::new_raw(Bytes::from(vec![
         opcode::JUMPDEST, // loop entry at offset 0

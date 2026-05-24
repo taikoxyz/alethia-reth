@@ -152,7 +152,7 @@ pub fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::PUSH3,
         0x01,
         0x00,
-        0x00, // len 0x10000 (64 KiB)
+        0x00, // len 0x010000 (64 KiB)
         opcode::PUSH1,
         0x00, // memory offset 0
         opcode::KECCAK256,

@@ -118,6 +118,17 @@ fn masaya_unzen_schedule_freezes_pre_recalibration_multipliers() {
         UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers,
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers
     );
+    // Spot-check a known recalibrated entry so this guard fails if the two tables ever realign:
+    // keccak256 went 85 -> 31 for the default schedule while Masaya stays at 85, and modexp went
+    // 1363 -> 923 while Masaya stays at 1363.
+    assert_ne!(
+        UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20],
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20]
+    );
+    assert_ne!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05],
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05]
+    );
     // Spawn estimates were not recalibrated, so they remain identical across networks.
     assert_eq!(UNZEN_ZK_GAS_SCHEDULE.spawn_estimates, MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates);
 }

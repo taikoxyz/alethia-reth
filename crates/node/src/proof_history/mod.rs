@@ -25,6 +25,7 @@ use reth::{
     tasks::TaskExecutor,
 };
 use reth_db::{Database, database_metrics::DatabaseMetrics};
+use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
@@ -133,7 +134,8 @@ pub fn install_proof_history_rpc<Node, EthApi>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents,
-    EthApi: FullEthApi + Send + Sync + 'static,
+    EthApi: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
+    EthApi::Provider: DatabaseProviderFactory,
     Node::Provider:
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {

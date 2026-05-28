@@ -2,6 +2,7 @@
 
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
+use alloy_rpc_types_engine::PayloadId;
 use reth::{
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{cancelled::CancelOnDrop, primitives::U256},
@@ -19,7 +20,7 @@ use tracing::{debug, trace, warn};
 use alethia_reth_block::{
     executor::is_zk_gas_limit_exceeded,
     tx_selection::{
-        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
+        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TerminalZkGasTxCandidate, TxSelectionConfig,
         select_and_execute_pool_transactions,
     },
 };
@@ -39,7 +40,12 @@ pub(super) enum ExecutionOutcome {
     /// Execution was cancelled before completion.
     Cancelled,
     /// Execution completed successfully with accumulated fees.
-    Completed(U256),
+    Completed {
+        /// Accumulated priority fees from committed transactions.
+        total_fees: U256,
+        /// Terminal transaction filtered after the block zk gas limit was exhausted.
+        terminal_zkgas_tx: Option<TerminalZkGasTxCandidate>,
+    },
 }
 
 /// Context for executing transactions in new mode (anchor + pool transactions).
@@ -51,7 +57,7 @@ pub(super) struct PoolExecutionContext<'a> {
     /// Timestamp for the new block.
     pub(super) block_timestamp: u64,
     /// Payload identifier for logging.
-    pub(super) payload_id: String,
+    pub(super) payload_id: PayloadId,
     /// Base fee per gas for transaction selection.
     pub(super) base_fee: u64,
     /// Block gas limit.
@@ -69,6 +75,7 @@ pub(super) fn execute_provided_transactions(
     cancel: &CancelOnDrop,
 ) -> Result<ExecutionOutcome, PayloadBuilderError> {
     let mut total_fees = U256::ZERO;
+    let mut terminal_zkgas_tx = None;
 
     for tx in transactions {
         if cancel.is_cancelled() {
@@ -89,6 +96,11 @@ pub(super) fn execute_provided_transactions(
                     ?tx,
                     "stopping legacy-mode payload after zk gas exhaustion"
                 );
+                debug_assert!(
+                    terminal_zkgas_tx.is_none(),
+                    "provided transaction execution must stop after the first terminal zk-gas transaction"
+                );
+                terminal_zkgas_tx = Some(TerminalZkGasTxCandidate::from_transaction(tx));
                 break;
             }
             Err(BlockExecutionError::Validation(
@@ -111,7 +123,7 @@ pub(super) fn execute_provided_transactions(
         total_fees += U256::from(miner_fee) * U256::from(gas_used);
     }
 
-    Ok(ExecutionOutcome::Completed(total_fees))
+    Ok(ExecutionOutcome::Completed { total_fees, terminal_zkgas_tx })
 }
 
 /// Executes new-mode transactions: injects the anchor transaction, then pulls
@@ -181,7 +193,7 @@ where
 
     match select_and_execute_pool_transactions(builder, pool, &config, || cancel.is_cancelled()) {
         Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
-        Ok(SelectionOutcome::Completed(lists)) => {
+        Ok(SelectionOutcome::Completed { lists, terminal_zkgas_tx }) => {
             // Calculate total fees from the executed transactions.
             let total_fees = match lists.first() {
                 Some(list) => list.transactions.iter().try_fold(U256::ZERO, |acc, etx| {
@@ -193,7 +205,7 @@ where
                 })?,
                 None => U256::ZERO,
             };
-            Ok(ExecutionOutcome::Completed(total_fees))
+            Ok(ExecutionOutcome::Completed { total_fees, terminal_zkgas_tx })
         }
         Err(err) => Err(PayloadBuilderError::evm(err)),
     }
@@ -206,7 +218,7 @@ mod tests {
     use super::*;
     use alloy_consensus::{
         SignableTransaction, Signed, TxEip1559,
-        transaction::{SignerRecoverable, TxHashable},
+        transaction::{SignerRecoverable, TxHashRef, TxHashable},
     };
     use alloy_primitives::{Address, B256, Bytes};
     use alloy_signer::SignerSync;
@@ -356,9 +368,10 @@ mod tests {
         );
         let mut builder = ExecutorBackedBuilder { executor };
         let cancel = CancelOnDrop::default();
+        let limit_tx = recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 1);
         let transactions = vec![
             recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
-            recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 1),
+            limit_tx.clone(),
             recovered_tx(BENCH_LATE_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
         ];
 
@@ -366,8 +379,11 @@ mod tests {
             .expect("zk gas exhaustion should stop cleanly");
 
         match outcome {
-            ExecutionOutcome::Completed(total_fees) => {
+            ExecutionOutcome::Completed { total_fees, terminal_zkgas_tx } => {
                 assert!(total_fees > U256::ZERO, "fees from the committed prefix should remain");
+                let terminal_zkgas_tx =
+                    terminal_zkgas_tx.expect("terminal zk-gas tx should be captured");
+                assert_eq!(terminal_zkgas_tx.tx_hash, *limit_tx.tx_hash());
             }
             ExecutionOutcome::Cancelled => panic!("selection should not cancel"),
         }
@@ -406,7 +422,7 @@ mod tests {
                 anchor_tx: &anchor_tx,
                 parent_header: &parent_header,
                 block_timestamp: 1,
-                payload_id: "anchor-zk-gas".to_string(),
+                payload_id: PayloadId::new([1; 8]),
                 base_fee: 0,
                 gas_limit: 30_000_000,
             },
@@ -415,7 +431,7 @@ mod tests {
 
         let err = match result {
             Ok(ExecutionOutcome::Cancelled) => panic!("anchor execution should not cancel"),
-            Ok(ExecutionOutcome::Completed(_)) => {
+            Ok(ExecutionOutcome::Completed { .. }) => {
                 panic!("anchor zk gas exhaustion should fail payload building")
             }
             Err(err) => err,

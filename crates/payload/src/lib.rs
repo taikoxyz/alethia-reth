@@ -14,6 +14,8 @@ use alethia_reth_primitives::engine::TaikoEngineTypes;
 
 /// Taiko payload-building implementation and transaction assembly flow.
 pub mod builder;
+/// Terminal zk-gas payload handoff for proof-history witness reconstruction.
+pub mod terminal_zkgas;
 pub use builder::TaikoPayloadBuilder;
 
 /// The builder to spawn [`TaikoPayloadBuilder`] payload building tasks.

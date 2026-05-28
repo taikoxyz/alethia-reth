@@ -4,9 +4,9 @@
 //! from the mempool, used by both the payload builder and the RPC pre-building endpoint.
 
 use alethia_reth_primitives::transaction::is_allowed_tx_type;
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::transaction::{Recovered, TxHashRef};
 use alloy_eips::Encodable2718;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256, Bytes};
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
@@ -88,13 +88,38 @@ pub struct ExecutedTxList {
     pub total_da_bytes: u64,
 }
 
+/// Terminal transaction filtered after the block zk gas limit is exhausted.
+///
+/// At most one terminal zk-gas transaction may exist for a built block. When present, it is the
+/// first rejected transaction after the committed prefix; all later candidate transactions are
+/// discarded and are not part of the block or witness replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalZkGasTxCandidate {
+    /// Hash of the filtered transaction.
+    pub tx_hash: B256,
+    /// EIP-2718 encoded signed transaction bytes.
+    pub tx_rlp: Bytes,
+}
+
+impl TerminalZkGasTxCandidate {
+    /// Captures the stable identity and encoded bytes for a filtered terminal transaction.
+    pub fn from_transaction(tx: &(impl TxHashRef + Encodable2718)) -> Self {
+        Self { tx_hash: *tx.tx_hash(), tx_rlp: tx.encoded_2718().into() }
+    }
+}
+
 /// Outcome of the transaction selection process.
 #[derive(Debug)]
 pub enum SelectionOutcome {
     /// Selection was cancelled before completion.
     Cancelled,
     /// Selection completed successfully with the produced lists.
-    Completed(Vec<ExecutedTxList>),
+    Completed {
+        /// Lists of transactions committed before selection stopped.
+        lists: Vec<ExecutedTxList>,
+        /// Terminal transaction filtered after the block zk gas limit was exhausted.
+        terminal_zkgas_tx: Option<TerminalZkGasTxCandidate>,
+    },
 }
 
 /// Default threshold for triggering the zlib guard check.
@@ -116,7 +141,7 @@ pub const DEFAULT_DA_ZLIB_GUARD_BYTES: u64 = 4 * 1024;
 /// # Returns
 ///
 /// * `Ok(SelectionOutcome::Cancelled)` - If cancelled during selection.
-/// * `Ok(SelectionOutcome::Completed(lists))` - If selection completed successfully.
+/// * `Ok(SelectionOutcome::Completed)` - If selection completed successfully.
 /// * `Err(err)` - If a fatal execution error occurred.
 pub fn select_and_execute_pool_transactions<B, Pool>(
     builder: &mut B,
@@ -133,6 +158,7 @@ where
 
     let mut lists = Vec::with_capacity(config.max_lists.max(1));
     lists.push(ExecutedTxList::default());
+    let mut terminal_zkgas_tx = None;
     // Per-list state for adaptive DA size calibration.
     let mut da_guard_states = Vec::with_capacity(config.max_lists.max(1));
     da_guard_states.push(DaRatioState::default());
@@ -235,6 +261,11 @@ where
             Ok(gas_used) => gas_used,
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
                 trace!(target: "tx_selection", ?tx, "stopping selection after zk gas exhaustion");
+                debug_assert!(
+                    terminal_zkgas_tx.is_none(),
+                    "selection must stop after the first terminal zk-gas transaction"
+                );
+                terminal_zkgas_tx = Some(TerminalZkGasTxCandidate::from_transaction(&tx));
                 break;
             }
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -269,7 +300,7 @@ where
         trace!(target: "tx_selection", gas_used, da_size, "included transaction from pool");
     }
 
-    Ok(SelectionOutcome::Completed(lists))
+    Ok(SelectionOutcome::Completed { lists, terminal_zkgas_tx })
 }
 
 #[cfg(test)]
@@ -358,10 +389,15 @@ mod tests {
         )
         .expect("zk gas exhaustion should stop selection cleanly");
 
-        let SelectionOutcome::Completed(lists) = outcome else {
+        let SelectionOutcome::Completed { lists, terminal_zkgas_tx } = outcome else {
             panic!("selection should not cancel")
         };
         assert_eq!(lists.len(), 1);
+        let terminal_zkgas_tx = terminal_zkgas_tx.expect("terminal zk-gas tx should be captured");
+        assert_eq!(
+            terminal_zkgas_tx.tx_hash,
+            *recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 20).tx_hash()
+        );
         assert_eq!(lists[0].transactions.len(), 1);
         assert_eq!(
             *lists[0].transactions[0].tx.tx_hash(),

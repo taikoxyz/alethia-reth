@@ -352,7 +352,7 @@ where
         };
 
         match select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false) {
-            Ok(SelectionOutcome::Completed(lists)) => {
+            Ok(SelectionOutcome::Completed { lists, .. }) => {
                 // Convert ExecutedTxList to PreBuiltTxList with RPC transactions
                 lists
                     .into_iter()

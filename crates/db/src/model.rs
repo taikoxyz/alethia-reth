@@ -2,12 +2,12 @@ use core::fmt;
 
 use alloy_primitives::BlockNumber;
 use reth::revm::primitives::{
-    B256, U256,
+    B256, Bytes, U256,
     alloy_primitives::{self},
 };
 use reth_db_api::{TableSet, TableType, TableViewer, table::TableInfo, tables};
 use serde::{Deserialize, Serialize};
-use serde_with::{Bytes, serde_as};
+use serde_with::{Bytes as SerdeBytes, serde_as};
 
 use alethia_reth_primitives::payload::attributes::RpcL1Origin;
 
@@ -31,8 +31,23 @@ pub struct StoredL1Origin {
     /// Indicates if the L2 block was included as a forced inclusion.
     pub is_forced_inclusion: bool,
     /// The signature of the L2 block payload.
-    #[serde_as(as = "Bytes")]
+    #[serde_as(as = "SerdeBytes")]
     pub signature: [u8; 65],
+}
+
+/// Durable recovery record for a terminal transaction filtered after block zk gas exhaustion.
+///
+/// The transaction bytes are kept outside proof-history storage because the upstream proofs store
+/// only retains trie and post-state data. Witness generation still requires the corresponding
+/// proof-history state window to be available.
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub struct TerminalZkGasTx {
+    /// Canonical block hash that this filtered terminal transaction supplements.
+    pub block_hash: B256,
+    /// Hash of the filtered transaction.
+    pub tx_hash: B256,
+    /// EIP-2718 encoded signed transaction bytes.
+    pub tx_rlp: Bytes,
 }
 
 impl From<RpcL1Origin> for StoredL1Origin {
@@ -94,6 +109,11 @@ tables! {
   table BatchToLastBlock {
     type Key = BlockNumber;
     type Value = BlockNumber;
+  }
+
+  table TerminalZkGasTxTable {
+    type Key = BlockNumber;
+    type Value = TerminalZkGasTx;
   }
 }
 

@@ -363,6 +363,7 @@ dependencies = [
  "alethia-reth-consensus",
  "alethia-reth-db",
  "alethia-reth-evm",
+ "alethia-reth-payload",
  "alethia-reth-primitives",
  "alethia-reth-rpc-types",
  "alloy-consensus",

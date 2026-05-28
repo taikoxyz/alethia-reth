@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use alloy_consensus::BlockHeader;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -32,6 +33,7 @@ use self::execution::{
     ExecutionOutcome, PoolExecutionContext, execute_anchor_and_pool_transactions,
     execute_provided_transactions,
 };
+use crate::terminal_zkgas::{PendingTerminalZkGasTx, record_terminal_zkgas_tx};
 
 /// Transaction-phase execution helpers for legacy/new-mode payload construction.
 mod execution;
@@ -218,12 +220,14 @@ where
 
     let base_fee = builder.evm_mut().block.basefee;
 
-    let total_fees = match &attributes.transactions {
+    let (total_fees, terminal_zkgas_tx) = match &attributes.transactions {
         Some(transactions) => {
             debug!(target: "payload_builder", id=%payload_id, tx_count=transactions.len(), "using provided transaction list");
             match execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)? {
                 ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
-                ExecutionOutcome::Completed(fees) => fees,
+                ExecutionOutcome::Completed { total_fees, terminal_zkgas_tx } => {
+                    (total_fees, terminal_zkgas_tx)
+                }
             }
         }
         None => {
@@ -238,7 +242,7 @@ where
                 anchor_tx,
                 parent_header: &parent_header,
                 block_timestamp: attributes.timestamp(),
-                payload_id: payload_id.to_string(),
+                payload_id,
                 base_fee,
                 gas_limit: attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
             };
@@ -246,7 +250,9 @@ where
             match execute_anchor_and_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)?
             {
                 ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
-                ExecutionOutcome::Completed(fees) => fees,
+                ExecutionOutcome::Completed { total_fees, terminal_zkgas_tx } => {
+                    (total_fees, terminal_zkgas_tx)
+                }
             }
         }
     };
@@ -279,6 +285,17 @@ where
 
     let sealed_block = Arc::new(block.into_sealed_block());
     debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+    if let Some(tx) = terminal_zkgas_tx {
+        record_terminal_zkgas_tx(
+            payload_id,
+            PendingTerminalZkGasTx {
+                block_hash: sealed_block.hash(),
+                tx_hash: tx.tx_hash,
+                tx_rlp: tx.tx_rlp,
+            },
+        );
+        debug!(target: "payload_builder", id=%payload_id, block_number=sealed_block.header().number(), "recorded terminal zk-gas transaction for payload");
+    }
 
     Ok(BuildOutcome::Freeze(EthBuiltPayload::new(sealed_block, total_fees, None, None)))
 }

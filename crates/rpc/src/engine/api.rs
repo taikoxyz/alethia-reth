@@ -1,10 +1,12 @@
 //! Taiko engine API RPC methods and persistence hooks.
 use std::{io, sync::Arc};
 
+use alethia_reth_payload::terminal_zkgas::{peek_terminal_zkgas_tx, remove_terminal_zkgas_tx};
 use alethia_reth_primitives::{
     decode_shasta_proposal_id, engine::types::TaikoExecutionData,
     payload::attributes::TaikoPayloadAttributes,
 };
+use alloy_consensus::BlockHeader;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::BlockNumber;
 use alloy_rpc_types_engine::{
@@ -32,8 +34,9 @@ use reth_rpc_engine_api::EngineApiError;
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
-    StoredL1OriginTable,
+    StoredL1OriginTable, TerminalZkGasTx, TerminalZkGasTxTable,
 };
+use tracing::{debug, warn};
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
@@ -177,6 +180,80 @@ where
 
         Ok(())
     }
+
+    /// Persists any terminal zk-gas transaction captured while building `payload_id`.
+    fn persist_terminal_zkgas_tx(
+        &self,
+        payload_id: PayloadId,
+        built_payload: &EthBuiltPayload,
+    ) -> Result<(), EngineApiError> {
+        let Some(pending) = peek_terminal_zkgas_tx(payload_id) else {
+            return Ok(());
+        };
+
+        let block = built_payload.block();
+        let block_number = block.header().number();
+        let block_hash = block.hash_slow();
+
+        if pending.block_hash != block_hash {
+            warn!(
+                target: "taiko_engine",
+                %payload_id,
+                actual_block_number = block_number,
+                pending_block_hash = ?pending.block_hash,
+                actual_block_hash = ?block_hash,
+                "discarding terminal zk-gas transaction for mismatched payload"
+            );
+            remove_terminal_zkgas_tx(payload_id);
+            return Ok(());
+        }
+
+        let terminal_tx =
+            TerminalZkGasTx { block_hash, tx_hash: pending.tx_hash, tx_rlp: pending.tx_rlp };
+        let tx_hash = terminal_tx.tx_hash;
+
+        let persisted = {
+            let tx = self.provider.database_provider_rw().map_err(Self::internal_error)?.into_tx();
+            if let Some(existing) =
+                tx.get::<TerminalZkGasTxTable>(block_number).map_err(Self::internal_error)? &&
+                existing.block_hash == block_hash
+            {
+                if existing != terminal_tx {
+                    return Err(Self::internal_error(io::Error::other(format!(
+                        "terminal zk-gas transaction conflict for block {block_number}: existing {:?}, pending {:?}",
+                        existing.tx_hash, tx_hash
+                    ))));
+                }
+                false
+            } else {
+                tx.put::<TerminalZkGasTxTable>(block_number, terminal_tx)
+                    .map_err(Self::internal_error)?;
+                tx.commit().map_err(Self::internal_error)?;
+                true
+            }
+        };
+
+        remove_terminal_zkgas_tx(payload_id);
+
+        if persisted {
+            debug!(
+                target: "taiko_engine",
+                %payload_id,
+                block_number,
+                tx_hash = ?tx_hash,
+                "persisted terminal zk-gas transaction"
+            );
+        } else {
+            debug!(
+                target: "taiko_engine",
+                %payload_id,
+                block_number,
+                tx_hash = ?tx_hash,
+                "terminal zk-gas transaction was already persisted"
+            );
+        }
+        Ok(())
+    }
 }
 
 // This is the concrete ethereum engine API implementation.
@@ -238,6 +315,9 @@ where
 
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
+            self.persist_terminal_zkgas_tx(payload_id, &built_payload)
+                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+
             self.persist_l1_origin(stored_l1_origin, is_preconf_block, batch_id)
                 .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
         }
@@ -252,6 +332,8 @@ where
     ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
         let built_payload =
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
+        self.persist_terminal_zkgas_tx(payload_id, &built_payload)
+            .map_err(ErrorObjectOwned::from)?;
         Ok(self.convert_built_payload_to_execution_payload_envelope_v2(built_payload))
     }
 }

@@ -208,6 +208,7 @@ where
             );
             continue;
         }
+
         if da_size > config.max_da_bytes_per_list {
             best_txs.mark_invalid(&pool_tx, &da_limit_error(da_size, config.max_da_bytes_per_list));
             continue;

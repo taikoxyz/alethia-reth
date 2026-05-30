@@ -1,6 +1,7 @@
 //! Prover helpers for executing derived candidate blocks.
 
 use alloy_consensus::transaction::Recovered;
+use alloy_primitives::U256;
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::{
     ConfigureEvm,
@@ -64,14 +65,36 @@ pub fn execute_derived_block<DB>(
 where
     DB: Database + std::fmt::Debug,
 {
+    execute_derived_block_with_expected_difficulty(
+        evm_config,
+        parent_header,
+        derived_block,
+        None,
+        db,
+    )
+}
+
+/// Executes a candidate derived block in prover mode with an optional canonical finalized zk-gas
+/// target.
+pub fn execute_derived_block_with_expected_difficulty<DB>(
+    evm_config: &TaikoEvmConfig,
+    parent_header: &SealedHeader,
+    derived_block: &RecoveredBlock<Block>,
+    expected_difficulty: Option<U256>,
+    db: DB,
+) -> Result<DerivedBlockExecutionOutcome, BlockExecutionError>
+where
+    DB: Database + std::fmt::Debug,
+{
     let mut state = State::builder().with_database(db).with_bundle_update().build();
     let attributes = attributes_from_derived_block(derived_block)?;
     let evm_env =
         evm_config.next_evm_env(parent_header, &attributes).map_err(BlockExecutionError::other)?;
     let evm = evm_config.evm_with_env(&mut state, evm_env);
-    let execution_ctx = evm_config
+    let mut execution_ctx = evm_config
         .context_for_next_block(parent_header, attributes)
         .map_err(BlockExecutionError::other)?;
+    execution_ctx.expected_difficulty = expected_difficulty;
     let finalized_zk_gas = execution_ctx.finalized_block_zk_gas.clone();
     let executor = TaikoBlockExecutor::new(
         evm,
@@ -169,12 +192,43 @@ mod tests {
         )
     }
 
+    fn test_parent_header() -> SealedHeader {
+        SealedHeader::seal_slow(Header {
+            number: 0,
+            timestamp: 0,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(0),
+            parent_beacon_block_root: Some(B256::ZERO),
+            ..Default::default()
+        })
+    }
+
+    fn test_derived_block(
+        transactions: Vec<TransactionSigned>,
+        senders: Vec<Address>,
+    ) -> RecoveredBlock<Block> {
+        RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody { transactions, ommers: Default::default(), withdrawals: None },
+            },
+            senders,
+        )
+    }
+
     #[test]
     fn execute_derived_block_skips_invalid_nonce_transaction_and_records_committed_txs() {
         let chain_spec = Arc::new(TaikoChainSpec::default());
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new(chain_spec);
-        let parent_header = SealedHeader::seal_slow(Header::default());
+        let parent_header = test_parent_header();
         let anchor_transaction = test_transaction(chain_id, 0);
         let valid_transaction = test_transaction(chain_id, 1);
         let invalid_transaction = test_transaction(chain_id, 99);
@@ -188,20 +242,7 @@ mod tests {
             valid_transaction.signer(),
             invalid_transaction.signer(),
         ];
-        let derived_block = RecoveredBlock::new_unhashed(
-            Block {
-                header: Header {
-                    number: 1,
-                    timestamp: 1,
-                    gas_limit: 30_000_000,
-                    base_fee_per_gas: Some(0),
-                    parent_beacon_block_root: Some(B256::ZERO),
-                    ..Default::default()
-                },
-                body: BlockBody { transactions, ommers: Default::default(), withdrawals: None },
-            },
-            senders,
-        );
+        let derived_block = test_derived_block(transactions, senders);
 
         let outcome = execute_derived_block(
             &config,
@@ -225,5 +266,55 @@ mod tests {
         .expect("filtered block should assemble");
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
+    }
+
+    #[test]
+    fn execute_derived_block_stops_at_expected_finalized_zk_gas_target() {
+        let chain_spec = Arc::new(crate::testutil::unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = test_parent_header();
+        let anchor_transaction = test_transaction(chain_id, 0);
+        let first_transaction = test_transaction(chain_id, 1);
+        let second_transaction = test_transaction(chain_id, 2);
+
+        let expected = {
+            let transactions =
+                vec![anchor_transaction.clone_inner(), first_transaction.clone_inner()];
+            let senders = vec![anchor_transaction.signer(), first_transaction.signer()];
+            let derived_block = test_derived_block(transactions, senders);
+            execute_derived_block(
+                &config,
+                &parent_header,
+                &derived_block,
+                db_with_contracts(&[(TEST_CALLER, 0)]),
+            )
+            .expect("prefix derived block should execute")
+            .finalized_block_zk_gas
+        };
+        assert!(expected > 0);
+
+        let transactions = vec![
+            anchor_transaction.clone_inner(),
+            first_transaction.clone_inner(),
+            second_transaction.clone_inner(),
+        ];
+        let senders = vec![
+            anchor_transaction.signer(),
+            first_transaction.signer(),
+            second_transaction.signer(),
+        ];
+        let derived_block = test_derived_block(transactions, senders);
+        let outcome = execute_derived_block_with_expected_difficulty(
+            &config,
+            &parent_header,
+            &derived_block,
+            Some(U256::from(expected)),
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+        )
+        .expect("derived block should stop at the canonical finalized zk gas target");
+
+        assert_eq!(outcome.finalized_block_zk_gas, expected);
+        assert_eq!(outcome.committed_transactions.len(), 2);
     }
 }

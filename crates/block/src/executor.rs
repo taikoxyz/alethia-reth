@@ -284,8 +284,8 @@ where
             // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
             // limit, this should never happen in practice.
             Err(err) if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(false),
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }))
-            | Err(BlockExecutionError::Validation(
+            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })) |
+            Err(BlockExecutionError::Validation(
                 BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) if !is_anchor_transaction => Ok(false),
             Err(err) => Err(err),

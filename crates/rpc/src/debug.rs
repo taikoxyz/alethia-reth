@@ -2,7 +2,9 @@
 
 use crate::proof_state::ProofHistoryStateProviderFactory;
 use alethia_reth_block::{
-    executor::{is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded},
+    executor::{
+        is_recoverable_non_anchor_tx_error, is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded,
+    },
     tx_selection::zlib_compressed_len,
 };
 use alethia_reth_primitives::payload::builder::decode_recovered_transactions;
@@ -16,7 +18,7 @@ use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_ethereum_primitives::Block;
 use reth_evm::{
     ConfigureEvm,
-    execute::{BlockExecutionError, BlockExecutor, BlockValidationError, Executor},
+    execute::{BlockExecutionError, BlockExecutor, Executor},
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
@@ -360,19 +362,12 @@ fn block_with_tx_list(
 }
 
 /// Return whether a transaction-list replay error should be tolerated for prover witness parity.
+///
+/// Anchor (index 0) failures are always fatal; non-anchor failures defer to the shared
+/// [`is_recoverable_non_anchor_tx_error`] classifier so the recoverable error set stays in sync
+/// with the prover executor and cannot drift.
 fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction: bool) -> bool {
-    if is_anchor_transaction {
-        return false;
-    }
-
-    is_zk_gas_limit_exceeded(err) ||
-        matches!(
-            err,
-            BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
-            )
-        )
+    !is_anchor_transaction && is_recoverable_non_anchor_tx_error(err)
 }
 
 #[cfg(test)]
@@ -381,6 +376,7 @@ mod tests {
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_rlp::Encodable;
+    use reth_evm::execute::BlockValidationError;
     use serde_json::json;
 
     #[test]

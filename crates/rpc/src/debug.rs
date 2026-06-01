@@ -1,10 +1,10 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
 use crate::proof_state::ProofHistoryStateProviderFactory;
-use alethia_reth_block::executor::is_zk_gas_limit_exceeded;
-use alloy_consensus::{BlockHeader, transaction::Recovered};
+use alethia_reth_block::executor::{is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded};
+use alloy_consensus::{transaction::Recovered, BlockHeader};
 use alloy_eips::{BlockId, BlockNumberOrTag};
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use alloy_rlp::Decodable;
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
@@ -12,19 +12,20 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_ethereum_primitives::Block;
 use reth_evm::{
-    ConfigureEvm,
     execute::{BlockExecutionError, BlockExecutor, BlockValidationError, Executor},
+    ConfigureEvm,
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::HeaderProvider;
 use reth_revm::{
-    State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
-    witness::ExecutionWitnessRecord,
+    database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
+    witness::ExecutionWitnessRecord, State,
 };
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_common::ExecutionWitnessMode;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 /// Maximum number of concurrent proof-history witness requests.
@@ -58,7 +59,20 @@ pub trait TaikoDebugWitnessApi {
         block: BlockId,
         tx_list: Bytes,
         mode: Option<ExecutionWitnessMode>,
+        options: Option<TxListWitnessOptions>,
     ) -> RpcResult<ExecutionWitness>;
+}
+
+/// Options for `debug_executionWitnessForTxList`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxListWitnessOptions {
+    /// Skip matching recomputed zk gas against `header.difficulty`.
+    ///
+    /// This is only useful for debug experiments that replay non-canonical transaction lists on
+    /// top of a canonical parent state.
+    #[serde(default)]
+    pub skip_zk_gas_difficulty_check: bool,
 }
 
 /// `debug_` namespace overrides that use proof-history state for witness generation.
@@ -111,6 +125,7 @@ where
         block_id: BlockId,
         tx_list: Bytes,
         mode: ExecutionWitnessMode,
+        options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block = self
             .eth_api
@@ -119,7 +134,7 @@ where
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
         let txs = decode_recovered_tx_list(tx_list)?;
         let block = block_with_tx_list(block.as_ref().clone(), txs);
-        self.execution_witness_for_tx_list_block(&block, mode).await
+        self.execution_witness_for_tx_list_block(&block, mode, options).await
     }
 
     /// Re-executes the provided block against proof-history backed parent state and returns the
@@ -157,6 +172,7 @@ where
         &self,
         block: &RecoveredBlock<Block>,
         mode: ExecutionWitnessMode,
+        options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block_number = block.header().number();
         let parent_block = BlockId::Hash(block.parent_hash().into());
@@ -195,7 +211,13 @@ where
                 }
             }
 
-            block_executor.apply_post_execution_changes().map_err(EthApiError::from)?;
+            match block_executor.apply_post_execution_changes() {
+                Ok(_) => {}
+                Err(err)
+                    if options.skip_zk_gas_difficulty_check
+                        && is_zk_gas_difficulty_mismatch(&err) => {}
+                Err(err) => return Err(EthApiError::from(err).into()),
+            }
         }
 
         state.merge_transitions(BundleRetention::Reverts);
@@ -246,11 +268,17 @@ where
         block: BlockId,
         tx_list: Bytes,
         mode: Option<ExecutionWitnessMode>,
+        options: Option<TxListWitnessOptions>,
     ) -> RpcResult<ExecutionWitness> {
         let _permit = self.semaphore.acquire().await;
-        self.execution_witness_for_tx_list_for_id(block, tx_list, mode.unwrap_or_default())
-            .await
-            .map_err(Into::into)
+        self.execution_witness_for_tx_list_for_id(
+            block,
+            tx_list,
+            mode.unwrap_or_default(),
+            options.unwrap_or_default(),
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -289,12 +317,12 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
         return false;
     }
 
-    is_zk_gas_limit_exceeded(err) ||
-        matches!(
+    is_zk_gas_limit_exceeded(err)
+        || matches!(
             err,
             BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+                BlockValidationError::InvalidTx { .. }
+                    | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
             )
         )
 }
@@ -303,6 +331,7 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
 mod tests {
     use super::*;
     use alloy_primitives::Bytes;
+    use serde_json::json;
 
     #[test]
     fn decode_recovered_tx_list_accepts_empty_rlp_list() {
@@ -322,5 +351,20 @@ mod tests {
 
         assert!(is_recoverable_tx_list_error(&err, false));
         assert!(!is_recoverable_tx_list_error(&err, true));
+    }
+
+    #[test]
+    fn tx_list_witness_options_validate_difficulty_by_default() {
+        let options = TxListWitnessOptions::default();
+
+        assert!(!options.skip_zk_gas_difficulty_check);
+    }
+
+    #[test]
+    fn tx_list_witness_options_accept_camel_case_skip_flag() {
+        let options: TxListWitnessOptions =
+            serde_json::from_value(json!({ "skipZkGasDifficultyCheck": true })).unwrap();
+
+        assert!(options.skip_zk_gas_difficulty_check);
     }
 }

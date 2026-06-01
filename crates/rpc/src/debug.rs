@@ -2,9 +2,9 @@
 
 use crate::proof_state::ProofHistoryStateProviderFactory;
 use alethia_reth_block::executor::{is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded};
-use alloy_consensus::{transaction::Recovered, BlockHeader};
+use alloy_consensus::{BlockHeader, transaction::Recovered};
 use alloy_eips::{BlockId, BlockNumberOrTag};
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, B256, Bytes};
 use alloy_rlp::Decodable;
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
@@ -12,15 +12,15 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_ethereum_primitives::Block;
 use reth_evm::{
-    execute::{BlockExecutionError, BlockExecutor, BlockValidationError, Executor},
     ConfigureEvm,
+    execute::{BlockExecutionError, BlockExecutor, BlockValidationError, Executor},
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::HeaderProvider;
 use reth_revm::{
-    database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
-    witness::ExecutionWitnessRecord, State,
+    State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
+    witness::ExecutionWitnessRecord,
 };
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
@@ -214,8 +214,8 @@ where
             match block_executor.apply_post_execution_changes() {
                 Ok(_) => {}
                 Err(err)
-                    if options.skip_zk_gas_difficulty_check
-                        && is_zk_gas_difficulty_mismatch(&err) => {}
+                    if options.skip_zk_gas_difficulty_check &&
+                        is_zk_gas_difficulty_mismatch(&err) => {}
                 Err(err) => return Err(EthApiError::from(err).into()),
             }
         }
@@ -317,12 +317,12 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
         return false;
     }
 
-    is_zk_gas_limit_exceeded(err)
-        || matches!(
+    is_zk_gas_limit_exceeded(err) ||
+        matches!(
             err,
             BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. }
-                    | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+                BlockValidationError::InvalidTx { .. } |
+                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
             )
         )
 }

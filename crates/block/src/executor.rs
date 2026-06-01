@@ -2,29 +2,29 @@
 #[cfg(feature = "prover")]
 use alloy_consensus::transaction::Recovered;
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
-use alloy_eips::{eip7685::Requests, Encodable2718};
+use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
-    block::GasOutput,
-    eth::{receipt_builder::ReceiptBuilder, EthTxResult},
     FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
+    block::GasOutput,
+    eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
-use alloy_primitives::{Address, Bytes, Log, Uint, U256};
+use alloy_primitives::{Address, Bytes, Log, U256, Uint};
 use reth_evm::{
+    Evm, OnStateHook,
     block::{
         BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
         InternalBlockExecutionError, StateChangeSource, StateDB, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
-    Evm, OnStateHook,
 };
 use reth_execution_types::BlockExecutionResult;
-use reth_revm::context::{result::ResultAndState, Block as _};
+use reth_revm::context::{Block as _, result::ResultAndState};
 use revm_database_interface::{Database, DatabaseCommit};
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
-    alloy::{TaikoZkGasEvm, TAIKO_GOLDEN_TOUCH_ADDRESS},
+    alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
     handler::get_treasury_address,
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
@@ -200,9 +200,9 @@ where
         > + TaikoZkGasEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<
-        Transaction: Transaction + Encodable2718 + Clone,
-        Receipt: TxReceipt<Log = Log>,
-    >,
+            Transaction: Transaction + Encodable2718 + Clone,
+            Receipt: TxReceipt<Log = Log>,
+        >,
 {
     /// Executes a prover candidate block and returns the transactions that were actually committed.
     pub fn execute_block_with_committed_transactions<'tx>(
@@ -263,8 +263,8 @@ where
             // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
             // limit, this should never happen in practice.
             Err(err) if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(false),
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }))
-            | Err(BlockExecutionError::Validation(
+            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })) |
+            Err(BlockExecutionError::Validation(
                 BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
             )) if !is_anchor_transaction => Ok(false),
             Err(err) => Err(err),
@@ -530,15 +530,15 @@ mod test {
 
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::EvmFactory;
-    use alloy_primitives::{Address, Bytes, ChainId, Signature, TxKind, B256, U256, U64};
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
     use reth_ethereum_primitives::TransactionSigned;
-    use reth_evm::{block::BlockExecutor, ConfigureEvm};
+    use reth_evm::{ConfigureEvm, block::BlockExecutor};
     use reth_evm_ethereum::RethReceiptBuilder;
     use reth_primitives_traits::SignedTransaction;
     use reth_revm::{
+        State,
         db::{CacheDB, EmptyDB},
         state::AccountInfo,
-        State,
     };
 
     use alethia_reth_chainspec::TAIKO_MASAYA_CHAIN_ID;
@@ -552,8 +552,8 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            db_with_contracts, recovered_tx, recovered_tx_with_chain_id, unzen_chain_spec,
-            unzen_evm_env, unzen_execution_ctx, BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
+            recovered_tx_with_chain_id, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;

@@ -17,7 +17,7 @@ use reth_storage_api::noop::NoopProvider;
 use reth_trie_common::{HashedPostState, KeccakKeyHasher};
 
 use crate::{
-    config::{MissingBaseFee, TaikoEvmConfig, TaikoNextBlockEnvAttributes},
+    config::{TaikoEvmConfig, attributes_from_derived_block},
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
 };
@@ -33,25 +33,6 @@ pub struct DerivedBlockExecutionOutcome {
     pub hashed_state: HashedPostState,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,
-}
-
-/// Derives next-block environment attributes from a candidate derived block header.
-fn attributes_from_derived_block(
-    derived_block: &RecoveredBlock<Block>,
-) -> Result<TaikoNextBlockEnvAttributes, BlockExecutionError> {
-    let header = derived_block.header();
-    let base_fee_per_gas = header.base_fee_per_gas.ok_or_else(|| {
-        BlockExecutionError::other(MissingBaseFee { block_number: header.number })
-    })?;
-
-    Ok(TaikoNextBlockEnvAttributes {
-        timestamp: header.timestamp,
-        suggested_fee_recipient: header.beneficiary,
-        prev_randao: header.mix_hash,
-        gas_limit: header.gas_limit,
-        extra_data: header.extra_data.clone(),
-        base_fee_per_gas,
-    })
 }
 
 /// Executes a candidate derived block in prover mode.

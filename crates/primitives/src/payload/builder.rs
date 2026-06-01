@@ -243,7 +243,7 @@ pub fn payload_id_taiko(
 }
 
 /// Decode RLP-encoded bytes into signed transactions.
-fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
+pub fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
     Vec::<TransactionSigned>::decode(&mut &bytes[..])
 }
 

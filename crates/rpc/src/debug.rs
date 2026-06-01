@@ -1,11 +1,14 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
 use crate::proof_state::ProofHistoryStateProviderFactory;
-use alethia_reth_block::executor::{is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded};
+use alethia_reth_block::{
+    config::{TaikoNextBlockEnvAttributes, attributes_from_derived_block},
+    executor::is_zk_gas_limit_exceeded,
+};
+use alethia_reth_primitives::payload::builder::decode_transactions;
 use alloy_consensus::{BlockHeader, transaction::Recovered};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Bytes};
-use alloy_rlp::Decodable;
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
@@ -16,7 +19,7 @@ use reth_evm::{
     execute::{BlockExecutionError, BlockExecutor, BlockValidationError, Executor},
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
-use reth_primitives_traits::RecoveredBlock;
+use reth_primitives_traits::{RecoveredBlock, SealedHeader, SignedTransaction};
 use reth_provider::HeaderProvider;
 use reth_revm::{
     State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
@@ -25,7 +28,6 @@ use reth_revm::{
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_common::ExecutionWitnessMode;
-use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 /// Maximum number of concurrent proof-history witness requests.
@@ -53,26 +55,17 @@ pub trait TaikoDebugWitnessApi {
 
     /// Replays an explicit transaction list on top of the requested block's parent state and
     /// returns the generated execution witness.
+    ///
+    /// The list is executed as the `parent + 1` block (matching the prover's derived-block
+    /// environment), so the resulting witness reflects a stateless re-execution of the supplied
+    /// transactions rather than the canonical block's transactions.
     #[method(name = "executionWitnessForTxList")]
     async fn execution_witness_for_tx_list(
         &self,
         block: BlockId,
         tx_list: Bytes,
         mode: Option<ExecutionWitnessMode>,
-        options: Option<TxListWitnessOptions>,
     ) -> RpcResult<ExecutionWitness>;
-}
-
-/// Options for `debug_executionWitnessForTxList`.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TxListWitnessOptions {
-    /// Skip matching recomputed zk gas against `header.difficulty`.
-    ///
-    /// This is only useful for debug experiments that replay non-canonical transaction lists on
-    /// top of a canonical parent state.
-    #[serde(default)]
-    pub skip_zk_gas_difficulty_check: bool,
 }
 
 /// `debug_` namespace overrides that use proof-history state for witness generation.
@@ -91,6 +84,7 @@ pub struct TaikoDebugWitnessExt<Eth, Storage, Provider> {
 impl<Eth, Storage, Provider> TaikoDebugWitnessExt<Eth, Storage, Provider>
 where
     Eth: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
+    Eth::Evm: ConfigureEvm<NextBlockEnvCtx = TaikoNextBlockEnvAttributes>,
     Storage: OpProofsStore + Clone + 'static,
     Provider: HeaderProvider + Clone + Send + Sync + 'static,
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
@@ -125,7 +119,6 @@ where
         block_id: BlockId,
         tx_list: Bytes,
         mode: ExecutionWitnessMode,
-        options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block = self
             .eth_api
@@ -134,7 +127,7 @@ where
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
         let txs = decode_recovered_tx_list(tx_list)?;
         let block = block_with_tx_list(block.as_ref().clone(), txs);
-        self.execution_witness_for_tx_list_block(&block, mode, options).await
+        self.execution_witness_for_tx_list_block(&block, mode).await
     }
 
     /// Re-executes the provided block against proof-history backed parent state and returns the
@@ -172,10 +165,24 @@ where
         &self,
         block: &RecoveredBlock<Block>,
         mode: ExecutionWitnessMode,
-        options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block_number = block.header().number();
         let parent_block = BlockId::Hash(block.parent_hash().into());
+
+        // Execute the replayed list as the `parent + 1` block, mirroring the prover's derived-block
+        // environment (`difficulty = 0`, no committed `expected_difficulty`) rather than the
+        // canonical block's environment. Reusing the canonical block env would expose the original
+        // block's zk-gas difficulty through the `DIFFICULTY` opcode and force a difficulty mismatch
+        // for any list other than the original one. Both async loads happen before the non-`Send`
+        // execution state is built so the RPC future stays `Send`.
+        let parent = self
+            .eth_api
+            .recovered_block(parent_block)
+            .await?
+            .ok_or(EthApiError::HeaderNotFound(parent_block))?;
+        let parent_header = SealedHeader::new(parent.header().clone(), block.parent_hash());
+        let attributes = attributes_from_derived_block(block).map_err(EthApiError::from)?;
+
         let state_provider = self
             .state_provider_factory
             .state_provider(parent_block)
@@ -186,16 +193,23 @@ where
         let mut witness_record = ExecutionWitnessRecord::default();
 
         {
-            let mut block_executor = self
-                .eth_api
-                .evm_config()
-                .executor_for_block(&mut state, block.sealed_block())
+            let evm_config = self.eth_api.evm_config();
+            let evm_env = evm_config
+                .next_evm_env(parent_header.header(), &attributes)
                 .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
+            let evm = evm_config.evm_with_env(&mut state, evm_env);
+            let execution_ctx = evm_config
+                .context_for_next_block(&parent_header, attributes)
+                .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
+            let mut block_executor = evm_config.create_executor(evm, execution_ctx);
 
             block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
 
             for (idx, tx) in block.transactions_recovered().enumerate() {
                 let is_anchor_transaction = idx == 0;
+                // Non-anchor transactions whose signer could not be recovered are kept as
+                // zero-signer entries by the decoder to preserve list ordering; skip them exactly
+                // as the prover's tx-list filtering does.
                 if !is_anchor_transaction && tx.signer() == Address::ZERO {
                     continue;
                 }
@@ -211,13 +225,7 @@ where
                 }
             }
 
-            match block_executor.apply_post_execution_changes() {
-                Ok(_) => {}
-                Err(err)
-                    if options.skip_zk_gas_difficulty_check &&
-                        is_zk_gas_difficulty_mismatch(&err) => {}
-                Err(err) => return Err(EthApiError::from(err).into()),
-            }
+            block_executor.apply_post_execution_changes().map_err(EthApiError::from)?;
         }
 
         state.merge_transitions(BundleRetention::Reverts);
@@ -234,6 +242,7 @@ impl<Eth, Storage, Provider> TaikoDebugWitnessApiServer
     for TaikoDebugWitnessExt<Eth, Storage, Provider>
 where
     Eth: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
+    Eth::Evm: ConfigureEvm<NextBlockEnvCtx = TaikoNextBlockEnvAttributes>,
     Storage: OpProofsStore + Clone + 'static,
     Provider: HeaderProvider + Clone + Send + Sync + 'static,
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
@@ -268,27 +277,32 @@ where
         block: BlockId,
         tx_list: Bytes,
         mode: Option<ExecutionWitnessMode>,
-        options: Option<TxListWitnessOptions>,
     ) -> RpcResult<ExecutionWitness> {
         let _permit = self.semaphore.acquire().await;
-        self.execution_witness_for_tx_list_for_id(
-            block,
-            tx_list,
-            mode.unwrap_or_default(),
-            options.unwrap_or_default(),
-        )
-        .await
-        .map_err(Into::into)
+        self.execution_witness_for_tx_list_for_id(block, tx_list, mode.unwrap_or_default())
+            .await
+            .map_err(Into::into)
     }
 }
 
-/// Decode an RLP transaction list and recover each transaction signer for EVM execution.
+/// Decode an RLP transaction list, recovering each signer for EVM execution.
+///
+/// Mirrors the canonical Taiko tx-list handling ([`decode_transactions`]): the list is decoded as a
+/// whole, and transactions whose signer cannot be recovered are kept as zero-signer entries rather
+/// than failing the entire request. Keeping them preserves list ordering (the anchor stays at index
+/// 0) and lets the executor skip them, matching the prover's tx-list filtering.
 fn decode_recovered_tx_list(
     tx_list: Bytes,
 ) -> Result<Vec<Recovered<TransactionSigned>>, EthApiError> {
-    let mut tx_list = tx_list.as_ref();
-    Vec::<Recovered<TransactionSigned>>::decode(&mut tx_list)
-        .map_err(|err| EthApiError::EvmCustom(format!("failed to decode tx list: {err}")))
+    let txs = decode_transactions(tx_list.as_ref())
+        .map_err(|err| EthApiError::EvmCustom(format!("failed to decode tx list: {err}")))?;
+    Ok(txs
+        .into_iter()
+        .map(|tx| {
+            let signer = tx.try_recover().unwrap_or(Address::ZERO);
+            Recovered::new_unchecked(tx, signer)
+        })
+        .collect())
 }
 
 /// Replace a canonical block's transactions with the explicit replay transaction list.
@@ -330,14 +344,39 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
-    use serde_json::json;
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_primitives::{Bytes, Signature, TxKind, U256};
+    use alloy_rlp::Encodable;
 
     #[test]
     fn decode_recovered_tx_list_accepts_empty_rlp_list() {
         let txs = decode_recovered_tx_list(Bytes::from_static(&[0xc0])).unwrap();
 
         assert!(txs.is_empty());
+    }
+
+    #[test]
+    fn decode_recovered_tx_list_keeps_unrecoverable_tx_as_zero_signer() {
+        // A signature with `r = 0` cannot be recovered, but it must not fail the whole list.
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let signature = Signature::new(U256::ZERO, U256::from(1u64), false);
+        let signed: TransactionSigned = Signed::new_unchecked(tx, signature, B256::ZERO).into();
+        let mut encoded = Vec::new();
+        vec![signed].encode(&mut encoded);
+
+        let decoded = decode_recovered_tx_list(Bytes::from(encoded))
+            .expect("list must decode despite bad sig");
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].signer(), Address::ZERO);
     }
 
     #[test]
@@ -351,20 +390,5 @@ mod tests {
 
         assert!(is_recoverable_tx_list_error(&err, false));
         assert!(!is_recoverable_tx_list_error(&err, true));
-    }
-
-    #[test]
-    fn tx_list_witness_options_validate_difficulty_by_default() {
-        let options = TxListWitnessOptions::default();
-
-        assert!(!options.skip_zk_gas_difficulty_check);
-    }
-
-    #[test]
-    fn tx_list_witness_options_accept_camel_case_skip_flag() {
-        let options: TxListWitnessOptions =
-            serde_json::from_value(json!({ "skipZkGasDifficultyCheck": true })).unwrap();
-
-        assert!(options.skip_zk_gas_difficulty_check);
     }
 }

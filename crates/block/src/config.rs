@@ -9,17 +9,17 @@ use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_forks::Hardforks;
-use reth_ethereum_primitives::EthPrimitives;
+use reth_ethereum_primitives::{Block, EthPrimitives};
 #[cfg(feature = "net")]
 use reth_evm::ConfigureEngineEvm;
-use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, block::BlockExecutionError};
 #[cfg(feature = "net")]
 use reth_evm::{ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
 #[cfg(feature = "net")]
 use reth_payload_primitives::ExecutionPayload;
 use reth_primitives_traits::{
-    BlockTy, SealedBlock, SealedHeader, constants::MAX_TX_GAS_LIMIT_OSAKA,
+    BlockTy, RecoveredBlock, SealedBlock, SealedHeader, constants::MAX_TX_GAS_LIMIT_OSAKA,
 };
 #[cfg(feature = "net")]
 use reth_primitives_traits::{SignedTransaction, TxTy};
@@ -354,6 +354,28 @@ pub struct TaikoNextBlockEnvAttributes {
     pub extra_data: Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
+}
+
+/// Derives next-block environment attributes from a candidate block header.
+///
+/// Shared by prover derived-block execution and the proof-history tx-list witness RPC so the two
+/// paths build identical `parent + 1` environments.
+pub fn attributes_from_derived_block(
+    derived_block: &RecoveredBlock<Block>,
+) -> Result<TaikoNextBlockEnvAttributes, BlockExecutionError> {
+    let header = derived_block.header();
+    let base_fee_per_gas = header.base_fee_per_gas.ok_or_else(|| {
+        BlockExecutionError::other(MissingBaseFee { block_number: header.number })
+    })?;
+
+    Ok(TaikoNextBlockEnvAttributes {
+        timestamp: header.timestamp,
+        suggested_fee_recipient: header.beneficiary,
+        prev_randao: header.mix_hash,
+        gas_limit: header.gas_limit,
+        extra_data: header.extra_data.clone(),
+        base_fee_per_gas,
+    })
 }
 
 /// Map the latest active hardfork at the given header to a [`TaikoSpecId`].

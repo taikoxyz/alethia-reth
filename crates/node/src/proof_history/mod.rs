@@ -12,6 +12,7 @@ use exex::{ProofHistorySidecar, ProofHistorySidecarConfig};
 use storage_init::proof_history_historical_init_metadata_path;
 
 use crate::TaikoNode;
+use alethia_reth_block::config::TaikoNextBlockEnvAttributes;
 use alethia_reth_rpc::{
     debug::{TaikoDebugWitnessApiServer, TaikoDebugWitnessExt},
     eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
@@ -26,7 +27,7 @@ use reth::{
 };
 use reth_db::{Database, database_metrics::DatabaseMetrics};
 use reth_ethereum::EthPrimitives;
-use reth_node_api::{FullNodeComponents, NodeAddOns};
+use reth_node_api::{ConfigureEvm, FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
@@ -135,6 +136,7 @@ pub fn install_proof_history_rpc<Node, EthApi>(
 where
     Node: FullNodeComponents,
     EthApi: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
+    EthApi::Evm: ConfigureEvm<NextBlockEnvCtx = TaikoNextBlockEnvAttributes>,
     Node::Provider:
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {

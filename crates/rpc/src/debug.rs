@@ -31,6 +31,12 @@ use tokio::sync::Semaphore;
 /// Maximum number of concurrent proof-history witness requests.
 const MAX_CONCURRENT_WITNESS_REQUESTS: usize = 3;
 
+/// Maximum raw transaction-list bytes accepted by `debug_executionWitnessForTxList`.
+///
+/// Mirrors taiko-client's `BlockMaxTxListBytes`: `(BlobTxBytesPerFieldElement - 1) *
+/// BlobTxFieldElementsPerBlob`, currently `31 * 4096`.
+const MAX_TX_LIST_BYTES: usize = 126_976;
+
 /// RPC server trait for Taiko proof-history backed `debug_` witness methods.
 #[cfg_attr(not(test), rpc(server, namespace = "debug"))]
 #[cfg_attr(test, rpc(server, client, namespace = "debug"))]
@@ -286,6 +292,14 @@ where
 fn decode_recovered_tx_list(
     tx_list: Bytes,
 ) -> Result<Vec<Recovered<TransactionSigned>>, EthApiError> {
+    if tx_list.len() > MAX_TX_LIST_BYTES {
+        return Err(EthApiError::EvmCustom(format!(
+            "tx list bytes {} exceeds limit {}",
+            tx_list.len(),
+            MAX_TX_LIST_BYTES
+        )));
+    }
+
     let mut tx_list = tx_list.as_ref();
     Vec::<Recovered<TransactionSigned>>::decode(&mut tx_list)
         .map_err(|err| EthApiError::EvmCustom(format!("failed to decode tx list: {err}")))
@@ -338,6 +352,15 @@ mod tests {
         let txs = decode_recovered_tx_list(Bytes::from_static(&[0xc0])).unwrap();
 
         assert!(txs.is_empty());
+    }
+
+    #[test]
+    fn decode_recovered_tx_list_rejects_oversized_bytes_before_decode() {
+        let tx_list = Bytes::from(vec![0u8; MAX_TX_LIST_BYTES + 1]);
+        let err = decode_recovered_tx_list(tx_list)
+            .expect_err("tx lists above the byte limit must be rejected");
+
+        assert!(err.to_string().contains("exceeds limit"));
     }
 
     #[test]

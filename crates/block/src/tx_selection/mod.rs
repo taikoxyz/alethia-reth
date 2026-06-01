@@ -26,6 +26,8 @@ use crate::executor::is_zk_gas_limit_exceeded;
 /// DA-limit checking and adaptive zlib sizing helpers.
 mod limits;
 
+pub use limits::zlib_compressed_len;
+
 /// Returns the appropriate pool error for the exceeded limit.
 fn limit_exceeded_error(
     gas_limit: u64,

@@ -125,6 +125,22 @@ fn adjusted_estimate(estimated_after: u64, state: &DaRatioState) -> u64 {
         as u64
 }
 
+/// Returns the zlib-compressed byte length of `rlp_bytes` using the protocol's compression
+/// settings, or `u64::MAX` if compression fails.
+///
+/// This is the single definition of "compressed tx-list size" shared by transaction selection
+/// (DA limiting) and the debug witness RPC, so the two cannot drift apart.
+pub fn zlib_compressed_len(rlp_bytes: &[u8]) -> u64 {
+    let mut encoder = ZlibEncoder::new(Vec::new(), zlib_compression());
+    if encoder.write_all(rlp_bytes).is_err() {
+        return u64::MAX;
+    }
+    match encoder.finish() {
+        Ok(data) => u64::try_from(data.len()).unwrap_or(u64::MAX),
+        Err(_) => u64::MAX,
+    }
+}
+
 /// Returns the zlib-compressed byte size for the list plus the candidate.
 fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<TransactionSigned>) -> u64 {
     let mut txs: Vec<&TransactionSigned> = Vec::with_capacity(list.transactions.len() + 1);
@@ -135,15 +151,7 @@ fn zlib_tx_list_size_bytes(list: &ExecutedTxList, candidate: &Recovered<Transact
         Vec::with_capacity(list_length::<&TransactionSigned, TransactionSigned>(&txs));
     encode_list::<&TransactionSigned, TransactionSigned>(&txs, &mut rlp_bytes);
 
-    let mut encoder = ZlibEncoder::new(Vec::new(), zlib_compression());
-    if encoder.write_all(&rlp_bytes).is_err() {
-        return u64::MAX;
-    }
-    let compressed_len = match encoder.finish() {
-        Ok(data) => data.len(),
-        Err(_) => return u64::MAX,
-    };
-    u64::try_from(compressed_len).unwrap_or(u64::MAX)
+    zlib_compressed_len(&rlp_bytes)
 }
 
 /// Returns the DA size that exceeded the limit, if any (estimated or actual).

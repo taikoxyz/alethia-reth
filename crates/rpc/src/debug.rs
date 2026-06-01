@@ -1,10 +1,15 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
 use crate::proof_state::ProofHistoryStateProviderFactory;
-use alethia_reth_block::executor::{is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded};
+use alethia_reth_block::{
+    executor::{
+        is_recoverable_non_anchor_tx_error, is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded,
+    },
+    tx_selection::zlib_compressed_len,
+};
 use alethia_reth_primitives::payload::builder::decode_recovered_transactions;
 use alloy_consensus::{BlockHeader, transaction::Recovered};
-use alloy_eips::{BlockId, BlockNumberOrTag};
+use alloy_eips::{BlockId, BlockNumberOrTag, eip4844::BYTES_PER_BLOB};
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
@@ -13,7 +18,7 @@ use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_ethereum_primitives::Block;
 use reth_evm::{
     ConfigureEvm,
-    execute::{BlockExecutionError, BlockExecutor, BlockValidationError, Executor},
+    execute::{BlockExecutionError, BlockExecutor, Executor},
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
@@ -30,6 +35,20 @@ use tokio::sync::Semaphore;
 
 /// Maximum number of concurrent proof-history witness requests.
 const MAX_CONCURRENT_WITNESS_REQUESTS: usize = 3;
+
+/// Block-level tx-list DA limit: the zlib-compressed transaction list must fit in one blob.
+///
+/// This mirrors the limit the proposer and [`alethia_reth_block::tx_selection`] enforce per block
+/// (`max_da_bytes_per_list`), so a tx list that would never have been a valid block is rejected.
+const MAX_TX_LIST_COMPRESSED_BYTES: usize = BYTES_PER_BLOB;
+
+/// Generous upper bound on the raw (decompressed) tx-list bytes accepted before compression.
+///
+/// This is not a protocol limit; it only bounds the work done by the compressed-size check so an
+/// oversized request (the auth RPC server accepts bodies up to 128 MiB) cannot be handed to zlib.
+/// A valid single block's decompressed tx list is far smaller — a 45M-gas block holds at most
+/// ~11 MiB of zero-byte calldata — so this never rejects a legitimately proposed block.
+const MAX_TX_LIST_RAW_BYTES: usize = 16 * 1024 * 1024;
 
 /// RPC server trait for Taiko proof-history backed `debug_` witness methods.
 #[cfg_attr(not(test), rpc(server, namespace = "debug"))]
@@ -281,15 +300,45 @@ where
 
 /// Decode an RLP transaction list and recover each transaction signer for EVM execution.
 ///
-/// Uses the same lenient ingestion as the payload builder ([`decode_recovered_transactions`]):
-/// transactions whose signer cannot be recovered are skipped rather than failing the request, so
-/// the replayed witness matches what the node would have executed for the same tx list. A malformed
-/// top-level RLP list is still reported as an error.
+/// Rejects oversized inputs (see [`check_tx_list_size`]) before decoding. Uses the same lenient
+/// ingestion as the payload builder ([`decode_recovered_transactions`]): transactions whose signer
+/// cannot be recovered are skipped rather than failing the request, so the replayed witness matches
+/// what the node would have executed for the same tx list. A malformed top-level RLP list is still
+/// reported as an error.
 fn decode_recovered_tx_list(
     tx_list: Bytes,
 ) -> Result<Vec<Recovered<TransactionSigned>>, EthApiError> {
-    decode_recovered_transactions(tx_list.as_ref())
+    let raw = tx_list.as_ref();
+    check_tx_list_size(raw, MAX_TX_LIST_RAW_BYTES, MAX_TX_LIST_COMPRESSED_BYTES)?;
+    decode_recovered_transactions(raw)
         .map_err(|err| EthApiError::EvmCustom(format!("failed to decode tx list: {err}")))
+}
+
+/// Reject a tx list that is too large to be a valid block-level transaction list.
+///
+/// `raw` is the decompressed RLP tx list. The cheap `max_raw` byte check runs first to bound the
+/// work of the compression check; the authoritative limit is `max_compressed`, the zlib-compressed
+/// size that must fit the block DA budget (one blob).
+fn check_tx_list_size(
+    raw: &[u8],
+    max_raw: usize,
+    max_compressed: usize,
+) -> Result<(), EthApiError> {
+    if raw.len() > max_raw {
+        return Err(EthApiError::EvmCustom(format!(
+            "tx list size {} exceeds raw limit {max_raw}",
+            raw.len(),
+        )));
+    }
+
+    let compressed = zlib_compressed_len(raw);
+    if compressed > max_compressed as u64 {
+        return Err(EthApiError::EvmCustom(format!(
+            "tx list compressed size {compressed} exceeds block DA limit {max_compressed}",
+        )));
+    }
+
+    Ok(())
 }
 
 /// Replace a canonical block's transactions with the explicit replay transaction list.
@@ -313,19 +362,12 @@ fn block_with_tx_list(
 }
 
 /// Return whether a transaction-list replay error should be tolerated for prover witness parity.
+///
+/// Anchor (index 0) failures are always fatal; non-anchor failures defer to the shared
+/// [`is_recoverable_non_anchor_tx_error`] classifier so the recoverable error set stays in sync
+/// with the prover executor and cannot drift.
 fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction: bool) -> bool {
-    if is_anchor_transaction {
-        return false;
-    }
-
-    is_zk_gas_limit_exceeded(err) ||
-        matches!(
-            err,
-            BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. } |
-                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
-            )
-        )
+    !is_anchor_transaction && is_recoverable_non_anchor_tx_error(err)
 }
 
 #[cfg(test)]
@@ -334,6 +376,7 @@ mod tests {
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_rlp::Encodable;
+    use reth_evm::execute::BlockValidationError;
     use serde_json::json;
 
     #[test]
@@ -394,5 +437,33 @@ mod tests {
             serde_json::from_value(json!({ "skipZkGasDifficultyCheck": true })).unwrap();
 
         assert!(options.skip_zk_gas_difficulty_check);
+    }
+
+    #[test]
+    fn check_tx_list_size_accepts_list_within_limits() {
+        assert!(check_tx_list_size(&[1, 2, 3], 1024, 1024).is_ok());
+    }
+
+    #[test]
+    fn check_tx_list_size_rejects_raw_over_limit() {
+        // The raw guard fires on length alone, before any compression.
+        let err = check_tx_list_size(&[0u8; 10], 4, usize::MAX)
+            .expect_err("raw byte limit must be enforced");
+
+        assert!(err.to_string().contains("raw limit"), "{err}");
+    }
+
+    #[test]
+    fn check_tx_list_size_rejects_compressed_over_limit() {
+        let raw = [7u8; 64];
+        let actual = zlib_compressed_len(&raw);
+        assert!(actual > 0);
+
+        // One byte below the actual compressed size is rejected; exactly at the size is accepted.
+        let err = check_tx_list_size(&raw, raw.len(), (actual - 1) as usize)
+            .expect_err("compressed size limit must be enforced");
+        assert!(err.to_string().contains("compressed size"), "{err}");
+
+        assert!(check_tx_list_size(&raw, raw.len(), actual as usize).is_ok());
     }
 }

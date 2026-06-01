@@ -170,35 +170,6 @@ where
         }
     }
 
-    /// Returns the non-zero imported finalized zk gas target when zk gas metering is active.
-    #[cfg(feature = "prover")]
-    fn expected_finalized_zk_gas(&self) -> Option<U256>
-    where
-        Evm: TaikoZkGasEvm,
-    {
-        if !self.ctx.is_unzen_active || self.evm.block_zk_gas_used().is_none() {
-            return None;
-        }
-
-        self.ctx.expected_difficulty().filter(|expected| !expected.is_zero())
-    }
-
-    /// Checks whether committed transactions have reached the finalized zk gas advertised by the
-    /// imported header, failing fast if execution overshoots it.
-    #[cfg(feature = "prover")]
-    fn reached_expected_finalized_zk_gas(&self) -> Result<bool, BlockExecutionError>
-    where
-        Evm: TaikoZkGasEvm,
-    {
-        let Some(expected) = self.expected_finalized_zk_gas() else { return Ok(false) };
-        let got = U256::from(self.ctx.finalized_block_zk_gas());
-        if got > expected {
-            return Err(BlockExecutionError::other(ZkGasDifficultyMismatch { expected, got }));
-        }
-
-        Ok(got == expected)
-    }
-
     /// Validates the imported header difficulty, when present, against the finalized block
     /// zk gas recomputed by execution.
     fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError> {
@@ -246,7 +217,7 @@ where
             if self.try_execute_filtered(tx, is_anchor_transaction)? {
                 committed_transactions.push(committed_tx);
             }
-            if self.zk_gas_exhausted || self.reached_expected_finalized_zk_gas()? {
+            if self.zk_gas_exhausted {
                 break;
             }
         }
@@ -517,7 +488,7 @@ where
                 continue;
             }
             self.try_execute_filtered((tx_env, tx), is_anchor_transaction)?;
-            if self.zk_gas_exhausted || self.reached_expected_finalized_zk_gas()? {
+            if self.zk_gas_exhausted {
                 break;
             }
         }
@@ -727,105 +698,6 @@ mod test {
         assert!(ctx.finalized_block_zk_gas() > 0);
     }
 
-    #[cfg(feature = "prover")]
-    #[test]
-    fn execute_block_stops_after_expected_finalized_zk_gas_is_reached() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let expected = {
-            let mut state = State::builder()
-                .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-                .with_bundle_update()
-                .build();
-            let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-            let ctx = unzen_execution_ctx();
-            let executor = TaikoBlockExecutor::new(
-                evm,
-                ctx.clone(),
-                chain_spec.clone(),
-                RethReceiptBuilder::default(),
-            );
-
-            let result = executor
-                .execute_block(vec![recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1)])
-                .expect("single transaction block should execute successfully");
-            assert_eq!(result.receipts.len(), 1);
-            ctx.finalized_block_zk_gas()
-        };
-        assert!(expected > 0);
-
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-        let mut ctx = unzen_execution_ctx();
-        ctx.expected_difficulty = Some(U256::from(expected));
-        let executor =
-            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
-
-        let result = executor
-            .execute_block(vec![
-                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
-                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1),
-                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 2, 1),
-            ])
-            .expect("executor should stop at the finalized zk gas target");
-
-        assert_eq!(result.receipts.len(), 1);
-        assert_eq!(ctx.finalized_block_zk_gas(), expected);
-    }
-
-    #[test]
-    fn executor_rejects_imported_unzen_block_when_zero_difficulty_mismatches_finalized_zk_gas() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-        let mut ctx = unzen_execution_ctx();
-        ctx.expected_difficulty = Some(U256::ZERO);
-        let mut executor =
-            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
-
-        executor
-            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
-            .expect("transaction should execute successfully");
-
-        let err: BlockExecutionError = match executor.finish() {
-            Ok(_) => panic!("imported Unzen blocks must reject zero difficulty mismatches"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("difficulty"));
-        assert!(ctx.finalized_block_zk_gas() > 0);
-    }
-
-    #[cfg(feature = "prover")]
-    #[test]
-    fn reached_expected_finalized_zk_gas_treats_zero_as_no_stop_target() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-        let mut ctx = unzen_execution_ctx();
-        ctx.expected_difficulty = Some(U256::ZERO);
-        let mut executor =
-            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
-
-        executor
-            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
-            .expect("transaction should execute successfully");
-
-        assert!(
-            !executor
-                .reached_expected_finalized_zk_gas()
-                .expect("zero target check should not fail")
-        );
-        assert!(ctx.finalized_block_zk_gas() > 0);
-    }
-
     #[test]
     fn executor_rejects_imported_unzen_block_when_difficulty_mismatches_finalized_zk_gas() {
         let chain_spec = Arc::new(unzen_chain_spec());
@@ -835,7 +707,7 @@ mod test {
             .build();
         let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let mut ctx = unzen_execution_ctx();
-        ctx.expected_difficulty = Some(U256::from(1_u64));
+        ctx.expected_difficulty = Some(U256::ZERO);
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx, chain_spec, RethReceiptBuilder::default());
 

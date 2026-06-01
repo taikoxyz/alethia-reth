@@ -7,7 +7,9 @@ use alethia_reth_block::{
     },
     tx_selection::zlib_compressed_len,
 };
-use alethia_reth_primitives::payload::builder::decode_recovered_transactions;
+use alethia_reth_primitives::{
+    payload::builder::decode_recovered_transactions, transaction::is_allowed_tx_type,
+};
 use alloy_consensus::{BlockHeader, transaction::Recovered};
 use alloy_eips::{BlockId, BlockNumberOrTag, eip4844::BYTES_PER_BLOB};
 use alloy_primitives::{B256, Bytes};
@@ -216,6 +218,14 @@ where
             for (idx, tx) in block.transactions_recovered().enumerate() {
                 let is_anchor_transaction = idx == 0;
 
+                // Taiko blocks never contain blob transactions: the build paths skip them
+                // (crates/payload/src/builder/execution.rs) and consensus validation rejects any
+                // block that includes one. Skip them here too so the replayed witness matches what
+                // the node would have executed for the same tx list.
+                if !is_allowed_tx_type(*tx.inner()) {
+                    continue;
+                }
+
                 match block_executor.execute_transaction(tx) {
                     Ok(_) => {}
                     Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
@@ -373,7 +383,7 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxEip4844, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_rlp::Encodable;
     use reth_evm::execute::BlockValidationError;
@@ -384,6 +394,49 @@ mod tests {
         let txs = decode_recovered_tx_list(Bytes::from_static(&[0xc0])).unwrap();
 
         assert!(txs.is_empty());
+    }
+
+    #[test]
+    fn blob_transactions_are_not_an_allowed_tx_type() {
+        // The replay loop skips any tx for which `is_allowed_tx_type` is false, matching the build
+        // paths. Blob (EIP-4844) transactions are never allowed in a Taiko block; legacy ones are.
+        let signature = Signature::new(U256::from(1u64), U256::from(1u64), false);
+
+        let legacy: TransactionSigned = Signed::new_unchecked(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            signature,
+            B256::ZERO,
+        )
+        .into();
+        assert!(is_allowed_tx_type(&legacy));
+
+        let blob: TransactionSigned = Signed::new_unchecked(
+            TxEip4844 {
+                chain_id: 1,
+                nonce: 0,
+                gas_limit: 21_000,
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 0,
+                to: Address::ZERO,
+                value: U256::ZERO,
+                access_list: Default::default(),
+                blob_versioned_hashes: vec![B256::ZERO],
+                max_fee_per_blob_gas: 1,
+                input: Bytes::new(),
+            },
+            signature,
+            B256::ZERO,
+        )
+        .into();
+        assert!(!is_allowed_tx_type(&blob));
     }
 
     #[test]

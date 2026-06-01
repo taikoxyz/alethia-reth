@@ -2,10 +2,10 @@
 
 use crate::proof_state::ProofHistoryStateProviderFactory;
 use alethia_reth_block::executor::{is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded};
+use alethia_reth_primitives::payload::builder::decode_recovered_transactions;
 use alloy_consensus::{BlockHeader, transaction::Recovered};
 use alloy_eips::{BlockId, BlockNumberOrTag};
-use alloy_primitives::{Address, B256, Bytes};
-use alloy_rlp::Decodable;
+use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
@@ -196,9 +196,6 @@ where
 
             for (idx, tx) in block.transactions_recovered().enumerate() {
                 let is_anchor_transaction = idx == 0;
-                if !is_anchor_transaction && tx.signer() == Address::ZERO {
-                    continue;
-                }
 
                 match block_executor.execute_transaction(tx) {
                     Ok(_) => {}
@@ -283,11 +280,15 @@ where
 }
 
 /// Decode an RLP transaction list and recover each transaction signer for EVM execution.
+///
+/// Uses the same lenient ingestion as the payload builder ([`decode_recovered_transactions`]):
+/// transactions whose signer cannot be recovered are skipped rather than failing the request, so
+/// the replayed witness matches what the node would have executed for the same tx list. A malformed
+/// top-level RLP list is still reported as an error.
 fn decode_recovered_tx_list(
     tx_list: Bytes,
 ) -> Result<Vec<Recovered<TransactionSigned>>, EthApiError> {
-    let mut tx_list = tx_list.as_ref();
-    Vec::<Recovered<TransactionSigned>>::decode(&mut tx_list)
+    decode_recovered_transactions(tx_list.as_ref())
         .map_err(|err| EthApiError::EvmCustom(format!("failed to decode tx list: {err}")))
 }
 
@@ -330,12 +331,39 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
+    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_rlp::Encodable;
     use serde_json::json;
 
     #[test]
     fn decode_recovered_tx_list_accepts_empty_rlp_list() {
         let txs = decode_recovered_tx_list(Bytes::from_static(&[0xc0])).unwrap();
+
+        assert!(txs.is_empty());
+    }
+
+    #[test]
+    fn decode_recovered_tx_list_skips_unrecoverable_transactions() {
+        // A legacy transaction with `r = 0` has an unrecoverable signature. Previously this aborted
+        // the whole request; it must now be skipped, matching the payload builder's lenient tx-list
+        // ingestion so the replay reflects what the node would have executed.
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let signature = Signature::new(U256::ZERO, U256::from(1u64), false);
+        let signed: TransactionSigned = Signed::new_unchecked(tx, signature, B256::ZERO).into();
+        let mut encoded = Vec::new();
+        vec![signed].encode(&mut encoded);
+
+        let txs = decode_recovered_tx_list(Bytes::from(encoded))
+            .expect("unrecoverable transactions are skipped, not fatal");
 
         assert!(txs.is_empty());
     }

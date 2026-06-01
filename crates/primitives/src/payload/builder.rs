@@ -105,29 +105,16 @@ impl TaikoPayloadBuilderAttributes {
                 None
             }
             Some(tx_list_bytes) => {
-                // Legacy mode: decode and use provided transactions
-                let txs = decode_transactions(tx_list_bytes)
-                    .unwrap_or_else(|e| {
-                        // If we can't decode the given transactions bytes, we will mine an empty
-                        // block instead.
-                        debug!(
-                            target: "payload_builder",
-                            "Failed to decode transactions: {e}, bytes: {:?}, mining empty block",
-                            tx_list_bytes
-                        );
-                        Vec::new()
-                    })
-                    .into_iter()
-                    .filter_map(|tx| match tx.try_into_recovered() {
-                        Ok(recovered) => Some(recovered),
-                        Err(e) => {
-                            debug!(
-                                "Failed to recover transaction: {e}, skipping invalid transaction"
-                            );
-                            None
-                        }
-                    })
-                    .collect();
+                // Legacy mode: decode and recover the provided transactions, skipping any that
+                // fail signer recovery. If the list itself cannot be decoded, mine an empty block.
+                let txs = decode_recovered_transactions(tx_list_bytes).unwrap_or_else(|e| {
+                    debug!(
+                        target: "payload_builder",
+                        "Failed to decode transactions: {e}, bytes: {:?}, mining empty block",
+                        tx_list_bytes
+                    );
+                    Vec::new()
+                });
                 Some(txs)
             }
         };
@@ -245,6 +232,27 @@ pub fn payload_id_taiko(
 /// Decode RLP-encoded bytes into signed transactions.
 fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp::Error> {
     Vec::<TransactionSigned>::decode(&mut &bytes[..])
+}
+
+/// Decode an RLP transaction list and recover each signer, dropping any transaction whose signer
+/// cannot be recovered.
+///
+/// This mirrors Taiko's lenient tx-list ingestion: a malformed top-level RLP list is reported as an
+/// error (so callers can decide whether to fall back, e.g. mine an empty block), while individual
+/// transactions that fail signer recovery are skipped rather than failing the whole list.
+pub fn decode_recovered_transactions(
+    bytes: &[u8],
+) -> Result<Vec<Recovered<TransactionSigned>>, alloy_rlp::Error> {
+    Ok(decode_transactions(bytes)?
+        .into_iter()
+        .filter_map(|tx| match tx.try_into_recovered() {
+            Ok(recovered) => Some(recovered),
+            Err(e) => {
+                debug!("Failed to recover transaction: {e}, skipping invalid transaction");
+                None
+            }
+        })
+        .collect())
 }
 
 #[cfg(all(test, feature = "net"))]

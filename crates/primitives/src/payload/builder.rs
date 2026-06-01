@@ -56,6 +56,13 @@ pub struct TaikoPayloadBuilderAttributes {
     pub extra_data: Bytes,
     /// Prebuilt anchor transaction for new mode, decoded and recovered.
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
+    /// L1 origin block number for the L2 block — the L1 tip at which the Shasta proposal
+    /// was made. Derived from `TaikoPayloadAttributes.l1_origin.l1_block_height` and
+    /// forwarded through to `TaikoNextBlockEnvAttributes` / `TaikoBlockExecutionCtx` so the
+    /// L1Sload / L1Staticcall precompile lookback window uses the on-chain-verified
+    /// `originBlockNumber` (per `Inbox.sol::propose()`) rather than the narrower
+    /// `anchorBlockNumber`. `None` when the sequencer didn't supply the field.
+    pub l1_origin_block_number: Option<u64>,
 }
 
 #[cfg(feature = "net")]
@@ -153,6 +160,13 @@ impl TaikoPayloadBuilderAttributes {
             extra_data: attributes.block_metadata.extra_data,
             transactions,
             anchor_transaction,
+            // `RpcL1Origin.l1_block_height: Option<U256>`. The U256 → u64 conversion can
+            // overflow for synthetic test fixtures with absurdly high values; in production
+            // L1 block numbers fit comfortably in u64 so a `try_into()` is the safe path.
+            l1_origin_block_number: attributes
+                .l1_origin
+                .l1_block_height
+                .and_then(|h| h.try_into().ok()),
         };
 
         Ok(res)

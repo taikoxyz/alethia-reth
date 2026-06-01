@@ -21,3 +21,7 @@ reth-db = { workspace = true }
 reth-db-api = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
+
+[dev-dependencies]
+# `test-utils` exposes the in-memory `create_test_rw_db` helper used by queries.rs tests.
+reth-db = { workspace = true, features = ["test-utils"] }

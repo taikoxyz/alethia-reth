@@ -45,6 +45,16 @@ pub struct TaikoExecutionDataSidecar {
     pub header_difficulty: Option<U256>,
     /// Marker flag indicating whether this payload is a Taiko block.
     pub taiko_block: Option<bool>,
+    /// L1 origin block number for this payload — the L1 tip at which the Shasta proposal
+    /// was made (`Proposal.originBlockNumber` per `Inbox.sol::propose()`). Used by the
+    /// L1Sload / L1Staticcall precompiles as the upper bound of their 256-block lookback
+    /// window. `None` for pre-Unzen payloads or when the sequencer doesn't supply it
+    /// (the L1 precompiles then halt for any in-block invocation).
+    ///
+    /// Backward-compatible: serde `default` lets older sequencers that don't include this
+    /// field deserialize cleanly into `None`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub l1_origin_block_number: Option<u64>,
 }
 
 impl ExecutionPayloadTr for TaikoExecutionData {

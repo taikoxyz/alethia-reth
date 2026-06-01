@@ -57,6 +57,19 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_unzen_timestamp: u64,
+
+    /// L1 RPC URL used by the L1Sload + L1Staticcall precompiles for live fetches. When
+    /// set, the node installs HTTP fetchers against this URL at startup so the precompiles
+    /// can serve cache misses by calling `eth_getStorageAt` / `debug_traceCall` upstream.
+    /// Leave unset to disable live L1 fetching (precompiles will only serve preloaded
+    /// witness data, as needed by the ZK guest).
+    #[arg(
+        long = "l1-rpc-url",
+        env = "ALETHIA_RETH_L1_RPC_URL",
+        value_name = "URL",
+        help_heading = "Taiko"
+    )]
+    pub l1_rpc_url: Option<String>,
 }
 
 /// CLI arguments controlling the optional proof-history sidecar.

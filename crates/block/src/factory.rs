@@ -42,6 +42,16 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub expected_difficulty: Option<U256>,
     /// Finalized block zk gas accumulated from fully committed post Unzen transactions.
     pub finalized_block_zk_gas: Arc<AtomicU64>,
+    /// L1 origin block number for this L2 block — `Proposal.originBlockNumber` (the L1 tip
+    /// the Shasta proposal committed to). It is the trust root and upper bound of the
+    /// L1Sload / L1Staticcall `[origin − 256, origin]` lookback window, bound on-chain via
+    /// `originBlockHash = blockhash(originBlockNumber)`.
+    ///
+    /// Sourced from `TaikoNextBlockEnvAttributes` (sequencer build) or the engine API
+    /// sidecar (import). `None` on the re-execution path (`context_for_block`); there the
+    /// debug / proof RPC handlers look up `StoredL1Origin` from the db and inject it via a
+    /// thread-local override instead. When `None`, the executor hook no-ops.
+    pub l1_origin_block_number: Option<u64>,
 }
 
 impl<'a> TaikoBlockExecutionCtx<'a> {

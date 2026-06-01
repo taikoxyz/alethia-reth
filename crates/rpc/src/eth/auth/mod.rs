@@ -331,6 +331,11 @@ where
                     gas_limit: block_max_gas_limit * max_transactions_lists,
                     extra_data: parent.extra_data().clone(),
                     base_fee_per_gas: base_fee,
+                    // Pre-built tx-list candidate path doesn't see the proposal's L1Origin.
+                    // The proposer fills it in via the engine API when the block is actually
+                    // built; here we only build candidate tx orderings, so leaving `None`
+                    // means L1 precompiles halt during pre-build (they shouldn't be invoked).
+                    l1_origin_block_number: None,
                 },
             )
             .map_err(|_| {

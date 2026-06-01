@@ -206,6 +206,12 @@ where
                 gas_limit: attributes.gas_limit,
                 extra_data: attributes.extra_data.clone(),
                 base_fee_per_gas: attributes.base_fee_per_gas,
+                // Forward the proposal's L1Origin block number — the on-chain-verified
+                // `originBlockNumber` — so the L1Sload / L1Staticcall precompile range-check
+                // uses the correct `[origin − 256, origin]` lookback window during block
+                // building. Sourced from `TaikoPayloadAttributes.l1_origin.l1_block_height`
+                // when the engine API request to build this payload arrived.
+                l1_origin_block_number: attributes.l1_origin_block_number,
             },
         )
         .map_err(PayloadBuilderError::other)?;

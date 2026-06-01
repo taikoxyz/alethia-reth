@@ -223,6 +223,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             .header()
             .base_fee_per_gas
             .ok_or_else(|| AnyError::new(MissingBaseFee { block_number: block.header().number }))?;
+
         Ok(TaikoBlockExecutionCtx {
             parent_hash: block.header().parent_hash,
             parent_beacon_block_root: block.header().parent_beacon_block_root,
@@ -233,6 +234,10 @@ impl ConfigureEvm for TaikoEvmConfig {
             is_unzen_active,
             expected_difficulty: is_unzen_active.then_some(block.header().difficulty),
             finalized_block_zk_gas: Default::default(),
+            // Re-execution path: the SealedBlock carries no L1Origin. Debug / proof RPC
+            // handlers look up `StoredL1Origin` from the db and inject it via a thread-local
+            // override; left `None` here, the executor hook no-ops.
+            l1_origin_block_number: None,
         })
     }
 
@@ -254,6 +259,9 @@ impl ConfigureEvm for TaikoEvmConfig {
             is_unzen_active,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
+            // Origin supplied by the sequencer via `TaikoPayloadAttributes.l1_origin`,
+            // forwarded through `TaikoNextBlockEnvAttributes`.
+            l1_origin_block_number: ctx.l1_origin_block_number,
         })
     }
 }
@@ -306,6 +314,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         payload: &'a TaikoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let is_unzen_active = self.chain_spec().is_unzen_active(payload.timestamp());
+
         Ok(TaikoBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
@@ -319,6 +328,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             is_unzen_active,
             expected_difficulty: None,
             finalized_block_zk_gas: Default::default(),
+            // Origin supplied by the sequencer in the engine API sidecar (serde-default
+            // `None` for senders that don't populate it).
+            l1_origin_block_number: payload.taiko_sidecar.l1_origin_block_number,
         })
     }
 
@@ -354,6 +366,11 @@ pub struct TaikoNextBlockEnvAttributes {
     pub extra_data: Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
+    /// L1 origin block number for the next block — the L1 tip at which the proposal was
+    /// made. Required for Unzen-or-later blocks to populate the L1Sload / L1Staticcall
+    /// precompile lookback window; sourced by the sequencer from
+    /// `TaikoPayloadAttributes.l1_origin.l1_block_height`. `None` for pre-Unzen blocks.
+    pub l1_origin_block_number: Option<u64>,
 }
 
 /// Map the latest active hardfork at the given header to a [`TaikoSpecId`].
@@ -404,6 +421,9 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
             gas_limit: parent.gas_limit,
             extra_data: parent.extra_data.clone(),
             base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
+            // Pending env is synthetic — there's no L1 proposal yet, so no origin to plumb.
+            // The L1 precompile range check will halt for any pending-block invocation.
+            l1_origin_block_number: None,
         }
     }
 }

@@ -5,3 +5,5 @@
 pub mod compress;
 /// Typed database table definitions and row models.
 pub mod model;
+/// Read-side query helpers over the typed tables in [`model`].
+pub mod queries;

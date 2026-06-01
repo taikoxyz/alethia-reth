@@ -8,12 +8,13 @@ use reth_revm::{
     },
     inspector::NoOpInspector,
     interpreter::interpreter::EthInterpreter,
-    precompile::{PrecompileSpecId, Precompiles},
+    precompile::PrecompileSpecId,
 };
 
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
+    precompiles::taiko_precompiles_map,
     spec::TaikoSpecId,
     zk_gas::{adapter::ZkGasInspector, schedule::schedule_for},
 };
@@ -54,9 +55,10 @@ impl EvmFactory for TaikoEvmFactory {
             .with_block(input.block_env)
             .with_db(db)
             .build_mainnet_with_inspector(ZkGasInspector::new(NoOpInspector {}, None))
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
+            .with_precompiles(taiko_precompiles_map(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
-            )));
+                spec_id,
+            ));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false)
     }
@@ -75,9 +77,10 @@ impl EvmFactory for TaikoEvmFactory {
             .with_block(input.block_env)
             .with_db(db)
             .build_mainnet_with_inspector(ZkGasInspector::new(inspector, schedule))
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
+            .with_precompiles(taiko_precompiles_map(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
-            )));
+                spec_id,
+            ));
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }

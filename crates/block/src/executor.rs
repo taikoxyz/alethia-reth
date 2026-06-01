@@ -26,6 +26,7 @@ use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
     handler::get_treasury_address,
+    precompiles::context::{current_l1_origin_override, set_l1_origin_block_id},
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
@@ -289,6 +290,35 @@ where
     }
 }
 
+/// Shared L1 precompile context helper — same bounds as the `BlockExecutor` impl below, so it
+/// can be used from both the prover-mode `execute_block_with_committed_transactions` and the
+/// trait-mode `BlockExecutor::execute_block`.
+impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
+where
+    E: Evm<
+            DB: StateDB + DatabaseCommit,
+            Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
+        > + TaikoZkGasEvm,
+    Spec: TaikoExecutorSpec + Clone,
+    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+{
+    /// Install the L1Sload / L1Staticcall origin context before any tx executes.
+    ///
+    /// The origin (`Proposal.originBlockNumber`, the upper bound of the `[origin − 256, origin]`
+    /// lookback window) comes from the thread-local override — set by re-execution RPC handlers
+    /// after a `StoredL1Origin` db lookup — or else `ctx.l1_origin_block_number` (build paths).
+    /// No-op pre-Unzen, or when neither is set (any L1 precompile call then halts "context unset").
+    fn apply_l1_precompile_context_from_ctx(&self) {
+        let timestamp: u64 = self.evm.block().timestamp().to();
+        if !self.spec.is_unzen_active(timestamp) {
+            return;
+        }
+        if let Some(origin) = current_l1_origin_override().or(self.ctx.l1_origin_block_number) {
+            set_l1_origin_block_id(origin);
+        }
+    }
+}
+
 impl<E, Spec, R> BlockExecutor for TaikoBlockExecutor<'_, E, Spec, R>
 where
     E: Evm<
@@ -311,6 +341,9 @@ where
     /// NOTE: Here we use a system call to set the Anchor transact sender account information and
     /// decode the base fee share percentage from the block's extra data.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
+        // Install the L1Sload / L1Staticcall origin context. No-op pre-Unzen or when unset.
+        self.apply_l1_precompile_context_from_ctx();
+
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
@@ -512,6 +545,7 @@ where
             if !is_anchor_transaction && *tx.signer() == Address::ZERO {
                 continue;
             }
+
             self.try_execute_filtered((tx_env, tx), is_anchor_transaction)?;
             if self.zk_gas_exhausted {
                 break;
@@ -791,6 +825,7 @@ mod test {
                         gas_limit: 30_000_000,
                         extra_data: Bytes::new(),
                         base_fee_per_gas: 1,
+                        l1_origin_block_number: None,
                     },
                 )
                 .expect("next block env should build");
@@ -808,6 +843,7 @@ mod test {
                     is_unzen_active: false,
                     expected_difficulty: None,
                     finalized_block_zk_gas: Default::default(),
+                    l1_origin_block_number: None,
                 },
                 chain_spec.clone(),
                 RethReceiptBuilder::default(),

@@ -60,6 +60,7 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
         is_unzen_active: true,
         expected_difficulty: None,
         finalized_block_zk_gas: Default::default(),
+        l1_origin_block_number: None,
     }
 }
 

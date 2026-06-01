@@ -135,8 +135,14 @@ pub fn install_proof_history_rpc<Node, EthApi>(
 where
     Node: FullNodeComponents,
     EthApi: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
-    Node::Provider:
-        HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
+    // `DatabaseProviderFactory` lets the debug handler read `StoredL1OriginTable` for the
+    // per-block `originBlockNumber`.
+    Node::Provider: reth_storage_api::DatabaseProviderFactory
+        + HeaderProvider<Header = reth::primitives::Header>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     let eth_ext = TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone());
     ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;

@@ -46,6 +46,11 @@ impl PayloadTypes for TaikoEngineTypes {
                 withdrawals_hash,
                 header_difficulty: Some(header_difficulty),
                 taiko_block: Some(true),
+                // `from_block` constructs the engine envelope from an already-built block,
+                // typically for re-broadcast. The originating builder is responsible for
+                // attaching L1Origin via a separate path (`taikoAuth_updateL1Origin`); this
+                // payload-conversion path doesn't have access to it.
+                l1_origin_block_number: None,
             },
         }
     }

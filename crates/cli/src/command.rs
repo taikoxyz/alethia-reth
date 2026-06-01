@@ -20,6 +20,10 @@ pub trait TaikoNodeExtArgs {
 
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
+
+    /// Returns the configured L1 RPC URL used by the L1Sload / L1Staticcall precompiles
+    /// for live fetches, or `None` if live L1 fetching is disabled.
+    fn l1_rpc_url(&self) -> Option<&str>;
 }
 
 impl TaikoNodeExtArgs for NoArgs {
@@ -31,6 +35,11 @@ impl TaikoNodeExtArgs for NoArgs {
     /// Returns a disabled proof-history configuration for commands without Taiko options.
     fn proof_history_config(&self) -> ProofHistoryConfig {
         ProofHistoryConfig::disabled()
+    }
+
+    /// Subcommands that don't expose Taiko args never wire the L1 RPC client.
+    fn l1_rpc_url(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -50,6 +59,11 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
             prune_interval: self.proof_history.prune_interval,
             verification_interval: self.proof_history.verification_interval,
         }
+    }
+
+    /// Returns the parsed `--l1-rpc-url` if provided, `None` otherwise.
+    fn l1_rpc_url(&self) -> Option<&str> {
+        self.l1_rpc_url.as_deref()
     }
 }
 

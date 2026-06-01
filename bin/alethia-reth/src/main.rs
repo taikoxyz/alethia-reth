@@ -1,9 +1,13 @@
 #![cfg_attr(not(test), deny(missing_docs, clippy::missing_docs_in_private_items))]
 #![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Rust Taiko node (alethia-reth) binary executable.
+use std::sync::Arc;
+
 use alethia_reth_cli::{
     TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs, command::TaikoNodeExtArgs,
 };
+use alethia_reth_evm::precompiles::context::set_record_l1_served_calls;
+use alethia_reth_l1_client::{L1RpcClient, install_l1sload_fetcher, install_l1staticcall_fetcher};
 use alethia_reth_node::{
     TaikoNode,
     proof_history::{install_proof_history, install_proof_history_rpc},
@@ -14,7 +18,7 @@ use alethia_reth_node::{
 };
 use reth::api::FullNodeComponents;
 use reth_rpc::eth::EthApiTypes;
-use tracing::info;
+use tracing::{info, warn};
 
 #[global_allocator]
 /// Global allocator used by the node binary.
@@ -29,6 +33,41 @@ fn main() {
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
         async move |builder, ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
+
+            // Wire the L1 RPC fetchers into the L1Sload / L1Staticcall precompiles when the
+            // operator supplied --l1-rpc-url. The fetchers run on the same tokio runtime as
+            // the node (block_in_place + Handle::block_on bridges the synchronous precompile
+            // contract into our async HTTP client).
+            if let Some(l1_url) = ext_args.l1_rpc_url() {
+                match L1RpcClient::new(l1_url) {
+                    Ok(client) => {
+                        let client = Arc::new(client);
+                        let handle = tokio::runtime::Handle::current();
+                        install_l1sload_fetcher(client.clone(), handle.clone());
+                        install_l1staticcall_fetcher(client, handle);
+                        // Live node: nobody collects served-call records here (only the prover
+                        // preflight does), so disable recording to keep the lists bounded.
+                        set_record_l1_served_calls(false);
+                        info!(
+                            target: "reth::taiko::cli",
+                            l1_url,
+                            "L1 precompile RPC fetchers installed",
+                        );
+                    }
+                    Err(e) => {
+                        // Don't fail node startup over a malformed URL — fall back to the
+                        // no-live-fetch path and surface the misconfiguration loudly so the
+                        // operator can fix it without losing block-production uptime.
+                        warn!(
+                            target: "reth::taiko::cli",
+                            l1_url,
+                            "Failed to initialize L1 RPC client; precompiles will rely on \
+                             cached witnesses only: {e}",
+                        );
+                    }
+                }
+            }
+
             let node_builder = builder.node(TaikoNode);
             let (node_builder, proof_history_storage) =
                 install_proof_history(node_builder, ext_args.proof_history_config())?;

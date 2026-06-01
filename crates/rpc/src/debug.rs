@@ -218,12 +218,16 @@ where
             for (idx, tx) in block.transactions_recovered().enumerate() {
                 let is_anchor_transaction = idx == 0;
 
-                // Taiko blocks never contain blob transactions: the build paths skip them
-                // (crates/payload/src/builder/execution.rs) and consensus validation rejects any
-                // block that includes one. Skip them here too so the replayed witness matches what
-                // the node would have executed for the same tx list.
-                if !is_allowed_tx_type(*tx.inner()) {
-                    continue;
+                // Taiko blocks never contain blob transactions: the build paths skip non-anchor
+                // ones (crates/payload/src/builder/execution.rs) and consensus validation rejects
+                // any block that includes one. Keep the same filtering, but never silently discard
+                // the mandatory anchor transaction.
+                match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
+                    Ok(true) => {
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(err) => return Err(err.into()),
                 }
 
                 match block_executor.execute_transaction(tx) {
@@ -240,8 +244,8 @@ where
             match block_executor.apply_post_execution_changes() {
                 Ok(_) => {}
                 Err(err)
-                    if options.skip_zk_gas_difficulty_check &&
-                        is_zk_gas_difficulty_mismatch(&err) => {}
+                    if options.skip_zk_gas_difficulty_check
+                        && is_zk_gas_difficulty_mismatch(&err) => {}
                 Err(err) => return Err(EthApiError::from(err).into()),
             }
         }
@@ -380,6 +384,26 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
     !is_anchor_transaction && is_recoverable_non_anchor_tx_error(err)
 }
 
+/// Return whether a disallowed transaction type should be skipped in tx-list replay.
+///
+/// Non-anchor transactions match the payload-builder filtering behavior. The anchor transaction is
+/// mandatory block setup, so silently skipping it would produce a witness for a block the node would
+/// never execute.
+fn should_skip_disallowed_tx_type(
+    tx: &TransactionSigned,
+    is_anchor_transaction: bool,
+) -> Result<bool, EthApiError> {
+    if is_allowed_tx_type(tx) {
+        return Ok(false);
+    }
+
+    if is_anchor_transaction {
+        return Err(EthApiError::EvmCustom("anchor transaction type is not allowed".to_string()));
+    }
+
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,24 +442,7 @@ mod tests {
         .into();
         assert!(is_allowed_tx_type(&legacy));
 
-        let blob: TransactionSigned = Signed::new_unchecked(
-            TxEip4844 {
-                chain_id: 1,
-                nonce: 0,
-                gas_limit: 21_000,
-                max_fee_per_gas: 1,
-                max_priority_fee_per_gas: 0,
-                to: Address::ZERO,
-                value: U256::ZERO,
-                access_list: Default::default(),
-                blob_versioned_hashes: vec![B256::ZERO],
-                max_fee_per_blob_gas: 1,
-                input: Bytes::new(),
-            },
-            signature,
-            B256::ZERO,
-        )
-        .into();
+        let blob = blob_transaction();
         assert!(!is_allowed_tx_type(&blob));
     }
 
@@ -475,6 +482,26 @@ mod tests {
 
         assert!(is_recoverable_tx_list_error(&err, false));
         assert!(!is_recoverable_tx_list_error(&err, true));
+    }
+
+    #[test]
+    fn tx_list_replay_rejects_disallowed_anchor_tx_type() {
+        let blob = blob_transaction();
+
+        let err = should_skip_disallowed_tx_type(&blob, true)
+            .expect_err("anchor transaction type failures must be fatal");
+
+        assert!(err.to_string().contains("anchor transaction type is not allowed"), "{err}");
+    }
+
+    #[test]
+    fn tx_list_replay_skips_disallowed_non_anchor_tx_type() {
+        let blob = blob_transaction();
+
+        let should_skip = should_skip_disallowed_tx_type(&blob, false)
+            .expect("non-anchor disallowed tx types should be skipped");
+
+        assert!(should_skip);
     }
 
     #[test]
@@ -518,5 +545,28 @@ mod tests {
         assert!(err.to_string().contains("compressed size"), "{err}");
 
         assert!(check_tx_list_size(&raw, raw.len(), actual as usize).is_ok());
+    }
+
+    fn blob_transaction() -> TransactionSigned {
+        let signature = Signature::new(U256::from(1u64), U256::from(1u64), false);
+
+        Signed::new_unchecked(
+            TxEip4844 {
+                chain_id: 1,
+                nonce: 0,
+                gas_limit: 21_000,
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 0,
+                to: Address::ZERO,
+                value: U256::ZERO,
+                access_list: Default::default(),
+                blob_versioned_hashes: vec![B256::ZERO],
+                max_fee_per_blob_gas: 1,
+                input: Bytes::new(),
+            },
+            signature,
+            B256::ZERO,
+        )
+        .into()
     }
 }

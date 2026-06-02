@@ -26,7 +26,11 @@ use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
     handler::get_treasury_address,
-    precompiles::context::{current_l1_origin_override, set_l1_origin_block_id},
+    precompiles::{
+        context::{current_l1_origin_override, set_l1_origin_block_id},
+        l1sload::evict_stale_l1_storage_entries,
+        l1staticcall::evict_stale_l1_staticcall_entries,
+    },
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
@@ -308,6 +312,9 @@ where
     /// lookback window) comes from the thread-local override — set by re-execution RPC handlers
     /// after a `StoredL1Origin` db lookup — or else `ctx.l1_origin_block_number` (build paths).
     /// No-op pre-Unzen, or when neither is set (any L1 precompile call then halts "context unset").
+    ///
+    /// After setting the origin, evicts cache entries that have fallen out of the new lookback
+    /// window so a long-running live node doesn't accumulate stale entries indefinitely.
     fn apply_l1_precompile_context_from_ctx(&self) {
         let timestamp: u64 = self.evm.block().timestamp().to();
         if !self.spec.is_unzen_active(timestamp) {
@@ -315,6 +322,8 @@ where
         }
         if let Some(origin) = current_l1_origin_override().or(self.ctx.l1_origin_block_number) {
             set_l1_origin_block_id(origin);
+            evict_stale_l1_storage_entries(origin);
+            evict_stale_l1_staticcall_entries(origin);
         }
     }
 }
@@ -820,12 +829,9 @@ mod test {
                     &alloy_consensus::Header::default(),
                     &TaikoNextBlockEnvAttributes {
                         timestamp: 1,
-                        suggested_fee_recipient: Address::ZERO,
-                        prev_randao: B256::ZERO,
                         gas_limit: 30_000_000,
-                        extra_data: Bytes::new(),
                         base_fee_per_gas: 1,
-                        l1_origin_block_number: None,
+                        ..Default::default()
                     },
                 )
                 .expect("next block env should build");
@@ -833,18 +839,7 @@ mod test {
 
             TaikoBlockExecutor::new(
                 evm,
-                TaikoBlockExecutionCtx {
-                    parent_hash: B256::ZERO,
-                    parent_beacon_block_root: None,
-                    ommers: &[],
-                    withdrawals: None,
-                    basefee_per_gas: 1,
-                    extra_data: Bytes::new(),
-                    is_unzen_active: false,
-                    expected_difficulty: None,
-                    finalized_block_zk_gas: Default::default(),
-                    l1_origin_block_number: None,
-                },
+                TaikoBlockExecutionCtx { basefee_per_gas: 1, ..Default::default() },
                 chain_spec.clone(),
                 RethReceiptBuilder::default(),
             )

@@ -15,18 +15,14 @@
 use std::sync::Arc;
 
 use alethia_reth_evm::precompiles::{
-    l1sload::set_l1_rpc_fetcher, l1staticcall::set_l1_staticcall_rpc_fetcher,
+    l1sload::set_l1_rpc_fetcher,
+    l1staticcall::{L1_PRECOMPILE_CALLER, L1STATICCALL_GAS_CAP, set_l1_staticcall_rpc_fetcher},
 };
 use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_client::{ClientBuilder, RpcClient};
 use serde::Deserialize;
 use tokio::runtime::Handle;
 use tracing::{debug, warn};
-
-/// Maximum L1 gas budget a single L1Staticcall fetch may consume. Mirrors `L1STATICCALL_GAS_CAP`
-/// shared between the L2 precompile, this live `debug_traceCall` fetcher, and the prover's
-/// preflight — keeping them in lockstep prevents sequencer↔prover OOM divergence.
-pub const L1STATICCALL_GAS_CAP: u64 = 30_000_000;
 
 /// HTTP-backed L1 RPC client. Wraps `alloy_rpc_client::RpcClient` with the specific RPC
 /// methods used by the L1 precompile fetchers + provers.
@@ -85,7 +81,7 @@ impl L1RpcClient {
                 "debug_traceCall",
                 (
                     serde_json::json!({
-                        "from": "0x0000000000000000000000000000000000000000",
+                        "from": format!("{L1_PRECOMPILE_CALLER:?}"),
                         "to": format!("{target:?}"),
                         "data": call_data_hex,
                         "gas": gas_hex,

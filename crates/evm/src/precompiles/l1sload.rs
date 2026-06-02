@@ -103,6 +103,24 @@ pub fn clear_l1_rpc_served_calls() {
     L1_RPC_SERVED_CALLS.lock().expect("L1_RPC_SERVED_CALLS mutex poisoned").clear();
 }
 
+/// Evict cache entries whose block falls below the `[l1_origin − 256, l1_origin]` lookback
+/// window. Called once per block from the executor hook so a long-running live node doesn't
+/// accumulate stale entries indefinitely (the precompile would reject reads of those blocks
+/// anyway, so they're dead memory). O(N) over the cache, but N is bounded by recent traffic.
+pub fn evict_stale_l1_storage_entries(l1_origin: u64) {
+    let floor = l1_origin.saturating_sub(L1SLOAD_MAX_BLOCK_LOOKBACK);
+    let mut cache = L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned");
+    let prior = cache.len();
+    cache.retain(|(_, _, block), _| {
+        let block_n: u64 = U256::from_be_bytes(block.0).try_into().unwrap_or(u64::MAX);
+        block_n >= floor
+    });
+    let removed = prior - cache.len();
+    if removed > 0 {
+        debug!("L1SLOAD: evicted {removed} cache entries below block {floor}");
+    }
+}
+
 /// Look up a cached L1 storage value by address, key, and block number.
 fn get_l1_storage_value(
     contract_address: Address,

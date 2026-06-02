@@ -152,18 +152,7 @@ mod test {
         evm_env.block_env.gas_limit = 30_000_000;
         evm_env.block_env.difficulty = U256::from(999_u64);
 
-        let ctx = TaikoBlockExecutionCtx {
-            parent_hash: B256::ZERO,
-            parent_beacon_block_root: None,
-            ommers: &[],
-            withdrawals: None,
-            basefee_per_gas: 0,
-            extra_data: Bytes::default(),
-            is_unzen_active: true,
-            expected_difficulty: None,
-            finalized_block_zk_gas: Default::default(),
-            l1_origin_block_number: None,
-        };
+        let ctx = TaikoBlockExecutionCtx { is_unzen_active: true, ..Default::default() };
         ctx.set_finalized_block_zk_gas(42);
 
         let parent = SealedHeader::seal_slow(Header::default());
@@ -204,16 +193,9 @@ mod test {
         evm_env.block_env.gas_limit = 30_000_000;
 
         let ctx = TaikoBlockExecutionCtx {
-            parent_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::ZERO),
-            ommers: &[],
-            withdrawals: None,
-            basefee_per_gas: 0,
-            extra_data: Bytes::default(),
             is_unzen_active: true,
-            expected_difficulty: None,
-            finalized_block_zk_gas: Default::default(),
-            l1_origin_block_number: None,
+            ..Default::default()
         };
 
         let parent = SealedHeader::seal_slow(Header::default());

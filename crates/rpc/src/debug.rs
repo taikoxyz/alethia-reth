@@ -36,6 +36,7 @@ use reth_rpc_eth_types::EthApiError;
 use reth_trie_common::ExecutionWitnessMode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
+use tracing::warn;
 
 /// Max concurrent witness requests. Pinned to 1: re-execution sets the process-global L1
 /// precompile origin context, so concurrent requests for different blocks would race on it.
@@ -194,10 +195,21 @@ where
         // L1 precompile hook installs the correct `[origin − 256, origin]` window — re-execution
         // then matches build time even when the proposer lagged the L1 tip. The guard MUST
         // outlive `execute_with_state_closure` (it clears the thread-local on drop).
-        let _l1_origin_guard: Option<L1OriginOverrideGuard> = self
+        let l1_origin = self
             .lookup_l1_origin(block_number)
-            .map_err(<Eth::Error as reth_rpc_eth_api::FromEthApiError>::from_eth_err)?
-            .map(install_l1_origin_override);
+            .map_err(<Eth::Error as reth_rpc_eth_api::FromEthApiError>::from_eth_err)?;
+        if l1_origin.is_none() {
+            // Liveness hint: re-execution will halt at the L1 precompile if the block contained
+            // L1Sload/L1Staticcall calls. The most common cause is the driver lagging behind on
+            // writing `StoredL1OriginTable`; less commonly, the block predates Shasta.
+            warn!(
+                target: "reth::taiko::rpc::debug",
+                block_number,
+                "L1 origin not found in StoredL1OriginTable — debug_executionWitness re-exec \
+                 may halt at L1 precompile if the block contains L1Sload/L1Staticcall calls",
+            );
+        }
+        let _l1_origin_guard: Option<L1OriginOverrideGuard> = l1_origin.map(install_l1_origin_override);
 
         let db = StateProviderDatabase::new(&*state_provider);
         let block_executor = self.eth_api.evm_config().executor(db);

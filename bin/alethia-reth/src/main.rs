@@ -3,6 +3,7 @@
 //! Rust Taiko node (alethia-reth) binary executable.
 use std::sync::Arc;
 
+use alethia_reth_chainspec::hardfork::{TaikoHardfork, TaikoHardforks};
 use alethia_reth_cli::{
     TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs, command::TaikoNodeExtArgs,
 };
@@ -16,9 +17,10 @@ use alethia_reth_node::{
         eth::{TaikoExt, TaikoExtApiServer},
     },
 };
+use alloy_hardforks::ForkCondition;
 use reth::api::FullNodeComponents;
 use reth_rpc::eth::EthApiTypes;
-use tracing::{info, warn};
+use tracing::info;
 
 #[global_allocator]
 /// Global allocator used by the node binary.
@@ -34,37 +36,46 @@ fn main() {
         async move |builder, ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
 
-            // Wire the L1 RPC fetchers into the L1Sload / L1Staticcall precompiles when the
-            // operator supplied --l1-rpc-url. The fetchers run on the same tokio runtime as
-            // the node (block_in_place + Handle::block_on bridges the synchronous precompile
-            // contract into our async HTTP client).
-            if let Some(l1_url) = ext_args.l1_rpc_url() {
-                match L1RpcClient::new(l1_url) {
-                    Ok(client) => {
-                        let client = Arc::new(client);
-                        let handle = tokio::runtime::Handle::current();
-                        install_l1sload_fetcher(client.clone(), handle.clone());
-                        install_l1staticcall_fetcher(client, handle);
-                        // Live node: nobody collects served-call records here (only the prover
-                        // preflight does), so disable recording to keep the lists bounded.
-                        set_record_l1_served_calls(false);
-                        info!(
-                            target: "reth::taiko::cli",
-                            l1_url,
-                            "L1 precompile RPC fetchers installed",
-                        );
-                    }
-                    Err(e) => {
-                        // Don't fail node startup over a malformed URL — fall back to the
-                        // no-live-fetch path and surface the misconfiguration loudly so the
-                        // operator can fix it without losing block-production uptime.
-                        warn!(
-                            target: "reth::taiko::cli",
-                            l1_url,
-                            "Failed to initialize L1 RPC client; precompiles will rely on \
-                             cached witnesses only: {e}",
-                        );
-                    }
+            // Wire the L1 RPC fetchers into the L1Sload / L1Staticcall precompiles. The
+            // fetchers run on the same tokio runtime as the node (block_in_place +
+            // Handle::block_on bridges the synchronous precompile contract into our async HTTP
+            // client).
+            //
+            // Fail-fast policy (mirrors Nethermind's TaikoPlugin): if Unzen is configured on
+            // the chainspec (any condition other than `Never`), the L1 RPC URL is mandatory —
+            // without it every L1 precompile call would halt at runtime, producing a node that
+            // silently rejects every L2 transaction touching the precompiles. Better to refuse
+            // to start.
+            let unzen_configured = !matches!(
+                builder.config().chain.taiko_fork_activation(TaikoHardfork::Unzen),
+                ForkCondition::Never,
+            );
+            match ext_args.l1_rpc_url() {
+                Some(l1_url) => {
+                    let client = L1RpcClient::new(l1_url).map_err(|e| {
+                        eyre::eyre!("failed to initialize L1 RPC client (URL: {l1_url}): {e}")
+                    })?;
+                    let client = Arc::new(client);
+                    let handle = tokio::runtime::Handle::current();
+                    install_l1sload_fetcher(client.clone(), handle.clone());
+                    install_l1staticcall_fetcher(client, handle);
+                    // Live node: nobody collects served-call records here (only the prover
+                    // preflight does), so disable recording to keep the lists bounded.
+                    set_record_l1_served_calls(false);
+                    info!(
+                        target: "reth::taiko::cli",
+                        l1_url,
+                        "L1 precompile RPC fetchers installed",
+                    );
+                }
+                None if unzen_configured => {
+                    eyre::bail!(
+                        "--l1-rpc-url must be provided when Unzen is configured on the chainspec — \
+                         L1Sload/L1Staticcall precompiles require it for live L1 reads",
+                    );
+                }
+                None => {
+                    // Unzen not configured: the precompiles never activate, no L1 RPC needed.
                 }
             }
 

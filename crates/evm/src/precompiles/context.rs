@@ -22,6 +22,12 @@ static CURRENT_L1_ORIGIN_BLOCK_ID: LazyLock<Mutex<Option<u64>>> =
     LazyLock::new(|| Mutex::new(None));
 
 /// Set the L1 origin block ID for the block about to execute.
+///
+/// **Caller contract**: must be invoked from a serialized execution context — either inside
+/// the block executor's `apply_pre_execution_changes` (single-threaded per block import / build)
+/// or under the prover's `L1_PRECOMPILE_EXECUTION_LOCK`. Concurrent callers will race on the
+/// process-global and the precompile may observe a value from a different block, silently
+/// widening or narrowing its lookback window.
 pub fn set_l1_origin_block_id(origin_block_id: u64) {
     *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned") =
         Some(origin_block_id);

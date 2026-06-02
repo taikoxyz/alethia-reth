@@ -33,7 +33,7 @@ impl From<TaikoExecutionData> for ExecutionPayload {
 
 /// Represents the sidecar data for the Taiko execution payload, which includes the transaction
 /// hash, optional withdrawals hash, and a boolean indicating if the block is a Taiko block.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TaikoExecutionDataSidecar {

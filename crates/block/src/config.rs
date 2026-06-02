@@ -352,7 +352,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
 }
 
 /// Context relevant for execution of a next block w.r.t Taiko.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaikoNextBlockEnvAttributes {
     /// The timestamp of the next block.
     pub timestamp: u64,

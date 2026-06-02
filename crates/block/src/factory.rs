@@ -54,6 +54,26 @@ pub struct TaikoBlockExecutionCtx<'a> {
     pub l1_origin_block_number: Option<u64>,
 }
 
+impl<'a> Default for TaikoBlockExecutionCtx<'a> {
+    /// Default ctx — every field zero-/None-initialized. Useful for tests that construct a ctx
+    /// via `..Default::default()` and only override the fields they exercise. The `'a`
+    /// lifetime is satisfied via the `&'static [Header]` empty slice coercion.
+    fn default() -> Self {
+        Self {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            basefee_per_gas: 0,
+            extra_data: Bytes::new(),
+            is_unzen_active: false,
+            expected_difficulty: None,
+            finalized_block_zk_gas: Arc::new(AtomicU64::new(0)),
+            l1_origin_block_number: None,
+        }
+    }
+}
+
 impl<'a> TaikoBlockExecutionCtx<'a> {
     /// Stores the finalized block zk gas value that should be written into the Unzen header.
     pub fn set_finalized_block_zk_gas(&self, zk_gas: u64) {

@@ -37,8 +37,17 @@ const MAX_RETURN_DATA_SIZE: usize = 24576;
 /// Maximum number of L1 blocks to look back from the L1 origin block.
 const L1STATICCALL_MAX_BLOCK_LOOKBACK: u64 = 256;
 
-/// Maximum gas limit passed to L1 `debug_traceCall`.
-const L1_CALL_MAX_GAS_CAP: u64 = 30_000_000;
+/// Maximum L1 gas budget for a single L1STATICCALL execution. Shared across the L2 precompile
+/// (live execution + cache clamp), the live `debug_traceCall` fetcher (alethia-reth-l1-client),
+/// and the prover's preflight + guest re-execution. Keeping them in lockstep prevents
+/// sequencer↔prover OOM divergence: if any party uses a different budget, an honest L1 view
+/// could land on a different code path and the proof would fail.
+pub const L1STATICCALL_GAS_CAP: u64 = 30_000_000;
+
+/// Caller address pinned for all L1 reads through the L1STATICCALL pipeline (live + prover).
+/// `Address::ZERO` matches Nethermind's `debug_traceCall` / `proof_call` defaults and keeps the
+/// guest re-executor's `TxEnv.caller` byte-identical to the sequencer's view.
+pub const L1_PRECOMPILE_CALLER: Address = Address::ZERO;
 
 /// Type alias for the L1 staticcall cache map.
 /// Key: `(target, block, keccak256(calldata))`; value: `(l1_gas_used, return_data, is_reverted)`.
@@ -86,6 +95,12 @@ static L1_STATICCALL_RPC_SERVED_CALLS: LazyLock<Mutex<Vec<L1StaticCallRecord>>> 
 /// Oversized inputs are dropped (with a high-visibility `error!` + backtrace): the host trims
 /// to the same ceiling before calling, so this only fires on a buggy caller. Failing here keeps
 /// oversized values out of the cache rather than surfacing later as a confusing read-side error.
+///
+/// **Revert invariant**: when `is_reverted == true`, both `gas_used` and `result` must be
+/// zeroed — matches NMC's `GethLikeTxTracer.MarkAsFailed` contract that the guest verifier
+/// enforces. Asserted in debug builds; release builds silently accept inconsistent reverted
+/// entries (the precompile's revert branch ignores `gas_used`/`result` anyway, but downstream
+/// callers reading the cache may be confused).
 pub fn set_l1_staticcall_value(
     target: Address,
     block_number: u64,
@@ -94,6 +109,12 @@ pub fn set_l1_staticcall_value(
     result: Vec<u8>,
     is_reverted: bool,
 ) {
+    debug_assert!(
+        !is_reverted || (gas_used == 0 && result.is_empty()),
+        "L1STATICCALL revert contract violated: is_reverted=true requires gas_used==0 && \
+         result.is_empty() (got gas_used={gas_used}, result.len()={})",
+        result.len(),
+    );
     if result.len() > MAX_RETURN_DATA_SIZE {
         error!(
             "L1STATICCALL: refusing to cache oversized return data — target={target:?} \
@@ -156,6 +177,21 @@ pub fn clear_l1_staticcall_rpc_served_calls() {
         .lock()
         .expect("L1_STATICCALL_RPC_SERVED_CALLS mutex poisoned")
         .clear();
+}
+
+/// Evict cache entries whose block falls below the `[l1_origin − 256, l1_origin]` lookback
+/// window. Called once per block from the executor hook so a long-running live node doesn't
+/// accumulate stale entries indefinitely. Pairs with `evict_stale_l1_storage_entries` for
+/// L1Sload.
+pub fn evict_stale_l1_staticcall_entries(l1_origin: u64) {
+    let floor = l1_origin.saturating_sub(L1STATICCALL_MAX_BLOCK_LOOKBACK);
+    let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
+    let prior = cache.len();
+    cache.retain(|(_, block_n, _), _| *block_n >= floor);
+    let removed = prior - cache.len();
+    if removed > 0 {
+        debug!("L1STATICCALL: evicted {removed} cache entries below block {floor}");
+    }
 }
 
 /// Look up a cached L1 staticcall result, returning `(gas_used, return_data, is_reverted)`.
@@ -257,9 +293,14 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
             calldata.len()
         );
         // Clamp cached L1 gas the same way the RPC path does, so a cache entry seeded with a
-        // larger budget can't overcharge a later caller with a smaller `gas_limit`. Deterministic
-        // for a given `gas_limit`, so safe for ZK proving (preflight + prover use the same budget).
-        let effective_gas_limit = gas_limit.min(L1_CALL_MAX_GAS_CAP);
+        // larger budget can't overcharge a later caller with a smaller `gas_limit`.
+        //
+        // Implication: two callers in the same block with different remaining budgets see
+        // different reported gas off the same cache entry. This is deterministic per-frame
+        // (the L2 block's gas_limit is committed in the block), so the prover sees the same
+        // value as the live executor — safe for ZK proving even though cache hits aren't
+        // pure functions of `(target, block, calldata)`.
+        let effective_gas_limit = gas_limit.min(L1STATICCALL_GAS_CAP);
         (cached_gas.min(effective_gas_limit), cached_data, cached_reverted)
     } else {
         // Clone the Arc out of the lock so the (slow) fetcher runs without holding the mutex.
@@ -273,7 +314,7 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
                 "L1STATICCALL: RPC fallback target={target:?} block={requested_block} calldata_len={}",
                 calldata.len()
             );
-            let effective_gas_limit = gas_limit.min(L1_CALL_MAX_GAS_CAP);
+            let effective_gas_limit = gas_limit.min(L1STATICCALL_GAS_CAP);
             let (fetched_gas, fetched_data, is_reverted) =
                 match fetcher(target, requested_block, effective_gas_limit, calldata) {
                     Ok(v) => v,
@@ -290,8 +331,17 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
                 fetched_data.len()
             );
 
-            // Clamp misbehaving RPC responses to the gas budget we handed the L1 call.
-            let l1_gas = fetched_gas.min(effective_gas_limit);
+            // Sanitize to NMC's `GethLikeTxTracer.MarkAsFailed` contract: any reverted call has
+            // `gas == 0 && data.is_empty()`. Mainline NMC already enforces this on its side, but
+            // a misbehaving fetcher (or a different L1 EL that doesn't follow the contract)
+            // shouldn't be able to poison the cache with inconsistent revert entries — the guest
+            // verifier rejects them outright, so we'd fail proving later. Sanitize here so the
+            // live path and the prover always see the same shape.
+            let (l1_gas, fetched_data) = if is_reverted {
+                (0u64, Vec::new())
+            } else {
+                (fetched_gas.min(effective_gas_limit), fetched_data)
+            };
 
             if fetched_data.len() > MAX_RETURN_DATA_SIZE {
                 warn!(
@@ -883,7 +933,7 @@ mod tests {
         });
         let gas_limit = 100_000u64;
         let output = l1staticcall_run(&create_min_input(100), gas_limit, 0).unwrap();
-        let effective_cap = gas_limit.min(L1_CALL_MAX_GAS_CAP);
+        let effective_cap = gas_limit.min(L1STATICCALL_GAS_CAP);
         assert_eq!(
             output.gas_used,
             expected_gas(0) + effective_cap,
@@ -896,7 +946,10 @@ mod tests {
     fn test_l1staticcall_reverted_result_returns_error() {
         reset_all();
         set_l1_origin_block_id(100);
-        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((50_000, vec![], true)));
+        // NMC tracer contract: reverted calls report gas=0 and empty data. The precompile
+        // sanitizes regardless of fetcher input, but matching the contract here keeps the
+        // fixture honest.
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((0, vec![], true)));
         let result = l1staticcall_run(&create_min_input(100), 1_000_000, 0);
         assert!(matches!(&result, Ok(o) if o.is_halt()), "reverted L1 call should halt");
         let msg = format!("{:?}", result.unwrap().halt_reason().expect("halt"));
@@ -904,6 +957,8 @@ mod tests {
         let served = take_l1_staticcall_rpc_served_calls();
         assert_eq!(served.len(), 1);
         assert!(served[0].is_reverted);
+        assert_eq!(served[0].gas_used, 0, "reverted served-call must carry gas=0");
+        assert!(served[0].return_data.is_empty(), "reverted served-call must carry empty data");
     }
 
     // ── Concurrency + panic-safety ────────────────────────────────────

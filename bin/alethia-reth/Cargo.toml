@@ -10,10 +10,13 @@ name = "alethia-reth"
 path = "src/main.rs"
 
 [dependencies]
+alethia-reth-chainspec = { path = "../../crates/chainspec" }
 alethia-reth-cli = { path = "../../crates/cli" }
 alethia-reth-evm = { path = "../../crates/evm" }
 alethia-reth-l1-client = { path = "../../crates/l1-client" }
 alethia-reth-node = { path = "../../crates/node" }
+alloy-hardforks = { workspace = true }
+eyre = { workspace = true }
 reth = { workspace = true }
 reth-cli-util = { workspace = true }
 reth-rpc = { workspace = true }

@@ -368,9 +368,7 @@ mod tests {
                 withdrawals_hash: Some(EMPTY_WITHDRAWALS),
                 header_difficulty,
                 taiko_block: Some(true),
-                // Test/validator helper; no proposal context here. Real engine API
-                // construction sites populate this from the sequencer's L1Origin.
-                l1_origin_block_number: None,
+                ..Default::default()
             },
         }
     }

@@ -69,10 +69,13 @@ dependencies = [
 name = "alethia-reth-bin"
 version = "1.1.0"
 dependencies = [
+ "alethia-reth-chainspec",
  "alethia-reth-cli",
  "alethia-reth-evm",
  "alethia-reth-l1-client",
  "alethia-reth-node",
+ "alloy-hardforks",
+ "eyre",
  "reth",
  "reth-cli-util",
  "reth-rpc",

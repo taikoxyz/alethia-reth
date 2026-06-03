@@ -244,8 +244,8 @@ where
             match block_executor.apply_post_execution_changes() {
                 Ok(_) => {}
                 Err(err)
-                    if options.skip_zk_gas_difficulty_check
-                        && is_zk_gas_difficulty_mismatch(&err) => {}
+                    if options.skip_zk_gas_difficulty_check &&
+                        is_zk_gas_difficulty_mismatch(&err) => {}
                 Err(err) => return Err(EthApiError::from(err).into()),
             }
         }
@@ -387,8 +387,8 @@ fn is_recoverable_tx_list_error(err: &BlockExecutionError, is_anchor_transaction
 /// Return whether a disallowed transaction type should be skipped in tx-list replay.
 ///
 /// Non-anchor transactions match the payload-builder filtering behavior. The anchor transaction is
-/// mandatory block setup, so silently skipping it would produce a witness for a block the node would
-/// never execute.
+/// mandatory block setup, so silently skipping it would produce a witness for a block the node
+/// would never execute.
 fn should_skip_disallowed_tx_type(
     tx: &TransactionSigned,
     is_anchor_transaction: bool,

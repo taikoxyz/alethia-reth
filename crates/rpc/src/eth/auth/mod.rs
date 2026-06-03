@@ -227,7 +227,6 @@ where
         )) else {
             return Ok(None);
         };
-
         self.read_l1_origin_by_block_id(block_id)
     }
 

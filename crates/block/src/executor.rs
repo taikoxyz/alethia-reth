@@ -80,6 +80,33 @@ pub fn is_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
     }
 }
 
+/// Returns `true` when `error` represents a zk gas difficulty commitment mismatch.
+pub fn is_zk_gas_difficulty_mismatch(error: &BlockExecutionError) -> bool {
+    match error {
+        BlockExecutionError::Internal(err) => err.is_other::<ZkGasDifficultyMismatch>(),
+        _ => false,
+    }
+}
+
+/// Returns `true` when `error` is the kind of failure that prover-style execution tolerates for a
+/// non-anchor transaction by skipping it: zk gas truncation, an invalid transaction, or a gas limit
+/// exceeding the block's remaining gas.
+///
+/// This is the single definition of the recoverable error set, shared by the prover executor's
+/// `try_execute_filtered` and the tx-list witness debug RPC, so the two cannot drift when a new
+/// recoverable variant is added. Callers remain responsible for never applying it to the anchor
+/// transaction, which must always be fatal.
+pub fn is_recoverable_non_anchor_tx_error(error: &BlockExecutionError) -> bool {
+    is_zk_gas_limit_exceeded(error) ||
+        matches!(
+            error,
+            BlockExecutionError::Validation(
+                BlockValidationError::InvalidTx { .. } |
+                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+            )
+        )
+}
+
 /// Block executor for Taiko network.
 pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     /// Reference to the specification object.
@@ -252,13 +279,11 @@ where
     ) -> Result<bool, BlockExecutionError> {
         match self.execute_transaction(tx) {
             Ok(_) => Ok(true),
-            // We don't allow anchor transaction to be discarded even if it exceeds the zk gas
-            // limit, this should never happen in practice.
-            Err(err) if is_zk_gas_limit_exceeded(&err) && !is_anchor_transaction => Ok(false),
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })) |
-            Err(BlockExecutionError::Validation(
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
-            )) if !is_anchor_transaction => Ok(false),
+            // We don't allow the anchor transaction to be discarded even if it would otherwise be a
+            // recoverable failure; this should never happen in practice.
+            Err(err) if !is_anchor_transaction && is_recoverable_non_anchor_tx_error(&err) => {
+                Ok(false)
+            }
             Err(err) => Err(err),
         }
     }
@@ -719,7 +744,26 @@ mod test {
             Ok(_) => panic!("imported Unzen blocks must reject difficulty mismatches"),
             Err(err) => err,
         };
+        assert!(is_zk_gas_difficulty_mismatch(&err));
         assert!(err.to_string().contains("difficulty"));
+    }
+
+    #[test]
+    fn is_recoverable_non_anchor_tx_error_classifies_recoverable_set() {
+        let gas_err = BlockExecutionError::Validation(
+            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                transaction_gas_limit: 2,
+                block_available_gas: 1,
+            },
+        );
+        assert!(is_recoverable_non_anchor_tx_error(&gas_err));
+
+        // A zk gas difficulty mismatch is fatal, not a recoverable per-transaction failure.
+        let difficulty_err = BlockExecutionError::other(ZkGasDifficultyMismatch {
+            expected: U256::from(1u64),
+            got: U256::from(2u64),
+        });
+        assert!(!is_recoverable_non_anchor_tx_error(&difficulty_err));
     }
 
     #[test]

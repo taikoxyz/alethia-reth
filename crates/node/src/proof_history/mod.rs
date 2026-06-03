@@ -25,6 +25,7 @@ use reth::{
     tasks::TaskExecutor,
 };
 use reth_db::{Database, database_metrics::DatabaseMetrics};
+use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
@@ -59,7 +60,7 @@ where
     T: reth_node_api::FullNodeTypes<Types = TaikoNode>,
     CB: NodeComponentsBuilder<T>,
     AO: NodeAddOns<NodeAdapter<T, CB::Components>> + RethRpcAddOns<NodeAdapter<T, CB::Components>>,
-    AO::EthApi: FullEthApi + Send + Sync + 'static,
+    AO::EthApi: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
     T::Provider: BlockHashReader
         + BlockNumReader
         + BlockReader
@@ -133,7 +134,7 @@ pub fn install_proof_history_rpc<Node, EthApi>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents,
-    EthApi: FullEthApi + Send + Sync + 'static,
+    EthApi: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
     Node::Provider:
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {

@@ -1,10 +1,15 @@
 //! Shared zk gas schedule types and fork selection helpers.
 
+use alloy_primitives::Address;
+
 use crate::spec::TaikoSpecId;
 
 use super::unzen::{MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE};
 
 pub use alethia_reth_chainspec::TAIKO_MASAYA_CHAIN_ID;
+
+/// Fail-safe multiplier applied to any precompile absent from a schedule's table.
+pub const FAILSAFE_MULTIPLIER: u16 = u16::MAX;
 
 /// Fixed raw-gas estimates for spawn opcodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,10 +39,21 @@ pub struct ZkGasSchedule {
     pub tx_intrinsic_zk_gas: u64,
     /// Per-opcode proving-cost multipliers indexed by opcode byte.
     pub opcode_multipliers: [u16; 256],
-    /// Per-precompile proving-cost multipliers indexed by low-byte address.
-    pub precompile_multipliers: [u16; 256],
+    /// Per-precompile proving-cost multipliers keyed by full 20-byte precompile address.
+    pub precompile_multipliers: &'static [(Address, u16)],
     /// Fixed raw-gas estimates for spawn opcodes.
     pub spawn_estimates: SpawnEstimates,
+}
+
+impl ZkGasSchedule {
+    /// Returns the proving-cost multiplier for `address`, or [`FAILSAFE_MULTIPLIER`] when the
+    /// precompile is not listed in this schedule.
+    pub fn precompile_multiplier(&self, address: &Address) -> u16 {
+        self.precompile_multipliers
+            .iter()
+            .find(|(addr, _)| addr == address)
+            .map_or(FAILSAFE_MULTIPLIER, |&(_, multiplier)| multiplier)
+    }
 }
 
 /// Returns the consensus zk gas schedule for the active Taiko fork on the given chain, when

@@ -1,6 +1,7 @@
 //! Tests for fork-scoped zk gas schedule selection.
 
 use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
+use alloy_primitives::{Address, address};
 use reth_revm::{
     Inspector,
     context::TxEnv,
@@ -21,7 +22,7 @@ use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
-    schedule::{TAIKO_MASAYA_CHAIN_ID, schedule_for},
+    schedule::{FAILSAFE_MULTIPLIER, TAIKO_MASAYA_CHAIN_ID, schedule_for},
     unzen::{
         MASAYA_BLOCK_ZK_GAS_LIMIT, MASAYA_TX_INTRINSIC_ZK_GAS, MASAYA_UNZEN_ZK_GAS_SCHEDULE,
         TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE,
@@ -71,10 +72,10 @@ fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
     assert_eq!(schedule.opcode_multipliers[0xfe], 0); // invalid (terminal)
     assert_eq!(schedule.opcode_multipliers[0xac], u16::MAX); // unlisted -> failsafe
 
-    assert_eq!(schedule.precompile_multipliers[0x05], 923); // modexp
-    assert_eq!(schedule.precompile_multipliers[0x01], 47); // ecrecover
-    assert_eq!(schedule.precompile_multipliers[0x04], 6); // identity
-    assert_eq!(schedule.precompile_multipliers[0x14], u16::MAX); // unlisted -> failsafe
+    assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x05)), 923); // modexp
+    assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x01)), 47); // ecrecover
+    assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x04)), 6); // identity
+    assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x14)), u16::MAX); // failsafe
 }
 
 #[test]
@@ -127,8 +128,8 @@ fn masaya_unzen_schedule_freezes_pre_recalibration_multipliers() {
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20]
     );
     assert_ne!(
-        UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05],
-        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05]
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x05)),
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x05))
     );
     // Spawn estimates were not recalibrated, so they remain identical across networks.
     assert_eq!(UNZEN_ZK_GAS_SCHEDULE.spawn_estimates, MASAYA_UNZEN_ZK_GAS_SCHEDULE.spawn_estimates);
@@ -141,10 +142,22 @@ fn masaya_unzen_schedule_pins_spec_opcode_and_precompile_multipliers() {
     assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xfe], 0);
     assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xac], u16::MAX);
 
-    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x05], 1363);
-    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x01], 81);
-    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x04], 2);
-    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers[0x14], u16::MAX);
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x05)),
+        1363
+    );
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x01)),
+        81
+    );
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x04)),
+        2
+    );
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x14)),
+        u16::MAX
+    );
 }
 
 #[test]
@@ -210,9 +223,13 @@ fn meter_treats_opcode_multiplication_overflow_as_limit_exceeded() {
 fn meter_treats_precompile_multiplication_overflow_as_limit_exceeded() {
     let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
-    let raw_gas = (u64::MAX / u64::from(schedule.precompile_multipliers[0x01])) + 1;
+    let raw_gas =
+        (u64::MAX / u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x01)))) + 1;
 
-    assert!(matches!(meter.charge_precompile(0x01, raw_gas), Err(ZkGasOutcome::LimitExceeded)));
+    assert!(matches!(
+        meter.charge_precompile(&Address::with_last_byte(0x01), raw_gas),
+        Err(ZkGasOutcome::LimitExceeded)
+    ));
 }
 
 #[test]
@@ -261,7 +278,7 @@ fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
     let mut meter = ZkGasMeter::new(schedule);
 
     assert!(matches!(
-        meter.charge_precompile(0x01, schedule.block_limit),
+        meter.charge_precompile(&Address::with_last_byte(0x01), schedule.block_limit),
         Err(ZkGasOutcome::LimitExceeded)
     ));
 }
@@ -322,7 +339,8 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
     let expected = probe.step_costs.iter().fold(
-        u64::from(schedule.precompile_multipliers[0x04]) * precompile_gas_used,
+        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
+            precompile_gas_used,
         |acc, (opcode, step_gas)| {
             let raw_gas = if *opcode == opcode::STATICCALL {
                 schedule.spawn_estimates.staticcall
@@ -333,7 +351,8 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
         },
     );
     let naive_expected = probe.step_costs.iter().fold(
-        u64::from(schedule.precompile_multipliers[0x04]) * precompile_gas_used,
+        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
+            precompile_gas_used,
         |acc, (opcode, step_gas)| {
             acc + (*step_gas * u64::from(schedule.opcode_multipliers[*opcode as usize]))
         },
@@ -564,4 +583,20 @@ fn simple_arithmetic_bytecode() -> Bytecode {
         opcode::ADD,
         opcode::STOP,
     ]))
+}
+
+#[test]
+fn high_range_precompile_collision_resolves_to_failsafe_not_canonical() {
+    // An `L1Sload`-style address whose low byte (0x01) collides with `ecrecover` but whose upper
+    // bytes differ. Under the old low-byte keying this was charged `ecrecover`'s multiplier; with
+    // full-address keying it must fall back to the fail-safe, since no such precompile exists in
+    // the Unzen fork.
+    let collider = address!("0x1670000000000000000000000000000000010001");
+    let ecrecover = Address::with_last_byte(0x01);
+
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover), 47);
+    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider), FAILSAFE_MULTIPLIER);
+
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover), 81);
+    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider), FAILSAFE_MULTIPLIER);
 }

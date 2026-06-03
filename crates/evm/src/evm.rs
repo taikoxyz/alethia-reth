@@ -139,9 +139,7 @@ where
         ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
         let precompile_metering = match &frame_input.frame_input {
-            FrameInput::Call(inputs) => {
-                Some((inputs.gas_limit, inputs.bytecode_address.as_slice()[19]))
-            }
+            FrameInput::Call(inputs) => Some((inputs.gas_limit, inputs.bytecode_address)),
             FrameInput::Create(_) | FrameInput::Empty => None,
         };
 
@@ -161,12 +159,12 @@ where
 
         if let ItemOrResult::Result(FrameResult::Call(outcome)) = &result &&
             outcome.was_precompile_called &&
-            let Some((gas_limit, address_low_byte)) = precompile_metering &&
+            let Some((gas_limit, bytecode_address)) = precompile_metering &&
             let Some(meter) = self.zk_gas_meter.as_mut()
         {
             let gas_used = gas_limit.saturating_sub(outcome.result.gas.remaining());
             if let Err(ZkGasOutcome::LimitExceeded) =
-                meter.charge_precompile(address_low_byte, gas_used)
+                meter.charge_precompile(&bytecode_address, gas_used)
             {
                 set_custom_error(&mut self.inner.ctx);
             }

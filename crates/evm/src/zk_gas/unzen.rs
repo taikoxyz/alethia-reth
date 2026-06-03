@@ -315,6 +315,7 @@ const fn unzen_opcode_multipliers() -> [u16; 256] {
     array[0x1b] = 24; // shl
     array[0x1c] = 22; // shr
     array[0x1d] = 21; // sar
+    array[0x1e] = 14; // clz
     array[0x20] = 31; // keccak256
     array[0x30] = 19; // address
     array[0x31] = 4; // balance

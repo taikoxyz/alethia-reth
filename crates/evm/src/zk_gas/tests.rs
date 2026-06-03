@@ -748,3 +748,22 @@ fn unzen_schedule_meters_p256verify_and_freezes_masaya() {
         "Masaya schedule must keep p256verify frozen at the fail-safe multiplier"
     );
 }
+
+#[test]
+fn unzen_schedule_meters_clz_and_freezes_masaya() {
+    // CLZ (EIP-7939) is added in Osaka at opcode 0x1e, which Unzen maps to. Without an explicit
+    // entry the fail-safe multiplier (u16::MAX) would brick any block using the opcode, so the
+    // default schedule must meter it at the spec value.
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x1e], 14,
+        "default Unzen schedule must meter clz at 14"
+    );
+
+    // Masaya stays frozen: its finalized blocks committed their zk-gas total to the header
+    // `difficulty` field, so clz must keep resolving to the fail-safe there rather than adopting
+    // 14 retroactively.
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x1e], FAILSAFE_MULTIPLIER,
+        "Masaya schedule must keep clz frozen at the fail-safe multiplier"
+    );
+}

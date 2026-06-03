@@ -649,11 +649,11 @@ fn full_address_lookup_preserves_canonical_precompile_multipliers() {
         (0x0a, 859),
         (0x0b, 201),
         (0x0c, 93),
-        (0x0e, 230),
-        (0x0f, 71),
-        (0x11, 365),
-        (0x12, 246),
-        (0x13, 208),
+        (0x0d, 230),
+        (0x0e, 71),
+        (0x0f, 365),
+        (0x10, 246),
+        (0x11, 208),
     ];
     for (byte, multiplier) in default_expected {
         assert_eq!(
@@ -690,14 +690,20 @@ fn full_address_lookup_preserves_canonical_precompile_multipliers() {
         );
     }
 
-    // Gaps in the canonical range (0x0d, 0x10 are unassigned in EIP-2537) and out-of-range bytes
-    // fall back to the fail-safe on both schedules.
-    for byte in [0x0d_u8, 0x10, 0x14] {
+    // Default schedule: the obsolete draft keys 0x12/0x13 are no longer listed — the spec moved
+    // the BLS12 precompiles down to their canonical Osaka addresses — and out-of-range bytes fall
+    // back to the fail-safe.
+    for byte in [0x12_u8, 0x13, 0x14] {
         assert_eq!(
             UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
             FAILSAFE_MULTIPLIER,
             "default: unlisted byte {byte:#04x}"
         );
+    }
+
+    // Masaya stays frozen on the draft addresses, so the canonical-only bytes 0x0d/0x10 it never
+    // adopted, plus out-of-range bytes, fall back to the fail-safe.
+    for byte in [0x0d_u8, 0x10, 0x14] {
         assert_eq!(
             MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
             FAILSAFE_MULTIPLIER,

@@ -633,9 +633,11 @@ fn high_range_precompile_collision_resolves_to_failsafe_not_canonical() {
 
 #[test]
 fn full_address_lookup_preserves_canonical_precompile_multipliers() {
-    // Every canonical precompile (0x01..=0x13) keeps its exact pre-fix multiplier, so finalized
-    // blocks stay byte-identical — including Masaya, whose finalized block zk-gas total is
-    // committed to the header `difficulty` field.
+    // Masaya stays byte-identical: every listed precompile keeps its frozen multiplier, so its
+    // finalized blocks' zk-gas total (committed to the header `difficulty` field) is preserved.
+    // On the default schedule the non-BLS precompiles (0x01..=0x0a) keep their pre-fix multipliers;
+    // the BLS12 precompiles keep the same values but now sit at their canonical Osaka addresses
+    // (0x0b..=0x11), so the stale draft keys 0x12/0x13 fall back to the fail-safe.
     let default_expected: [(u8, u16); 17] = [
         (0x01, 47),
         (0x02, 10),

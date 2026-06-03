@@ -235,8 +235,9 @@ const fn masaya_unzen_opcode_multipliers() -> [u16; 256] {
 
 /// Recalibrated Unzen precompile multipliers (Devnet / Hoodi / Mainnet), keyed by full address.
 /// Precompiles not listed here fall back to [`FAILSAFE_MULTIPLIER`]. The canonical EVM precompiles
-/// live at `0x0000…00XX`, so [`Address::with_last_byte`] spells their keys; p256verify (RIP-7212)
-/// sits at `0x0000…0100` and uses a full-address literal.
+/// set only their last byte (`0x…01` through `0x…13`), so [`Address::with_last_byte`] spells their
+/// keys; p256verify (RIP-7212) is at `0x100`, whose second-to-last byte is non-zero, so it needs a
+/// full-address literal.
 const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x01), 47),  // ecrecover
     (Address::with_last_byte(0x02), 10),  // sha256

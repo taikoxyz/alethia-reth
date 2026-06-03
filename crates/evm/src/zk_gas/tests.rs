@@ -633,9 +633,11 @@ fn high_range_precompile_collision_resolves_to_failsafe_not_canonical() {
 
 #[test]
 fn full_address_lookup_preserves_canonical_precompile_multipliers() {
-    // Every canonical precompile (0x01..=0x13) keeps its exact pre-fix multiplier, so finalized
-    // blocks stay byte-identical — including Masaya, whose finalized block zk-gas total is
-    // committed to the header `difficulty` field.
+    // Masaya stays byte-identical: every listed precompile keeps its frozen multiplier, so its
+    // finalized blocks' zk-gas total (committed to the header `difficulty` field) is preserved.
+    // On the default schedule the non-BLS precompiles (0x01..=0x0a) keep their pre-fix multipliers;
+    // the BLS12 precompiles keep the same values but now sit at their canonical Osaka addresses
+    // (0x0b..=0x11), so the stale draft keys 0x12/0x13 fall back to the fail-safe.
     let default_expected: [(u8, u16); 17] = [
         (0x01, 47),
         (0x02, 10),
@@ -649,11 +651,11 @@ fn full_address_lookup_preserves_canonical_precompile_multipliers() {
         (0x0a, 859),
         (0x0b, 201),
         (0x0c, 93),
-        (0x0e, 230),
-        (0x0f, 71),
-        (0x11, 365),
-        (0x12, 246),
-        (0x13, 208),
+        (0x0d, 230),
+        (0x0e, 71),
+        (0x0f, 365),
+        (0x10, 246),
+        (0x11, 208),
     ];
     for (byte, multiplier) in default_expected {
         assert_eq!(
@@ -690,14 +692,20 @@ fn full_address_lookup_preserves_canonical_precompile_multipliers() {
         );
     }
 
-    // Gaps in the canonical range (0x0d, 0x10 are unassigned in EIP-2537) and out-of-range bytes
-    // fall back to the fail-safe on both schedules.
-    for byte in [0x0d_u8, 0x10, 0x14] {
+    // Default schedule: the obsolete draft keys 0x12/0x13 are no longer listed — the spec moved
+    // the BLS12 precompiles down to their canonical Osaka addresses — and out-of-range bytes fall
+    // back to the fail-safe.
+    for byte in [0x12_u8, 0x13, 0x14] {
         assert_eq!(
             UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
             FAILSAFE_MULTIPLIER,
             "default: unlisted byte {byte:#04x}"
         );
+    }
+
+    // Masaya stays frozen on the draft addresses, so the canonical-only bytes 0x0d/0x10 it never
+    // adopted, plus out-of-range bytes, fall back to the fail-safe.
+    for byte in [0x0d_u8, 0x10, 0x14] {
         assert_eq!(
             MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
             FAILSAFE_MULTIPLIER,
@@ -740,5 +748,24 @@ fn unzen_schedule_meters_p256verify_and_freezes_masaya() {
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&p256verify),
         FAILSAFE_MULTIPLIER,
         "Masaya schedule must keep p256verify frozen at the fail-safe multiplier"
+    );
+}
+
+#[test]
+fn unzen_schedule_meters_clz_and_freezes_masaya() {
+    // CLZ (EIP-7939) is added in Osaka at opcode 0x1e, which Unzen maps to. Without an explicit
+    // entry the fail-safe multiplier (u16::MAX) would brick any block using the opcode, so the
+    // default schedule must meter it at the spec value.
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x1e], 14,
+        "default Unzen schedule must meter clz at 14"
+    );
+
+    // Masaya stays frozen: its finalized blocks committed their zk-gas total to the header
+    // `difficulty` field, so clz must keep resolving to the fail-safe there rather than adopting
+    // 14 retroactively.
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x1e], FAILSAFE_MULTIPLIER,
+        "Masaya schedule must keep clz frozen at the fail-safe multiplier"
     );
 }

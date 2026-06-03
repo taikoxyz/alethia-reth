@@ -235,7 +235,7 @@ const fn masaya_unzen_opcode_multipliers() -> [u16; 256] {
 
 /// Recalibrated Unzen precompile multipliers (Devnet / Hoodi / Mainnet), keyed by full address.
 /// Precompiles not listed here fall back to [`FAILSAFE_MULTIPLIER`]. The canonical EVM precompiles
-/// set only their last byte (`0x…01` through `0x…13`), so [`Address::with_last_byte`] spells their
+/// set only their last byte (`0x…01` through `0x…11`), so [`Address::with_last_byte`] spells their
 /// keys; p256verify (RIP-7212) is at `0x100`, whose second-to-last byte is non-zero, so it needs a
 /// full-address literal.
 const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
@@ -251,11 +251,11 @@ const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x0a), 859), // point_evaluation
     (Address::with_last_byte(0x0b), 201), // bls12_g1add
     (Address::with_last_byte(0x0c), 93),  // bls12_g1msm
-    (Address::with_last_byte(0x0e), 230), // bls12_g2add
-    (Address::with_last_byte(0x0f), 71),  // bls12_g2msm
-    (Address::with_last_byte(0x11), 365), // bls12_pairing
-    (Address::with_last_byte(0x12), 246), // bls12_map_fp_to_g1
-    (Address::with_last_byte(0x13), 208), // bls12_map_fp2_to_g2
+    (Address::with_last_byte(0x0d), 230), // bls12_g2add
+    (Address::with_last_byte(0x0e), 71),  // bls12_g2msm
+    (Address::with_last_byte(0x0f), 365), // bls12_pairing
+    (Address::with_last_byte(0x10), 246), // bls12_map_fp_to_g1
+    (Address::with_last_byte(0x11), 208), // bls12_map_fp2_to_g2
     // p256verify (RIP-7212) at 0x0000…0100 — outside the canonical 0x..XX range, so it
     // needs a full-address literal. Multiplier from taikoxyz/taiko-mono#21748.
     (address!("0x0000000000000000000000000000000000000100"), 163),
@@ -315,6 +315,7 @@ const fn unzen_opcode_multipliers() -> [u16; 256] {
     array[0x1b] = 24; // shl
     array[0x1c] = 22; // shr
     array[0x1d] = 21; // sar
+    array[0x1e] = 14; // clz
     array[0x20] = 31; // keccak256
     array[0x30] = 19; // address
     array[0x31] = 4; // balance

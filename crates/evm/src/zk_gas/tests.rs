@@ -599,4 +599,104 @@ fn high_range_precompile_collision_resolves_to_failsafe_not_canonical() {
 
     assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover), 81);
     assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider), FAILSAFE_MULTIPLIER);
+
+    // A second collider on a different low byte (identity, 0x04) — confirms the fix is not a
+    // one-off carve-out for 0x01: every canonical precompile had a potential high-range collider.
+    let identity_collider = address!("0x1670000000000000000000000000000000010004");
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&identity_collider),
+        FAILSAFE_MULTIPLIER
+    );
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&identity_collider),
+        FAILSAFE_MULTIPLIER
+    );
+}
+
+#[test]
+fn full_address_lookup_preserves_canonical_precompile_multipliers() {
+    // Every canonical precompile (0x01..=0x13) keeps its exact pre-fix multiplier, so finalized
+    // blocks stay byte-identical — including Masaya, whose finalized block zk-gas total is
+    // committed to the header `difficulty` field.
+    let default_expected: [(u8, u16); 17] = [
+        (0x01, 47),
+        (0x02, 10),
+        (0x03, 4),
+        (0x04, 6),
+        (0x05, 923),
+        (0x06, 19),
+        (0x07, 58),
+        (0x08, 54),
+        (0x09, 166),
+        (0x0a, 859),
+        (0x0b, 201),
+        (0x0c, 93),
+        (0x0e, 230),
+        (0x0f, 71),
+        (0x11, 365),
+        (0x12, 246),
+        (0x13, 208),
+    ];
+    for (byte, multiplier) in default_expected {
+        assert_eq!(
+            UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
+            multiplier,
+            "default precompile {byte:#04x}"
+        );
+    }
+
+    let masaya_expected: [(u8, u16); 17] = [
+        (0x01, 81),
+        (0x02, 10),
+        (0x03, 3),
+        (0x04, 2),
+        (0x05, 1363),
+        (0x06, 38),
+        (0x07, 87),
+        (0x08, 82),
+        (0x09, 243),
+        (0x0a, 398),
+        (0x0b, 112),
+        (0x0c, 52),
+        (0x0e, 111),
+        (0x0f, 39),
+        (0x11, 134),
+        (0x12, 159),
+        (0x13, 112),
+    ];
+    for (byte, multiplier) in masaya_expected {
+        assert_eq!(
+            MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
+            multiplier,
+            "masaya precompile {byte:#04x}"
+        );
+    }
+
+    // Gaps in the canonical range (0x0d, 0x10 are unassigned in EIP-2537) and out-of-range bytes
+    // fall back to the fail-safe on both schedules.
+    for byte in [0x0d_u8, 0x10, 0x14] {
+        assert_eq!(
+            UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
+            FAILSAFE_MULTIPLIER,
+            "default: unlisted byte {byte:#04x}"
+        );
+        assert_eq!(
+            MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(byte)),
+            FAILSAFE_MULTIPLIER,
+            "masaya: unlisted byte {byte:#04x}"
+        );
+    }
+}
+
+#[test]
+fn precompile_tables_have_no_duplicate_addresses() {
+    for (label, table) in [
+        ("default", UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers),
+        ("masaya", MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multipliers),
+    ] {
+        let mut seen = std::collections::HashSet::new();
+        for (addr, _) in table {
+            assert!(seen.insert(addr), "{label} precompile table has duplicate address {addr}");
+        }
+    }
 }

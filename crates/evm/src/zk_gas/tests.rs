@@ -718,3 +718,27 @@ fn precompile_tables_have_no_duplicate_addresses() {
         }
     }
 }
+
+#[test]
+fn unzen_schedule_meters_p256verify_and_freezes_masaya() {
+    // p256verify (RIP-7212) lives at 0x0000…0100 — outside the canonical 0x..XX
+    // precompile range. revm's Osaka set (which Unzen maps to) makes it active, so
+    // it must carry a real multiplier on the default schedule instead of the
+    // fail-safe that would truncate any calling transaction.
+    let p256verify = address!("0x0000000000000000000000000000000000000100");
+
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&p256verify),
+        163,
+        "default Unzen schedule must meter p256verify at 163"
+    );
+
+    // Masaya stays frozen: its finalized blocks committed their zk-gas total to the
+    // header `difficulty` field, so p256verify must keep resolving to the fail-safe
+    // there rather than adopting 163 retroactively.
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&p256verify),
+        FAILSAFE_MULTIPLIER,
+        "Masaya schedule must keep p256verify frozen at the fail-safe multiplier"
+    );
+}

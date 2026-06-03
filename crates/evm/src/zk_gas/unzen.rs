@@ -7,7 +7,7 @@
 //! Source:
 //! <https://github.com/taikoxyz/taiko-mono/blob/main/packages/protocol/docs/zk_gas_spec.md>
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, address};
 
 use super::schedule::{FAILSAFE_MULTIPLIER, SpawnEstimates, ZkGasSchedule};
 
@@ -235,7 +235,9 @@ const fn masaya_unzen_opcode_multipliers() -> [u16; 256] {
 
 /// Recalibrated Unzen precompile multipliers (Devnet / Hoodi / Mainnet), keyed by full address.
 /// Precompiles not listed here fall back to [`FAILSAFE_MULTIPLIER`]. The canonical EVM precompiles
-/// all live at `0x0000…00XX`, so [`Address::with_last_byte`] is sufficient to spell their keys.
+/// set only their last byte (`0x…01` through `0x…13`), so [`Address::with_last_byte`] spells their
+/// keys; p256verify (RIP-7212) is at `0x100`, whose second-to-last byte is non-zero, so it needs a
+/// full-address literal.
 const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x01), 47),  // ecrecover
     (Address::with_last_byte(0x02), 10),  // sha256
@@ -254,6 +256,9 @@ const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x11), 365), // bls12_pairing
     (Address::with_last_byte(0x12), 246), // bls12_map_fp_to_g1
     (Address::with_last_byte(0x13), 208), // bls12_map_fp2_to_g2
+    // p256verify (RIP-7212) at 0x0000…0100 — outside the canonical 0x..XX range, so it
+    // needs a full-address literal. Multiplier from taikoxyz/taiko-mono#21748.
+    (address!("0x0000000000000000000000000000000000000100"), 163),
 ];
 
 /// Frozen Masaya Unzen precompile multipliers, keyed by full address. Pinned at the

@@ -7,7 +7,9 @@
 //! Source:
 //! <https://github.com/taikoxyz/taiko-mono/blob/main/packages/protocol/docs/zk_gas_spec.md>
 
-use super::schedule::{SpawnEstimates, ZkGasSchedule};
+use alloy_primitives::Address;
+
+use super::schedule::{FAILSAFE_MULTIPLIER, SpawnEstimates, ZkGasSchedule};
 
 /// Maximum zk gas permitted within a single Unzen block on Devnet, Hoodi, and Mainnet.
 pub const BLOCK_ZK_GAS_LIMIT: u64 = 100_000_000;
@@ -28,9 +30,6 @@ pub const TX_INTRINSIC_ZK_GAS: u64 = 243_000;
 /// blocks (their `difficulty` header equals the finalized block zk gas).
 pub const MASAYA_TX_INTRINSIC_ZK_GAS: u64 = 0;
 
-/// Fail-safe multiplier used for any opcode or precompile missing from the Unzen table.
-const FAILSAFE_MULTIPLIER: u16 = u16::MAX;
-
 /// Builds an Unzen-shaped zk gas schedule from the requested block limit, per-transaction
 /// intrinsic charge, and opcode/precompile multiplier tables. Spawn estimates are identical
 /// across all networks.
@@ -38,7 +37,7 @@ const fn unzen_schedule_with(
     block_limit: u64,
     tx_intrinsic_zk_gas: u64,
     opcode_multipliers: [u16; 256],
-    precompile_multipliers: [u16; 256],
+    precompile_multipliers: &'static [(Address, u16)],
 ) -> ZkGasSchedule {
     ZkGasSchedule {
         block_limit,
@@ -62,7 +61,7 @@ pub static UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
     BLOCK_ZK_GAS_LIMIT,
     TX_INTRINSIC_ZK_GAS,
     unzen_opcode_multipliers(),
-    unzen_precompile_multipliers(),
+    UNZEN_PRECOMPILE_MULTIPLIERS,
 );
 
 /// Unzen zk gas schedule used by the Taiko Masaya network: a 10× higher block budget, a zero
@@ -72,7 +71,7 @@ pub static MASAYA_UNZEN_ZK_GAS_SCHEDULE: ZkGasSchedule = unzen_schedule_with(
     MASAYA_BLOCK_ZK_GAS_LIMIT,
     MASAYA_TX_INTRINSIC_ZK_GAS,
     masaya_unzen_opcode_multipliers(),
-    masaya_unzen_precompile_multipliers(),
+    MASAYA_UNZEN_PRECOMPILE_MULTIPLIERS,
 );
 
 /// Returns the frozen Masaya Unzen opcode multiplier table, pinned at the pre-recalibration values.
@@ -234,31 +233,52 @@ const fn masaya_unzen_opcode_multipliers() -> [u16; 256] {
     array
 }
 
-/// Returns the frozen Masaya Unzen precompile multiplier table, pinned at the pre-recalibration
-/// values.
-///
-/// Frozen for the same consensus reason as [`masaya_unzen_opcode_multipliers`].
-const fn masaya_unzen_precompile_multipliers() -> [u16; 256] {
-    let mut array = [FAILSAFE_MULTIPLIER; 256];
-    array[0x05] = 1363; // modexp
-    array[0x0a] = 398; // point_evaluation
-    array[0x09] = 243; // blake2f
-    array[0x12] = 159; // bls12_map_fp_to_g1
-    array[0x11] = 134; // bls12_pairing
-    array[0x0b] = 112; // bls12_g1add
-    array[0x13] = 112; // bls12_map_fp2_to_g2
-    array[0x0e] = 111; // bls12_g2add
-    array[0x07] = 87; // bn128_mul
-    array[0x08] = 82; // bn128_pairing
-    array[0x01] = 81; // ecrecover
-    array[0x0c] = 52; // bls12_g1msm
-    array[0x0f] = 39; // bls12_g2msm
-    array[0x06] = 38; // bn128_add
-    array[0x02] = 10; // sha256
-    array[0x03] = 3; // ripemd160
-    array[0x04] = 2; // identity
-    array
-}
+/// Recalibrated Unzen precompile multipliers (Devnet / Hoodi / Mainnet), keyed by full address.
+/// Precompiles not listed here fall back to [`FAILSAFE_MULTIPLIER`]. The canonical EVM precompiles
+/// all live at `0x0000…00XX`, so [`Address::with_last_byte`] is sufficient to spell their keys.
+const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
+    (Address::with_last_byte(0x01), 47),  // ecrecover
+    (Address::with_last_byte(0x02), 10),  // sha256
+    (Address::with_last_byte(0x03), 4),   // ripemd160
+    (Address::with_last_byte(0x04), 6),   // identity
+    (Address::with_last_byte(0x05), 923), // modexp
+    (Address::with_last_byte(0x06), 19),  // bn128_add
+    (Address::with_last_byte(0x07), 58),  // bn128_mul
+    (Address::with_last_byte(0x08), 54),  // bn128_pairing
+    (Address::with_last_byte(0x09), 166), // blake2f
+    (Address::with_last_byte(0x0a), 859), // point_evaluation
+    (Address::with_last_byte(0x0b), 201), // bls12_g1add
+    (Address::with_last_byte(0x0c), 93),  // bls12_g1msm
+    (Address::with_last_byte(0x0e), 230), // bls12_g2add
+    (Address::with_last_byte(0x0f), 71),  // bls12_g2msm
+    (Address::with_last_byte(0x11), 365), // bls12_pairing
+    (Address::with_last_byte(0x12), 246), // bls12_map_fp_to_g1
+    (Address::with_last_byte(0x13), 208), // bls12_map_fp2_to_g2
+];
+
+/// Frozen Masaya Unzen precompile multipliers, keyed by full address. Pinned at the
+/// pre-recalibration values to preserve consensus on already-finalized Masaya blocks (their
+/// `difficulty` header equals the finalized block zk gas). As above, canonical precompiles live at
+/// `0x0000…00XX`, so [`Address::with_last_byte`] spells their keys.
+const MASAYA_UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
+    (Address::with_last_byte(0x01), 81),   // ecrecover
+    (Address::with_last_byte(0x02), 10),   // sha256
+    (Address::with_last_byte(0x03), 3),    // ripemd160
+    (Address::with_last_byte(0x04), 2),    // identity
+    (Address::with_last_byte(0x05), 1363), // modexp
+    (Address::with_last_byte(0x06), 38),   // bn128_add
+    (Address::with_last_byte(0x07), 87),   // bn128_mul
+    (Address::with_last_byte(0x08), 82),   // bn128_pairing
+    (Address::with_last_byte(0x09), 243),  // blake2f
+    (Address::with_last_byte(0x0a), 398),  // point_evaluation
+    (Address::with_last_byte(0x0b), 112),  // bls12_g1add
+    (Address::with_last_byte(0x0c), 52),   // bls12_g1msm
+    (Address::with_last_byte(0x0e), 111),  // bls12_g2add
+    (Address::with_last_byte(0x0f), 39),   // bls12_g2msm
+    (Address::with_last_byte(0x11), 134),  // bls12_pairing
+    (Address::with_last_byte(0x12), 159),  // bls12_map_fp_to_g1
+    (Address::with_last_byte(0x13), 112),  // bls12_map_fp2_to_g2
+];
 
 /// Returns the recalibrated Unzen opcode multiplier table, with fail-safe defaults for unlisted
 /// opcodes.
@@ -413,29 +433,5 @@ const fn unzen_opcode_multipliers() -> [u16; 256] {
     array[0xfd] = 0; // revert
     array[0xfe] = 0; // invalid
     array[0xff] = 0; // selfdestruct
-    array
-}
-
-/// Returns the recalibrated Unzen precompile multiplier table, with fail-safe defaults for unlisted
-/// entries.
-const fn unzen_precompile_multipliers() -> [u16; 256] {
-    let mut array = [FAILSAFE_MULTIPLIER; 256];
-    array[0x01] = 47; // ecrecover
-    array[0x02] = 10; // sha256
-    array[0x03] = 4; // ripemd160
-    array[0x04] = 6; // identity
-    array[0x05] = 923; // modexp
-    array[0x06] = 19; // bn128_add
-    array[0x07] = 58; // bn128_mul
-    array[0x08] = 54; // bn128_pairing
-    array[0x09] = 166; // blake2f
-    array[0x0a] = 859; // point_evaluation
-    array[0x0b] = 201; // bls12_g1add
-    array[0x0c] = 93; // bls12_g1msm
-    array[0x0e] = 230; // bls12_g2add
-    array[0x0f] = 71; // bls12_g2msm
-    array[0x11] = 365; // bls12_pairing
-    array[0x12] = 246; // bls12_map_fp_to_g1
-    array[0x13] = 208; // bls12_map_fp2_to_g2
     array
 }

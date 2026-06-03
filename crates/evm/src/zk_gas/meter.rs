@@ -1,5 +1,7 @@
 //! Checked zk gas accounting for a single metered block execution.
 
+use alloy_primitives::Address;
+
 use super::schedule::ZkGasSchedule;
 
 /// Outcome used when zk gas charging exceeds the active block budget.
@@ -85,11 +87,10 @@ impl<'a> ZkGasMeter<'a> {
     #[inline(always)]
     pub fn charge_precompile(
         &mut self,
-        address_low_byte: u8,
+        address: &Address,
         gas_used: u64,
     ) -> Result<(), ZkGasOutcome> {
-        let multiplier =
-            u64::from(self.schedule.precompile_multipliers[usize::from(address_low_byte)]);
+        let multiplier = u64::from(self.schedule.precompile_multiplier(address));
         let charge = gas_used.checked_mul(multiplier).ok_or(ZkGasOutcome::LimitExceeded)?;
         self.charge_amount(charge)
     }

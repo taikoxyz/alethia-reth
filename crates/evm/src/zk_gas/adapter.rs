@@ -189,12 +189,11 @@ where
                 return;
             }
             if was_precompile_called {
-                // Precompile usage is charged separately from the CALL opcode itself using the
-                // low-byte address lookup in the precompile multiplier table.
+                // Precompile usage is charged separately from the CALL opcode itself, keyed by the
+                // full precompile address.
                 let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
-                let address_low_byte = inputs.bytecode_address.as_slice()[19];
                 if let Err(ZkGasOutcome::LimitExceeded) =
-                    metering.meter.charge_precompile(address_low_byte, gas_used)
+                    metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
                 {
                     set_custom_error(context);
                 }

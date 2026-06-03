@@ -234,7 +234,8 @@ const fn masaya_unzen_opcode_multipliers() -> [u16; 256] {
 }
 
 /// Recalibrated Unzen precompile multipliers (Devnet / Hoodi / Mainnet), keyed by full address.
-/// Precompiles not listed here fall back to [`FAILSAFE_MULTIPLIER`].
+/// Precompiles not listed here fall back to [`FAILSAFE_MULTIPLIER`]. The canonical EVM precompiles
+/// all live at `0x0000…00XX`, so [`Address::with_last_byte`] is sufficient to spell their keys.
 const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x01), 47),  // ecrecover
     (Address::with_last_byte(0x02), 10),  // sha256
@@ -257,7 +258,8 @@ const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
 
 /// Frozen Masaya Unzen precompile multipliers, keyed by full address. Pinned at the
 /// pre-recalibration values to preserve consensus on already-finalized Masaya blocks (their
-/// `difficulty` header equals the finalized block zk gas).
+/// `difficulty` header equals the finalized block zk gas). As above, canonical precompiles live at
+/// `0x0000…00XX`, so [`Address::with_last_byte`] spells their keys.
 const MASAYA_UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x01), 81),   // ecrecover
     (Address::with_last_byte(0x02), 10),   // sha256

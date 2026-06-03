@@ -48,6 +48,7 @@ pub struct ZkGasSchedule {
 impl ZkGasSchedule {
     /// Returns the proving-cost multiplier for `address`, or [`FAILSAFE_MULTIPLIER`] when the
     /// precompile is not listed in this schedule.
+    #[inline]
     pub fn precompile_multiplier(&self, address: &Address) -> u16 {
         self.precompile_multipliers
             .iter()

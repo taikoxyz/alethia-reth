@@ -594,22 +594,40 @@ fn high_range_precompile_collision_resolves_to_failsafe_not_canonical() {
     let collider = address!("0x1670000000000000000000000000000000010001");
     let ecrecover = Address::with_last_byte(0x01);
 
-    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover), 47);
-    assert_eq!(UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider), FAILSAFE_MULTIPLIER);
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover),
+        47,
+        "canonical ecrecover should keep its multiplier"
+    );
+    assert_eq!(
+        UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider),
+        FAILSAFE_MULTIPLIER,
+        "high-range collider should resolve to the fail-safe, not ecrecover's multiplier"
+    );
 
-    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover), 81);
-    assert_eq!(MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider), FAILSAFE_MULTIPLIER);
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&ecrecover),
+        81,
+        "canonical ecrecover should keep its frozen Masaya multiplier"
+    );
+    assert_eq!(
+        MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&collider),
+        FAILSAFE_MULTIPLIER,
+        "high-range collider should resolve to the fail-safe on Masaya too"
+    );
 
     // A second collider on a different low byte (identity, 0x04) — confirms the fix is not a
     // one-off carve-out for 0x01: every canonical precompile had a potential high-range collider.
     let identity_collider = address!("0x1670000000000000000000000000000000010004");
     assert_eq!(
         UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&identity_collider),
-        FAILSAFE_MULTIPLIER
+        FAILSAFE_MULTIPLIER,
+        "identity collider should resolve to the fail-safe"
     );
     assert_eq!(
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&identity_collider),
-        FAILSAFE_MULTIPLIER
+        FAILSAFE_MULTIPLIER,
+        "identity collider should resolve to the fail-safe on Masaya"
     );
 }
 

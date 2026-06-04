@@ -243,7 +243,7 @@ const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     (Address::with_last_byte(0x02), 10),  // sha256
     (Address::with_last_byte(0x03), 4),   // ripemd160
     (Address::with_last_byte(0x04), 6),   // identity
-    (Address::with_last_byte(0x05), 923), // modexp
+    (Address::with_last_byte(0x05), 154), // modexp
     (Address::with_last_byte(0x06), 19),  // bn128_add
     (Address::with_last_byte(0x07), 58),  // bn128_mul
     (Address::with_last_byte(0x08), 54),  // bn128_pairing

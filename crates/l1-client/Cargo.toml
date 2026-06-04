@@ -15,11 +15,15 @@ alethia-reth-evm = { path = "../evm" }
 alloy-primitives.workspace = true
 alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 
+# anyhow/hex/reqwest aren't workspace deps (alloc-only workspace serde_json wouldn't fit
+# either) — pin them literally here per `session-log-2026-06-01.md` §5.
 anyhow = "1"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false }
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+# Workspace `serde_json` is `alloc`-only; the live RPC client needs std for the HTTP path.
 serde_json = "1"
+thiserror = { workspace = true }
 # rt-multi-thread is required for tokio::task::block_in_place (used inside the synchronous
 # fetcher closures to bridge into the async HTTP client).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

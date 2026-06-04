@@ -26,6 +26,32 @@ use tracing::info;
 /// Global allocator used by the node binary.
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
+/// Returns `true` if Unzen is configured on the chainspec (any fork condition other than
+/// `Never`). Extracted so the fail-fast predicate behind `--l1-rpc-url` is unit-testable (T6).
+fn is_unzen_configured(unzen_activation: &ForkCondition) -> bool {
+    !matches!(unzen_activation, ForkCondition::Never)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_unzen_configured_returns_false_for_never() {
+        assert!(!is_unzen_configured(&ForkCondition::Never));
+    }
+
+    #[test]
+    fn is_unzen_configured_returns_true_for_timestamp() {
+        assert!(is_unzen_configured(&ForkCondition::Timestamp(1)));
+    }
+
+    #[test]
+    fn is_unzen_configured_returns_true_for_block() {
+        assert!(is_unzen_configured(&ForkCondition::Block(0)));
+    }
+}
+
 fn main() {
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
     if std::env::var_os("RUST_BACKTRACE").is_none() {
@@ -46,9 +72,8 @@ fn main() {
             // without it every L1 precompile call would halt at runtime, producing a node that
             // silently rejects every L2 transaction touching the precompiles. Better to refuse
             // to start.
-            let unzen_configured = !matches!(
-                builder.config().chain.taiko_fork_activation(TaikoHardfork::Unzen),
-                ForkCondition::Never,
+            let unzen_configured = is_unzen_configured(
+                &builder.config().chain.taiko_fork_activation(TaikoHardfork::Unzen),
             );
             match ext_args.l1_rpc_url() {
                 Some(l1_url) => {
@@ -57,8 +82,12 @@ fn main() {
                     })?;
                     let client = Arc::new(client);
                     let handle = tokio::runtime::Handle::current();
-                    install_l1sload_fetcher(client.clone(), handle.clone());
-                    install_l1staticcall_fetcher(client, handle);
+                    install_l1sload_fetcher(client.clone(), handle.clone()).map_err(|e| {
+                        eyre::eyre!("failed to install L1Sload precompile fetcher: {e}")
+                    })?;
+                    install_l1staticcall_fetcher(client, handle).map_err(|e| {
+                        eyre::eyre!("failed to install L1Staticcall precompile fetcher: {e}")
+                    })?;
                     // Live node: nobody collects served-call records here (only the prover
                     // preflight does), so disable recording to keep the lists bounded.
                     set_record_l1_served_calls(false);

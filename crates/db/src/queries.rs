@@ -87,6 +87,37 @@ mod tests {
         assert_eq!(read, None);
     }
 
+    /// T13: a stored `l1_block_height` whose `U256` exceeds `u64::MAX` is silently coerced
+    /// to `None` (treated as missing entry). The caller's L1 precompile range check then
+    /// halts cleanly. This test pins the behavior so a future refactor of the conversion
+    /// can't accidentally start truncating instead.
+    #[test]
+    fn read_l1_origin_block_height_returns_none_on_u64_overflow() {
+        let db = temp_taiko_db();
+        let l2_block_number: BlockNumber = 7;
+        // l1_block_height = u64::MAX + 1 → doesn't fit in u64.
+        let overflow = U256::from(u64::MAX) + U256::from(1u64);
+        let stored = StoredL1Origin {
+            block_id: U256::from(1u64),
+            l2_block_hash: B256::from([0x11u8; 32]),
+            l1_block_height: overflow,
+            l1_block_hash: B256::from([0x22u8; 32]),
+            build_payload_args_id: [0u8; 8],
+            is_forced_inclusion: false,
+            signature: [0u8; 65],
+        };
+        let tx = db.tx_mut().unwrap();
+        tx.put::<StoredL1OriginTable>(l2_block_number, stored).unwrap();
+        tx.commit().unwrap();
+
+        let tx = db.tx().unwrap();
+        let read = read_l1_origin_block_height(&tx, l2_block_number).unwrap();
+        assert_eq!(
+            read, None,
+            "u64-overflow l1_block_height must be silently coerced to None, not truncated"
+        );
+    }
+
     /// Sanity: the helper doesn't accidentally read from `StoredL1HeadOriginTable` (a sibling
     /// table that uses the same key type but stores `BlockNumber`, not `StoredL1Origin`).
     /// If someone refactors the table macro and confuses the type parameter, this regression

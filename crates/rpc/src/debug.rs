@@ -8,7 +8,7 @@ use alethia_reth_block::{
     tx_selection::zlib_compressed_len,
 };
 use alethia_reth_db::queries::read_l1_origin_block_height;
-use alethia_reth_evm::precompiles::context::{L1OriginOverrideGuard, install_l1_origin_override};
+use alethia_reth_evm::precompiles::context::L1OriginOverride;
 use alethia_reth_primitives::{
     payload::builder::decode_recovered_transactions, transaction::is_allowed_tx_type,
 };
@@ -209,7 +209,7 @@ where
                  may halt at L1 precompile if the block contains L1Sload/L1Staticcall calls",
             );
         }
-        let _l1_origin_guard: Option<L1OriginOverrideGuard> = l1_origin.map(install_l1_origin_override);
+        let _l1_origin_guard: Option<L1OriginOverride> = l1_origin.map(L1OriginOverride::install);
 
         let db = StateProviderDatabase::new(&*state_provider);
         let block_executor = self.eth_api.evm_config().executor(db);
@@ -245,10 +245,10 @@ where
         // Install the block's `originBlockNumber` as the thread-local override so any L1
         // precompile call in the replayed tx list sees the correct `[origin − 256, origin]`
         // window — matches the canonical re-execution path above.
-        let _l1_origin_guard: Option<L1OriginOverrideGuard> = self
+        let _l1_origin_guard: Option<L1OriginOverride> = self
             .lookup_l1_origin(block_number)
             .map_err(<Eth::Error as reth_rpc_eth_api::FromEthApiError>::from_eth_err)?
-            .map(install_l1_origin_override);
+            .map(L1OriginOverride::install);
 
         let db = StateProviderDatabase::new(&*state_provider);
         let mut state = State::builder().with_database(db).with_bundle_update().build();

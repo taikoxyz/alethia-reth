@@ -16,6 +16,35 @@ use std::{
     },
 };
 
+/// Maximum L1-block lookback enforced by both L1Sload and L1Staticcall. Matches the EVM
+/// `BLOCKHASH` opcode's 256-block window: any block older than `origin − 256` is rejected
+/// before the precompile attempts a cache lookup or RPC fetch.
+pub const L1_PRECOMPILE_MAX_LOOKBACK: u64 = 256;
+
+/// Outcome of [`validate_l1_block_in_window`]. The discriminants double as halt-reason
+/// strings for the precompile entry points, so the variant names track exactly the
+/// messages users see in halt outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowError {
+    /// Requested block is strictly greater than the L1 origin block.
+    BlockAfterOrigin,
+    /// Requested block is older than `origin − [`L1_PRECOMPILE_MAX_LOOKBACK`]`.
+    BlockBeyondLookback,
+}
+
+/// Validate `block ∈ [origin − L1_PRECOMPILE_MAX_LOOKBACK, origin]`. Single source of truth
+/// shared by both precompiles' live paths and the guest verifier so a future change to the
+/// constant or the saturating semantics lands in one place.
+pub fn validate_l1_block_in_window(block: u64, origin: u64) -> Result<(), WindowError> {
+    if block > origin {
+        return Err(WindowError::BlockAfterOrigin);
+    }
+    if origin - block > L1_PRECOMPILE_MAX_LOOKBACK {
+        return Err(WindowError::BlockBeyondLookback);
+    }
+    Ok(())
+}
+
 /// Current L1 origin block number — the upper bound of the `[origin − 256, origin]`
 /// lookback window.
 static CURRENT_L1_ORIGIN_BLOCK_ID: LazyLock<Mutex<Option<u64>>> =
@@ -69,20 +98,22 @@ thread_local! {
 
 /// RAII guard that restores the previous [`L1_ORIGIN_OVERRIDE`] on drop (supports nesting).
 #[must_use = "bind the guard to a variable that outlives the executor invocation"]
-pub struct L1OriginOverrideGuard {
+pub struct L1OriginOverride {
     prev: Option<u64>,
 }
 
-impl Drop for L1OriginOverrideGuard {
-    fn drop(&mut self) {
-        L1_ORIGIN_OVERRIDE.with(|cell| cell.set(self.prev));
+impl L1OriginOverride {
+    /// Install `origin` as the current thread's override; restored when the returned guard drops.
+    pub fn install(origin: u64) -> Self {
+        let prev = L1_ORIGIN_OVERRIDE.with(|cell| cell.replace(Some(origin)));
+        Self { prev }
     }
 }
 
-/// Install `origin` as the current thread's override; restored when the guard drops.
-pub fn install_l1_origin_override(origin: u64) -> L1OriginOverrideGuard {
-    let prev = L1_ORIGIN_OVERRIDE.with(|cell| cell.replace(Some(origin)));
-    L1OriginOverrideGuard { prev }
+impl Drop for L1OriginOverride {
+    fn drop(&mut self) {
+        L1_ORIGIN_OVERRIDE.with(|cell| cell.set(self.prev));
+    }
 }
 
 /// Read the current thread's origin override, if any.
@@ -109,15 +140,65 @@ mod tests {
     #[test]
     fn override_install_read_and_nested_restore() {
         assert_eq!(current_l1_origin_override(), None);
-        let outer = install_l1_origin_override(1000);
+        let outer = L1OriginOverride::install(1000);
         assert_eq!(current_l1_origin_override(), Some(1000));
         {
-            let _inner = install_l1_origin_override(2000);
+            let _inner = L1OriginOverride::install(2000);
             assert_eq!(current_l1_origin_override(), Some(2000));
         }
         // Inner dropped → outer's value restored, not None.
         assert_eq!(current_l1_origin_override(), Some(1000));
         drop(outer);
         assert_eq!(current_l1_origin_override(), None);
+    }
+
+    // T14: guard must clear the thread-local even on panic-unwind. Defends against a future
+    // refactor that drops the Drop impl or moves the restore out of it.
+    #[test]
+    fn override_guard_clears_on_panic_unwind() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        assert_eq!(current_l1_origin_override(), None);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = L1OriginOverride::install(4242);
+            assert_eq!(current_l1_origin_override(), Some(4242));
+            panic!("simulated panic while override is installed");
+        }));
+        assert!(result.is_err(), "panic must propagate to catch_unwind");
+        assert_eq!(
+            current_l1_origin_override(),
+            None,
+            "override must be cleared via Drop on panic unwind"
+        );
+    }
+
+    #[test]
+    fn validate_l1_block_in_window_accepts_inside_window() {
+        assert!(validate_l1_block_in_window(1000, 1000).is_ok(), "block == origin");
+        assert!(validate_l1_block_in_window(744, 1000).is_ok(), "exact lookback boundary (origin - 256)");
+        assert!(validate_l1_block_in_window(900, 1000).is_ok(), "well inside the window");
+    }
+
+    #[test]
+    fn validate_l1_block_in_window_rejects_after_origin() {
+        assert_eq!(
+            validate_l1_block_in_window(1001, 1000),
+            Err(WindowError::BlockAfterOrigin),
+        );
+    }
+
+    #[test]
+    fn validate_l1_block_in_window_rejects_beyond_lookback() {
+        assert_eq!(
+            validate_l1_block_in_window(743, 1000), // distance 257 > 256
+            Err(WindowError::BlockBeyondLookback),
+        );
+    }
+
+    #[test]
+    fn validate_l1_block_in_window_saturates_when_origin_is_small() {
+        // origin == 0 → only block 0 is in window; everything else is BlockAfterOrigin.
+        assert!(validate_l1_block_in_window(0, 0).is_ok());
+        assert_eq!(validate_l1_block_in_window(1, 0), Err(WindowError::BlockAfterOrigin));
     }
 }

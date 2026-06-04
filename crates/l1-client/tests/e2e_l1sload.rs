@@ -105,7 +105,7 @@ async fn e2e_l1sload_fetches_from_mock_l1_via_installed_fetcher() {
 
     // This is the same call sequence `bin/alethia-reth/src/main.rs` runs when the operator
     // supplies `--l1-rpc-url` — the test is exercising the exact wiring.
-    install_l1sload_fetcher(client, runtime_handle);
+    install_l1sload_fetcher(client, runtime_handle).expect("multi-thread runtime");
 
     // The precompile needs an active L1 trust window. Set origin = 200, covering any test
     // block ≤ 200 within the 256-block lookback.
@@ -161,7 +161,7 @@ async fn e2e_l1sload_second_call_hits_cache_no_extra_rpc() {
 
     let (_h, url, mock_state) = start_mock_l1(U256::from(0x42u64)).await;
     let client = Arc::new(L1RpcClient::new(&url).unwrap());
-    install_l1sload_fetcher(client, tokio::runtime::Handle::current());
+    install_l1sload_fetcher(client, tokio::runtime::Handle::current()).expect("multi-thread");
     set_l1_origin_block_id(200);
 
     let contract = Address::from([0xBBu8; 20]);

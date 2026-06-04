@@ -26,17 +26,19 @@ pub use super::context::{
     clear_l1_origin_context, get_l1_origin_block_id, set_l1_origin_block_id,
     set_record_l1_served_calls, should_record_l1_served_calls,
 };
+use super::context::{L1_PRECOMPILE_MAX_LOOKBACK, WindowError, validate_l1_block_in_window};
 
 /// Fixed gas cost for an L1SLOAD precompile call.
+///
+/// Calibration: matches the RIP-7728 reference draft's static gas + per-load schedule
+/// (2000 / 2000). Adjust together with the L2 fee market if the proving cost-per-slot
+/// shifts materially.
 const L1SLOAD_FIXED_GAS: u64 = 2000;
 /// Per-load gas cost for each storage slot read.
 const L1SLOAD_PER_LOAD_GAS: u64 = 2000;
 
 /// Expected input length: 20B address + 32B storage key + 32B block number = 84 bytes.
 const EXPECTED_INPUT_LENGTH: usize = 84;
-
-/// Maximum number of L1 blocks to look back from the L1 origin block.
-const L1SLOAD_MAX_BLOCK_LOOKBACK: u64 = 256;
 
 /// Type alias for the L1 storage cache map. Key: `(contract, key, block)`; value: storage value.
 type L1StorageCache = HashMap<(Address, B256, B256), B256>;
@@ -107,13 +109,20 @@ pub fn clear_l1_rpc_served_calls() {
 /// window. Called once per block from the executor hook so a long-running live node doesn't
 /// accumulate stale entries indefinitely (the precompile would reject reads of those blocks
 /// anyway, so they're dead memory). O(N) over the cache, but N is bounded by recent traffic.
+///
+/// Block-number keys are stored as `B256` (matches the precompile's input wire format). An
+/// entry whose `B256` doesn't fit in `u64` cannot have been produced by the precompile (it
+/// rejects oversized block numbers up front), but a future bug or direct insertion via the
+/// test API could leak one in — we evict those rather than pinning them in the cache forever.
 pub fn evict_stale_l1_storage_entries(l1_origin: u64) {
-    let floor = l1_origin.saturating_sub(L1SLOAD_MAX_BLOCK_LOOKBACK);
+    let floor = l1_origin.saturating_sub(L1_PRECOMPILE_MAX_LOOKBACK);
     let mut cache = L1_STORAGE_CACHE.lock().expect("L1_STORAGE_CACHE mutex poisoned");
     let prior = cache.len();
     cache.retain(|(_, _, block), _| {
-        let block_n: u64 = U256::from_be_bytes(block.0).try_into().unwrap_or(u64::MAX);
-        block_n >= floor
+        match u64::try_from(U256::from_be_bytes(block.0)) {
+            Ok(block_n) => block_n >= floor,
+            Err(_) => false, // u64-overflow keys can't be in any valid window; evict.
+        }
     });
     let removed = prior - cache.len();
     if removed > 0 {
@@ -174,21 +183,17 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileRe
         }
     };
 
-    if requested_block > l1_origin_block_id {
-        debug!("L1SLOAD: rejected block {requested_block} > origin {l1_origin_block_id}");
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::other("Requested block number is after the L1 origin block"),
-            reservoir,
-        ));
-    }
-    if l1_origin_block_id - requested_block > L1SLOAD_MAX_BLOCK_LOOKBACK {
-        debug!("L1SLOAD: rejected block {requested_block} too old (origin={l1_origin_block_id})");
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::other(
-                "Requested block number exceeds max lookback from L1 origin block",
-            ),
-            reservoir,
-        ));
+    if let Err(err) = validate_l1_block_in_window(requested_block, l1_origin_block_id) {
+        debug!(
+            "L1SLOAD: rejected block {requested_block} for origin {l1_origin_block_id}: {err:?}"
+        );
+        let msg = match err {
+            WindowError::BlockAfterOrigin => "Requested block number is after the L1 origin block",
+            WindowError::BlockBeyondLookback => {
+                "Requested block number exceeds max lookback from L1 origin block"
+            }
+        };
+        return Ok(PrecompileOutput::halt(PrecompileHalt::other(msg), reservoir));
     }
 
     let value = if let Some(cached) =
@@ -360,7 +365,7 @@ mod tests {
         clear_l1_storage();
         set_l1_origin_block_id(1000);
         // origin - 257 = 743, distance 257 > 256.
-        let input = create_test_input(1000 - L1SLOAD_MAX_BLOCK_LOOKBACK - 1);
+        let input = create_test_input(1000 - L1_PRECOMPILE_MAX_LOOKBACK - 1);
         assert!(
             matches!(&l1sload_run(&Bytes::from(input), SUFFICIENT_GAS, 0), Ok(o) if o.is_halt()),
             "beyond lookback"
@@ -477,7 +482,7 @@ mod tests {
     fn test_l1sload_exact_lookback_boundary() {
         clear_l1_storage();
         let origin = 1000u64;
-        let block = origin - L1SLOAD_MAX_BLOCK_LOOKBACK; // 744
+        let block = origin - L1_PRECOMPILE_MAX_LOOKBACK; // 744
         let (_, _, _, expected) = setup_test_storage(origin, block);
         let result = l1sload_run(&Bytes::from(create_test_input(block)), SUFFICIENT_GAS, 0);
         assert!(result.is_ok(), "block at exact lookback boundary should succeed");
@@ -577,5 +582,138 @@ mod tests {
         let _ = l1sload_run(&Bytes::from(create_test_input(105)), SUFFICIENT_GAS, 0).unwrap();
         let _ = l1sload_run(&Bytes::from(create_test_input(110)), SUFFICIENT_GAS, 0).unwrap();
         assert_eq!(take_l1_rpc_served_calls().len(), 2, "both RPC-served calls tracked");
+    }
+
+    // ── T4: per-block cache eviction ──────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn test_evict_stale_l1_storage_entries_keeps_in_window() {
+        clear_l1_storage();
+        let origin = 1000u64;
+        let addr = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        let val = B256::from(TEST_STORAGE_VALUE);
+        // Seed two entries: one inside the window (`origin - 256`), one outside (`origin - 257`).
+        set_l1_storage_value(addr, key, block_number_b256(origin - L1_PRECOMPILE_MAX_LOOKBACK), val);
+        set_l1_storage_value(
+            addr,
+            key,
+            block_number_b256(origin - L1_PRECOMPILE_MAX_LOOKBACK - 1),
+            val,
+        );
+        evict_stale_l1_storage_entries(origin);
+        // In-window entry KEPT (boundary inclusive).
+        assert_eq!(
+            get_l1_storage_value(addr, key, block_number_b256(origin - L1_PRECOMPILE_MAX_LOOKBACK)),
+            Some(val),
+            "entry at exactly origin-256 must be kept"
+        );
+        // Out-of-window entry REMOVED.
+        assert!(
+            get_l1_storage_value(
+                addr,
+                key,
+                block_number_b256(origin - L1_PRECOMPILE_MAX_LOOKBACK - 1)
+            )
+            .is_none(),
+            "entry at origin-257 must be evicted"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_evict_stale_l1_storage_entries_saturates_for_low_origin() {
+        clear_l1_storage();
+        let addr = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        let val = B256::from(TEST_STORAGE_VALUE);
+        set_l1_storage_value(addr, key, block_number_b256(0), val);
+        set_l1_storage_value(addr, key, block_number_b256(50), val);
+        // origin=0 → floor saturates to 0; both entries are ≥ 0 so both kept.
+        evict_stale_l1_storage_entries(0);
+        assert!(get_l1_storage_value(addr, key, block_number_b256(0)).is_some());
+        assert!(get_l1_storage_value(addr, key, block_number_b256(50)).is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn test_evict_stale_l1_storage_entries_drops_u64_overflow_keys() {
+        // S9: malformed (u64-overflow) block keys can't appear via the precompile (it rejects
+        // oversized inputs up front), but a direct insertion via the test setter could leak
+        // one in. Eviction must drop them rather than pinning them in the cache forever.
+        clear_l1_storage();
+        let addr = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        let val = B256::from(TEST_STORAGE_VALUE);
+        // U256::from(u64::MAX) + 1 = 2^64, encoded as B256.
+        let overflow_block =
+            B256::from((U256::from(u64::MAX) + U256::from(1u64)).to_be_bytes::<32>());
+        set_l1_storage_value(addr, key, overflow_block, val);
+        evict_stale_l1_storage_entries(100);
+        assert!(
+            get_l1_storage_value(addr, key, overflow_block).is_none(),
+            "u64-overflow block keys must be evicted, not pinned"
+        );
+    }
+
+    // ── T11: L1SLOAD concurrent + panic-poison-recovery (symmetric to L1STATICCALL) ──
+
+    /// Two threads hitting the L1SLOAD precompile while the fetcher sleeps must not deadlock
+    /// on the global mutex — the fetcher `Arc` is cloned out of the lock before invocation.
+    #[test]
+    #[serial]
+    fn test_l1sload_concurrent_invocation_no_deadlock() {
+        use std::{
+            sync::{Arc as StdArc, Barrier},
+            thread,
+            time::Duration,
+        };
+
+        clear_l1_storage();
+        set_l1_origin_block_id(100);
+        set_l1_rpc_fetcher(|_, _, _| {
+            thread::sleep(Duration::from_millis(50));
+            Ok(B256::from([0xAAu8; 32]))
+        });
+
+        let barrier = StdArc::new(Barrier::new(2));
+        let (b1, b2) = (StdArc::clone(&barrier), StdArc::clone(&barrier));
+        let input1 = create_test_input(100);
+        let input2 = create_test_input(99);
+        let h1 = thread::spawn(move || {
+            b1.wait();
+            l1sload_run(&Bytes::from(input1), SUFFICIENT_GAS, 0).map(|o| o.bytes.to_vec())
+        });
+        let h2 = thread::spawn(move || {
+            b2.wait();
+            l1sload_run(&Bytes::from(input2), SUFFICIENT_GAS, 0).map(|o| o.bytes.to_vec())
+        });
+        let r1 = h1.join().expect("thread 1 panicked");
+        let r2 = h2.join().expect("thread 2 panicked");
+        assert!(r1.is_ok(), "thread 1 did not complete: {:?}", r1.err());
+        assert!(r2.is_ok(), "thread 2 did not complete: {:?}", r2.err());
+    }
+
+    /// A panicking L1SLOAD fetcher must not poison the global mutex.
+    #[test]
+    #[serial]
+    fn test_l1sload_fetcher_panic_does_not_poison_mutex() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        clear_l1_storage();
+        set_l1_origin_block_id(100);
+        set_l1_rpc_fetcher(|_, _, _| panic!("fetcher panic (test): L1 node exploded"));
+
+        let input = Bytes::from(create_test_input(100));
+        let first = catch_unwind(AssertUnwindSafe(|| l1sload_run(&input, SUFFICIENT_GAS, 0)));
+        assert!(first.is_err(), "first call must propagate the fetcher panic");
+
+        // A well-behaved fetcher must now succeed, proving the mutex was not poisoned.
+        clear_l1_storage();
+        set_l1_origin_block_id(100);
+        set_l1_rpc_fetcher(|_, _, _| Ok(B256::from([0xBBu8; 32])));
+        let out = l1sload_run(&input, SUFFICIENT_GAS, 0).expect("recovered fetcher should succeed");
+        assert_eq!(out.bytes.as_ref(), B256::from([0xBBu8; 32]).as_slice());
     }
 }

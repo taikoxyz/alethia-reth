@@ -5,6 +5,17 @@ pub mod l1sload;
 /// L1STATICCALL precompile implementation.
 pub mod l1staticcall;
 
+// Deferred refactors documented in `notes/2026/05-21-l1sload-l1staticcall-upstreaming/code-review-2026-06-04.md`:
+//
+//  * D2 — thread-local-only L1 origin (drop `TaikoBlockExecutionCtx.l1_origin_block_number`).
+//    Rejected per session-log-2026-06-01.md §5: thread-locals don't survive `tokio::spawn`,
+//    so the build path would lose the override across runtime boundaries. Revisit only if
+//    the payload builder is proven single-thread end-to-end.
+//
+//  * D4 — `PrecompileGlobals<K, V>` generic to consolidate the per-precompile global
+//    skeleton (cache + fetcher + served-calls). ~250 LoC dedup but invasive; defer until
+//    post-devnet so the structural change doesn't churn against in-flight ZK fixtures.
+
 use reth_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use reth_revm::precompile::{PrecompileSpecId, Precompiles, u64_to_address};
 

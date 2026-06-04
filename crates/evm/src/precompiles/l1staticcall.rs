@@ -18,9 +18,17 @@ use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use reth_revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tracing::{debug, error, trace, warn};
 
-use super::context::{get_l1_origin_block_id, should_record_l1_served_calls};
+use super::context::{
+    L1_PRECOMPILE_MAX_LOOKBACK, WindowError, get_l1_origin_block_id, should_record_l1_served_calls,
+    validate_l1_block_in_window,
+};
 
 /// Fixed gas cost for an L1STATICCALL precompile call.
+///
+/// Calibration: fixed 2000 + per-call overhead 10000 mirrors the EVM `CALL`/`STATICCALL`
+/// cost shape with extra overhead for the L1 round-trip + cache lookup. Per-byte 16 matches
+/// the standard non-zero calldata gas cost so encoded inputs price in proportion to L1's
+/// own calldata gas. Adjust together with the L2 fee market.
 const L1STATICCALL_FIXED_GAS: u64 = 2000;
 /// Per-call overhead gas cost.
 const L1STATICCALL_PER_CALL_OVERHEAD: u64 = 10000;
@@ -32,10 +40,14 @@ const L1STATICCALL_PER_BYTE_CALLDATA_GAS: u64 = 16;
 const MIN_INPUT_LENGTH: usize = 52;
 
 /// Maximum size of return data from an L1STATICCALL (24 KB).
-const MAX_RETURN_DATA_SIZE: usize = 24576;
+pub const MAX_RETURN_DATA_SIZE: usize = 24576;
 
-/// Maximum number of L1 blocks to look back from the L1 origin block.
-const L1STATICCALL_MAX_BLOCK_LOOKBACK: u64 = 256;
+/// Maximum calldata payload (excluding the 52-byte header) accepted by the precompile. Caps
+/// cost asymmetry between L2 gas and prover ZK cycles: even though `16 gas/byte` naturally
+/// limits a single call to ≈1.8 MB at a 30M block, witness generation and ZK proving scale
+/// far worse than L2 gas with calldata size. 65 KiB matches L1's typical max tx size and is
+/// well below where serialization costs explode. Hard halt before charging gas (S6).
+pub const MAX_CALLDATA_SIZE: usize = 65_536;
 
 /// Maximum L1 gas budget for a single L1STATICCALL execution. Shared across the L2 precompile
 /// (live execution + cache clamp), the live `debug_traceCall` fetcher (alethia-reth-l1-client),
@@ -90,17 +102,45 @@ pub struct L1StaticCallRecord {
 static L1_STATICCALL_RPC_SERVED_CALLS: LazyLock<Mutex<Vec<L1StaticCallRecord>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// Reason a `set_l1_staticcall_value` call refused to populate the cache. Surfaced to callers
+/// (D20) so the failure mode lands at the actual site of the bug instead of as a confusing
+/// "cache miss + no RPC" halt the next time the precompile runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetL1StaticCallValueError {
+    /// `result` exceeded [`MAX_RETURN_DATA_SIZE`].
+    ReturnDataTooLarge,
+}
+
+impl std::fmt::Display for SetL1StaticCallValueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReturnDataTooLarge => write!(f, "L1STATICCALL return data exceeds max size"),
+        }
+    }
+}
+
+impl std::error::Error for SetL1StaticCallValueError {}
+
 /// Insert a value into the L1 staticcall cache (keyed by `keccak256(calldata)`).
 ///
-/// Oversized inputs are dropped (with a high-visibility `error!` + backtrace): the host trims
-/// to the same ceiling before calling, so this only fires on a buggy caller. Failing here keeps
-/// oversized values out of the cache rather than surfacing later as a confusing read-side error.
+/// Oversized inputs are refused with `Err(ReturnDataTooLarge)`: the host trims to the same
+/// ceiling before calling, so this only fires on a buggy caller. Returning the error (D20)
+/// surfaces the bug at the setter rather than as a confusing "cache miss + no RPC" halt the
+/// next time the precompile runs.
 ///
 /// **Revert invariant**: when `is_reverted == true`, both `gas_used` and `result` must be
 /// zeroed — matches NMC's `GethLikeTxTracer.MarkAsFailed` contract that the guest verifier
 /// enforces. Asserted in debug builds; release builds silently accept inconsistent reverted
 /// entries (the precompile's revert branch ignores `gas_used`/`result` anyway, but downstream
 /// callers reading the cache may be confused).
+///
+/// **Soundness note (S8)**: `is_reverted` itself is not cross-checked against the actual L1
+/// transaction state. A malicious prover could mark an honest non-reverted call as reverted
+/// with `gas_used=0, result=[]` and the entry would pass the invariant check here. Caching a
+/// fake-revert under a `(target, block, calldata)` honest L2 transactions read makes the
+/// guest's re-execution diverge from the live sequencer's — caught **transitively** by the
+/// L2 block-level state-root assertion downstream. Soundness depends on that downstream
+/// check; don't loosen it without re-evaluating this contract.
 pub fn set_l1_staticcall_value(
     target: Address,
     block_number: u64,
@@ -108,7 +148,7 @@ pub fn set_l1_staticcall_value(
     gas_used: u64,
     result: Vec<u8>,
     is_reverted: bool,
-) {
+) -> Result<(), SetL1StaticCallValueError> {
     debug_assert!(
         !is_reverted || (gas_used == 0 && result.is_empty()),
         "L1STATICCALL revert contract violated: is_reverted=true requires gas_used==0 && \
@@ -123,11 +163,12 @@ pub fn set_l1_staticcall_value(
             MAX_RETURN_DATA_SIZE,
             std::backtrace::Backtrace::capture(),
         );
-        return;
+        return Err(SetL1StaticCallValueError::ReturnDataTooLarge);
     }
     let calldata_hash = keccak256(calldata);
     let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
     cache.insert((target, block_number, calldata_hash), (gas_used, result, is_reverted));
+    Ok(())
 }
 
 /// Clear the L1STATICCALL cache only (does NOT clear the shared L1 origin context).
@@ -138,6 +179,15 @@ pub fn clear_l1_staticcall_cache() {
     if prior > 0 {
         debug!("L1STATICCALL: cache cleared (evicted {prior} entries)");
     }
+}
+
+/// Clear all L1STATICCALL state (cache, RPC fetcher, served-calls list). Mirrors
+/// [`super::l1sload::clear_l1_storage`] for the L1Staticcall side; does NOT touch the
+/// shared L1 origin context (use [`super::context::clear_l1_origin_context`] for that).
+pub fn clear_l1_staticcall_storage() {
+    clear_l1_staticcall_cache();
+    clear_l1_staticcall_rpc_fetcher();
+    clear_l1_staticcall_rpc_served_calls();
 }
 
 /// Set the L1 staticcall RPC fetcher callback for live fetching on cache miss.
@@ -184,7 +234,7 @@ pub fn clear_l1_staticcall_rpc_served_calls() {
 /// accumulate stale entries indefinitely. Pairs with `evict_stale_l1_storage_entries` for
 /// L1Sload.
 pub fn evict_stale_l1_staticcall_entries(l1_origin: u64) {
-    let floor = l1_origin.saturating_sub(L1STATICCALL_MAX_BLOCK_LOOKBACK);
+    let floor = l1_origin.saturating_sub(L1_PRECOMPILE_MAX_LOOKBACK);
     let mut cache = L1_STATICCALL_CACHE.lock().expect("L1_STATICCALL_CACHE mutex poisoned");
     let prior = cache.len();
     cache.retain(|(_, block_n, _), _| *block_n >= floor);
@@ -226,9 +276,27 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
         return Ok(PrecompileOutput::halt(PrecompileHalt::other("Invalid input length"), reservoir));
     }
 
+    // S6: reject oversized calldata before charging gas. The L2 fee market would natually
+    // limit calldata at ~1.8 MB (16 gas/byte × 30M block gas), but witness generation and ZK
+    // proving scale far worse than L2 gas with calldata size. A hard cap closes the cost
+    // asymmetry.
+    let extra_calldata_len = input.len() - MIN_INPUT_LENGTH;
+    if extra_calldata_len > MAX_CALLDATA_SIZE {
+        warn!(
+            "L1STATICCALL: rejected oversized calldata ({} bytes, max {})",
+            extra_calldata_len, MAX_CALLDATA_SIZE
+        );
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::other(format!(
+                "L1STATICCALL calldata too large: {} > {} bytes",
+                extra_calldata_len, MAX_CALLDATA_SIZE
+            )),
+            reservoir,
+        ));
+    }
+
     // Static gas: fixed + overhead + per-byte for calldata beyond the header. Dynamic L1 gas is
     // added after execution from cache or fetcher.
-    let extra_calldata_len = input.len() - MIN_INPUT_LENGTH;
     let static_gas = L1STATICCALL_FIXED_GAS +
         L1STATICCALL_PER_CALL_OVERHEAD +
         L1STATICCALL_PER_BYTE_CALLDATA_GAS * (extra_calldata_len as u64);
@@ -266,23 +334,17 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
         }
     };
 
-    if requested_block > l1_origin_block_id {
-        debug!("L1STATICCALL: rejected block {requested_block} > origin {l1_origin_block_id}");
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::other("Requested block number is after the L1 origin block"),
-            reservoir,
-        ));
-    }
-    if l1_origin_block_id - requested_block > L1STATICCALL_MAX_BLOCK_LOOKBACK {
+    if let Err(err) = validate_l1_block_in_window(requested_block, l1_origin_block_id) {
         debug!(
-            "L1STATICCALL: rejected block {requested_block} too old (origin={l1_origin_block_id})"
+            "L1STATICCALL: rejected block {requested_block} for origin {l1_origin_block_id}: {err:?}"
         );
-        return Ok(PrecompileOutput::halt(
-            PrecompileHalt::other(
-                "Requested block number exceeds max lookback from L1 origin block",
-            ),
-            reservoir,
-        ));
+        let msg = match err {
+            WindowError::BlockAfterOrigin => "Requested block number is after the L1 origin block",
+            WindowError::BlockBeyondLookback => {
+                "Requested block number exceeds max lookback from L1 origin block"
+            }
+        };
+        return Ok(PrecompileOutput::halt(PrecompileHalt::other(msg), reservoir));
     }
 
     let (l1_gas, result, is_reverted) = if let Some((cached_gas, cached_data, cached_reverted)) =
@@ -359,14 +421,22 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
                 ));
             }
 
-            set_l1_staticcall_value(
+            // Size already checked above; `set_l1_staticcall_value` would only error on
+            // oversize, so propagating the `Result` here is purely defense-in-depth — if it
+            // ever does fire we surface the same halt as the explicit check above.
+            if let Err(e) = set_l1_staticcall_value(
                 target,
                 requested_block,
                 calldata,
                 l1_gas,
                 fetched_data.clone(),
                 is_reverted,
-            );
+            ) {
+                return Ok(PrecompileOutput::halt(
+                    PrecompileHalt::other(format!("L1STATICCALL cache write rejected: {e}")),
+                    reservoir,
+                ));
+            }
             if should_record_l1_served_calls() {
                 L1_STATICCALL_RPC_SERVED_CALLS
                     .lock()
@@ -489,7 +559,7 @@ mod tests {
         set_l1_origin_block_id(100);
         let input = create_min_input(100);
         assert_eq!(input.len(), 52, "minimum input is exactly 52 bytes");
-        set_l1_staticcall_value(Address::from(TEST_ADDRESS), 100, &[], 0, vec![0xAA], false);
+        set_l1_staticcall_value(Address::from(TEST_ADDRESS), 100, &[], 0, vec![0xAA], false).expect("test setup");
         let result = l1staticcall_run(&input, expected_gas(0), 0);
         assert!(result.is_ok(), "52-byte input should be accepted: {:?}", result.err());
     }
@@ -502,7 +572,7 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         for extra_len in [1, 4, 32, 100, 256] {
             let calldata = vec![0xBBu8; extra_len];
-            set_l1_staticcall_value(target, 100, &calldata, 0, vec![0xCC], false);
+            set_l1_staticcall_value(target, 100, &calldata, 0, vec![0xCC], false).expect("test setup");
             let input = create_test_input(100, &calldata);
             assert_eq!(input.len(), 52 + extra_len);
             let result = l1staticcall_run(&input, expected_gas(extra_len), 0);
@@ -547,7 +617,7 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0x01, 0x02, 0x03, 0x04];
         let return_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        set_l1_staticcall_value(target, 100, &calldata, 0, return_data.clone(), false);
+        set_l1_staticcall_value(target, 100, &calldata, 0, return_data.clone(), false).expect("test setup");
         let output =
             l1staticcall_run(&create_test_input(100, &calldata), expected_gas(calldata.len()), 0)
                 .unwrap();
@@ -567,7 +637,7 @@ mod tests {
         assert_eq!(expected_gas(10), 2000 + 10000 + 16 * 10);
         assert_eq!(expected_gas(100), 2000 + 10000 + 16 * 100);
         let calldata = vec![0xAA; 100];
-        set_l1_staticcall_value(target, 100, &calldata, 0, vec![0x01], false);
+        set_l1_staticcall_value(target, 100, &calldata, 0, vec![0x01], false).expect("test setup");
         let output =
             l1staticcall_run(&create_test_input(100, &calldata), expected_gas(100), 0).unwrap();
         assert_eq!(output.gas_used, expected_gas(100), "static gas with 0 L1 gas");
@@ -606,7 +676,7 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         let calldata = vec![0x11];
         let return_data = vec![0x22, 0x33];
-        set_l1_staticcall_value(target, 115, &calldata, 0, return_data.clone(), false);
+        set_l1_staticcall_value(target, 115, &calldata, 0, return_data.clone(), false).expect("test setup");
         let result =
             l1staticcall_run(&create_test_input(115, &calldata), expected_gas(calldata.len()), 0);
         assert!(result.is_ok(), "block within window should succeed");
@@ -619,7 +689,7 @@ mod tests {
         reset_all();
         set_l1_origin_block_id(1000);
         // origin - 257 = 743, distance 257 > 256.
-        let input = create_min_input(1000 - L1STATICCALL_MAX_BLOCK_LOOKBACK - 1);
+        let input = create_min_input(1000 - L1_PRECOMPILE_MAX_LOOKBACK - 1);
         assert!(
             matches!(&l1staticcall_run(&input, expected_gas(0), 0), Ok(o) if o.is_halt()),
             "beyond lookback"
@@ -631,8 +701,8 @@ mod tests {
     fn test_l1staticcall_exact_lookback_boundary() {
         reset_all();
         set_l1_origin_block_id(1000);
-        let block = 1000 - L1STATICCALL_MAX_BLOCK_LOOKBACK; // 744
-        set_l1_staticcall_value(Address::from(TEST_ADDRESS), block, &[], 0, vec![0xFF], false);
+        let block = 1000 - L1_PRECOMPILE_MAX_LOOKBACK; // 744
+        set_l1_staticcall_value(Address::from(TEST_ADDRESS), block, &[], 0, vec![0xFF], false).expect("test setup");
         let result = l1staticcall_run(&create_min_input(block), expected_gas(0), 0);
         assert!(result.is_ok(), "block at exact lookback boundary should succeed");
     }
@@ -644,7 +714,7 @@ mod tests {
         set_l1_origin_block_id(200);
         let target = Address::from(TEST_ADDRESS);
         let return_data = vec![0x42];
-        set_l1_staticcall_value(target, 200, &[], 0, return_data.clone(), false);
+        set_l1_staticcall_value(target, 200, &[], 0, return_data.clone(), false).expect("test setup");
         let result = l1staticcall_run(&create_min_input(200), expected_gas(0), 0);
         assert!(result.is_ok(), "block at exact origin should succeed");
         assert_eq!(result.unwrap().bytes.as_ref(), &return_data);
@@ -660,8 +730,8 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         let (cd_a, cd_b) = (vec![0xAA; 4], vec![0xBB; 4]);
         let (ret_a, ret_b) = (vec![0x11], vec![0x22]);
-        set_l1_staticcall_value(target, 100, &cd_a, 0, ret_a.clone(), false);
-        set_l1_staticcall_value(target, 100, &cd_b, 0, ret_b.clone(), false);
+        set_l1_staticcall_value(target, 100, &cd_a, 0, ret_a.clone(), false).expect("test setup");
+        set_l1_staticcall_value(target, 100, &cd_b, 0, ret_b.clone(), false).expect("test setup");
         assert_eq!(
             l1staticcall_run(&create_test_input(100, &cd_a), expected_gas(4), 0)
                 .unwrap()
@@ -687,7 +757,7 @@ mod tests {
         set_l1_origin_block_id(100);
         let target = Address::from(TEST_ADDRESS);
 
-        set_l1_staticcall_value(target, 100, &[0x01], 0, vec![], false);
+        set_l1_staticcall_value(target, 100, &[0x01], 0, vec![], false).expect("test setup");
         assert!(
             l1staticcall_run(&create_test_input(100, &[0x01]), expected_gas(1), 0)
                 .unwrap()
@@ -696,7 +766,7 @@ mod tests {
             "empty allowed"
         );
 
-        set_l1_staticcall_value(target, 100, &[0x02], 0, vec![0xFF], false);
+        set_l1_staticcall_value(target, 100, &[0x02], 0, vec![0xFF], false).expect("test setup");
         assert_eq!(
             l1staticcall_run(&create_test_input(100, &[0x02]), expected_gas(1), 0)
                 .unwrap()
@@ -706,7 +776,7 @@ mod tests {
         );
 
         let big_return = vec![0xAB; 1024];
-        set_l1_staticcall_value(target, 100, &[0x03], 0, big_return.clone(), false);
+        set_l1_staticcall_value(target, 100, &[0x03], 0, big_return.clone(), false).expect("test setup");
         let output =
             l1staticcall_run(&create_test_input(100, &[0x03]), expected_gas(1), 0).unwrap();
         assert_eq!(output.bytes.len(), 1024);
@@ -794,7 +864,7 @@ mod tests {
         reset_all();
         set_l1_origin_block_id(100);
         let target = Address::from(TEST_ADDRESS);
-        set_l1_staticcall_value(target, 100, &[0x01], 0, vec![0xFF], false);
+        set_l1_staticcall_value(target, 100, &[0x01], 0, vec![0xFF], false).expect("test setup");
         let input = create_test_input(100, &[0x01]);
         assert!(l1staticcall_run(&input, expected_gas(1), 0).is_ok(), "find cached value");
 
@@ -833,7 +903,7 @@ mod tests {
         let input = create_test_input(100, &[0x01]);
 
         let exact_max = vec![0xAA; MAX_RETURN_DATA_SIZE];
-        set_l1_staticcall_value(target, 100, &[0x01], 0, exact_max.clone(), false);
+        set_l1_staticcall_value(target, 100, &[0x01], 0, exact_max.clone(), false).expect("test setup");
         let result = l1staticcall_run(&input, expected_gas(1), 0);
         assert!(result.is_ok(), "exactly MAX_RETURN_DATA_SIZE should succeed");
         assert_eq!(result.unwrap().bytes.len(), MAX_RETURN_DATA_SIZE);
@@ -853,7 +923,7 @@ mod tests {
     fn test_l1staticcall_zero_block_number() {
         reset_all();
         set_l1_origin_block_id(100);
-        set_l1_staticcall_value(Address::from(TEST_ADDRESS), 0, &[], 0, vec![0x00], false);
+        set_l1_staticcall_value(Address::from(TEST_ADDRESS), 0, &[], 0, vec![0x00], false).expect("test setup");
         let result = l1staticcall_run(&create_min_input(0), expected_gas(0), 0);
         assert!(result.is_ok(), "block 0 within lookback should succeed");
     }
@@ -866,8 +936,8 @@ mod tests {
         let target = Address::from(TEST_ADDRESS);
         let (cd1, cd2) = (vec![0x01, 0x02], vec![0x03, 0x04]);
         let (ret1, ret2) = (vec![0xAA, 0xBB], vec![0xCC, 0xDD]);
-        set_l1_staticcall_value(target, 100, &cd1, 0, ret1.clone(), false);
-        set_l1_staticcall_value(target, 100, &cd2, 0, ret2.clone(), false);
+        set_l1_staticcall_value(target, 100, &cd1, 0, ret1.clone(), false).expect("test setup");
+        set_l1_staticcall_value(target, 100, &cd2, 0, ret2.clone(), false).expect("test setup");
         let r1 = l1staticcall_run(&create_test_input(100, &cd1), expected_gas(2), 0).unwrap();
         let r2 = l1staticcall_run(&create_test_input(100, &cd2), expected_gas(2), 0).unwrap();
         assert_eq!(r1.bytes.as_ref(), &ret1);
@@ -883,7 +953,7 @@ mod tests {
         reset_all();
         set_l1_origin_block_id(100);
         let l1_gas = 50_000u64;
-        set_l1_staticcall_value(Address::from(TEST_ADDRESS), 100, &[], l1_gas, vec![0x42], false);
+        set_l1_staticcall_value(Address::from(TEST_ADDRESS), 100, &[], l1_gas, vec![0x42], false).expect("test setup");
         let output = l1staticcall_run(&create_min_input(100), 1_000_000, 0).unwrap();
         assert_eq!(output.gas_used, expected_gas(0) + l1_gas, "total = static + cached L1 gas");
     }
@@ -1024,7 +1094,9 @@ mod tests {
 
     // ── Setter/gas regression guards ──────────────────────────────────
 
-    /// Oversized return data is dropped at the setter rather than poisoning the cache.
+    /// Oversized return data is dropped at the setter rather than poisoning the cache. D20:
+    /// the setter now returns `Err(ReturnDataTooLarge)` so callers see the failure at the
+    /// site instead of as a confusing "cache miss + no RPC" downstream.
     #[test]
     #[serial]
     fn test_set_l1_staticcall_value_drops_oversized_return_data() {
@@ -1032,21 +1104,23 @@ mod tests {
         let target = Address::from([0x1Au8; 20]);
         let calldata = vec![0xAA, 0xBB];
 
-        set_l1_staticcall_value(
+        let err = set_l1_staticcall_value(
             target,
             100,
             &calldata,
             0,
             vec![0xCDu8; MAX_RETURN_DATA_SIZE + 1],
             false,
-        );
+        )
+        .expect_err("oversized must return Err");
+        assert_eq!(err, SetL1StaticCallValueError::ReturnDataTooLarge);
         assert!(
             get_l1_staticcall_value(target, 100, &calldata).is_none(),
             "oversized must NOT enter cache"
         );
 
         let at_cap = vec![0xEFu8; MAX_RETURN_DATA_SIZE];
-        set_l1_staticcall_value(target, 200, &calldata, 0, at_cap, false);
+        set_l1_staticcall_value(target, 200, &calldata, 0, at_cap, false).expect("at-cap stores");
         let stored =
             get_l1_staticcall_value(target, 200, &calldata).expect("at-cap must be stored");
         assert_eq!(stored.0, 0);
@@ -1063,8 +1137,7 @@ mod tests {
         set_l1_origin_block_id(100);
         let target = Address::from([0xC0u8; 20]);
         let calldata = vec![0x01];
-        set_l1_staticcall_value(target, 100, &calldata, 10_000_000, vec![0xAA], false);
-
+        set_l1_staticcall_value(target, 100, &calldata, 10_000_000, vec![0xAA], false).expect("test setup");
         let mut input = Vec::with_capacity(53);
         input.extend_from_slice(target.as_slice());
         input.extend_from_slice(&U256::from(100u64).to_be_bytes::<32>());
@@ -1078,5 +1151,96 @@ mod tests {
             result.gas_used
         );
         assert_eq!(result.bytes.as_ref(), &[0xAA]);
+    }
+
+    // ── T4: per-block cache eviction ──────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn test_evict_stale_l1_staticcall_entries_keeps_in_window() {
+        reset_all();
+        let origin = 1000u64;
+        let target = Address::from(TEST_ADDRESS);
+        let cd = vec![0xAB];
+        // Entry at `origin - 256` (boundary, inclusive).
+        set_l1_staticcall_value(target, origin - L1_PRECOMPILE_MAX_LOOKBACK, &cd, 100, vec![1], false)
+            .expect("setup");
+        // Entry at `origin - 257` (outside).
+        set_l1_staticcall_value(target, origin - L1_PRECOMPILE_MAX_LOOKBACK - 1, &cd, 100, vec![1], false)
+            .expect("setup");
+        evict_stale_l1_staticcall_entries(origin);
+        assert!(
+            get_l1_staticcall_value(target, origin - L1_PRECOMPILE_MAX_LOOKBACK, &cd).is_some(),
+            "entry at exactly origin-256 must be kept"
+        );
+        assert!(
+            get_l1_staticcall_value(target, origin - L1_PRECOMPILE_MAX_LOOKBACK - 1, &cd).is_none(),
+            "entry at origin-257 must be evicted"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_evict_stale_l1_staticcall_entries_saturates_for_low_origin() {
+        reset_all();
+        let target = Address::from(TEST_ADDRESS);
+        let cd = vec![0xCD];
+        set_l1_staticcall_value(target, 0, &cd, 0, vec![1], false).expect("setup");
+        set_l1_staticcall_value(target, 50, &cd, 0, vec![1], false).expect("setup");
+        evict_stale_l1_staticcall_entries(0);
+        assert!(get_l1_staticcall_value(target, 0, &cd).is_some());
+        assert!(get_l1_staticcall_value(target, 50, &cd).is_some());
+    }
+
+    // ── T7: fetcher-path sanitization for reverted calls ──────────────────
+
+    /// A misbehaving fetcher (or a non-NMC L1 EL with sloppy revert semantics) might return
+    /// `(gas != 0, data != [])` together with `is_reverted = true`. The precompile must
+    /// sanitize to `(0, [], true)` regardless of fetcher input — defense-in-depth so the
+    /// cache and served-call record always carry NMC's canonical revert shape.
+    #[test]
+    #[serial]
+    fn test_l1staticcall_fetcher_revert_sanitized_to_canonical_shape() {
+        reset_all();
+        set_l1_origin_block_id(100);
+        // Lying fetcher: returns 99 gas + 8 bytes with is_reverted=true.
+        set_l1_staticcall_rpc_fetcher(|_, _, _, _| Ok((99, vec![0xCD; 8], true)));
+        let result = l1staticcall_run(&create_min_input(100), 1_000_000, 0);
+        assert!(matches!(&result, Ok(o) if o.is_halt()), "revert must halt");
+        let served = take_l1_staticcall_rpc_served_calls();
+        assert_eq!(served.len(), 1);
+        assert!(served[0].is_reverted);
+        assert_eq!(served[0].gas_used, 0, "served-call gas must be sanitized to 0");
+        assert!(
+            served[0].return_data.is_empty(),
+            "served-call data must be sanitized to empty"
+        );
+        // Cache contents must also have the canonical shape.
+        let cached = get_l1_staticcall_value(Address::from(TEST_ADDRESS), 100, &[]).expect("cached");
+        assert_eq!(cached.0, 0, "cached gas sanitized");
+        assert!(cached.1.is_empty(), "cached data sanitized");
+        assert!(cached.2, "cached is_reverted");
+    }
+
+    // ── T9: revert-contract debug_assert ───────────────────────────────
+
+    /// The `set_l1_staticcall_value` setter asserts in debug builds that `is_reverted=true`
+    /// implies `gas_used == 0 && result.is_empty()`. This test confirms the assert fires
+    /// for a clearly-violating input. Release builds silently accept the inconsistent entry
+    /// (documented trade-off in the setter's doc comment).
+    #[test]
+    #[serial]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "L1STATICCALL revert contract violated")]
+    fn test_set_l1_staticcall_value_debug_assert_on_revert_with_nonzero_gas() {
+        reset_all();
+        let _ = set_l1_staticcall_value(
+            Address::from(TEST_ADDRESS),
+            100,
+            &[0x01],
+            42, // non-zero gas with is_reverted=true → debug_assert! fires
+            vec![],
+            true,
+        );
     }
 }

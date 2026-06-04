@@ -27,7 +27,7 @@ use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
     handler::get_treasury_address,
     precompiles::{
-        context::{current_l1_origin_override, set_l1_origin_block_id},
+        context::{clear_l1_origin_context, current_l1_origin_override, set_l1_origin_block_id},
         l1sload::evict_stale_l1_storage_entries,
         l1staticcall::evict_stale_l1_staticcall_entries,
     },
@@ -311,19 +311,32 @@ where
     /// The origin (`Proposal.originBlockNumber`, the upper bound of the `[origin − 256, origin]`
     /// lookback window) comes from the thread-local override — set by re-execution RPC handlers
     /// after a `StoredL1Origin` db lookup — or else `ctx.l1_origin_block_number` (build paths).
-    /// No-op pre-Unzen, or when neither is set (any L1 precompile call then halts "context unset").
     ///
-    /// After setting the origin, evicts cache entries that have fallen out of the new lookback
+    /// **Fail-fast on missing origin once Unzen is active.** When neither the override nor the
+    /// ctx field supplies a value, we explicitly **clear** the process-global rather than letting
+    /// the precompiles read whatever the previous block left there. Any L1 precompile invocation
+    /// in this block will then halt with "context unset" — better than silently widening or
+    /// narrowing the lookback window against a stale origin (S1).
+    ///
+    /// After setting a fresh origin, evicts cache entries that have fallen out of the new lookback
     /// window so a long-running live node doesn't accumulate stale entries indefinitely.
     fn apply_l1_precompile_context_from_ctx(&self) {
         let timestamp: u64 = self.evm.block().timestamp().to();
         if !self.spec.is_unzen_active(timestamp) {
             return;
         }
-        if let Some(origin) = current_l1_origin_override().or(self.ctx.l1_origin_block_number) {
-            set_l1_origin_block_id(origin);
-            evict_stale_l1_storage_entries(origin);
-            evict_stale_l1_staticcall_entries(origin);
+        match current_l1_origin_override().or(self.ctx.l1_origin_block_number) {
+            Some(origin) => {
+                set_l1_origin_block_id(origin);
+                evict_stale_l1_storage_entries(origin);
+                evict_stale_l1_staticcall_entries(origin);
+            }
+            None => {
+                // No origin available for this Unzen block. Clear any stale value left by a
+                // prior block so the precompile halts cleanly rather than reading the wrong
+                // lookback window.
+                clear_l1_origin_context();
+            }
         }
     }
 }

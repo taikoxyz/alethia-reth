@@ -72,7 +72,7 @@ fn unzen_schedule_uses_spec_opcode_and_precompile_multipliers() {
     assert_eq!(schedule.opcode_multipliers[0xfe], 0); // invalid (terminal)
     assert_eq!(schedule.opcode_multipliers[0xac], u16::MAX); // unlisted -> failsafe
 
-    assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x05)), 923); // modexp
+    assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x05)), 154); // modexp
     assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x01)), 47); // ecrecover
     assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x04)), 6); // identity
     assert_eq!(schedule.precompile_multiplier(&Address::with_last_byte(0x14)), u16::MAX); // failsafe
@@ -122,7 +122,7 @@ fn masaya_unzen_schedule_freezes_pre_recalibration_multipliers() {
     );
     // Spot-check a known recalibrated entry so this guard fails if the two tables ever realign:
     // keccak256 went 85 -> 31 for the default schedule while Masaya stays at 85, and modexp went
-    // 1363 -> 923 while Masaya stays at 1363.
+    // 1363 -> 154 while Masaya stays at 1363.
     assert_ne!(
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20],
         MASAYA_UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x20]
@@ -643,7 +643,7 @@ fn full_address_lookup_preserves_canonical_precompile_multipliers() {
         (0x02, 10),
         (0x03, 4),
         (0x04, 6),
-        (0x05, 923),
+        (0x05, 154),
         (0x06, 19),
         (0x07, 58),
         (0x08, 54),

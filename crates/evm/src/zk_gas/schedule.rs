@@ -4,9 +4,7 @@ use alloy_primitives::Address;
 
 use crate::spec::TaikoSpecId;
 
-use super::unzen::{MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE};
-
-pub use alethia_reth_chainspec::TAIKO_MASAYA_CHAIN_ID;
+use super::unzen::UNZEN_ZK_GAS_SCHEDULE;
 
 /// Fail-safe multiplier applied to any precompile absent from a schedule's table.
 pub const FAILSAFE_MULTIPLIER: u16 = u16::MAX;
@@ -34,8 +32,7 @@ pub struct ZkGasSchedule {
     /// Maximum zk gas permitted across a single block.
     pub block_limit: u64,
     /// Fixed zk gas charged once per block transaction before opcode or precompile
-    /// metering begins. Set to `0` on chains whose Unzen activation predates this
-    /// field, to preserve historical block consensus.
+    /// metering begins.
     pub tx_intrinsic_zk_gas: u64,
     /// Per-opcode proving-cost multipliers indexed by opcode byte.
     pub opcode_multipliers: [u16; 256],
@@ -57,16 +54,11 @@ impl ZkGasSchedule {
     }
 }
 
-/// Returns the consensus zk gas schedule for the active Taiko fork on the given chain, when
-/// defined. Masaya runs Unzen with a 10× higher block budget than Devnet/Hoodi/Mainnet; all
-/// other chains share the default Unzen schedule.
-pub const fn schedule_for(spec: TaikoSpecId, chain_id: u64) -> Option<&'static ZkGasSchedule> {
+/// Returns the consensus zk gas schedule for the active Taiko fork, when defined. Only Unzen
+/// defines a schedule; every chain shares the single [`UNZEN_ZK_GAS_SCHEDULE`].
+pub const fn schedule_for(spec: TaikoSpecId) -> Option<&'static ZkGasSchedule> {
     match spec {
-        TaikoSpecId::UNZEN => Some(if chain_id == TAIKO_MASAYA_CHAIN_ID {
-            &MASAYA_UNZEN_ZK_GAS_SCHEDULE
-        } else {
-            &UNZEN_ZK_GAS_SCHEDULE
-        }),
+        TaikoSpecId::UNZEN => Some(&UNZEN_ZK_GAS_SCHEDULE),
         _ => None,
     }
 }

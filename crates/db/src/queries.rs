@@ -14,21 +14,20 @@ use crate::model::StoredL1OriginTable;
 
 /// Read the L1 origin block height (`Proposal.originBlockNumber`) recorded for a given L2 block.
 ///
-/// The taiko-client driver writes [`crate::model::StoredL1Origin`] into this table (via
-/// `taikoAuth_updateL1Origin`) from the on-chain `Proposed` event. The L1 precompiles' 256-block
-/// lookback hangs off `originBlockHash = blockhash(originBlockNumber)`, so re-execution paths
-/// (e.g. `debug_executionWitness`) look the origin up here and feed it into the executor context.
-///
-/// `None` when no entry exists (pre-Shasta block, or the driver hasn't committed yet); callers
-/// must surface an error or leave the window unset — never silently use the wrong pivot.
+/// The taiko-client driver writes [`crate::model::StoredL1Origin`] into this table via
+/// `taikoAuth_updateL1Origin`. The proposal-anchored insertion path populates `l1_block_height`;
+/// the preconf path leaves it null (= 0 when read back). Returns `None` for both shapes — match
+/// NMC's `TaikoVirtualMachine.SetBlockExecutionContext` (`?.L1BlockHeight is long h && h > 0`)
+/// so the precompiles' permissive-on-null contract kicks in instead of running the range check
+/// against a sentinel zero.
 pub fn read_l1_origin_block_height<Tx: DbTx>(
     tx: &Tx,
     l2_block_number: BlockNumber,
 ) -> Result<Option<u64>, DatabaseError> {
     let stored = tx.get::<StoredL1OriginTable>(l2_block_number)?;
     // `l1_block_height` is stored as `U256` (serde-compat with `RpcL1Origin`) but real L1 block
-    // numbers fit in `u64`; reject an overflowing value rather than silently truncate.
-    Ok(stored.and_then(|s| u64::try_from(s.l1_block_height).ok()))
+    // numbers fit in `u64`; reject overflow rather than silently truncate, and treat 0 as null.
+    Ok(stored.and_then(|s| u64::try_from(s.l1_block_height).ok().filter(|h| *h > 0)))
 }
 
 #[cfg(test)]
@@ -116,6 +115,23 @@ mod tests {
             read, None,
             "u64-overflow l1_block_height must be silently coerced to None, not truncated"
         );
+    }
+
+    /// Driver preconf-block convention: `taikoAuth_updateL1Origin` writes `l1_block_height = 0`
+    /// when no proposal has anchored the block yet. NMC treats that sentinel as null
+    /// (`?.L1BlockHeight is long h && h > 0`); we mirror that contract so the precompile's
+    /// permissive-on-null path kicks in instead of running the range check against `origin = 0`.
+    #[test]
+    fn read_l1_origin_block_height_returns_none_for_zero_height() {
+        let db = temp_taiko_db();
+        let l2_block_number: BlockNumber = 9;
+        let tx = db.tx_mut().unwrap();
+        tx.put::<StoredL1OriginTable>(l2_block_number, sample_stored_origin(0)).unwrap();
+        tx.commit().unwrap();
+
+        let tx = db.tx().unwrap();
+        let read = read_l1_origin_block_height(&tx, l2_block_number).unwrap();
+        assert_eq!(read, None, "l1_block_height=0 must surface as None, not Some(0)");
     }
 
     /// Sanity: the helper doesn't accidentally read from `StoredL1HeadOriginTable` (a sibling

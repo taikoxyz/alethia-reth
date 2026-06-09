@@ -62,7 +62,9 @@ pub fn set_l1_origin_block_id(origin_block_id: u64) {
         Some(origin_block_id);
 }
 
-/// Read the current L1 origin block ID.
+/// Read the current L1 origin block ID. Re-execution paths inject their override via
+/// [`L1OriginOverride::install`]; the executor's apply hook copies it into the global before any
+/// precompile runs, so this getter sees a single source of truth.
 pub fn get_l1_origin_block_id() -> Option<u64> {
     *CURRENT_L1_ORIGIN_BLOCK_ID.lock().expect("CURRENT_L1_ORIGIN_BLOCK_ID mutex poisoned")
 }

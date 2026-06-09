@@ -23,6 +23,11 @@ use super::context::{
     validate_l1_block_in_window,
 };
 
+// No L1 origin available → skip the `[origin − 256, origin]` range check rather than halting
+// (preconf blocks, prebuild simulation, `eth_call`, stateless re-execution without a sidecar).
+// The proving layer enforces correctness. Matches NMC's contract; both halves must agree so the
+// guest's recomputed zk_gas matches the live mining value.
+
 /// Fixed gas cost for an L1STATICCALL precompile call.
 ///
 /// Calibration: fixed 2000 + per-call overhead 10000 mirrors the EVM `CALL`/`STATICCALL`
@@ -319,32 +324,21 @@ pub fn l1staticcall_run(input: &[u8], gas_limit: u64, reservoir: u64) -> Precomp
         }
     };
 
-    // The trusted window is `[origin − 256, origin]`, bound on-chain via `originBlockHash`.
-    let l1_origin_block_id = match get_l1_origin_block_id() {
-        Some(id) => id,
-        None => {
-            warn!("L1STATICCALL: L1 origin block ID not set");
-            return Ok(PrecompileOutput::halt(
-                PrecompileHalt::other(
-                    "L1STATICCALL context unset (L1 precompiles not enabled for this fork, or the \
-                     host did not set the L1 origin block for this block)",
-                ),
-                reservoir,
-            ));
+    if let Some(l1_origin_block_id) = get_l1_origin_block_id() {
+        if let Err(err) = validate_l1_block_in_window(requested_block, l1_origin_block_id) {
+            debug!(
+                "L1STATICCALL: rejected block {requested_block} for origin {l1_origin_block_id}: {err:?}"
+            );
+            let msg = match err {
+                WindowError::BlockAfterOrigin => {
+                    "Requested block number is after the L1 origin block"
+                }
+                WindowError::BlockBeyondLookback => {
+                    "Requested block number exceeds max lookback from L1 origin block"
+                }
+            };
+            return Ok(PrecompileOutput::halt(PrecompileHalt::other(msg), reservoir));
         }
-    };
-
-    if let Err(err) = validate_l1_block_in_window(requested_block, l1_origin_block_id) {
-        debug!(
-            "L1STATICCALL: rejected block {requested_block} for origin {l1_origin_block_id}: {err:?}"
-        );
-        let msg = match err {
-            WindowError::BlockAfterOrigin => "Requested block number is after the L1 origin block",
-            WindowError::BlockBeyondLookback => {
-                "Requested block number exceeds max lookback from L1 origin block"
-            }
-        };
-        return Ok(PrecompileOutput::halt(PrecompileHalt::other(msg), reservoir));
     }
 
     let (l1_gas, result, is_reverted) = if let Some((cached_gas, cached_data, cached_reverted)) =
@@ -588,12 +582,26 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1staticcall_fails_without_origin() {
+    fn test_l1staticcall_permissive_when_origin_unset() {
+        // No origin → skip range check; cache hit still succeeds.
+        reset_all();
+        let target = Address::from(TEST_ADDRESS);
+        let return_data = vec![0xAB, 0xCD];
+        set_l1_staticcall_value(target, 100, &[], 0, return_data.clone(), false)
+            .expect("test setup");
+        let result =
+            l1staticcall_run(&create_min_input(100), expected_gas(0), 0).expect("cache hit");
+        assert_eq!(result.bytes.as_ref(), &return_data);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1staticcall_halts_on_cache_miss_without_origin_or_fetcher() {
         reset_all();
         let result = l1staticcall_run(&create_min_input(100), expected_gas(0), 0);
-        assert!(matches!(&result, Ok(o) if o.is_halt()), "should fail without origin");
+        assert!(matches!(&result, Ok(o) if o.is_halt()));
         let msg = format!("{:?}", result.unwrap().halt_reason().expect("halt"));
-        assert!(msg.contains("L1STATICCALL context unset"), "got: {msg}");
+        assert!(msg.contains("L1STATICCALL result not found in cache"), "got: {msg}");
     }
 
     // ── Cache miss without RPC ────────────────────────────────────────

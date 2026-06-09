@@ -29,6 +29,7 @@ use serde::Deserialize;
 use tokio::runtime::{Handle, RuntimeFlavor};
 use tracing::{debug, warn};
 
+
 /// Bridge a sync precompile callback to an async future using `block_in_place +
 /// block_on`. The synchronous return shape comes from revm; the async work is dispatched on
 /// `handle`'s runtime. Centralizing the bridge (D3) keeps the four installer bodies
@@ -142,6 +143,7 @@ impl L1RpcClient {
         let bytes = hex::decode(hex_str).map_err(|e| anyhow::anyhow!("decode returnValue: {e}"))?;
         Ok((resp.gas.min(gas_limit), bytes, false))
     }
+
 }
 
 /// Subset of `debug_traceCall`'s response that the L1Staticcall fetcher consumes.

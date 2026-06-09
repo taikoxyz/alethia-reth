@@ -259,6 +259,12 @@ const UNZEN_PRECOMPILE_MULTIPLIERS: &[(Address, u16)] = &[
     // p256verify (RIP-7212) at 0x0000…0100 — outside the canonical 0x..XX range, so it
     // needs a full-address literal. Multiplier from taikoxyz/taiko-mono#21748.
     (address!("0x0000000000000000000000000000000000000100"), 163),
+    // TODO(calibrate): 50 is a placeholder. Without an explicit entry these fall through to
+    // FAILSAFE_MULTIPLIER (u16::MAX), which exceeds the 100M block budget on a single call.
+    // Replace with measured proving-cycles-per-native-gas (cf. `taikoxyz/taiko-mono#21748`
+    // for p256verify) before shipping outside devnet, and update `MASAYA_…` below.
+    (address!("0x0000000000000000000000000000000000010001"), 50), // L1SLOAD     — TODO(calibrate)
+    (address!("0x0000000000000000000000000000000000010002"), 50), // L1STATICCALL — TODO(calibrate)
 ];
 
 /// Frozen Masaya Unzen precompile multipliers, keyed by full address. Pinned at the

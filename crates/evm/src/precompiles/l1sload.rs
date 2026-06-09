@@ -19,6 +19,11 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use reth_revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
 use tracing::{debug, trace, warn};
 
+// No L1 origin available → skip the `[origin − 256, origin]` range check rather than halting
+// (preconf blocks, prebuild simulation, `eth_call`, stateless re-execution without a sidecar).
+// The proving layer enforces correctness. Matches NMC's contract; both halves must agree so the
+// guest's recomputed zk_gas matches the live mining value.
+
 // Re-export the shared origin context functions through this module so consumers (notably
 // raiko) can import `alethia_reth_evm::precompiles::l1sload::{set_l1_origin_block_id, ...}`.
 // They operate on the same global that `l1staticcall` reads via `super::context::get_*`.
@@ -158,21 +163,6 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileRe
     let storage_key = B256::from_slice(&input[20..52]);
     let block_number = B256::from_slice(&input[52..84]);
 
-    // The trusted window is `[origin − 256, origin]`, bound on-chain via `originBlockHash`.
-    let l1_origin_block_id = match get_l1_origin_block_id() {
-        Some(id) => id,
-        None => {
-            warn!("L1SLOAD: L1 origin block ID not set");
-            return Ok(PrecompileOutput::halt(
-                PrecompileHalt::other(
-                    "L1SLOAD context unset (L1 precompiles not enabled for this fork, or the host \
-                     did not set the L1 origin block for this block)",
-                ),
-                reservoir,
-            ));
-        }
-    };
-
     let requested_block: u64 = match U256::from_be_bytes(block_number.0).try_into() {
         Ok(n) => n,
         Err(_) => {
@@ -183,17 +173,21 @@ pub fn l1sload_run(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileRe
         }
     };
 
-    if let Err(err) = validate_l1_block_in_window(requested_block, l1_origin_block_id) {
-        debug!(
-            "L1SLOAD: rejected block {requested_block} for origin {l1_origin_block_id}: {err:?}"
-        );
-        let msg = match err {
-            WindowError::BlockAfterOrigin => "Requested block number is after the L1 origin block",
-            WindowError::BlockBeyondLookback => {
-                "Requested block number exceeds max lookback from L1 origin block"
-            }
-        };
-        return Ok(PrecompileOutput::halt(PrecompileHalt::other(msg), reservoir));
+    if let Some(l1_origin_block_id) = get_l1_origin_block_id() {
+        if let Err(err) = validate_l1_block_in_window(requested_block, l1_origin_block_id) {
+            debug!(
+                "L1SLOAD: rejected block {requested_block} for origin {l1_origin_block_id}: {err:?}"
+            );
+            let msg = match err {
+                WindowError::BlockAfterOrigin => {
+                    "Requested block number is after the L1 origin block"
+                }
+                WindowError::BlockBeyondLookback => {
+                    "Requested block number exceeds max lookback from L1 origin block"
+                }
+            };
+            return Ok(PrecompileOutput::halt(PrecompileHalt::other(msg), reservoir));
+        }
     }
 
     let value = if let Some(cached) =
@@ -297,13 +291,27 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_l1sload_fails_without_origin() {
+    fn test_l1sload_permissive_when_origin_unset() {
+        // No origin → skip range check; cache hit still succeeds.
+        clear_l1_storage();
+        let address = Address::from(TEST_ADDRESS);
+        let key = B256::from(TEST_STORAGE_KEY);
+        let value = B256::from(TEST_STORAGE_VALUE);
+        set_l1_storage_value(address, key, block_number_b256(100), value);
+        let result = l1sload_run(&Bytes::from(create_test_input(100)), SUFFICIENT_GAS, 0)
+            .expect("permissive cache hit should succeed");
+        assert_eq!(result.bytes.as_ref(), &value.0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_l1sload_halts_on_cache_miss_without_origin_or_fetcher() {
         clear_l1_storage();
         let input = create_test_input(100);
         let out = l1sload_run(&Bytes::from(input), SUFFICIENT_GAS, 0).expect("expected Ok halt");
-        assert!(out.is_halt(), "should fail when origin block ID is not set");
+        assert!(out.is_halt());
         let halt = format!("{:?}", out.halt_reason().expect("halt"));
-        assert!(halt.contains("L1SLOAD context unset"), "got: {halt}");
+        assert!(halt.contains("L1 storage value not found in cache"), "got: {halt}");
     }
 
     #[test]
@@ -469,11 +477,12 @@ mod tests {
         clear_l1_storage();
         assert!(take_l1_rpc_served_calls().is_empty(), "served calls cleared");
 
-        // Context cleared → call halts before any fetcher use.
+        // Cache + fetcher cleared → halt on cache-miss (origin is permissive).
         let out = l1sload_run(&input, SUFFICIENT_GAS, 0).expect("expected Ok halt");
-        assert!(out.is_halt(), "context cleared");
+        assert!(out.is_halt());
         assert!(
-            format!("{:?}", out.halt_reason().expect("halt")).contains("L1SLOAD context unset")
+            format!("{:?}", out.halt_reason().expect("halt"))
+                .contains("L1 storage value not found in cache")
         );
     }
 

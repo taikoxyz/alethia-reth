@@ -397,8 +397,8 @@ where
         // Charge the per-transaction intrinsic zk gas before EVM execution begins, as required
         // by the Unzen zk gas spec (taikoxyz/taiko-mono#21669). The intrinsic sits in the
         // in-flight tx total so it is committed alongside opcode/precompile usage on success
-        // and discarded on revert/failure. A schedule with a zero intrinsic (Masaya) makes this
-        // a no-op. If the intrinsic alone would exceed the remaining block budget, mirror the
+        // and discarded on revert/failure. A schedule with a zero intrinsic makes this a no-op.
+        // If the intrinsic alone would exceed the remaining block budget, mirror the
         // mid-tx exhaustion path used by the inspector.
         if let Err(ZkGasOutcome::LimitExceeded) = self.evm.charge_tx_intrinsic_zk_gas() {
             self.zk_gas_exhausted = true;
@@ -558,11 +558,9 @@ mod test {
         state::AccountInfo,
     };
 
-    use alethia_reth_chainspec::TAIKO_MASAYA_CHAIN_ID;
     use alethia_reth_evm::{
-        alloy::decode_anchor_system_call_data,
-        factory::TaikoEvmFactory,
-        zk_gas::unzen::{MASAYA_TX_INTRINSIC_ZK_GAS, TX_INTRINSIC_ZK_GAS},
+        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory,
+        zk_gas::unzen::TX_INTRINSIC_ZK_GAS,
     };
 
     use super::*;
@@ -570,7 +568,7 @@ mod test {
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
-            recovered_tx_with_chain_id, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -663,39 +661,6 @@ mod test {
             finalized >= TX_INTRINSIC_ZK_GAS,
             "finalized block zk gas ({finalized}) must include the per-tx intrinsic charge ({TX_INTRINSIC_ZK_GAS})"
         );
-    }
-
-    #[test]
-    fn executor_does_not_charge_tx_intrinsic_on_masaya_schedule() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let mut env = unzen_evm_env();
-        env.cfg_env.chain_id = TAIKO_MASAYA_CHAIN_ID;
-        let evm = TaikoEvmFactory.create_evm(&mut state, env);
-        let ctx = unzen_execution_ctx();
-        let mut executor =
-            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
-
-        executor
-            .execute_transaction(recovered_tx_with_chain_id(
-                BENCH_CALLER,
-                BENCH_SUCCESS_TARGET,
-                0,
-                1,
-                TAIKO_MASAYA_CHAIN_ID,
-            ))
-            .expect("successful tx should commit on Masaya");
-
-        let finalized = ctx.finalized_block_zk_gas();
-        assert_eq!(MASAYA_TX_INTRINSIC_ZK_GAS, 0);
-        assert!(
-            finalized < TX_INTRINSIC_ZK_GAS,
-            "Masaya finalized block zk gas ({finalized}) must not include any per-tx intrinsic charge"
-        );
-        assert!(finalized > 0, "successful tx must still record opcode-driven zk gas (got 0)");
     }
 
     #[cfg(feature = "prover")]

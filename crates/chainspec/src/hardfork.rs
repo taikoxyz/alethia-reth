@@ -102,7 +102,7 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(1_778_158_800)),
+        (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(0)),
     ]))
 });
 
@@ -223,5 +223,15 @@ mod test {
         let shasta = TAIKO_MASAYA_HARDFORKS.fork(TaikoHardfork::Shasta);
         assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
         assert_eq!(shasta, ForkCondition::Timestamp(0));
+    }
+
+    #[test]
+    fn test_masaya_unzen_activates_at_genesis() {
+        let unzen = TAIKO_MASAYA_HARDFORKS.fork(TaikoHardfork::Unzen);
+        assert_eq!(
+            unzen,
+            ForkCondition::Timestamp(0),
+            "post-reset Masaya forks into Unzen at genesis"
+        );
     }
 }

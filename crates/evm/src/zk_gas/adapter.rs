@@ -62,16 +62,14 @@ impl<I> ZkGasInspector<I> {
 
     /// Returns a reference to the active zk gas meter, if metering is enabled.
     ///
-    /// Returns `None` when the active spec/chain combination has no zk gas schedule
-    /// (pre-Unzen specs).
+    /// Returns `None` when the active spec has no zk gas schedule (pre-Unzen specs).
     pub(crate) fn meter(&self) -> Option<&ZkGasMeter<'static>> {
         self.metering.as_ref().map(|state| &state.meter)
     }
 
     /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
     ///
-    /// Returns `None` when the active spec/chain combination has no zk gas schedule
-    /// (pre-Unzen specs).
+    /// Returns `None` when the active spec has no zk gas schedule (pre-Unzen specs).
     pub(crate) fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
         self.metering.as_mut().map(|state| &mut state.meter)
     }
@@ -413,17 +411,14 @@ fn parent_step_depth(depth: usize) -> usize {
 mod tests {
     use crate::{
         spec::TaikoSpecId,
-        zk_gas::{
-            schedule::schedule_for,
-            unzen::{MASAYA_UNZEN_ZK_GAS_SCHEDULE, UNZEN_ZK_GAS_SCHEDULE},
-        },
+        zk_gas::{schedule::schedule_for, unzen::UNZEN_ZK_GAS_SCHEDULE},
     };
 
     use super::{FinishedStep, ZkGasMeteringState};
 
     #[test]
     fn flush_deferred_steps_returns_immediately_when_empty() {
-        let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+        let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
         let mut metering = ZkGasMeteringState::new(schedule);
 
         metering.flush_deferred_steps().expect("empty flush should succeed");
@@ -434,7 +429,7 @@ mod tests {
 
     #[test]
     fn flush_deferred_steps_clears_flag_after_charging_deferred_step() {
-        let schedule = schedule_for(TaikoSpecId::UNZEN, 167).expect("Unzen schedule");
+        let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
         let mut metering = ZkGasMeteringState::new(schedule);
 
         metering.defer_step(0, FinishedStep { opcode: 0x01, step_gas: 3, spawned: false });
@@ -449,13 +444,13 @@ mod tests {
 
     #[test]
     fn flush_deferred_steps_preserves_flag_when_later_deferred_step_remains_after_error() {
-        let mut metering = ZkGasMeteringState::new(&MASAYA_UNZEN_ZK_GAS_SCHEDULE);
+        let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
 
         metering.defer_step(
             0,
             FinishedStep {
                 opcode: 0xf0,
-                step_gas: MASAYA_UNZEN_ZK_GAS_SCHEDULE.block_limit + 1,
+                step_gas: UNZEN_ZK_GAS_SCHEDULE.block_limit + 1,
                 spawned: false,
             },
         );

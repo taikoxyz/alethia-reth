@@ -75,7 +75,7 @@ pub fn recovered_tx(
 }
 
 /// Builds a recovered legacy transaction targeting `to` from `caller` with an explicit chain id,
-/// so tests can submit transactions against the Masaya chain id (`167_011`) and others.
+/// so tests can submit transactions against chain ids other than the default.
 pub fn recovered_tx_with_chain_id(
     caller: Address,
     to: Address,

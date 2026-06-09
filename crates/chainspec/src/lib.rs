@@ -39,9 +39,10 @@ pub const TAIKO_HOODI_GENESIS_HASH: B256 =
 pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
     b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9");
 
-/// Genesis hash for the Taiko Masaya network.
+/// Genesis hash for the Taiko Masaya network. After the reset, Masaya activates Unzen at genesis
+/// (`Timestamp(0)`), which makes the genesis header an Osaka-era block.
 pub const TAIKO_MASAYA_GENESIS_HASH: B256 =
-    b256!("0xeef96dc254e1ac4a0044b116e38b16dface1a153d9299c056552898a43f8513e");
+    b256!("0xd3597fd63c823352526ce2a4cfafe0837d878e3c9ac8558129bc04ce900402ae");
 
 /// EVM chain id for the Taiko Devnet network.
 pub const TAIKO_DEVNET_CHAIN_ID: u64 = 167_001;

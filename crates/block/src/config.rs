@@ -59,6 +59,21 @@ impl std::fmt::Display for MissingBaseFee {
 
 impl std::error::Error for MissingBaseFee {}
 
+/// Error when an Unzen payload sidecar is missing the hash-relevant header difficulty.
+#[derive(Debug)]
+pub struct MissingUnzenHeaderDifficulty {
+    /// The block number whose payload sidecar lacked the header difficulty.
+    pub block_number: u64,
+}
+
+impl std::fmt::Display for MissingUnzenHeaderDifficulty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "missing header difficulty for Unzen payload at block {}", self.block_number)
+    }
+}
+
+impl std::error::Error for MissingUnzenHeaderDifficulty {}
+
 /// A complete configuration of EVM for Taiko network.
 #[derive(Debug, Clone)]
 pub struct TaikoEvmConfig {
@@ -306,6 +321,17 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         payload: &'a TaikoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let is_unzen_active = self.chain_spec().is_unzen_active(payload.timestamp());
+        // Unzen commits the finalized block zk gas into the header difficulty, so payload
+        // execution must validate it against the sidecar value the same way block re-execution
+        // does. Requiring the sidecar value keeps `engine_newPayload` fail-closed instead of
+        // silently skipping the check.
+        let expected_difficulty = if is_unzen_active {
+            Some(payload.taiko_sidecar.header_difficulty.ok_or_else(|| {
+                AnyError::new(MissingUnzenHeaderDifficulty { block_number: payload.block_number() })
+            })?)
+        } else {
+            None
+        };
         Ok(TaikoBlockExecutionCtx {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
@@ -317,7 +343,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
             extra_data: payload.execution_payload.extra_data.clone(),
             is_unzen_active,
-            expected_difficulty: None,
+            expected_difficulty,
             finalized_block_zk_gas: Default::default(),
         })
     }
@@ -469,5 +495,82 @@ mod tests {
     #[test]
     fn unzen_normalization_falls_back_to_zero_root_when_missing() {
         assert_eq!(normalize_parent_beacon_block_root(true, None), Some(B256::ZERO));
+    }
+
+    #[cfg(feature = "net")]
+    mod payload_ctx {
+        use super::*;
+        use alethia_reth_primitives::engine::types::{
+            TaikoExecutionDataSidecar, TaikoExecutionPayloadV1,
+        };
+        use alloy_primitives::Bloom;
+
+        fn sample_payload(header_difficulty: Option<U256>) -> TaikoExecutionData {
+            TaikoExecutionData {
+                execution_payload: TaikoExecutionPayloadV1 {
+                    parent_hash: B256::ZERO,
+                    fee_recipient: Address::ZERO,
+                    state_root: B256::ZERO,
+                    receipts_root: B256::ZERO,
+                    logs_bloom: Bloom::ZERO,
+                    prev_randao: B256::ZERO,
+                    block_number: 1,
+                    gas_limit: 30_000_000,
+                    gas_used: 0,
+                    timestamp: 1,
+                    extra_data: Bytes::new(),
+                    base_fee_per_gas: U256::from(1_u64),
+                    block_hash: B256::ZERO,
+                    transactions: Some(vec![]),
+                },
+                taiko_sidecar: TaikoExecutionDataSidecar {
+                    tx_hash: B256::ZERO,
+                    withdrawals_hash: None,
+                    header_difficulty,
+                    taiko_block: Some(true),
+                },
+            }
+        }
+
+        fn config_with_unzen_at(timestamp: u64) -> TaikoEvmConfig {
+            let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+            chain_spec
+                .inner
+                .hardforks
+                .insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
+            TaikoEvmConfig::new(Arc::new(chain_spec))
+        }
+
+        #[test]
+        fn unzen_payload_ctx_expects_sidecar_header_difficulty() {
+            let config = config_with_unzen_at(0);
+            let payload = sample_payload(Some(U256::from(42_u64)));
+
+            let ctx = config.context_for_payload(&payload).expect("payload ctx should build");
+
+            assert_eq!(ctx.expected_difficulty, Some(U256::from(42_u64)));
+        }
+
+        #[test]
+        fn unzen_payload_ctx_rejects_missing_header_difficulty() {
+            let config = config_with_unzen_at(0);
+            let payload = sample_payload(None);
+
+            let err = config
+                .context_for_payload(&payload)
+                .expect_err("Unzen payload ctx must require the sidecar header difficulty");
+
+            assert!(err.to_string().contains("missing header difficulty"));
+        }
+
+        #[test]
+        fn pre_unzen_payload_ctx_has_no_expected_difficulty() {
+            let config = config_with_unzen_at(100);
+            let payload = sample_payload(Some(U256::from(42_u64)));
+
+            let ctx = config.context_for_payload(&payload).expect("payload ctx should build");
+
+            assert_eq!(ctx.expected_difficulty, None);
+        }
     }
 }

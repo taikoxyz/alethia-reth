@@ -141,8 +141,8 @@ pub(super) fn proof_history_startup_action(
         ));
     }
 
-    if latest_number <= canonical_best
-        && canonical_latest_hash.is_some_and(|canonical_hash| canonical_hash == latest_hash)
+    if latest_number <= canonical_best &&
+        canonical_latest_hash.is_some_and(|canonical_hash| canonical_hash == latest_hash)
     {
         return Ok(ProofHistoryStartupAction::Ready);
     }
@@ -799,8 +799,8 @@ where
 
         let best_block = self.provider.best_block_number()?;
         let is_sequential = new.tip().number() == latest_stored + 1;
-        let is_near_tip = best_block.saturating_sub(new.tip().number())
-            < PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
+        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
+            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
 
         if is_sequential && is_near_tip {
             for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
@@ -820,12 +820,12 @@ where
         chain: &Chain<Primitives>,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
-        let should_verify = self.config.verification_interval > 0
-            && block_number.is_multiple_of(self.config.verification_interval);
+        let should_verify = self.config.verification_interval > 0 &&
+            block_number.is_multiple_of(self.config.verification_interval);
 
-        if !should_verify
-            && let Some(block) = chain.blocks().get(&block_number)
-            && let Some(trie_data) = chain.trie_data_at(block_number)
+        if !should_verify &&
+            let Some(block) = chain.blocks().get(&block_number) &&
+            let Some(trie_data) = chain.trie_data_at(block_number)
         {
             let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
             collector.store_block_updates(

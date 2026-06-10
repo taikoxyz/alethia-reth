@@ -4,10 +4,10 @@ use super::init::ProofHistoryInitializationJob;
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
 use alloy_primitives::B256;
-use eyre::{eyre, WrapErr};
+use eyre::{WrapErr, eyre};
 use reth::providers::{BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider};
 use reth_db::Database;
-use reth_optimism_trie::{api::OpProofsProviderRO, OpProofsStore};
+use reth_optimism_trie::{OpProofsStore, api::OpProofsProviderRO};
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
 };
@@ -28,8 +28,8 @@ where
     Storage: OpProofsStore,
 {
     let provider_ro = storage.provider_ro()?;
-    Ok(provider_ro.get_earliest_block_number()?.is_none()
-        || provider_ro.get_latest_block_number()?.is_none())
+    Ok(provider_ro.get_earliest_block_number()?.is_none() ||
+        provider_ro.get_latest_block_number()?.is_none())
 }
 
 /// Safety threshold for automatic proof-history pruning on startup.
@@ -403,7 +403,7 @@ mod tests {
     use super::*;
     use alloy_consensus::Header;
     use reth_ethereum_primitives::EthPrimitives;
-    use reth_optimism_trie::{api::OpProofsProviderRw, InMemoryProofsStorage, OpProofsStorage};
+    use reth_optimism_trie::{InMemoryProofsStorage, OpProofsStorage, api::OpProofsProviderRw};
     use reth_provider::test_utils::MockEthProvider;
 
     #[test]

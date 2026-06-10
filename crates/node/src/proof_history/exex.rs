@@ -141,8 +141,8 @@ pub(super) fn proof_history_startup_action(
         ));
     }
 
-    if latest_number <= canonical_best &&
-        canonical_latest_hash.is_some_and(|canonical_hash| canonical_hash == latest_hash)
+    if latest_number <= canonical_best
+        && canonical_latest_hash.is_some_and(|canonical_hash| canonical_hash == latest_hash)
     {
         return Ok(ProofHistoryStartupAction::Ready);
     }
@@ -189,6 +189,25 @@ where
     missed_start_logged: AtomicBool,
     /// Serializes proof-history writers across live notifications, background sync, and pruning.
     write_lock: Arc<Mutex<()>>,
+}
+
+/// Ensures a canonical reorg or revert does not replace the retained proof-history anchor.
+fn ensure_canonical_update_above_earliest(
+    update_kind: &'static str,
+    earliest: BlockNumHash,
+    first_old: BlockNumHash,
+) -> eyre::Result<()> {
+    if first_old.number <= earliest.number {
+        return Err(eyre!(
+            "proof-history {update_kind} touches retained earliest block {} hash {:?} with old block {} hash {:?}; wipe proof-history storage and restart initialization",
+            earliest.number,
+            earliest.hash,
+            first_old.number,
+            first_old.hash
+        ));
+    }
+
+    Ok(())
 }
 
 impl<Node, Storage> ProofHistorySidecar<Node, Storage>
@@ -741,22 +760,25 @@ where
         sync_target_tx: &watch::Sender<u64>,
     ) -> eyre::Result<()> {
         let _write_guard = self.write_lock.lock().await;
-        let latest_stored = self
-            .storage
-            .provider_ro()?
+        let provider_ro = self.storage.provider_ro()?;
+        let earliest_stored = provider_ro
+            .get_earliest_block_number()?
+            .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
+        let latest_stored = provider_ro
             .get_latest_block_number()?
-            .ok_or_else(|| eyre!("no blocks stored in proof-history storage"))?
+            .ok_or_else(|| eyre!("no latest proof-history block stored"))?
             .0;
+        let earliest_stored = BlockNumHash::new(earliest_stored.0, earliest_stored.1);
 
         match &notification {
             ExExNotification::ChainCommitted { new } => {
                 self.handle_chain_committed(new, latest_stored, collector, sync_target_tx)?
             }
             ExExNotification::ChainReorged { old, new } => {
-                self.handle_chain_reorged(old, new, latest_stored, collector)?
+                self.handle_chain_reorged(old, new, earliest_stored, latest_stored, collector)?
             }
             ExExNotification::ChainReverted { old } => {
-                self.handle_chain_reverted(old, latest_stored, collector)?
+                self.handle_chain_reverted(old, earliest_stored, latest_stored, collector)?
             }
         }
 
@@ -777,8 +799,8 @@ where
 
         let best_block = self.provider.best_block_number()?;
         let is_sequential = new.tip().number() == latest_stored + 1;
-        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
-            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
+        let is_near_tip = best_block.saturating_sub(new.tip().number())
+            < PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
 
         if is_sequential && is_near_tip {
             for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
@@ -798,12 +820,12 @@ where
         chain: &Chain<Primitives>,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
-        let should_verify = self.config.verification_interval > 0 &&
-            block_number.is_multiple_of(self.config.verification_interval);
+        let should_verify = self.config.verification_interval > 0
+            && block_number.is_multiple_of(self.config.verification_interval);
 
-        if !should_verify &&
-            let Some(block) = chain.blocks().get(&block_number) &&
-            let Some(trie_data) = chain.trie_data_at(block_number)
+        if !should_verify
+            && let Some(block) = chain.blocks().get(&block_number)
+            && let Some(trie_data) = chain.trie_data_at(block_number)
         {
             let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
             collector.store_block_updates(
@@ -827,12 +849,19 @@ where
         &self,
         old: &Chain<Primitives>,
         new: &Chain<Primitives>,
+        earliest_stored: BlockNumHash,
         latest_stored: u64,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
         if old.first().number() > latest_stored {
             return Ok(());
         }
+
+        ensure_canonical_update_above_earliest(
+            "reorg",
+            earliest_stored,
+            BlockNumHash::new(old.first().number(), old.first().hash()),
+        )?;
 
         if old.fork_block() != new.fork_block() {
             return Err(eyre!(
@@ -879,12 +908,19 @@ where
     fn handle_chain_reverted(
         &self,
         old: &Chain<Primitives>,
+        earliest_stored: BlockNumHash,
         latest_stored: u64,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
         if old.first().number() > latest_stored {
             return Ok(());
         }
+
+        ensure_canonical_update_above_earliest(
+            "revert",
+            earliest_stored,
+            BlockNumHash::new(old.first().number(), old.first().hash()),
+        )?;
 
         collector.unwind_history(old.first().block_with_parent())?;
         Ok(())
@@ -894,7 +930,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryStartupAction, canonical_notification_to_exex, proof_history_startup_action,
+        ProofHistoryStartupAction, canonical_notification_to_exex,
+        ensure_canonical_update_above_earliest, proof_history_startup_action,
     };
     use alloy_eips::BlockNumHash;
     use alloy_primitives::B256;
@@ -906,6 +943,44 @@ mod tests {
 
     fn hash(byte: u8) -> B256 {
         B256::with_last_byte(byte)
+    }
+
+    #[test]
+    fn proof_history_update_guard_rejects_reorg_touching_earliest() {
+        let error = ensure_canonical_update_above_earliest(
+            "reorg",
+            BlockNumHash::new(10, hash(10)),
+            BlockNumHash::new(10, hash(11)),
+        )
+        .expect_err("reorg replacing earliest must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("proof-history reorg touches retained earliest block 10"));
+        assert!(message.contains("wipe proof-history storage"));
+    }
+
+    #[test]
+    fn proof_history_update_guard_rejects_revert_touching_earliest() {
+        let error = ensure_canonical_update_above_earliest(
+            "revert",
+            BlockNumHash::new(10, hash(10)),
+            BlockNumHash::new(10, hash(10)),
+        )
+        .expect_err("revert unwinding earliest must fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("proof-history revert touches retained earliest block 10"));
+        assert!(message.contains("wipe proof-history storage"));
+    }
+
+    #[test]
+    fn proof_history_update_guard_allows_reorg_above_earliest() {
+        ensure_canonical_update_above_earliest(
+            "reorg",
+            BlockNumHash::new(10, hash(10)),
+            BlockNumHash::new(11, hash(11)),
+        )
+        .expect("reorg after retained earliest should be allowed");
     }
 
     #[test]

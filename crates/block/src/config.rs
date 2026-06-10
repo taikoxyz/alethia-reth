@@ -52,6 +52,7 @@ pub struct MissingBaseFee {
 }
 
 impl std::fmt::Display for MissingBaseFee {
+    /// Formats the missing-base-fee error with the affected block number.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "missing base_fee_per_gas in block {}", self.block_number)
     }
@@ -67,6 +68,7 @@ pub struct MissingUnzenHeaderDifficulty {
 }
 
 impl std::fmt::Display for MissingUnzenHeaderDifficulty {
+    /// Formats the missing-header-difficulty error with the affected block number.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "missing header difficulty for Unzen payload at block {}", self.block_number)
     }

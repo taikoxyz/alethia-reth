@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 
 use alloy_hardforks::{EthereumHardfork, ForkCondition, Hardfork, hardfork};
 use alloy_primitives::U256;
+use dyn_clone::clone_box;
 use reth_ethereum_forks::{ChainHardforks, EthereumHardforks};
 
 use crate::spec::TaikoChainSpec;
@@ -110,6 +111,17 @@ pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
 ) -> Vec<(Box<dyn Hardfork>, ForkCondition)> {
+    fn fork_id_activation_key(condition: ForkCondition) -> (u8, u64) {
+        match condition {
+            ForkCondition::Block(block) | ForkCondition::TTD { fork_block: Some(block), .. } => {
+                (0, block)
+            }
+            ForkCondition::Timestamp(timestamp) => (1, timestamp),
+            ForkCondition::TTD { fork_block: None, .. } => (2, 0),
+            ForkCondition::Never => (3, 0),
+        }
+    }
+
     // Determine the Ethereum fork activations implied by Unzen. Taiko executes Unzen with Osaka
     // semantics, and upstream validators still consult the predecessor Cancun/Prague fork flags
     // for some transaction and payload checks. If Unzen is not present, default to
@@ -121,7 +133,7 @@ fn extend_with_shared_hardforks(
         })
         .unwrap_or(ForkCondition::Never);
 
-    let mut shared_hardforks = vec![
+    let shared_hardforks = [
         (EthereumHardfork::Frontier.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Homestead.boxed(), ForkCondition::Block(0)),
         (EthereumHardfork::Tangerine.boxed(), ForkCondition::Block(0)),
@@ -149,14 +161,50 @@ fn extend_with_shared_hardforks(
         (EthereumHardfork::Osaka.boxed(), unzen_activation),
     ];
 
-    shared_hardforks.extend(hardforks);
+    let mut ordered_hardforks = ChainHardforks::default();
+    for (fork, condition) in shared_hardforks.into_iter().chain(hardforks) {
+        ordered_hardforks.insert(fork, condition);
+    }
 
-    shared_hardforks
+    let mut ordered_hardforks = ordered_hardforks
+        .forks_iter()
+        .map(|(fork, condition)| (clone_box(fork), condition))
+        .collect::<Vec<_>>();
+
+    // Match fork-ID activation order: known TTD fork blocks are block activations, not enum-order
+    // TTD activations, so Paris block zero must stay before later Taiko block forks.
+    ordered_hardforks.sort_by_key(|(_, condition)| fork_id_activation_key(*condition));
+
+    ordered_hardforks
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    use alloy_chains::Chain;
+    use alloy_genesis::Genesis;
+    use alloy_hardforks::Head;
+    use reth_chainspec::ChainSpec;
+
+    fn shasta_before_unzen_hardforks() -> Vec<(Box<dyn Hardfork>, ForkCondition)> {
+        vec![
+            (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(1)),
+            (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(2)),
+            (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(100)),
+            (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(200)),
+        ]
+    }
+
+    fn shasta_before_unzen_chain_spec() -> ChainSpec {
+        ChainSpec::builder()
+            .chain(Chain::mainnet())
+            .genesis(Genesis::default())
+            .with_forks(ChainHardforks::new(extend_with_shared_hardforks(
+                shasta_before_unzen_hardforks(),
+            )))
+            .build()
+    }
 
     #[test]
     fn test_extend_with_shared_hardforks() {
@@ -195,6 +243,39 @@ mod test {
 
         assert_eq!(cancun, Some(ForkCondition::Timestamp(123)));
         assert_eq!(prague, Some(ForkCondition::Timestamp(123)));
+    }
+
+    #[test]
+    fn test_extend_with_shared_hardforks_orders_future_timestamp_forks() {
+        let forks = extend_with_shared_hardforks(shasta_before_unzen_hardforks());
+        let future_timestamp_forks = forks
+            .iter()
+            .filter_map(|(fork, condition)| {
+                matches!(condition.as_timestamp(), Some(100 | 200)).then_some(fork.name())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            future_timestamp_forks,
+            vec!["Shasta", "Cancun", "Prague", "Osaka", "Unzen"],
+            "Shasta must be folded into fork hashes before Unzen-derived Ethereum forks"
+        );
+    }
+
+    #[test]
+    fn test_future_unzen_fork_id_matches_sorted_fork_filter() {
+        let chain_spec = shasta_before_unzen_chain_spec();
+
+        for timestamp in [150, 250] {
+            let head = Head { number: 2, timestamp, ..Default::default() };
+            let advertised = chain_spec.fork_id(&head);
+            let sorted_filter = chain_spec.fork_filter(head).current();
+
+            assert_eq!(
+                advertised, sorted_filter,
+                "advertised fork ID should match the sorted fork-filter ID at timestamp {timestamp}"
+            );
+        }
     }
 
     #[test]

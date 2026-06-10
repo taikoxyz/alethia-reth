@@ -135,21 +135,21 @@ pub(super) fn proof_history_startup_action(
         ));
     }
 
+    if canonical_earliest_hash.is_none_or(|canonical_hash| canonical_hash != earliest_hash) {
+        return Err(eyre!(
+            "proof-history earliest stored block {earliest_number} hash {earliest_hash:?} is not canonical"
+        ));
+    }
+
     if latest_number <= canonical_best &&
         canonical_latest_hash.is_some_and(|canonical_hash| canonical_hash == latest_hash)
     {
         return Ok(ProofHistoryStartupAction::Ready);
     }
 
-    if canonical_earliest_hash.is_some_and(|canonical_hash| canonical_hash == earliest_hash) {
-        return Ok(ProofHistoryStartupAction::UnwindToEarliest {
-            earliest: BlockNumHash::new(earliest_number, earliest_hash),
-        });
-    }
-
-    Err(eyre!(
-        "proof-history earliest stored block {earliest_number} hash {earliest_hash:?} is not canonical"
-    ))
+    Ok(ProofHistoryStartupAction::UnwindToEarliest {
+        earliest: BlockNumHash::new(earliest_number, earliest_hash),
+    })
 }
 
 /// Runtime settings passed into the proof-history sidecar.
@@ -920,6 +920,20 @@ mod tests {
         .expect("canonical latest should be ready");
 
         assert_eq!(action, ProofHistoryStartupAction::Ready);
+    }
+
+    #[test]
+    fn proof_history_startup_action_errors_when_latest_canonical_but_earliest_noncanonical() {
+        let error = proof_history_startup_action(
+            Some((10, hash(11))),
+            Some((20, hash(20))),
+            20,
+            Some(hash(10)),
+            Some(hash(20)),
+        )
+        .expect_err("noncanonical earliest must fail even when latest is canonical");
+
+        assert!(error.to_string().contains("earliest stored block"));
     }
 
     #[test]

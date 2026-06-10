@@ -12,6 +12,8 @@ pub mod execution;
 pub mod factory;
 /// Taiko-specific handler behavior for fee sharing and anchor processing.
 pub mod handler;
+/// L1SLOAD (RIP-7728) and L1STATICCALL precompiles, gated at the `Unzen` hardfork.
+pub mod precompiles;
 /// Taiko hardfork spec identifiers and conversions.
 pub mod spec;
 /// Fork-scoped zk gas schedules for Taiko consensus.

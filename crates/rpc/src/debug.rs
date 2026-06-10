@@ -7,6 +7,8 @@ use alethia_reth_block::{
     },
     tx_selection::zlib_compressed_len,
 };
+use alethia_reth_db::queries::read_l1_origin_block_height;
+use alethia_reth_evm::precompiles::context::L1OriginOverride;
 use alethia_reth_primitives::{
     payload::builder::decode_recovered_transactions, transaction::is_allowed_tx_type,
 };
@@ -24,7 +26,7 @@ use reth_evm::{
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::HeaderProvider;
+use reth_provider::{DBProvider, DatabaseProviderFactory, HeaderProvider};
 use reth_revm::{
     State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
     witness::ExecutionWitnessRecord,
@@ -34,9 +36,11 @@ use reth_rpc_eth_types::EthApiError;
 use reth_trie_common::ExecutionWitnessMode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
+use tracing::warn;
 
-/// Maximum number of concurrent proof-history witness requests.
-const MAX_CONCURRENT_WITNESS_REQUESTS: usize = 3;
+/// Max concurrent witness requests. Pinned to 1: re-execution sets the process-global L1
+/// precompile origin context, so concurrent requests for different blocks would race on it.
+const MAX_CONCURRENT_WITNESS_REQUESTS: usize = 1;
 
 /// Block-level tx-list DA limit: the zlib-compressed transaction list must fit in one blob.
 ///
@@ -99,21 +103,24 @@ pub struct TxListWitnessOptions {
 /// `debug_` namespace overrides that use proof-history state for witness generation.
 #[derive(Debug)]
 pub struct TaikoDebugWitnessExt<Eth, Storage, Provider> {
-    /// Provider used to fetch ancestor block headers for the returned witness.
+    /// Provider used to fetch ancestor block headers and to read `StoredL1OriginTable`.
     provider: Provider,
     /// Ethereum RPC API used to load blocks, state, and the EVM configuration.
     eth_api: Eth,
     /// Factory for sidecar-backed state providers.
     state_provider_factory: ProofHistoryStateProviderFactory<Eth, Storage>,
-    /// Semaphore limiting concurrent witness generation.
+    /// Semaphore serializing witness generation (see [`MAX_CONCURRENT_WITNESS_REQUESTS`]).
     semaphore: Semaphore,
 }
 
+// `DatabaseProviderFactory` lets the handler open a read-only db tx and look up
+// `StoredL1OriginTable` for the per-block `originBlockNumber` — `TaikoEvmConfig` can't do this
+// itself (no db handle), so re-execution recovers the L1 precompile window from here.
 impl<Eth, Storage, Provider> TaikoDebugWitnessExt<Eth, Storage, Provider>
 where
     Eth: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
     Storage: OpProofsStore + Clone + 'static,
-    Provider: HeaderProvider + Clone + Send + Sync + 'static,
+    Provider: DatabaseProviderFactory + HeaderProvider + Clone + Send + Sync + 'static,
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
 {
     /// Creates a new proof-history backed debug witness override.
@@ -124,6 +131,17 @@ where
             eth_api,
             semaphore: Semaphore::new(MAX_CONCURRENT_WITNESS_REQUESTS),
         }
+    }
+
+    /// Look up the `originBlockNumber` recorded for the given L2 block in `StoredL1OriginTable`
+    /// (written by the taiko-client driver via `taikoAuth_updateL1Origin`). `None` if the block
+    /// predates Shasta, the driver hasn't committed yet, or the entry was pruned — callers handle
+    /// `None` by leaving the L1 precompile window unset (precompile calls then halt).
+    fn lookup_l1_origin(&self, l2_block_number: u64) -> Result<Option<u64>, EthApiError> {
+        let db_provider = self.provider.database_provider_ro().map_err(EthApiError::from)?;
+        let tx = db_provider.into_tx();
+        read_l1_origin_block_height(&tx, l2_block_number)
+            .map_err(|e| EthApiError::EvmCustom(format!("L1Origin lookup failed: {e}")))
     }
 
     /// Re-executes the requested canonical block and returns the generated witness.
@@ -172,6 +190,27 @@ where
             .state_provider(parent_block)
             .await
             .map_err(EthApiError::from)?;
+
+        // Install the block's `originBlockNumber` as the thread-local override so the executor's
+        // L1 precompile hook installs the correct `[origin − 256, origin]` window — re-execution
+        // then matches build time even when the proposer lagged the L1 tip. The guard MUST
+        // outlive `execute_with_state_closure` (it clears the thread-local on drop).
+        let l1_origin = self
+            .lookup_l1_origin(block_number)
+            .map_err(<Eth::Error as reth_rpc_eth_api::FromEthApiError>::from_eth_err)?;
+        if l1_origin.is_none() {
+            // Liveness hint: re-execution will halt at the L1 precompile if the block contained
+            // L1Sload/L1Staticcall calls. The most common cause is the driver lagging behind on
+            // writing `StoredL1OriginTable`; less commonly, the block predates Shasta.
+            warn!(
+                target: "reth::taiko::rpc::debug",
+                block_number,
+                "L1 origin not found in StoredL1OriginTable — debug_executionWitness re-exec \
+                 may halt at L1 precompile if the block contains L1Sload/L1Staticcall calls",
+            );
+        }
+        let _l1_origin_guard: Option<L1OriginOverride> = l1_origin.map(L1OriginOverride::install);
+
         let db = StateProviderDatabase::new(&*state_provider);
         let block_executor = self.eth_api.evm_config().executor(db);
         let mut witness_record = ExecutionWitnessRecord::default();
@@ -202,6 +241,15 @@ where
             .state_provider(parent_block)
             .await
             .map_err(EthApiError::from)?;
+
+        // Install the block's `originBlockNumber` as the thread-local override so any L1
+        // precompile call in the replayed tx list sees the correct `[origin − 256, origin]`
+        // window — matches the canonical re-execution path above.
+        let _l1_origin_guard: Option<L1OriginOverride> = self
+            .lookup_l1_origin(block_number)
+            .map_err(<Eth::Error as reth_rpc_eth_api::FromEthApiError>::from_eth_err)?
+            .map(L1OriginOverride::install);
+
         let db = StateProviderDatabase::new(&*state_provider);
         let mut state = State::builder().with_database(db).with_bundle_update().build();
         let mut witness_record = ExecutionWitnessRecord::default();
@@ -265,7 +313,7 @@ impl<Eth, Storage, Provider> TaikoDebugWitnessApiServer
 where
     Eth: FullEthApi<Primitives = EthPrimitives> + Send + Sync + 'static,
     Storage: OpProofsStore + Clone + 'static,
-    Provider: HeaderProvider + Clone + Send + Sync + 'static,
+    Provider: DatabaseProviderFactory + HeaderProvider + Clone + Send + Sync + 'static,
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
 {
     /// Handles `debug_executionWitness` with proof-history backed state.

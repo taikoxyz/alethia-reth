@@ -318,7 +318,8 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
-        // Create the block builder based on the parent block and the provided attributes.
+        // `l1_origin_block_number = None` → precompiles go permissive for the simulation; the
+        // actual proposed block re-binds an origin via the engine API sidecar.
         let mut builder = self
             .evm_config
             .builder_for_next_block(
@@ -331,6 +332,7 @@ where
                     gas_limit: block_max_gas_limit * max_transactions_lists,
                     extra_data: parent.extra_data().clone(),
                     base_fee_per_gas: base_fee,
+                    l1_origin_block_number: None,
                 },
             )
             .map_err(|_| {
@@ -350,7 +352,9 @@ where
             locals: locals.unwrap_or_default(),
         };
 
-        match select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false) {
+        let outcome = select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false);
+
+        match outcome {
             Ok(SelectionOutcome::Completed(lists)) => {
                 // Convert ExecutedTxList to PreBuiltTxList with RPC transactions
                 lists

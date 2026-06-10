@@ -51,15 +51,9 @@ pub fn unzen_evm_env() -> EvmEnv<TaikoSpecId> {
 /// Returns a [`TaikoBlockExecutionCtx`] for Unzen test blocks.
 pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     TaikoBlockExecutionCtx {
-        parent_hash: B256::ZERO,
         parent_beacon_block_root: Some(B256::ZERO),
-        ommers: &[],
-        withdrawals: None,
-        basefee_per_gas: 0,
-        extra_data: Bytes::default(),
         is_unzen_active: true,
-        expected_difficulty: None,
-        finalized_block_zk_gas: Default::default(),
+        ..Default::default()
     }
 }
 

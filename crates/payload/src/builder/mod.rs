@@ -179,7 +179,12 @@ where
         best_payload: _,
     } = args;
     let attributes = normalize_payload_config(&config)?;
-    let PayloadConfig { parent_header, attributes: _, payload_id } = config;
+    let PayloadConfig { parent_header, attributes: original_attrs, payload_id } = config;
+    // The L1 origin block number comes from the engine API's `RpcL1Origin.l1_block_height`
+    // (a U256 that fits comfortably in u64 in production). Derived here rather than stored on
+    // `TaikoPayloadBuilderAttributes` so the value lives in exactly one place per build job.
+    let l1_origin_block_number =
+        original_attrs.l1_origin.l1_block_height.and_then(|h| h.try_into().ok());
 
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
@@ -206,6 +211,12 @@ where
                 gas_limit: attributes.gas_limit,
                 extra_data: attributes.extra_data.clone(),
                 base_fee_per_gas: attributes.base_fee_per_gas,
+                // Forward the proposal's L1Origin block number — the on-chain-verified
+                // `originBlockNumber` — so the L1Sload / L1Staticcall precompile range-check
+                // uses the correct `[origin − 256, origin]` lookback window during block
+                // building. Sourced from `TaikoPayloadAttributes.l1_origin.l1_block_height`
+                // when the engine API request to build this payload arrived.
+                l1_origin_block_number,
             },
         )
         .map_err(PayloadBuilderError::other)?;

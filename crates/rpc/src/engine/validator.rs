@@ -368,6 +368,7 @@ mod tests {
                 withdrawals_hash: Some(EMPTY_WITHDRAWALS),
                 header_difficulty,
                 taiko_block: Some(true),
+                ..Default::default()
             },
         }
     }

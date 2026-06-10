@@ -51,6 +51,9 @@ fn attributes_from_derived_block(
         gas_limit: header.gas_limit,
         extra_data: header.extra_data.clone(),
         base_fee_per_gas,
+        // Re-execution path: origin is injected by the caller (raiko2 sets the precompile
+        // global directly), so the executor hook no-ops on this `None`.
+        l1_origin_block_number: None,
     })
 }
 

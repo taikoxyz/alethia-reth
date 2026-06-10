@@ -1,0 +1,38 @@
+[package]
+name = "alethia-reth-l1-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "alethia_reth_l1_client"
+path = "src/lib.rs"
+
+[dependencies]
+alethia-reth-evm = { path = "../evm" }
+
+alloy-primitives.workspace = true
+alloy-rpc-client = { workspace = true, features = ["reqwest"] }
+
+# anyhow/hex/reqwest aren't workspace deps (alloc-only workspace serde_json wouldn't fit
+# either) — pin them literally here per `session-log-2026-06-01.md` §5.
+anyhow = "1"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false }
+serde = { workspace = true, features = ["derive"] }
+# Workspace `serde_json` is `alloc`-only; the live RPC client needs std for the HTTP path.
+serde_json = "1"
+thiserror = { workspace = true }
+# rt-multi-thread is required for tokio::task::block_in_place (used inside the synchronous
+# fetcher closures to bridge into the async HTTP client).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+tracing.workspace = true
+
+[dev-dependencies]
+jsonrpsee = { workspace = true, features = ["server"] }
+jsonrpsee-server.workspace = true
+# Serialize tests that touch the alethia-reth-evm precompile globals (cache, origin context,
+# fetcher slot) so they don't stomp on each other under cargo's default parallel runner.
+serial_test = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

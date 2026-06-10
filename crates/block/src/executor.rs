@@ -26,6 +26,11 @@ use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
     handler::get_treasury_address,
+    precompiles::{
+        context::{clear_l1_origin_context, current_l1_origin_override, set_l1_origin_block_id},
+        l1sload::evict_stale_l1_storage_entries,
+        l1staticcall::evict_stale_l1_staticcall_entries,
+    },
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
@@ -289,6 +294,42 @@ where
     }
 }
 
+/// Shared L1 precompile context helper — same bounds as the `BlockExecutor` impl below, so it
+/// can be used from both the prover-mode `execute_block_with_committed_transactions` and the
+/// trait-mode `BlockExecutor::execute_block`.
+impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
+where
+    E: Evm<
+            DB: StateDB + DatabaseCommit,
+            Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
+        > + TaikoZkGasEvm,
+    Spec: TaikoExecutorSpec + Clone,
+    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+{
+    /// Install the L1Sload / L1Staticcall origin (`Proposal.originBlockNumber`, the upper
+    /// bound of the `[origin − 256, origin]` lookback window) for this block.
+    ///
+    /// Source: thread-local override (re-execution RPC handlers) → `ctx.l1_origin_block_number`
+    /// (build / import paths). When neither supplies a value the global is cleared and the
+    /// precompiles run permissive (see their top-of-file note). After setting a fresh origin,
+    /// evicts cache entries below the new lookback window.
+    fn apply_l1_precompile_context_from_ctx(&self) {
+        let timestamp: u64 = self.evm.block().timestamp().to();
+        if !self.spec.is_unzen_active(timestamp) {
+            return;
+        }
+        let origin = current_l1_origin_override().or(self.ctx.l1_origin_block_number);
+        match origin {
+            Some(origin) => {
+                set_l1_origin_block_id(origin);
+                evict_stale_l1_storage_entries(origin);
+                evict_stale_l1_staticcall_entries(origin);
+            }
+            None => clear_l1_origin_context(),
+        }
+    }
+}
+
 impl<E, Spec, R> BlockExecutor for TaikoBlockExecutor<'_, E, Spec, R>
 where
     E: Evm<
@@ -311,6 +352,9 @@ where
     /// NOTE: Here we use a system call to set the Anchor transact sender account information and
     /// decode the base fee share percentage from the block's extra data.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
+        // Install the L1Sload / L1Staticcall origin context. No-op pre-Unzen or when unset.
+        self.apply_l1_precompile_context_from_ctx();
+
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
@@ -512,6 +556,7 @@ where
             if !is_anchor_transaction && *tx.signer() == Address::ZERO {
                 continue;
             }
+
             self.try_execute_filtered((tx_env, tx), is_anchor_transaction)?;
             if self.zk_gas_exhausted {
                 break;
@@ -751,11 +796,9 @@ mod test {
                     &alloy_consensus::Header::default(),
                     &TaikoNextBlockEnvAttributes {
                         timestamp: 1,
-                        suggested_fee_recipient: Address::ZERO,
-                        prev_randao: B256::ZERO,
                         gas_limit: 30_000_000,
-                        extra_data: Bytes::new(),
                         base_fee_per_gas: 1,
+                        ..Default::default()
                     },
                 )
                 .expect("next block env should build");
@@ -763,17 +806,7 @@ mod test {
 
             TaikoBlockExecutor::new(
                 evm,
-                TaikoBlockExecutionCtx {
-                    parent_hash: B256::ZERO,
-                    parent_beacon_block_root: None,
-                    ommers: &[],
-                    withdrawals: None,
-                    basefee_per_gas: 1,
-                    extra_data: Bytes::new(),
-                    is_unzen_active: false,
-                    expected_difficulty: None,
-                    finalized_block_zk_gas: Default::default(),
-                },
+                TaikoBlockExecutionCtx { basefee_per_gas: 1, ..Default::default() },
                 chain_spec.clone(),
                 RethReceiptBuilder::default(),
             )

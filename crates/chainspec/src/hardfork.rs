@@ -3,7 +3,6 @@ use std::sync::LazyLock;
 
 use alloy_hardforks::{EthereumHardfork, ForkCondition, Hardfork, hardfork};
 use alloy_primitives::U256;
-use dyn_clone::clone_box;
 use reth_ethereum_forks::{ChainHardforks, EthereumHardforks};
 
 use crate::spec::TaikoChainSpec;
@@ -161,15 +160,7 @@ fn extend_with_shared_hardforks(
         (EthereumHardfork::Osaka.boxed(), unzen_activation),
     ];
 
-    let mut ordered_hardforks = ChainHardforks::default();
-    for (fork, condition) in shared_hardforks.into_iter().chain(hardforks) {
-        ordered_hardforks.insert(fork, condition);
-    }
-
-    let mut ordered_hardforks = ordered_hardforks
-        .forks_iter()
-        .map(|(fork, condition)| (clone_box(fork), condition))
-        .collect::<Vec<_>>();
+    let mut ordered_hardforks = shared_hardforks.into_iter().chain(hardforks).collect::<Vec<_>>();
 
     // Match fork-ID activation order: known TTD fork blocks are block activations, not enum-order
     // TTD activations, so Paris block zero must stay before later Taiko block forks.

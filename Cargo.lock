@@ -123,7 +123,6 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "auto_impl",
- "dyn-clone",
  "reth-chainspec",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",

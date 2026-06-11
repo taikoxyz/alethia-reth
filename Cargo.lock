@@ -211,19 +211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alethia-reth-network"
-version = "1.1.0"
-dependencies = [
- "alethia-reth-chainspec",
- "eyre",
- "reth",
- "reth-ethereum",
- "reth-node-api",
- "reth-node-builder",
- "tracing",
-]
-
-[[package]]
 name = "alethia-reth-node"
 version = "1.1.0"
 dependencies = [
@@ -232,8 +219,6 @@ dependencies = [
  "alethia-reth-consensus",
  "alethia-reth-db",
  "alethia-reth-evm",
- "alethia-reth-network",
- "alethia-reth-node-builder",
  "alethia-reth-payload",
  "alethia-reth-primitives",
  "alethia-reth-rpc",
@@ -268,24 +253,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "alethia-reth-node-builder"
-version = "1.1.0"
-dependencies = [
- "alethia-reth-block",
- "alethia-reth-chainspec",
- "alethia-reth-consensus",
- "alethia-reth-primitives",
- "alloy-primitives",
- "eyre",
- "reth-ethereum",
- "reth-node-api",
- "reth-node-builder",
- "reth-primitives-traits",
- "reth-provider",
- "reth-storage-api",
 ]
 
 [[package]]
@@ -394,7 +361,6 @@ dependencies = [
  "reth-node-api",
  "reth-node-builder",
  "reth-node-core",
- "reth-node-ethereum",
  "reth-optimism-trie",
  "reth-payload-primitives",
  "reth-primitives-traits",

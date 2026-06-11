@@ -19,17 +19,17 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 /                      Workspace root, Dockerfile, justfile, docs
 ├── bin/alethia-reth   Binary crate producing `alethia-reth`
 └── crates/
-    ├── node           Public API surface (`TaikoNode`, add-ons)
+    ├── node           Public API surface (`TaikoNode`, add-ons, component builders)
     ├── block          Block execution/assembly
     ├── chainspec      Chain specs + genesis data
     ├── cli            CLI wrapper (`TaikoCli`)
     ├── consensus      Beacon consensus extensions
     ├── db             Taiko-specific tables & codecs
     ├── evm            EVM config, handlers, execution helpers
-    ├── network        P2P network builder
     ├── payload        Payload builder service
     ├── primitives     Shared types (engine, payload attributes)
-    └── rpc            Taiko RPC (eth / engine / auth)
+    ├── rpc            Taiko RPC (eth / engine / auth)
+    └── rpc-types      Lightweight `taikoAuth` request/response types
 ```
 
 ## Development Guidelines

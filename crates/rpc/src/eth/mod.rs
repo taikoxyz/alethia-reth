@@ -10,8 +10,6 @@ pub mod error;
 pub mod eth;
 /// Proof-history backed `eth_getProof` override.
 pub mod proofs;
-/// Aliases to `reth` Eth API types used by Taiko node wiring.
-pub mod types;
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,69 @@
 # Changelog
 
+## [1.2.0](https://github.com/taikoxyz/alethia-reth/compare/v1.1.0...v1.2.0) (2026-06-12)
+
+
+### Features
+
+* **chainspec:** activate Unzen from genesis + drop special zk-gas schedule for Masaya ([#205](https://github.com/taikoxyz/alethia-reth/issues/205)) ([157cefb](https://github.com/taikoxyz/alethia-reth/commit/157cefbe096facc8f2042cf1ffd699820a977fd5))
+* **chainspec:** set Hoodi Unzen fork time ([#210](https://github.com/taikoxyz/alethia-reth/issues/210)) ([aa1924a](https://github.com/taikoxyz/alethia-reth/commit/aa1924afe9689687571be889d1b88a19441c6d9d))
+* **eth:** gate batch lookup results by network ([#177](https://github.com/taikoxyz/alethia-reth/issues/177)) ([9afd71f](https://github.com/taikoxyz/alethia-reth/commit/9afd71f4ccc3fc17d8e4c6fb0d61025cbaa6f480))
+* **evm:** add `TX_INTRINSIC_ZK_GAS` to Unzen zk gas accounting ([#180](https://github.com/taikoxyz/alethia-reth/issues/180)) ([faee735](https://github.com/taikoxyz/alethia-reth/commit/faee735b7386cbdf93839bc070cc693b590408f2))
+* **evm:** key zk-gas precompile multipliers by full address ([#201](https://github.com/taikoxyz/alethia-reth/issues/201)) ([4dc60fb](https://github.com/taikoxyz/alethia-reth/commit/4dc60fbca875b7cd9a7ed751db39cc8d15057c5d))
+* **evm:** lower modexp zk-gas multiplier to 154 ([#204](https://github.com/taikoxyz/alethia-reth/issues/204)) ([ec1650b](https://github.com/taikoxyz/alethia-reth/commit/ec1650bfc5925af4f763795cfeb7872f9e85813b))
+* **evm:** meter `p256verify` zk gas at `163` ([#202](https://github.com/taikoxyz/alethia-reth/issues/202)) ([408ca7c](https://github.com/taikoxyz/alethia-reth/commit/408ca7cd19aad12aaf55e327ef8a332300623159))
+* **evm:** meter p256verify (RIP-7212) zk gas at 163 ([408ca7c](https://github.com/taikoxyz/alethia-reth/commit/408ca7cd19aad12aaf55e327ef8a332300623159))
+* **evm:** recalibrate Unzen zk gas multipliers ([#187](https://github.com/taikoxyz/alethia-reth/issues/187)) ([7679835](https://github.com/taikoxyz/alethia-reth/commit/7679835db47b3fbb859dd2c73423256fd42ebff5))
+* **rpc:** add tx-list execution witness debug RPC ([#189](https://github.com/taikoxyz/alethia-reth/issues/189)) ([04d232c](https://github.com/taikoxyz/alethia-reth/commit/04d232ccadb6800dc5d2ed8eec982f32e7d0c6e9))
+* **rpc:** change serde rename to alias for `block_id` and `build_payload_id` ([#186](https://github.com/taikoxyz/alethia-reth/issues/186)) ([e4e09ec](https://github.com/taikoxyz/alethia-reth/commit/e4e09ecdaf93729654c472bf4db5cef7b62f447c))
+* **rpc:** change serde rename to alias for block_id and build_payload_args_id ([e4e09ec](https://github.com/taikoxyz/alethia-reth/commit/e4e09ecdaf93729654c472bf4db5cef7b62f447c))
+
+
+### Bug Fixes
+
+* **block:** validate Unzen header difficulty on the newPayload path ([#208](https://github.com/taikoxyz/alethia-reth/issues/208)) ([4be394a](https://github.com/taikoxyz/alethia-reth/commit/4be394ac1a284bc1bdf89a1e2c30c52c2af334c3))
+* **hoodi:** disable unzen fork ([61ca8d0](https://github.com/taikoxyz/alethia-reth/commit/61ca8d0d6d1b324fbcd38a034e6e5689a1ff778e))
+* **node:** decouple sidecar from reth exex wal ([#174](https://github.com/taikoxyz/alethia-reth/issues/174)) ([0ed31d9](https://github.com/taikoxyz/alethia-reth/commit/0ed31d96e91b5c7c37ab8a952c01e88ec7349e23))
+* **proof-history:** decouple sidecar from reth exex wal ([0ed31d9](https://github.com/taikoxyz/alethia-reth/commit/0ed31d96e91b5c7c37ab8a952c01e88ec7349e23))
+* **proof-history:** use on-disk tip for historical init target ([4701f7c](https://github.com/taikoxyz/alethia-reth/commit/4701f7ccc6842eaa4c6e9c6a39970e2fd2181657))
+* **rpc:** fail closed on proof-history anchor mismatches ([#207](https://github.com/taikoxyz/alethia-reth/issues/207)) ([2dbf4ba](https://github.com/taikoxyz/alethia-reth/commit/2dbf4ba62b3c6306d9b1fa96bbed82835ed2c354))
+* **rpc:** use on-disk tip for historical init target ([#171](https://github.com/taikoxyz/alethia-reth/issues/171)) ([4701f7c](https://github.com/taikoxyz/alethia-reth/commit/4701f7ccc6842eaa4c6e9c6a39970e2fd2181657))
+
+
+### Chores
+
+* **auth:** increase batch lookup window ([#178](https://github.com/taikoxyz/alethia-reth/issues/178)) ([85ba463](https://github.com/taikoxyz/alethia-reth/commit/85ba463c26a47677ee5ae83afbce5b99c16fee55))
+* **block:** stop after finalized zk gas target ([#190](https://github.com/taikoxyz/alethia-reth/issues/190)) ([c242b0d](https://github.com/taikoxyz/alethia-reth/commit/c242b0dbe0c7bfb739d9e1cdc7afb70a91b255f6))
+* **chainspec:** disable Hoodi Unzen fork ([#181](https://github.com/taikoxyz/alethia-reth/issues/181)) ([61ca8d0](https://github.com/taikoxyz/alethia-reth/commit/61ca8d0d6d1b324fbcd38a034e6e5689a1ff778e))
+* **chainspec:** order hardforks before fork id ([#206](https://github.com/taikoxyz/alethia-reth/issues/206)) ([a8e8ea8](https://github.com/taikoxyz/alethia-reth/commit/a8e8ea836282881bf12fbea6108645f1eefdfd8d))
+* **chainspec:** set Hoodi Unzen fork time to `2026-05-21 13:00 UTC` ([#176](https://github.com/taikoxyz/alethia-reth/issues/176)) ([2ebe77c](https://github.com/taikoxyz/alethia-reth/commit/2ebe77c3afaae3992270186d4d026e97b4c62e4c))
+* **deps-dev:** sync Cargo.lock to 1.1.0 and drop redundant clones ([#173](https://github.com/taikoxyz/alethia-reth/issues/173)) ([a6782fe](https://github.com/taikoxyz/alethia-reth/commit/a6782fe948f86fdf9b13a2f3f5f1a89f00d1c9c9))
+* **evm:** apply canonical BLS12 addresses + CLZ opcode ([#203](https://github.com/taikoxyz/alethia-reth/issues/203)) ([abc9833](https://github.com/taikoxyz/alethia-reth/commit/abc9833208ccf5b9ea5271016ef316d78c000a82))
+* sync Cargo.lock to 1.1.0 and drop redundant clones ([a6782fe](https://github.com/taikoxyz/alethia-reth/commit/a6782fe948f86fdf9b13a2f3f5f1a89f00d1c9c9))
+
+
+### Code Refactoring
+
+* **network:** remove pass-through wrappers and fold component-builder crates ([#209](https://github.com/taikoxyz/alethia-reth/issues/209)) ([ede5c81](https://github.com/taikoxyz/alethia-reth/commit/ede5c817ee5411fdc3944927451fdb594017ac52))
+* **node:** remove pass-through wrappers and fold component-builder crates ([ede5c81](https://github.com/taikoxyz/alethia-reth/commit/ede5c817ee5411fdc3944927451fdb594017ac52))
+
+
+### Performance Improvements
+
+* **evm:** drop `Arc<Mutex<ZkGasMeter>>` from hot path ([#182](https://github.com/taikoxyz/alethia-reth/issues/182)) ([e42910b](https://github.com/taikoxyz/alethia-reth/commit/e42910b4f4e189a9fa32b57b293b5e660afc4e37))
+* **evm:** meter zk gas in interpreter path ([#185](https://github.com/taikoxyz/alethia-reth/issues/185)) ([6e17536](https://github.com/taikoxyz/alethia-reth/commit/6e17536f31e7f3d8fcb76e391210c72e64bfbc13))
+
+
+### Workflow
+
+* **docker-build:** publish taiko-reth alongside alethia-reth ([12553e4](https://github.com/taikoxyz/alethia-reth/commit/12553e4bcdf97196bd079fced618b3e77ee88cd4))
+* **repo:** publish taiko-reth alongside alethia-reth ([#179](https://github.com/taikoxyz/alethia-reth/issues/179)) ([12553e4](https://github.com/taikoxyz/alethia-reth/commit/12553e4bcdf97196bd079fced618b3e77ee88cd4))
+
+
+### Reverted Commits
+
+* **block:** stop after finalized zk gas target ([#190](https://github.com/taikoxyz/alethia-reth/issues/190)) ([#193](https://github.com/taikoxyz/alethia-reth/issues/193)) ([26077f1](https://github.com/taikoxyz/alethia-reth/commit/26077f125130aa23ab03f376929250d93a21a835))
+
 ## [1.1.0](https://github.com/taikoxyz/alethia-reth/compare/v1.0.0...v1.1.0) (2026-04-28)
 
 

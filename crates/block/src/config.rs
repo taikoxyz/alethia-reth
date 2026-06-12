@@ -99,7 +99,7 @@ impl TaikoEvmConfig {
         evm_factory: TaikoEvmFactory,
     ) -> Self {
         Self {
-            block_assembler: TaikoBlockAssembler::new(chain_spec.clone()),
+            block_assembler: TaikoBlockAssembler,
             executor_factory: TaikoBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,

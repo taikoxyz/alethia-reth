@@ -1,6 +1,4 @@
 //! Block assembler implementation for Taiko headers and block bodies.
-use std::sync::Arc;
-
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
@@ -12,32 +10,18 @@ use reth_evm::{
     block::{BlockExecutionError, BlockExecutorFactory},
     execute::{BlockAssembler, BlockAssemblerInput},
 };
-use reth_evm_ethereum::EthBlockAssembler;
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::logs_bloom;
 use reth_revm::context::Block as _;
 
 use crate::factory::TaikoBlockExecutionCtx;
-use alethia_reth_chainspec::spec::TaikoChainSpec;
 
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
-#[derive(Clone, Debug)]
-pub struct TaikoBlockAssembler {
-    /// Underlying Ethereum block assembler configured with Taiko chain spec.
-    block_assembler: EthBlockAssembler<TaikoChainSpec>,
-}
-
-impl TaikoBlockAssembler {
-    /// Creates a new instance of the [`TaikoBlockAssembler`] with the given chain specification.
-    pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self { block_assembler: EthBlockAssembler::new(chain_spec) }
-    }
-
-    /// Returns a reference to the chain specification.
-    pub fn chain_spec(&self) -> Arc<TaikoChainSpec> {
-        self.block_assembler.chain_spec.clone()
-    }
-}
+///
+/// Taiko headers are assembled entirely from the execution context and EVM environment, so the
+/// assembler carries no state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TaikoBlockAssembler;
 
 impl<F> BlockAssembler<F> for TaikoBlockAssembler
 where
@@ -118,7 +102,6 @@ where
 mod test {
     use alloy_consensus::{Header, Signed, TxLegacy};
     use alloy_eips::eip7685::{EMPTY_REQUESTS_HASH, Requests};
-    use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_evm::{
         EvmEnv,
@@ -131,20 +114,11 @@ mod test {
 
     use super::*;
     use crate::factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory};
-    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alethia_reth_evm::spec::TaikoSpecId;
 
     #[test]
-    fn test_get_chain_spec() {
-        let chain_spec = Arc::new(TaikoChainSpec::default());
-        let assembler = TaikoBlockAssembler::new(chain_spec.clone());
-
-        assert_eq!(assembler.chain_spec(), chain_spec);
-    }
-
-    #[test]
     fn assembled_unzen_block_uses_final_zk_gas_as_difficulty() {
-        let assembler = TaikoBlockAssembler::new(Arc::new(TaikoChainSpec::default()));
+        let assembler = TaikoBlockAssembler;
         let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
         evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
@@ -193,9 +167,7 @@ mod test {
 
     #[test]
     fn assembled_unzen_block_sets_requests_hash() {
-        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
-        let assembler = TaikoBlockAssembler::new(Arc::new(chain_spec));
+        let assembler = TaikoBlockAssembler;
         let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
         evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/taikoxyz/alethia-reth/compare/v1.2.0...v1.2.1) (2026-06-13)
+
+
+### Code Refactoring
+
+* **block:** simplify `TaikoBlockAssembler` and `StoredL1Origin` conversions ([#211](https://github.com/taikoxyz/alethia-reth/issues/211)) ([2c791d8](https://github.com/taikoxyz/alethia-reth/commit/2c791d83843e81828411ca7a4aaadb7f6149983f))
+* simplify TaikoBlockAssembler and StoredL1Origin conversions ([2c791d8](https://github.com/taikoxyz/alethia-reth/commit/2c791d83843e81828411ca7a4aaadb7f6149983f))
+
 ## [1.2.0](https://github.com/taikoxyz/alethia-reth/compare/v1.1.0...v1.2.0) (2026-06-12)
 
 

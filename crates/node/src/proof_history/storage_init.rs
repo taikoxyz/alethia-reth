@@ -246,14 +246,26 @@ pub(super) fn delayed_proof_history_start(
     }
 }
 
+/// Returns the persisted DB block used to label current-state proof-history initialization.
+fn proof_history_current_state_anchor<Provider>(provider: &Provider) -> eyre::Result<BlockNumHash>
+where
+    Provider: BlockNumReader + HeaderProvider,
+{
+    let best_number = provider.best_block_number()?;
+    let best_header = provider
+        .sealed_header(best_number)?
+        .ok_or_else(|| eyre!("missing proof-history current-state anchor header {best_number}"))?;
+    Ok(BlockNumHash::new(best_number, best_header.hash()))
+}
+
 /// Initializes empty proof-history storage from the node's current canonical state.
 pub(super) fn initialize_proof_history_storage<Provider, Storage>(
     provider: &Provider,
     storage: Storage,
 ) -> eyre::Result<()>
 where
-    Provider: BlockNumReader + DatabaseProviderFactory,
-    Provider::Provider: StorageSettingsCache,
+    Provider: DatabaseProviderFactory,
+    Provider::Provider: BlockNumReader + HeaderProvider + StorageSettingsCache,
     <Provider::DB as Database>::TX: Sync,
     Storage: OpProofsStore + Send,
 {
@@ -261,30 +273,28 @@ where
         return Ok(());
     }
 
-    let chain_info = provider.chain_info()?;
+    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+    let anchor = proof_history_current_state_anchor(&db_provider)?;
     info!(
         target: "reth::taiko::proof_history",
-        best_number = chain_info.best_number,
-        best_hash = ?chain_info.best_hash,
+        best_number = anchor.number,
+        best_hash = ?anchor.hash,
         "initializing proof-history storage from current canonical state"
     );
 
-    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
     let storage_v2 = db_provider.cached_storage_settings().is_v2();
     let db_tx = db_provider.into_tx();
     let init_job = ProofHistoryInitializationJob::new(storage, db_tx);
     if storage_v2 {
-        init_job
-            .run_with_adapter::<PackedKeyAdapter>(chain_info.best_number, chain_info.best_hash)?;
+        init_job.run_with_adapter::<PackedKeyAdapter>(anchor.number, anchor.hash)?;
     } else {
-        init_job
-            .run_with_adapter::<LegacyKeyAdapter>(chain_info.best_number, chain_info.best_hash)?;
+        init_job.run_with_adapter::<LegacyKeyAdapter>(anchor.number, anchor.hash)?;
     }
 
     info!(
         target: "reth::taiko::proof_history",
-        best_number = chain_info.best_number,
-        best_hash = ?chain_info.best_hash,
+        best_number = anchor.number,
+        best_hash = ?anchor.hash,
         "proof-history storage initialized"
     );
 
@@ -391,7 +401,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::Header;
+    use reth_ethereum_primitives::EthPrimitives;
     use reth_optimism_trie::{InMemoryProofsStorage, OpProofsStorage, api::OpProofsProviderRw};
+    use reth_provider::test_utils::MockEthProvider;
 
     #[test]
     fn proof_history_storage_initialization_check_tracks_empty_storage() {
@@ -405,6 +418,18 @@ mod tests {
         provider_rw.commit().expect("commit");
 
         assert!(!proof_history_storage_needs_initialization(&storage).unwrap());
+    }
+
+    #[test]
+    fn proof_history_current_state_anchor_uses_provider_best_header() {
+        let provider = MockEthProvider::<EthPrimitives>::new();
+        provider.add_header(B256::with_last_byte(10), Header { number: 10, ..Header::default() });
+        provider.add_header(B256::with_last_byte(12), Header { number: 12, ..Header::default() });
+
+        let anchor = proof_history_current_state_anchor(&provider).unwrap();
+        let expected_hash = provider.sealed_header(12).unwrap().unwrap().hash();
+
+        assert_eq!(anchor, BlockNumHash::new(12, expected_hash));
     }
 
     #[test]

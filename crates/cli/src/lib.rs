@@ -23,8 +23,8 @@ use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
     TaikoNode,
+    components::ProviderTaikoBlockReader,
     consensus::validation::TaikoBeaconConsensus,
-    node_builder::ProviderTaikoBlockReader,
     proof_history::{DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW},
 };
 use reth_ethereum::EthPrimitives;

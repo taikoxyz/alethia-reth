@@ -8,9 +8,7 @@ members = [
     "crates/db",
     "crates/evm",
     "crates/l1-client",
-    "crates/network",
     "crates/node",
-    "crates/node-builder",
     "crates/payload",
     "crates/primitives",
     "crates/rpc",
@@ -19,7 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"

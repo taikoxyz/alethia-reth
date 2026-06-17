@@ -10,11 +10,11 @@ pub mod evm;
 pub mod execution;
 /// Factory wiring for Taiko EVM builders.
 pub mod factory;
+/// Next-fork single-dimension gas repricing primitives.
+pub mod gas_reprice;
 /// Taiko-specific handler behavior for fee sharing and anchor processing.
 pub mod handler;
 /// Taiko hardfork spec identifiers and conversions.
 pub mod spec;
 /// Fork-scoped zk gas schedules for Taiko consensus.
 pub mod zk_gas;
-/// Next-fork single-dimension gas repricing primitives.
-pub mod gas_reprice;

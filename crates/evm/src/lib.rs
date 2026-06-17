@@ -16,3 +16,5 @@ pub mod handler;
 pub mod spec;
 /// Fork-scoped zk gas schedules for Taiko consensus.
 pub mod zk_gas;
+/// Next-fork single-dimension gas repricing primitives.
+pub mod gas_reprice;

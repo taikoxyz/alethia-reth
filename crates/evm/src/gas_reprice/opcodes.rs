@@ -21,7 +21,6 @@ use super::schedule::RepriceSchedule;
 /// Maintenance: the `(opcode, f)` pairs in [`repriced_instruction_table`] duplicate revm's
 /// own opcode-to-function mapping. When bumping the reth/revm pin, re-verify each pair
 /// against revm's instruction table — a fn that moved would otherwise be silently replaced.
-#[inline]
 fn reprice<W, H>(
     table: &mut InstructionTable<W, H>,
     opcode: usize,

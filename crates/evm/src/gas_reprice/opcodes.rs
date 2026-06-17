@@ -102,4 +102,22 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn surcharge_on_unwired_opcode_is_ignored() {
+        // The builder reprices only opcodes whose fn it names; a schedule entry for any
+        // other opcode (here SSTORE 0x55) is intentionally dropped, not applied. This pins
+        // that contract so extending coverage is a conscious change to the builder.
+        let spec = SpecId::OSAKA;
+        let mut schedule = example_reprice_schedule();
+        schedule.opcode_surcharge[0x55] = 999;
+        let base = instruction_table_gas_changes_spec::<EthInterpreter, Ctx>(spec);
+        let table = repriced_instruction_table::<EthInterpreter, Ctx>(spec, &schedule);
+
+        assert_eq!(
+            table[0x55].static_gas(),
+            base[0x55].static_gas(),
+            "surcharge on an unwired opcode (SSTORE) must be ignored"
+        );
+    }
 }

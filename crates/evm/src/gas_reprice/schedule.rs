@@ -7,6 +7,11 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepriceSchedule {
     /// Per-opcode additive `static_gas` surcharge, indexed by opcode byte. `0` = unchanged.
+    ///
+    /// Only opcodes explicitly wired in `repriced_instruction_table` take effect; a surcharge
+    /// on any other index is silently ignored (the builder can reprice an opcode only if it
+    /// also names that opcode's instruction fn). Extending coverage means adding to that
+    /// builder, not just setting an entry here.
     pub opcode_surcharge: [u64; 256],
     /// Fixed gas added to every transaction's intrinsic gas (covers ecrecover proving).
     pub tx_intrinsic_surcharge: u64,

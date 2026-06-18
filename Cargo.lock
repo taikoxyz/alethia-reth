@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-l1-client"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "alethia-reth-evm",
  "alloy-primitives",

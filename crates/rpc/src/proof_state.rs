@@ -7,13 +7,22 @@ use reth_optimism_trie::{
 use reth_provider::{BlockIdReader, ProviderError, ProviderResult, StateProvider};
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// Returns whether proof-history storage can serve `block_number` given its retained bounds.
 ///
 /// `bounds` is `Some((earliest, latest))` when storage is initialized, `None` when it is empty.
 fn proof_history_covers(block_number: u64, bounds: Option<(u64, u64)>) -> bool {
     matches!(bounds, Some((earliest, latest)) if block_number >= earliest && block_number <= latest)
+}
+
+/// Returns whether an uncovered `block_number` falls below the retained window (pruned), as opposed
+/// to ahead of it (the sidecar is still catching up) or with storage not yet initialized.
+///
+/// A pruned miss is a genuine gap worth a `WARN`; an ahead/uninitialized miss is expected and
+/// transient, so it should not spam `WARN` on every `eth_getProof` call while proof-history lags.
+fn proof_history_miss_is_pruned(block_number: u64, bounds: Option<(u64, u64)>) -> bool {
+    matches!(bounds, Some((earliest, _)) if block_number < earliest)
 }
 
 /// Creates state providers that overlay OP Proofs history on top of canonical state.
@@ -66,12 +75,24 @@ where
             .map(|((latest_number, _), (earliest_number, _))| (earliest_number, latest_number));
 
         if !proof_history_covers(block_number, bounds) {
-            warn!(
-                target: "reth::taiko::proof_history",
-                block_number,
-                ?bounds,
-                "proof-history does not cover requested block; serving from canonical state"
-            );
+            if proof_history_miss_is_pruned(block_number, bounds) {
+                // Below the retained window: the block is pruned from proof-history, a genuine gap.
+                warn!(
+                    target: "reth::taiko::proof_history",
+                    block_number,
+                    ?bounds,
+                    "proof-history has pruned requested block; serving from canonical state"
+                );
+            } else {
+                // Ahead of the cursor (sidecar catching up) or storage not yet initialized:
+                // expected and transient, so log at debug to avoid spamming under RPC load.
+                debug!(
+                    target: "reth::taiko::proof_history",
+                    block_number,
+                    ?bounds,
+                    "proof-history does not yet cover requested block; serving from canonical state"
+                );
+            }
             return Ok(historical_provider);
         }
 
@@ -81,7 +102,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::proof_history_covers;
+    use super::{proof_history_covers, proof_history_miss_is_pruned};
 
     #[test]
     fn covers_block_within_bounds() {
@@ -108,5 +129,23 @@ mod tests {
     #[test]
     fn does_not_cover_when_storage_empty() {
         assert!(!proof_history_covers(150, None));
+    }
+
+    #[test]
+    fn miss_below_earliest_is_pruned() {
+        // Below the retained window: a genuine gap worth a WARN.
+        assert!(proof_history_miss_is_pruned(50, Some((100, 200))));
+    }
+
+    #[test]
+    fn miss_above_latest_is_not_pruned() {
+        // Ahead of the cursor while the sidecar catches up: expected and transient, not a WARN.
+        assert!(!proof_history_miss_is_pruned(8_109_699, Some((7_503_971, 8_108_771))));
+    }
+
+    #[test]
+    fn miss_with_empty_storage_is_not_pruned() {
+        // Uninitialized storage: transient startup state, not a WARN.
+        assert!(!proof_history_miss_is_pruned(150, None));
     }
 }

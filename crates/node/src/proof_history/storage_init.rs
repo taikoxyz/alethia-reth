@@ -194,6 +194,10 @@ pub(super) fn proof_history_backfill_target(
 /// still index everything the node has executed. Folding in `executed_head` fixes that, while the
 /// inner `proof_history_backfill_target` still clamps the result to `executed_head` so re-execution
 /// only ever reads persisted blocks. `None` means caught up (nothing new to backfill).
+///
+/// Because that inner clamp re-bounds the result to `executed_head`, `notified_target` is currently
+/// inert (the result reduces to `executed_head` once it exceeds `latest_stored`); it is retained as
+/// the seam for the planned notified-target demotion follow-up.
 pub(super) fn proof_history_sync_target(
     latest_stored: u64,
     notified_target: u64,

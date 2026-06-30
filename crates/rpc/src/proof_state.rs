@@ -7,6 +7,14 @@ use reth_optimism_trie::{
 use reth_provider::{BlockIdReader, ProviderError, ProviderResult, StateProvider};
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
+use tracing::warn;
+
+/// Returns whether proof-history storage can serve `block_number` given its retained bounds.
+///
+/// `bounds` is `Some((earliest, latest))` when storage is initialized, `None` when it is empty.
+fn proof_history_covers(block_number: u64, bounds: Option<(u64, u64)>) -> bool {
+    matches!(bounds, Some((earliest, latest)) if block_number >= earliest && block_number <= latest)
+}
 
 /// Creates state providers that overlay OP Proofs history on top of canonical state.
 #[derive(Debug, Clone)]
@@ -33,8 +41,9 @@ where
     ///
     /// The returned provider serves account and storage reads from proof-history storage while
     /// delegating non-state lookups, such as bytecode and block hashes, to the canonical provider.
-    /// Returns [`ProviderError::StateForNumberNotFound`] when the requested block is outside the
-    /// retained proof-history window.
+    /// Falls back to the canonical historical state provider (logging a warning) when the requested
+    /// block is outside the retained proof-history window, so a lagging sidecar does not block proofs
+    /// the node can still serve from canonical state.
     pub async fn state_provider(
         &'a self,
         block_id: BlockId,
@@ -50,17 +59,54 @@ where
             self.eth_api.state_at_block_id(block_id).await.map_err(ProviderError::other)?;
         let provider_ro = self.storage.provider_ro().map_err(ProviderError::from)?;
 
-        let (Some((latest_block_number, _)), Some((earliest_block_number, _))) = (
-            provider_ro.get_latest_block_number().map_err(ProviderError::from)?,
-            provider_ro.get_earliest_block_number().map_err(ProviderError::from)?,
-        ) else {
-            return Err(ProviderError::StateForNumberNotFound(block_number));
-        };
+        let latest = provider_ro.get_latest_block_number().map_err(ProviderError::from)?;
+        let earliest = provider_ro.get_earliest_block_number().map_err(ProviderError::from)?;
+        let bounds = latest
+            .zip(earliest)
+            .map(|((latest_number, _), (earliest_number, _))| (earliest_number, latest_number));
 
-        if block_number < earliest_block_number || block_number > latest_block_number {
-            return Err(ProviderError::StateForNumberNotFound(block_number));
+        if !proof_history_covers(block_number, bounds) {
+            warn!(
+                target: "reth::taiko::proof_history",
+                block_number,
+                ?bounds,
+                "proof-history does not cover requested block; serving from canonical state"
+            );
+            return Ok(historical_provider);
         }
 
         Ok(Box::new(OpProofsStateProviderRef::new(historical_provider, provider_ro, block_number)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proof_history_covers;
+
+    #[test]
+    fn covers_block_within_bounds() {
+        assert!(proof_history_covers(150, Some((100, 200))));
+    }
+
+    #[test]
+    fn covers_inclusive_boundaries() {
+        assert!(proof_history_covers(100, Some((100, 200))));
+        assert!(proof_history_covers(200, Some((100, 200))));
+    }
+
+    #[test]
+    fn does_not_cover_block_above_latest() {
+        // The incident: requested block sits above latest_stored -> fall back to canonical state.
+        assert!(!proof_history_covers(8_109_699, Some((7_503_971, 8_108_771))));
+    }
+
+    #[test]
+    fn does_not_cover_block_below_earliest() {
+        assert!(!proof_history_covers(50, Some((100, 200))));
+    }
+
+    #[test]
+    fn does_not_cover_when_storage_empty() {
+        assert!(!proof_history_covers(150, None));
     }
 }

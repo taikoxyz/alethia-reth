@@ -669,16 +669,18 @@ where
             // Using the on-disk head (rather than the in-memory tip) guarantees the blocks the
             // backfill re-executes are persisted, and lets proof-history catch up across a
             // staged-sync gap even when no live notification advances `requested_target`.
-            let executed_head =
-                match provider.database_provider_ro().and_then(|p| p.best_block_number()) {
-                    Ok(number) => number,
-                    Err(error) => {
-                        error!(target: "reth::taiko::proof_history", ?error, "failed to read executed head for proof-history sync");
-                        drop(write_guard);
-                        time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
-                        continue;
-                    }
-                };
+            let executed_head = match provider
+                .database_provider_ro()
+                .and_then(|p| p.best_block_number())
+            {
+                Ok(number) => number,
+                Err(error) => {
+                    error!(target: "reth::taiko::proof_history", ?error, "failed to read executed head for proof-history sync");
+                    drop(write_guard);
+                    time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                    continue;
+                }
+            };
 
             let Some(target) = proof_history_sync_target(latest, requested_target, executed_head)
             else {

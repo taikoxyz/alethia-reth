@@ -42,8 +42,8 @@ where
     /// The returned provider serves account and storage reads from proof-history storage while
     /// delegating non-state lookups, such as bytecode and block hashes, to the canonical provider.
     /// Falls back to the canonical historical state provider (logging a warning) when the requested
-    /// block is outside the retained proof-history window, so a lagging sidecar does not block proofs
-    /// the node can still serve from canonical state.
+    /// block is outside the retained proof-history window, so a lagging sidecar does not block
+    /// proofs the node can still serve from canonical state.
     pub async fn state_provider(
         &'a self,
         block_id: BlockId,

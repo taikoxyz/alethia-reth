@@ -7,6 +7,23 @@ use reth_optimism_trie::{
 use reth_provider::{BlockIdReader, ProviderError, ProviderResult, StateProvider};
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
+use tracing::{debug, warn};
+
+/// Returns whether proof-history storage can serve `block_number` given its retained bounds.
+///
+/// `bounds` is `Some((earliest, latest))` when storage is initialized, `None` when it is empty.
+fn proof_history_covers(block_number: u64, bounds: Option<(u64, u64)>) -> bool {
+    matches!(bounds, Some((earliest, latest)) if block_number >= earliest && block_number <= latest)
+}
+
+/// Returns whether an uncovered `block_number` falls below the retained window (pruned), as opposed
+/// to ahead of it (the sidecar is still catching up) or with storage not yet initialized.
+///
+/// A pruned miss is a genuine gap worth a `WARN`; an ahead/uninitialized miss is expected and
+/// transient, so it should not spam `WARN` on every `eth_getProof` call while proof-history lags.
+fn proof_history_miss_is_pruned(block_number: u64, bounds: Option<(u64, u64)>) -> bool {
+    matches!(bounds, Some((earliest, _)) if block_number < earliest)
+}
 
 /// Creates state providers that overlay OP Proofs history on top of canonical state.
 #[derive(Debug, Clone)]
@@ -33,8 +50,9 @@ where
     ///
     /// The returned provider serves account and storage reads from proof-history storage while
     /// delegating non-state lookups, such as bytecode and block hashes, to the canonical provider.
-    /// Returns [`ProviderError::StateForNumberNotFound`] when the requested block is outside the
-    /// retained proof-history window.
+    /// Falls back to the canonical historical state provider (logging a warning) when the requested
+    /// block is outside the retained proof-history window, so a lagging sidecar does not block
+    /// proofs the node can still serve from canonical state.
     pub async fn state_provider(
         &'a self,
         block_id: BlockId,
@@ -50,17 +68,84 @@ where
             self.eth_api.state_at_block_id(block_id).await.map_err(ProviderError::other)?;
         let provider_ro = self.storage.provider_ro().map_err(ProviderError::from)?;
 
-        let (Some((latest_block_number, _)), Some((earliest_block_number, _))) = (
-            provider_ro.get_latest_block_number().map_err(ProviderError::from)?,
-            provider_ro.get_earliest_block_number().map_err(ProviderError::from)?,
-        ) else {
-            return Err(ProviderError::StateForNumberNotFound(block_number));
-        };
+        let latest = provider_ro.get_latest_block_number().map_err(ProviderError::from)?;
+        let earliest = provider_ro.get_earliest_block_number().map_err(ProviderError::from)?;
+        let bounds = latest
+            .zip(earliest)
+            .map(|((latest_number, _), (earliest_number, _))| (earliest_number, latest_number));
 
-        if block_number < earliest_block_number || block_number > latest_block_number {
-            return Err(ProviderError::StateForNumberNotFound(block_number));
+        if !proof_history_covers(block_number, bounds) {
+            if proof_history_miss_is_pruned(block_number, bounds) {
+                // Below the retained window: the block is pruned from proof-history, a genuine gap.
+                warn!(
+                    target: "reth::taiko::proof_history",
+                    block_number,
+                    ?bounds,
+                    "proof-history has pruned requested block; serving from canonical state"
+                );
+            } else {
+                // Ahead of the cursor (sidecar catching up) or storage not yet initialized:
+                // expected and transient, so log at debug to avoid spamming under RPC load.
+                debug!(
+                    target: "reth::taiko::proof_history",
+                    block_number,
+                    ?bounds,
+                    "proof-history does not yet cover requested block; serving from canonical state"
+                );
+            }
+            return Ok(historical_provider);
         }
 
         Ok(Box::new(OpProofsStateProviderRef::new(historical_provider, provider_ro, block_number)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{proof_history_covers, proof_history_miss_is_pruned};
+
+    #[test]
+    fn covers_block_within_bounds() {
+        assert!(proof_history_covers(150, Some((100, 200))));
+    }
+
+    #[test]
+    fn covers_inclusive_boundaries() {
+        assert!(proof_history_covers(100, Some((100, 200))));
+        assert!(proof_history_covers(200, Some((100, 200))));
+    }
+
+    #[test]
+    fn does_not_cover_block_above_latest() {
+        // The incident: requested block sits above latest_stored -> fall back to canonical state.
+        assert!(!proof_history_covers(8_109_699, Some((7_503_971, 8_108_771))));
+    }
+
+    #[test]
+    fn does_not_cover_block_below_earliest() {
+        assert!(!proof_history_covers(50, Some((100, 200))));
+    }
+
+    #[test]
+    fn does_not_cover_when_storage_empty() {
+        assert!(!proof_history_covers(150, None));
+    }
+
+    #[test]
+    fn miss_below_earliest_is_pruned() {
+        // Below the retained window: a genuine gap worth a WARN.
+        assert!(proof_history_miss_is_pruned(50, Some((100, 200))));
+    }
+
+    #[test]
+    fn miss_above_latest_is_not_pruned() {
+        // Ahead of the cursor while the sidecar catches up: expected and transient, not a WARN.
+        assert!(!proof_history_miss_is_pruned(8_109_699, Some((7_503_971, 8_108_771))));
+    }
+
+    #[test]
+    fn miss_with_empty_storage_is_not_pruned() {
+        // Uninitialized storage: transient startup state, not a WARN.
+        assert!(!proof_history_miss_is_pruned(150, None));
     }
 }

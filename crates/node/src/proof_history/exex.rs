@@ -4,7 +4,7 @@ use super::storage_init::{
     DelayedProofHistoryStart, PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
     ProofHistoryInitializationAction, delayed_proof_history_start, finalized_block_number,
     initialize_historical_proof_history_storage, initialize_proof_history_storage,
-    proof_history_backfill_target, proof_history_storage_needs_initialization,
+    proof_history_storage_needs_initialization, proof_history_sync_target,
 };
 use alloy_consensus::BlockHeader;
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
@@ -80,6 +80,10 @@ const PROOF_HISTORY_SYNC_IDLE_SLEEP: Duration = Duration::from_secs(5);
 
 /// Delay used while waiting for delayed proof-history initialization to become possible.
 const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Delay between polls of the node's executed head while proof-history is caught up, so a
+/// staged-sync gap is backfilled even when no live canonical notification arrives.
+const PROOF_HISTORY_HEAD_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Number of proof-history blocks pruned in one pruning transaction.
 const PROOF_HISTORY_PRUNE_BATCH_SIZE: u64 = 200;
@@ -644,6 +648,10 @@ where
     ) {
         debug!(target: "reth::taiko::proof_history", "starting proof-history sync loop");
 
+        // Whether the current divergence episode (stored head ahead of executed head) has already
+        // been warned about, so the 5s idle poll does not re-emit the warning on every tick.
+        let mut divergence_logged = false;
+
         loop {
             let requested_target = *sync_target_rx.borrow_and_update();
             let write_guard = write_lock.lock().await;
@@ -661,19 +669,14 @@ where
                 }
             };
 
-            if latest >= requested_target {
-                drop(write_guard);
-                if sync_target_rx.changed().await.is_err() {
-                    debug!(
-                        target: "reth::taiko::proof_history",
-                        "proof-history sync target sender dropped; stopping sync loop"
-                    );
-                    return;
-                }
-                continue;
-            }
-
-            let executed_head = match provider.best_block_number() {
+            // Track the node's on-disk executed head, not just the last notified canonical tip.
+            // Using the on-disk head (rather than the in-memory tip) guarantees the blocks the
+            // backfill re-executes are persisted, and lets proof-history catch up across a
+            // staged-sync gap even when no live notification advances `requested_target`.
+            let executed_head = match provider
+                .database_provider_ro()
+                .and_then(|p| p.best_block_number())
+            {
                 Ok(number) => number,
                 Err(error) => {
                     error!(target: "reth::taiko::proof_history", ?error, "failed to read executed head for proof-history sync");
@@ -683,18 +686,44 @@ where
                 }
             };
 
-            let Some(target) =
-                proof_history_backfill_target(latest, requested_target, executed_head)
+            // Surface divergence: proof-history's stored head sits above the node's executed head.
+            // This only arises after the on-disk head regresses (a reorg/unwind) and is normally
+            // repaired by the notification-driven reorg/revert handlers — which never run when no
+            // live notification arrives, the staged-sync-gap case this loop guards. Warn once per
+            // episode (the idle poll would otherwise re-warn every tick) so a stuck/diverged
+            // sidecar is observable instead of indistinguishable from healthy idle.
+            if latest > executed_head {
+                if !divergence_logged {
+                    warn!(
+                        target: "reth::taiko::proof_history",
+                        latest,
+                        executed_head,
+                        "proof-history stored head is ahead of the node's executed head; awaiting a canonical notification to reconcile"
+                    );
+                    divergence_logged = true;
+                }
+            } else {
+                divergence_logged = false;
+            }
+
+            let Some(target) = proof_history_sync_target(latest, requested_target, executed_head)
             else {
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    latest,
-                    requested_target,
-                    executed_head,
-                    "proof-history sync waiting for local execution"
-                );
+                // Caught up to the locally executed head. Wake on the next live notification (fast
+                // path) or after a poll delay, so a staged-sync gap is still picked up with no
+                // notifications.
                 drop(write_guard);
-                time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                tokio::select! {
+                    result = sync_target_rx.changed() => {
+                        if result.is_err() {
+                            debug!(
+                                target: "reth::taiko::proof_history",
+                                "proof-history sync target sender dropped; stopping sync loop"
+                            );
+                            return;
+                        }
+                    }
+                    _ = time::sleep(PROOF_HISTORY_HEAD_POLL_INTERVAL) => {}
+                }
                 continue;
             };
 
@@ -722,9 +751,19 @@ where
                 .and_then(|result| result);
             drop(write_guard);
 
-            if let Err(error) = batch_result {
-                error!(target: "reth::taiko::proof_history", ?error, "proof-history batch processing failed");
-                time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+            match batch_result {
+                Ok(backfilled_to) => {
+                    info!(
+                        target: "reth::taiko::proof_history",
+                        backfilled_to,
+                        head = executed_head,
+                        "proof-history backfill batch committed"
+                    );
+                }
+                Err(error) => {
+                    error!(target: "reth::taiko::proof_history", ?error, "proof-history batch processing failed");
+                    time::sleep(PROOF_HISTORY_SYNC_IDLE_SLEEP).await;
+                }
             }
 
             task::yield_now().await;
@@ -732,13 +771,15 @@ where
     }
 
     /// Processes a bounded batch of canonical blocks into proof-history storage.
+    ///
+    /// Returns the highest block number processed in this batch.
     fn process_batch(
         start: u64,
         target: u64,
         provider: &Node::Provider,
         collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
         batch_size: usize,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<u64> {
         let end = start.saturating_add(batch_size as u64).min(target);
         debug!(target: "reth::taiko::proof_history", start, end, "processing proof-history batch");
 
@@ -749,7 +790,7 @@ where
             collector.execute_and_store_block_updates(&block)?;
         }
 
-        Ok(())
+        Ok(end)
     }
 
     /// Handles a canonical notification and advances proof-history storage or its backfill target.

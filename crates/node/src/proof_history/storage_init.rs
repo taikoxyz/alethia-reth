@@ -185,6 +185,28 @@ pub(super) fn proof_history_backfill_target(
     (target > latest_stored).then_some(target)
 }
 
+/// Returns the next block proof-history should backfill toward, tracking the node's locally
+/// executed head.
+///
+/// A target derived only from the last canonical notification stalls when the node advances via
+/// pipeline/staged sync without delivering a live notification (e.g. after a restart) or when the
+/// consensus feed is down: `notified_target` then lags `executed_head`, yet proof-history must
+/// still index everything the node has executed. Folding in `executed_head` fixes that, while the
+/// inner `proof_history_backfill_target` still clamps the result to `executed_head` so re-execution
+/// only ever reads persisted blocks. `None` means caught up (nothing new to backfill).
+///
+/// Because that inner clamp re-bounds the result to `executed_head`, `notified_target` is currently
+/// inert (the result reduces to `executed_head` once it exceeds `latest_stored`); it is retained as
+/// the seam for the planned notified-target demotion follow-up.
+pub(super) fn proof_history_sync_target(
+    latest_stored: u64,
+    notified_target: u64,
+    executed_head: u64,
+) -> Option<u64> {
+    let effective_target = notified_target.max(executed_head);
+    proof_history_backfill_target(latest_stored, effective_target, executed_head)
+}
+
 /// Decision for delayed proof-history initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DelayedProofHistoryStart {
@@ -508,5 +530,38 @@ mod tests {
             validate_historical_init_metadata_file(Some(&path), current).unwrap_err().to_string();
 
         assert!(error.contains("initialization target changed"));
+    }
+
+    #[test]
+    fn proof_history_sync_target_tracks_executed_head_when_notification_is_stale() {
+        // Incident: the last notified canonical tip is frozen at the pre-stall height, but the node
+        // pipeline-synced ahead. Proof-history must still backfill up to the executed head.
+        assert_eq!(proof_history_sync_target(8_108_771, 8_108_771, 8_110_008), Some(8_110_008));
+    }
+
+    #[test]
+    fn proof_history_sync_target_waits_when_caught_up_to_executed_head() {
+        assert_eq!(proof_history_sync_target(8_110_008, 8_110_008, 8_110_008), None);
+    }
+
+    #[test]
+    fn proof_history_sync_target_never_runs_ahead_of_executed_head() {
+        // Notified tip is ahead of what is executed locally; do not backfill unexecuted blocks.
+        assert_eq!(proof_history_sync_target(100, 200, 100), None);
+    }
+
+    #[test]
+    fn proof_history_sync_target_backfills_to_executed_head_below_notified_tip() {
+        // Executed head sits between latest_stored and the notified tip.
+        assert_eq!(proof_history_sync_target(100, 200, 150), Some(150));
+    }
+
+    #[test]
+    fn proof_history_sync_target_reports_none_when_executed_head_regressed_below_stored() {
+        // Reorg/unwind rolled the on-disk executed head back below what proof-history already
+        // stored. There is nothing to backfill (`None`), but this is a divergence, not healthy
+        // idle: the sync loop logs it because the notification-driven reorg handlers that would
+        // unwind `latest_stored` only run on live notifications.
+        assert_eq!(proof_history_sync_target(200, 200, 150), None);
     }
 }

@@ -555,4 +555,13 @@ mod tests {
         // Executed head sits between latest_stored and the notified tip.
         assert_eq!(proof_history_sync_target(100, 200, 150), Some(150));
     }
+
+    #[test]
+    fn proof_history_sync_target_reports_none_when_executed_head_regressed_below_stored() {
+        // Reorg/unwind rolled the on-disk executed head back below what proof-history already
+        // stored. There is nothing to backfill (`None`), but this is a divergence, not healthy
+        // idle: the sync loop logs it because the notification-driven reorg handlers that would
+        // unwind `latest_stored` only run on live notifications.
+        assert_eq!(proof_history_sync_target(200, 200, 150), None);
+    }
 }

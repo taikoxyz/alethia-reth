@@ -648,6 +648,10 @@ where
     ) {
         debug!(target: "reth::taiko::proof_history", "starting proof-history sync loop");
 
+        // Whether the current divergence episode (stored head ahead of executed head) has already
+        // been warned about, so the 5s idle poll does not re-emit the warning on every tick.
+        let mut divergence_logged = false;
+
         loop {
             let requested_target = *sync_target_rx.borrow_and_update();
             let write_guard = write_lock.lock().await;
@@ -681,6 +685,26 @@ where
                     continue;
                 }
             };
+
+            // Surface divergence: proof-history's stored head sits above the node's executed head.
+            // This only arises after the on-disk head regresses (a reorg/unwind) and is normally
+            // repaired by the notification-driven reorg/revert handlers — which never run when no
+            // live notification arrives, the staged-sync-gap case this loop guards. Warn once per
+            // episode (the idle poll would otherwise re-warn every tick) so a stuck/diverged
+            // sidecar is observable instead of indistinguishable from healthy idle.
+            if latest > executed_head {
+                if !divergence_logged {
+                    warn!(
+                        target: "reth::taiko::proof_history",
+                        latest,
+                        executed_head,
+                        "proof-history stored head is ahead of the node's executed head; awaiting a canonical notification to reconcile"
+                    );
+                    divergence_logged = true;
+                }
+            } else {
+                divergence_logged = false;
+            }
 
             let Some(target) = proof_history_sync_target(latest, requested_target, executed_head)
             else {

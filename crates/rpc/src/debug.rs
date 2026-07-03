@@ -165,9 +165,7 @@ where
             .recovered_block(block_id)
             .await?
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
-        let txs = decode_recovered_tx_list(tx_list)?;
-        let block = block_with_tx_list(block.as_ref().clone(), txs);
-        self.execution_witness_for_tx_list_block(block, mode, options).await
+        self.execution_witness_for_tx_list_block(block, tx_list, mode, options).await
     }
 
     /// Re-executes the provided block against proof-history backed parent state and returns the
@@ -223,16 +221,23 @@ where
         Ok(flatten_blocking_task(witness_task)?)
     }
 
-    /// Replays the explicit transaction-list block with prover-style filtering, without enabling
-    /// the block crate's global `prover` feature for normal node execution.
+    /// Replays the explicit transaction list on the canonical block's parent state with
+    /// prover-style filtering, without enabling the block crate's global `prover` feature for
+    /// normal node execution.
+    ///
+    /// The raw transaction list is validated and decoded inside the permit-guarded blocking
+    /// closure: the size check zlib-compresses up to 16 MiB and decoding recovers every
+    /// transaction signer, which is far too much CPU for the async RPC workers and must stay
+    /// under the witness concurrency cap.
     async fn execution_witness_for_tx_list_block(
         &self,
-        block: RecoveredBlock<Block>,
+        canonical_block: Arc<RecoveredBlock<Block>>,
+        tx_list: Bytes,
         mode: ExecutionWitnessMode,
         options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        let block_number = block.header().number();
-        let parent_block = BlockId::Hash(block.parent_hash().into());
+        let block_number = canonical_block.header().number();
+        let parent_block = BlockId::Hash(canonical_block.parent_hash().into());
         let (parent_number, canonical_state) = self
             .state_provider_factory
             .resolve_block_state(parent_block)
@@ -249,10 +254,12 @@ where
             .await
             .expect("witness request semaphore is never closed");
 
-        // Transaction replay and witness assembly are CPU/I/O heavy; keep them off the async
-        // RPC workers.
+        // Tx-list validation/decode, transaction replay, and witness assembly are CPU/I/O
+        // heavy; keep them off the async RPC workers and under the concurrency cap.
         let witness_task = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let txs = decode_recovered_tx_list(tx_list)?;
+            let block = block_with_tx_list(canonical_block.as_ref().clone(), txs);
             let state_provider = factory
                 .state_provider_at(canonical_state, parent_number)
                 .map_err(EthApiError::from)?;

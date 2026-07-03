@@ -9,7 +9,45 @@ use reth_provider::{
 };
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tracing::{debug, warn};
+
+/// Shared flag tracking whether proof-history storage is reconciled against canonical state.
+///
+/// The sidecar sets the flag once startup reconciliation (or lag recovery) has validated the
+/// stored bounds against canonical block hashes, and clears it while reconciliation is pending.
+/// The RPC layer refuses to serve proof-history state while the flag is clear: after an
+/// ungraceful restart the stored head can describe a branch the canonical chain no longer
+/// follows, and bounds alone cannot tell. The flag cannot cover a divergence that has not been
+/// *detected* yet (in-flight snapshots, un-received notifications); it closes the known-waiting
+/// window where the sidecar itself knows storage is unvalidated.
+#[derive(Debug, Clone, Default)]
+pub struct ProofHistoryReadiness(Arc<AtomicBool>);
+
+impl ProofHistoryReadiness {
+    /// Creates a readiness handle that starts not ready.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Marks proof-history storage as reconciled with canonical state.
+    pub fn set_ready(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Marks proof-history storage as pending reconciliation.
+    pub fn set_not_ready(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    /// Returns whether proof-history storage is reconciled with canonical state.
+    pub fn is_ready(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 /// Maximum distance behind the canonical tip for which an uncovered proof request may fall back
 /// to canonical (revert-overlay) state instead of erroring.
@@ -20,16 +58,18 @@ use tracing::{debug, warn};
 /// rejected instead of risking minutes of CPU and an OOM-sized overlay per request.
 const PROOF_HISTORY_CANONICAL_FALLBACK_MAX_DISTANCE: u64 = 1024;
 
-/// A proof request outside the proof-history window and too deep to serve from canonical state.
+/// A proof request that proof-history cannot serve and that is too deep for canonical fallback.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "block {block_number} is not covered by proof-history storage (retained bounds: {bounds:?}) \
-     and lies {distance} blocks behind the canonical tip; deep-history proofs cannot be served \
-     from canonical fallback state"
+    "block {block_number} cannot be served from proof-history storage (reconciled: {reconciled}, \
+     retained bounds: {bounds:?}) and lies {distance} blocks behind the canonical tip; \
+     deep-history proofs cannot be served from canonical fallback state"
 )]
 struct ProofHistoryDeepHistoryError {
     /// Requested block number.
     block_number: u64,
+    /// Whether stored bounds were reconciled against canonical state at request time.
+    reconciled: bool,
     /// Retained proof-history bounds at request time.
     bounds: Option<(u64, u64)>,
     /// Distance between the canonical tip and the requested block.
@@ -73,6 +113,16 @@ fn proof_history_fallback_allowed(
     canonical_tip.saturating_sub(block_number) <= max_distance
 }
 
+/// Returns whether proof-history storage may serve `block_number`: it must be within the retained
+/// bounds *and* the bounds must have been reconciled against canonical state.
+fn proof_history_can_serve(
+    reconciled: bool,
+    block_number: u64,
+    bounds: Option<(u64, u64)>,
+) -> bool {
+    reconciled && proof_history_covers(block_number, bounds)
+}
+
 /// Creates state providers that overlay OP Proofs history on top of canonical state.
 #[derive(Debug, Clone)]
 pub struct ProofHistoryStateProviderFactory<Eth, Storage> {
@@ -80,12 +130,18 @@ pub struct ProofHistoryStateProviderFactory<Eth, Storage> {
     eth_api: Eth,
     /// Proof-history storage containing retained trie nodes and hashed leaves.
     storage: OpProofsStorage<Storage>,
+    /// Whether the sidecar has reconciled the stored bounds against canonical state.
+    readiness: ProofHistoryReadiness,
 }
 
 impl<Eth, Storage> ProofHistoryStateProviderFactory<Eth, Storage> {
     /// Creates a new proof-history state provider factory.
-    pub const fn new(eth_api: Eth, storage: OpProofsStorage<Storage>) -> Self {
-        Self { eth_api, storage }
+    pub const fn new(
+        eth_api: Eth,
+        storage: OpProofsStorage<Storage>,
+        readiness: ProofHistoryReadiness,
+    ) -> Self {
+        Self { eth_api, storage, readiness }
     }
 }
 
@@ -133,7 +189,8 @@ where
             .zip(earliest)
             .map(|((latest_number, _), (earliest_number, _))| (earliest_number, latest_number));
 
-        if !proof_history_covers(block_number, bounds) {
+        let reconciled = self.readiness.is_ready();
+        if !proof_history_can_serve(reconciled, block_number, bounds) {
             let canonical_tip = self.eth_api.provider().best_block_number()?;
             if !proof_history_fallback_allowed(
                 block_number,
@@ -144,17 +201,28 @@ where
                 warn!(
                     target: "reth::taiko::proof_history",
                     block_number,
+                    reconciled,
                     ?bounds,
                     distance,
                     "refusing canonical-state fallback for deep-history proof request"
                 );
                 return Err(ProviderError::other(ProofHistoryDeepHistoryError {
                     block_number,
+                    reconciled,
                     bounds,
                     distance,
                 }));
             }
-            if proof_history_miss_is_pruned(block_number, bounds) {
+            if !reconciled {
+                // Storage exists but has not been validated against canonical state yet (startup
+                // reconciliation or lag recovery in flight): expected and transient.
+                debug!(
+                    target: "reth::taiko::proof_history",
+                    block_number,
+                    ?bounds,
+                    "proof-history is awaiting reconciliation; serving from canonical state"
+                );
+            } else if proof_history_miss_is_pruned(block_number, bounds) {
                 // Below the retained window: the block is pruned from proof-history, a genuine gap.
                 warn!(
                     target: "reth::taiko::proof_history",
@@ -182,7 +250,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        proof_history_covers, proof_history_fallback_allowed, proof_history_miss_is_pruned,
+        ProofHistoryReadiness, proof_history_can_serve, proof_history_covers,
+        proof_history_fallback_allowed, proof_history_miss_is_pruned,
     };
 
     #[test]
@@ -251,5 +320,44 @@ mod tests {
         // A requested block above the tip has zero look-back distance; resolution already
         // failed earlier if the block does not exist.
         assert!(proof_history_fallback_allowed(1000, 900, 1024));
+    }
+
+    #[test]
+    fn readiness_starts_not_ready_and_toggles() {
+        let readiness = ProofHistoryReadiness::new();
+
+        assert!(!readiness.is_ready());
+        readiness.set_ready();
+        assert!(readiness.is_ready());
+        readiness.set_not_ready();
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn readiness_is_shared_across_clones() {
+        let sidecar_handle = ProofHistoryReadiness::new();
+        let rpc_handle = sidecar_handle.clone();
+
+        sidecar_handle.set_ready();
+
+        assert!(rpc_handle.is_ready());
+    }
+
+    #[test]
+    fn cannot_serve_covered_block_before_reconciliation() {
+        // The stored bounds may describe a branch the canonical chain no longer follows until
+        // reconciliation validates them; a covered block must not be served while not ready.
+        assert!(!proof_history_can_serve(false, 150, Some((100, 200))));
+    }
+
+    #[test]
+    fn serves_covered_block_when_reconciled() {
+        assert!(proof_history_can_serve(true, 150, Some((100, 200))));
+    }
+
+    #[test]
+    fn cannot_serve_uncovered_block_even_when_reconciled() {
+        assert!(!proof_history_can_serve(true, 250, Some((100, 200))));
+        assert!(!proof_history_can_serve(true, 150, None));
     }
 }

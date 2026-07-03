@@ -1,6 +1,8 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
-use crate::proof_state::{ProofHistoryStateProviderFactory, flatten_blocking_task};
+use crate::proof_state::{
+    ProofHistoryReadiness, ProofHistoryStateProviderFactory, flatten_blocking_task,
+};
 use alethia_reth_block::{
     executor::{
         is_recoverable_non_anchor_tx_error, is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded,
@@ -107,7 +109,7 @@ pub struct TaikoDebugWitnessExt<Eth, Storage, Provider> {
     /// Factory for sidecar-backed state providers.
     state_provider_factory: ProofHistoryStateProviderFactory<Eth, Storage>,
     /// Semaphore limiting concurrent witness generation.
-    semaphore: Semaphore,
+    semaphore: Arc<Semaphore>,
 }
 
 impl<Eth, Storage, Provider> TaikoDebugWitnessExt<Eth, Storage, Provider>
@@ -118,12 +120,21 @@ where
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
 {
     /// Creates a new proof-history backed debug witness override.
-    pub fn new(provider: Provider, eth_api: Eth, storage: OpProofsStorage<Storage>) -> Self {
+    pub fn new(
+        provider: Provider,
+        eth_api: Eth,
+        storage: OpProofsStorage<Storage>,
+        readiness: ProofHistoryReadiness,
+    ) -> Self {
         Self {
             provider,
-            state_provider_factory: ProofHistoryStateProviderFactory::new(eth_api.clone(), storage),
+            state_provider_factory: ProofHistoryStateProviderFactory::new(
+                eth_api.clone(),
+                storage,
+                readiness,
+            ),
             eth_api,
-            semaphore: Semaphore::new(MAX_CONCURRENT_WITNESS_REQUESTS),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_WITNESS_REQUESTS)),
         }
     }
 
@@ -176,10 +187,20 @@ where
         let factory = self.state_provider_factory.clone();
         let evm_config = self.eth_api.evm_config().clone();
         let header_provider = self.provider.clone();
+        // Acquire an owned permit and move it into the blocking closure: a permit held only by
+        // this (cancellable) future would be released on client disconnect while the
+        // non-abortable blocking work keeps running, letting cancelled requests bypass the cap.
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("witness request semaphore is never closed");
 
         // Block re-execution and witness assembly are CPU/I/O heavy; keep them off the async
         // RPC workers.
         let witness_task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let state_provider = factory
                 .state_provider_at(canonical_state, parent_number)
                 .map_err(EthApiError::from)?;
@@ -220,10 +241,18 @@ where
         let factory = self.state_provider_factory.clone();
         let evm_config = self.eth_api.evm_config().clone();
         let header_provider = self.provider.clone();
+        // Owned permit moved into the closure; see `execution_witness_for_block`.
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("witness request semaphore is never closed");
 
         // Transaction replay and witness assembly are CPU/I/O heavy; keep them off the async
         // RPC workers.
         let witness_task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let state_provider = factory
                 .state_provider_at(canonical_state, parent_number)
                 .map_err(EthApiError::from)?;
@@ -301,8 +330,6 @@ where
         block: BlockNumberOrTag,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit =
-            self.semaphore.acquire().await.expect("witness request semaphore is never closed");
         self.execution_witness_for_id(block.into(), mode.unwrap_or_default())
             .await
             .map_err(Into::into)
@@ -314,8 +341,6 @@ where
         hash: B256,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit =
-            self.semaphore.acquire().await.expect("witness request semaphore is never closed");
         self.execution_witness_for_id(hash.into(), mode.unwrap_or_default())
             .await
             .map_err(Into::into)
@@ -329,8 +354,6 @@ where
         mode: Option<ExecutionWitnessMode>,
         options: Option<TxListWitnessOptions>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit =
-            self.semaphore.acquire().await.expect("witness request semaphore is never closed");
         self.execution_witness_for_tx_list_for_id(
             block,
             tx_list,

@@ -10,12 +10,12 @@ pub use config::{
     DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
 use sidecar::ProofHistorySidecar;
-use storage_init::proof_history_historical_init_metadata_path;
 
 use crate::TaikoNode;
 use alethia_reth_rpc::{
     debug::{TaikoDebugWitnessApiServer, TaikoDebugWitnessExt},
     eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
+    proof_state::ProofHistoryReadiness,
 };
 use eyre::WrapErr;
 use reth::{
@@ -45,11 +45,14 @@ use tracing::info;
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
 pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorage>>;
 
+/// Storage and reconciliation-readiness handles shared with the proof-history RPC overrides.
+pub type ProofHistoryRpcHandles = (ProofHistoryStorage, ProofHistoryReadiness);
+
 /// Result returned by proof-history installation with the updated node builder and optional
-/// storage.
+/// RPC handles.
 pub type ProofHistoryInstallResult<T, CB, AO> = eyre::Result<(
     WithLaunchContext<NodeBuilderWithComponents<T, CB, AO>>,
-    Option<ProofHistoryStorage>,
+    Option<ProofHistoryRpcHandles>,
 )>;
 
 /// Installs the proof-history sidecar and proof database metrics task on a Taiko node builder.
@@ -88,7 +91,10 @@ where
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
     let storage_for_sidecar = storage.clone();
     let storage_for_init = Arc::clone(&mdbx);
-    let historical_init_metadata_path = proof_history_historical_init_metadata_path(&storage_path);
+    // Starts not-ready: the RPC layer must not serve proof-history state until the sidecar has
+    // reconciled the stored bounds against canonical block hashes.
+    let readiness = ProofHistoryReadiness::new();
+    let readiness_for_sidecar = readiness.clone();
 
     Ok((
         node_builder.on_node_started(move |node| {
@@ -105,7 +111,7 @@ where
                 storage_for_sidecar,
                 storage_for_init,
                 config,
-                Some(historical_init_metadata_path),
+                readiness_for_sidecar,
             );
             task_executor.spawn_critical_with_graceful_shutdown_signal(
                 "taiko::proof_history::sidecar",
@@ -119,14 +125,14 @@ where
             );
             Ok(())
         }),
-        Some(storage),
+        Some((storage, readiness)),
     ))
 }
 
 /// Installs proof-history backed replacements for configured `eth_` and `debug_` RPC methods.
 pub fn install_proof_history_rpc<Node, EthApi>(
     ctx: &mut RpcContext<'_, Node, EthApi>,
-    storage: ProofHistoryStorage,
+    handles: ProofHistoryRpcHandles,
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents,
@@ -134,13 +140,16 @@ where
     Node::Provider:
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {
-    let eth_ext = TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone());
+    let (storage, readiness) = handles;
+    let eth_ext =
+        TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone(), readiness.clone());
     ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
 
     let debug_ext = TaikoDebugWitnessExt::new(
         ctx.node().provider().clone(),
         ctx.registry.eth_api().clone(),
         storage,
+        readiness,
     );
     ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Debug, debug_ext.into_rpc())?;
     Ok(())

@@ -5,10 +5,12 @@ use super::{
     storage_init::{
         DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
         finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, proof_history_storage_needs_initialization,
-        proof_history_sync_target, read_historical_init_metadata,
+        initialize_proof_history_storage, proof_history_historical_init_metadata_path,
+        proof_history_storage_needs_initialization, proof_history_sync_target,
+        read_historical_init_metadata,
     },
 };
+use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
 use alloy_consensus::BlockHeader;
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use alloy_primitives::B256;
@@ -197,6 +199,8 @@ where
     config: ProofHistoryConfig,
     /// Sidecar file that records historical initialization target metadata.
     historical_init_metadata_path: Option<PathBuf>,
+    /// Readiness flag consumed by the RPC layer; set only while storage is reconciled.
+    readiness: ProofHistoryReadiness,
     /// Serializes proof-history writers across live notifications, background sync, and pruning.
     write_lock: Arc<Mutex<()>>,
 }
@@ -238,8 +242,10 @@ where
         storage: OpProofsStorage<Storage>,
         init_storage: Storage,
         config: ProofHistoryConfig,
-        historical_init_metadata_path: Option<PathBuf>,
+        readiness: ProofHistoryReadiness,
     ) -> Self {
+        let historical_init_metadata_path =
+            config.storage_path.as_deref().map(proof_history_historical_init_metadata_path);
         Self {
             provider,
             evm_config,
@@ -248,6 +254,7 @@ where
             init_storage,
             config,
             historical_init_metadata_path,
+            readiness,
             write_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -332,6 +339,9 @@ where
         if !self.reconcile_or_wait().await? {
             return Ok(None);
         }
+        // Storage bounds are now validated against canonical hashes: allow the RPC layer to
+        // serve from proof-history. Workers only extend storage consistently from here on.
+        self.readiness.set_ready();
         let sync_wake = self.spawn_sync_task();
         self.spawn_pruner_task();
         Ok(Some(sync_wake))
@@ -340,6 +350,9 @@ where
     /// Reconciles proof-history storage after missing canonical notifications.
     async fn recover_from_lag(&self, sync_wake: &Notify) -> eyre::Result<()> {
         let _write_guard = self.write_lock.lock().await;
+        // Notifications were missed, so the stored bounds are unvalidated until reconciliation
+        // succeeds; stop serving proof-history state in the meantime.
+        self.readiness.set_not_ready();
         if !self.reconcile_or_wait().await? {
             return Err(eyre!(
                 "proof-history reconciliation cannot proceed while sync workers are running \
@@ -347,6 +360,7 @@ where
                  recover"
             ));
         }
+        self.readiness.set_ready();
         sync_wake.notify_one();
         Ok(())
     }

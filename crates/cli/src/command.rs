@@ -49,6 +49,7 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
             backfill_window_only: self.proof_history.backfill_window_only,
             prune_interval: self.proof_history.prune_interval,
             verification_interval: self.proof_history.verification_interval,
+            max_startup_prune_blocks: self.proof_history.max_startup_prune_blocks,
         }
     }
 }

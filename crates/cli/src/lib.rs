@@ -25,7 +25,10 @@ use alethia_reth_node::{
     TaikoNode,
     components::ProviderTaikoBlockReader,
     consensus::validation::TaikoBeaconConsensus,
-    proof_history::{DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW},
+    proof_history::{
+        DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
+    },
 };
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
@@ -109,6 +112,16 @@ pub struct TaikoProofHistoryArgs {
         help_heading = "Taiko Proof History"
     )]
     pub verification_interval: u64,
+
+    /// Maximum number of retained blocks startup may prune automatically, e.g. after lowering
+    /// the retention window. Startup refuses to prune more than this many blocks.
+    #[arg(
+        long = "proofs-history.max-startup-prune-blocks",
+        value_name = "BLOCKS",
+        default_value_t = DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
+        help_heading = "Taiko Proof History"
+    )]
+    pub max_startup_prune_blocks: u64,
 }
 
 /// The main alethia-reth cli interface.
@@ -271,6 +284,7 @@ mod tests {
     use clap::Parser;
 
     use super::{
+        DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
     };
     use crate::command::TaikoNodeExtArgs;
@@ -329,6 +343,8 @@ mod tests {
             "30s",
             "--proofs-history.verification-interval",
             "16",
+            "--proofs-history.max-startup-prune-blocks",
+            "5000",
         ])
         .expect("proof-history args should parse");
 
@@ -338,6 +354,7 @@ mod tests {
         assert!(cli.ext.proof_history.backfill_window_only);
         assert_eq!(cli.ext.proof_history.prune_interval, Duration::from_secs(30));
         assert_eq!(cli.ext.proof_history.verification_interval, 16);
+        assert_eq!(cli.ext.proof_history.max_startup_prune_blocks, 5000);
     }
 
     #[test]
@@ -351,6 +368,7 @@ mod tests {
         assert!(!config.backfill_window_only);
         assert_eq!(config.prune_interval, Duration::from_secs(15));
         assert_eq!(config.verification_interval, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL);
+        assert_eq!(config.max_startup_prune_blocks, DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS);
     }
 
     #[test]

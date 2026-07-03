@@ -235,7 +235,6 @@ dependencies = [
  "reth-ethereum",
  "reth-ethereum-primitives",
  "reth-execution-types",
- "reth-exex",
  "reth-node-api",
  "reth-node-builder",
  "reth-node-ethereum",

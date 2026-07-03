@@ -1,6 +1,8 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
-use crate::proof_state::ProofHistoryStateProviderFactory;
+use crate::proof_state::{
+    ProofHistoryReadiness, ProofHistoryStateProviderFactory, flatten_blocking_task,
+};
 use alethia_reth_block::{
     executor::{
         is_recoverable_non_anchor_tx_error, is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded,
@@ -33,6 +35,7 @@ use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_common::ExecutionWitnessMode;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 /// Maximum number of concurrent proof-history witness requests.
@@ -106,7 +109,7 @@ pub struct TaikoDebugWitnessExt<Eth, Storage, Provider> {
     /// Factory for sidecar-backed state providers.
     state_provider_factory: ProofHistoryStateProviderFactory<Eth, Storage>,
     /// Semaphore limiting concurrent witness generation.
-    semaphore: Semaphore,
+    semaphore: Arc<Semaphore>,
 }
 
 impl<Eth, Storage, Provider> TaikoDebugWitnessExt<Eth, Storage, Provider>
@@ -117,12 +120,21 @@ where
     Provider::Header: BlockHeader + alloy_rlp::Encodable,
 {
     /// Creates a new proof-history backed debug witness override.
-    pub fn new(provider: Provider, eth_api: Eth, storage: OpProofsStorage<Storage>) -> Self {
+    pub fn new(
+        provider: Provider,
+        eth_api: Eth,
+        storage: OpProofsStorage<Storage>,
+        readiness: ProofHistoryReadiness,
+    ) -> Self {
         Self {
             provider,
-            state_provider_factory: ProofHistoryStateProviderFactory::new(eth_api.clone(), storage),
+            state_provider_factory: ProofHistoryStateProviderFactory::new(
+                eth_api.clone(),
+                storage,
+                readiness,
+            ),
             eth_api,
-            semaphore: Semaphore::new(MAX_CONCURRENT_WITNESS_REQUESTS),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_WITNESS_REQUESTS)),
         }
     }
 
@@ -137,7 +149,7 @@ where
             .recovered_block(block_id)
             .await?
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
-        self.execution_witness_for_block(block.as_ref(), mode).await
+        self.execution_witness_for_block(block, mode).await
     }
 
     /// Replays the explicit transaction list on top of the requested block's parent state.
@@ -153,109 +165,160 @@ where
             .recovered_block(block_id)
             .await?
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
-        let txs = decode_recovered_tx_list(tx_list)?;
-        let block = block_with_tx_list(block.as_ref().clone(), txs);
-        self.execution_witness_for_tx_list_block(&block, mode, options).await
+        self.execution_witness_for_tx_list_block(block, tx_list, mode, options).await
     }
 
     /// Re-executes the provided block against proof-history backed parent state and returns the
     /// generated witness.
     async fn execution_witness_for_block(
         &self,
-        block: &RecoveredBlock<Block>,
+        block: Arc<RecoveredBlock<Block>>,
         mode: ExecutionWitnessMode,
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block_number = block.header().number();
         let parent_block = BlockId::Hash(block.parent_hash().into());
-        let state_provider = self
+        let (parent_number, canonical_state) = self
             .state_provider_factory
-            .state_provider(parent_block)
+            .resolve_block_state(parent_block)
             .await
             .map_err(EthApiError::from)?;
-        let db = StateProviderDatabase::new(&*state_provider);
-        let block_executor = self.eth_api.evm_config().executor(db);
-        let mut witness_record = ExecutionWitnessRecord::default();
+        let factory = self.state_provider_factory.clone();
+        let evm_config = self.eth_api.evm_config().clone();
+        let header_provider = self.provider.clone();
+        // Acquire an owned permit and move it into the blocking closure: a permit held only by
+        // this (cancellable) future would be released on client disconnect while the
+        // non-abortable blocking work keeps running, letting cancelled requests bypass the cap.
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("witness request semaphore is never closed");
 
-        block_executor
-            .execute_with_state_closure(block, |statedb: &State<_>| {
-                witness_record.record_executed_state(statedb, mode);
-            })
-            .map_err(EthApiError::from)?;
+        // Block re-execution and witness assembly are CPU/I/O heavy; keep them off the async
+        // RPC workers.
+        let witness_task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let state_provider = factory
+                .state_provider_at(canonical_state, parent_number)
+                .map_err(EthApiError::from)?;
+            let db = StateProviderDatabase::new(&*state_provider);
+            let block_executor = evm_config.executor(db);
+            let mut witness_record = ExecutionWitnessRecord::default();
 
-        Ok(witness_record
-            .into_execution_witness(&*state_provider, &self.provider, block_number, mode)
-            .map_err(EthApiError::from)?)
+            block_executor
+                .execute_with_state_closure(&*block, |statedb: &State<_>| {
+                    witness_record.record_executed_state(statedb, mode);
+                })
+                .map_err(EthApiError::from)?;
+
+            witness_record
+                .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
+                .map_err(EthApiError::from)
+        })
+        .await;
+
+        Ok(flatten_blocking_task(witness_task)?)
     }
 
-    /// Replays the explicit transaction-list block with prover-style filtering, without enabling
-    /// the block crate's global `prover` feature for normal node execution.
+    /// Replays the explicit transaction list on the canonical block's parent state with
+    /// prover-style filtering, without enabling the block crate's global `prover` feature for
+    /// normal node execution.
+    ///
+    /// The raw transaction list is validated and decoded inside the permit-guarded blocking
+    /// closure: the size check zlib-compresses up to 16 MiB and decoding recovers every
+    /// transaction signer, which is far too much CPU for the async RPC workers and must stay
+    /// under the witness concurrency cap.
     async fn execution_witness_for_tx_list_block(
         &self,
-        block: &RecoveredBlock<Block>,
+        canonical_block: Arc<RecoveredBlock<Block>>,
+        tx_list: Bytes,
         mode: ExecutionWitnessMode,
         options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        let block_number = block.header().number();
-        let parent_block = BlockId::Hash(block.parent_hash().into());
-        let state_provider = self
+        let block_number = canonical_block.header().number();
+        let parent_block = BlockId::Hash(canonical_block.parent_hash().into());
+        let (parent_number, canonical_state) = self
             .state_provider_factory
-            .state_provider(parent_block)
+            .resolve_block_state(parent_block)
             .await
             .map_err(EthApiError::from)?;
-        let db = StateProviderDatabase::new(&*state_provider);
-        let mut state = State::builder().with_database(db).with_bundle_update().build();
-        let mut witness_record = ExecutionWitnessRecord::default();
+        let factory = self.state_provider_factory.clone();
+        let evm_config = self.eth_api.evm_config().clone();
+        let header_provider = self.provider.clone();
+        // Owned permit moved into the closure; see `execution_witness_for_block`.
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("witness request semaphore is never closed");
 
-        {
-            let mut block_executor = self
-                .eth_api
-                .evm_config()
-                .executor_for_block(&mut state, block.sealed_block())
-                .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
+        // Tx-list validation/decode, transaction replay, and witness assembly are CPU/I/O
+        // heavy; keep them off the async RPC workers and under the concurrency cap.
+        let witness_task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let txs = decode_recovered_tx_list(tx_list)?;
+            let block = block_with_tx_list(canonical_block.as_ref().clone(), txs);
+            let state_provider = factory
+                .state_provider_at(canonical_state, parent_number)
+                .map_err(EthApiError::from)?;
+            let db = StateProviderDatabase::new(&*state_provider);
+            let mut state = State::builder().with_database(db).with_bundle_update().build();
+            let mut witness_record = ExecutionWitnessRecord::default();
 
-            block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
+            {
+                let mut block_executor = evm_config
+                    .executor_for_block(&mut state, block.sealed_block())
+                    .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
 
-            for (idx, tx) in block.transactions_recovered().enumerate() {
-                let is_anchor_transaction = idx == 0;
+                block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
 
-                // Taiko blocks never contain blob transactions: the build paths skip non-anchor
-                // ones (crates/payload/src/builder/execution.rs) and consensus validation rejects
-                // any block that includes one. Keep the same filtering, but never silently discard
-                // the mandatory anchor transaction.
-                match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
-                    Ok(true) => {
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(err) => return Err(err.into()),
-                }
+                for (idx, tx) in block.transactions_recovered().enumerate() {
+                    let is_anchor_transaction = idx == 0;
 
-                match block_executor.execute_transaction(tx) {
-                    Ok(_) => {}
-                    Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
-                        if is_zk_gas_limit_exceeded(&err) {
-                            break;
+                    // Taiko blocks never contain blob transactions: the build paths skip
+                    // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
+                    // validation rejects any block that includes one. Keep the same filtering,
+                    // but never silently discard the mandatory anchor transaction.
+                    match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
+                        Ok(true) => {
+                            continue;
                         }
+                        Ok(false) => {}
+                        Err(err) => return Err(err),
                     }
-                    Err(err) => return Err(EthApiError::from(err).into()),
+
+                    match block_executor.execute_transaction(tx) {
+                        Ok(_) => {}
+                        Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
+                            if is_zk_gas_limit_exceeded(&err) {
+                                break;
+                            }
+                        }
+                        Err(err) => return Err(EthApiError::from(err)),
+                    }
+                }
+
+                match block_executor.apply_post_execution_changes() {
+                    Ok(_) => {}
+                    Err(err)
+                        if options.skip_zk_gas_difficulty_check &&
+                            is_zk_gas_difficulty_mismatch(&err) => {}
+                    Err(err) => return Err(EthApiError::from(err)),
                 }
             }
 
-            match block_executor.apply_post_execution_changes() {
-                Ok(_) => {}
-                Err(err)
-                    if options.skip_zk_gas_difficulty_check &&
-                        is_zk_gas_difficulty_mismatch(&err) => {}
-                Err(err) => return Err(EthApiError::from(err).into()),
-            }
-        }
+            state.merge_transitions(BundleRetention::Reverts);
+            witness_record.record_executed_state(&state, mode);
 
-        state.merge_transitions(BundleRetention::Reverts);
-        witness_record.record_executed_state(&state, mode);
+            witness_record
+                .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
+                .map_err(EthApiError::from)
+        })
+        .await;
 
-        Ok(witness_record
-            .into_execution_witness(&*state_provider, &self.provider, block_number, mode)
-            .map_err(EthApiError::from)?)
+        Ok(flatten_blocking_task(witness_task)?)
     }
 }
 
@@ -274,7 +337,6 @@ where
         block: BlockNumberOrTag,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit = self.semaphore.acquire().await;
         self.execution_witness_for_id(block.into(), mode.unwrap_or_default())
             .await
             .map_err(Into::into)
@@ -286,7 +348,6 @@ where
         hash: B256,
         mode: Option<ExecutionWitnessMode>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit = self.semaphore.acquire().await;
         self.execution_witness_for_id(hash.into(), mode.unwrap_or_default())
             .await
             .map_err(Into::into)
@@ -300,7 +361,6 @@ where
         mode: Option<ExecutionWitnessMode>,
         options: Option<TxListWitnessOptions>,
     ) -> RpcResult<ExecutionWitness> {
-        let _permit = self.semaphore.acquire().await;
         self.execution_witness_for_tx_list_for_id(
             block,
             tx_list,

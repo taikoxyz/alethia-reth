@@ -12,6 +12,13 @@ const DEFAULT_PROOF_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(15);
 /// Default interval, in blocks, between proof-history consistency checks.
 pub const DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL: u64 = 1024;
 
+/// Default safety threshold for automatic proof-history pruning on startup.
+///
+/// Startup refuses to prune more than this many blocks (e.g. after the retention window was
+/// lowered) unless the operator raises the limit explicitly, so a fat-fingered window cannot
+/// silently destroy retained history.
+pub const DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS: u64 = 1000;
+
 /// Configuration for the optional proof-history execution extension.
 #[derive(Debug, Clone)]
 pub struct ProofHistoryConfig {
@@ -27,6 +34,8 @@ pub struct ProofHistoryConfig {
     pub prune_interval: Duration,
     /// Block interval between proof-history consistency checks; zero disables verification.
     pub verification_interval: u64,
+    /// Maximum number of blocks startup reconciliation may prune automatically.
+    pub max_startup_prune_blocks: u64,
 }
 
 impl ProofHistoryConfig {
@@ -39,6 +48,7 @@ impl ProofHistoryConfig {
             backfill_window_only: false,
             prune_interval: DEFAULT_PROOF_HISTORY_PRUNE_INTERVAL,
             verification_interval: DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
+            max_startup_prune_blocks: DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         }
     }
 
@@ -62,6 +72,14 @@ mod tests {
         assert!(!config.backfill_window_only);
         assert!(config.storage_path.is_none());
         assert!(config.required_storage_path().is_err());
+    }
+
+    #[test]
+    fn default_startup_prune_threshold_is_conservative() {
+        let config = ProofHistoryConfig::disabled();
+
+        assert_eq!(config.max_startup_prune_blocks, DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS);
+        assert_eq!(config.max_startup_prune_blocks, 1000);
     }
 
     #[test]

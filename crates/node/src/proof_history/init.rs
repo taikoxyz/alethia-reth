@@ -254,7 +254,7 @@ where
 
         if block.number != best_number || block.hash != best_hash {
             return Err(eyre!(
-                "proof-history initialization anchor mismatch: stored=({:?}, {:?}) current=({:?}, {:?})",
+                "proof-history initialization anchor mismatch: stored=({:?}, {:?}) current=({:?}, {:?}); wipe proof-history storage and restart initialization",
                 block.number,
                 block.hash,
                 best_number,

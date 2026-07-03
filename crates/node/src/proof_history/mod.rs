@@ -1,14 +1,15 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
-mod exex;
 mod init;
+mod sidecar;
 mod storage_init;
 
 pub use config::{
-    DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
+    DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
+    DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
-use exex::{ProofHistorySidecar, ProofHistorySidecarConfig};
+use sidecar::ProofHistorySidecar;
 use storage_init::proof_history_historical_init_metadata_path;
 
 use crate::TaikoNode;
@@ -103,13 +104,8 @@ where
                 task_executor.clone(),
                 storage_for_sidecar,
                 storage_for_init,
-                ProofHistorySidecarConfig {
-                    proofs_history_window: config.window,
-                    proofs_history_prune_interval: config.prune_interval,
-                    verification_interval: config.verification_interval,
-                    backfill_window_only: config.backfill_window_only,
-                    historical_init_metadata_path: Some(historical_init_metadata_path),
-                },
+                config,
+                Some(historical_init_metadata_path),
             );
             task_executor.spawn_critical_with_graceful_shutdown_signal(
                 "taiko::proof_history::sidecar",

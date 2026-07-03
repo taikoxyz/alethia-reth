@@ -99,7 +99,6 @@ reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953e
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f", default-features = false }
 reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f", default-features = false }
-reth-exex = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f" }
 reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f", default-features = false }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "27bfddeada3953edc22759080a3659ccea62ca1f" }

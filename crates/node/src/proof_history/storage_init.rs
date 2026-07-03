@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 /// Returns whether proof-history storage needs an initial current-state snapshot.
 pub(super) fn proof_history_storage_needs_initialization<Storage>(
@@ -32,11 +32,11 @@ where
         provider_ro.get_latest_block_number()?.is_none())
 }
 
-/// Safety threshold for automatic proof-history pruning on startup.
-pub(super) const PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS: u64 = 1000;
-
 /// File stored beside the proof-history MDBX database to validate historical init resume targets.
 pub(super) const PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE: &str = "taiko-historical-init-target";
+
+/// Revert span above which historical initialization warns about its in-memory changeset size.
+const PROOF_HISTORY_REVERT_SPAN_WARN_BLOCKS: u64 = 100_000;
 
 /// Returns the metadata file path used to validate in-progress historical initialization.
 pub(super) fn proof_history_historical_init_metadata_path(storage_path: &Path) -> PathBuf {
@@ -150,7 +150,14 @@ pub(super) fn remove_historical_init_metadata(path: &Path) -> eyre::Result<()> {
     }
 }
 
-/// Validates that in-progress historical initialization is resuming the same source state.
+/// Validates that in-progress historical initialization is resuming the same anchor state.
+///
+/// Only the anchor start block must match the recorded metadata: every copied row is the current
+/// table row rewound to the anchor state by the reverse-changeset overlay, so rows copied before
+/// and after an interruption agree as long as the anchor is unchanged (and the recomputed overlay
+/// is re-verified against the anchor state root before any row is written). The target is
+/// expected to move between attempts on a live chain; refresh the recorded target instead of
+/// failing the resume.
 pub(super) fn validate_historical_init_metadata_file(
     metadata_path: Option<&Path>,
     expected_metadata: HistoricalInitMetadata,
@@ -166,45 +173,30 @@ pub(super) fn validate_historical_init_metadata_file(
         ));
     };
 
-    if stored_metadata != expected_metadata {
+    if stored_metadata.start_block != expected_metadata.start_block {
         return Err(eyre!(
-            "historical proof-history initialization target changed: stored={stored_metadata:?} current={expected_metadata:?}; wipe proof-history storage and restart initialization"
+            "historical proof-history initialization start block changed: stored={:?} current={:?}; wipe proof-history storage and restart initialization",
+            stored_metadata.start_block,
+            expected_metadata.start_block
         ));
+    }
+
+    if stored_metadata != expected_metadata {
+        write_historical_init_metadata(path, expected_metadata)?;
     }
 
     Ok(())
 }
 
-/// Returns the highest block proof-history may backfill without running ahead of execution.
-pub(super) fn proof_history_backfill_target(
-    latest_stored: u64,
-    requested_target: u64,
-    executed_head: u64,
-) -> Option<u64> {
-    let target = requested_target.min(executed_head);
-    (target > latest_stored).then_some(target)
-}
-
-/// Returns the next block proof-history should backfill toward, tracking the node's locally
-/// executed head.
+/// Returns the next block proof-history should backfill toward, or `None` when caught up.
 ///
-/// A target derived only from the last canonical notification stalls when the node advances via
-/// pipeline/staged sync without delivering a live notification (e.g. after a restart) or when the
-/// consensus feed is down: `notified_target` then lags `executed_head`, yet proof-history must
-/// still index everything the node has executed. Folding in `executed_head` fixes that, while the
-/// inner `proof_history_backfill_target` still clamps the result to `executed_head` so re-execution
-/// only ever reads persisted blocks. `None` means caught up (nothing new to backfill).
-///
-/// Because that inner clamp re-bounds the result to `executed_head`, `notified_target` is currently
-/// inert (the result reduces to `executed_head` once it exceeds `latest_stored`); it is retained as
-/// the seam for the planned notified-target demotion follow-up.
-pub(super) fn proof_history_sync_target(
-    latest_stored: u64,
-    notified_target: u64,
-    executed_head: u64,
-) -> Option<u64> {
-    let effective_target = notified_target.max(executed_head);
-    proof_history_backfill_target(latest_stored, effective_target, executed_head)
+/// The target is always the node's locally executed on-disk head: canonical notifications only
+/// wake the sync loop, they never extend its target, so re-execution can never read a block that
+/// is not yet persisted. Deriving the target from the executed head (rather than the last
+/// notification) also means a pipeline/staged-sync gap is backfilled even when no live
+/// notification arrives, e.g. right after a restart or while the consensus feed is down.
+pub(super) fn proof_history_sync_target(latest_stored: u64, executed_head: u64) -> Option<u64> {
+    (executed_head > latest_stored).then_some(executed_head)
 }
 
 /// Decision for delayed proof-history initialization.
@@ -372,6 +364,20 @@ where
         "initializing proof-history storage from historical canonical state"
     );
 
+    // The reverse changesets for the whole span are materialized in memory before the copy
+    // starts; call out unusually wide spans (e.g. enabling backfill-window-only on a node that
+    // is already far past the window start) since they can require many GiB of RAM.
+    let revert_span = target_block.saturating_sub(start_block);
+    if revert_span > PROOF_HISTORY_REVERT_SPAN_WARN_BLOCKS {
+        warn!(
+            target: "reth::taiko::proof_history",
+            start_block,
+            target_block,
+            revert_span,
+            "historical proof-history initialization spans many blocks; building its in-memory reverse changesets may require a lot of RAM"
+        );
+    }
+
     let historical_post_state =
         HashedPostStateSorted::from_reverts(&db_provider, start_block.saturating_add(1)..=target_block)
             .wrap_err_with(|| {
@@ -456,7 +462,9 @@ mod tests {
 
     #[test]
     fn proof_history_backfill_waits_when_executed_head_has_no_next_parent_state() {
-        assert_eq!(proof_history_backfill_target(0, 350_000, 0), None);
+        // Nothing is executed locally beyond the stored anchor, so there is nothing to backfill
+        // regardless of how far ahead the notified canonical tip is.
+        assert_eq!(proof_history_sync_target(0, 0), None);
     }
 
     #[test]
@@ -512,7 +520,11 @@ mod tests {
     }
 
     #[test]
-    fn historical_init_metadata_validation_rejects_target_mismatch() {
+    fn historical_init_metadata_validation_refreshes_target_on_resume() {
+        // The node executed further while initialization was interrupted, so the recomputed
+        // target differs from the recorded one. The overlay is rebuilt against the current
+        // tables and re-verified against the anchor state root, so the resume is safe: accept
+        // it and refresh the recorded target.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
 
@@ -522,38 +534,55 @@ mod tests {
         };
         let current = HistoricalInitMetadata {
             start_block: stored.start_block,
-            target_block: BlockNumHash::new(999_999, B256::with_last_byte(3)),
+            target_block: BlockNumHash::new(1_000_123, B256::with_last_byte(3)),
+        };
+
+        write_historical_init_metadata(&path, stored).unwrap();
+        validate_historical_init_metadata_file(Some(&path), current)
+            .expect("moved target must be accepted on resume");
+
+        assert_eq!(read_historical_init_metadata(&path).unwrap(), Some(current));
+    }
+
+    #[test]
+    fn historical_init_metadata_validation_rejects_start_mismatch() {
+        // A different anchor start block means the resumed copy would mix rows rewound to two
+        // different anchor states; that must stay a hard error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
+
+        let stored = HistoricalInitMetadata {
+            start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
+            target_block: BlockNumHash::new(1_000_000, B256::with_last_byte(2)),
+        };
+        let current = HistoricalInitMetadata {
+            start_block: BlockNumHash::new(650_001, B256::with_last_byte(4)),
+            target_block: stored.target_block,
         };
 
         write_historical_init_metadata(&path, stored).unwrap();
         let error =
             validate_historical_init_metadata_file(Some(&path), current).unwrap_err().to_string();
 
-        assert!(error.contains("initialization target changed"));
+        assert!(error.contains("start block changed"));
+        assert!(error.contains("wipe proof-history storage"));
     }
 
     #[test]
     fn proof_history_sync_target_tracks_executed_head_when_notification_is_stale() {
-        // Incident: the last notified canonical tip is frozen at the pre-stall height, but the node
-        // pipeline-synced ahead. Proof-history must still backfill up to the executed head.
-        assert_eq!(proof_history_sync_target(8_108_771, 8_108_771, 8_110_008), Some(8_110_008));
+        // Incident: no live notification arrived after a stall, but the node pipeline-synced
+        // ahead. Proof-history must still backfill up to the executed head.
+        assert_eq!(proof_history_sync_target(8_108_771, 8_110_008), Some(8_110_008));
     }
 
     #[test]
     fn proof_history_sync_target_waits_when_caught_up_to_executed_head() {
-        assert_eq!(proof_history_sync_target(8_110_008, 8_110_008, 8_110_008), None);
+        assert_eq!(proof_history_sync_target(8_110_008, 8_110_008), None);
     }
 
     #[test]
-    fn proof_history_sync_target_never_runs_ahead_of_executed_head() {
-        // Notified tip is ahead of what is executed locally; do not backfill unexecuted blocks.
-        assert_eq!(proof_history_sync_target(100, 200, 100), None);
-    }
-
-    #[test]
-    fn proof_history_sync_target_backfills_to_executed_head_below_notified_tip() {
-        // Executed head sits between latest_stored and the notified tip.
-        assert_eq!(proof_history_sync_target(100, 200, 150), Some(150));
+    fn proof_history_sync_target_backfills_to_executed_head() {
+        assert_eq!(proof_history_sync_target(100, 150), Some(150));
     }
 
     #[test]
@@ -562,6 +591,6 @@ mod tests {
         // stored. There is nothing to backfill (`None`), but this is a divergence, not healthy
         // idle: the sync loop logs it because the notification-driven reorg handlers that would
         // unwind `latest_stored` only run on live notifications.
-        assert_eq!(proof_history_sync_target(200, 200, 150), None);
+        assert_eq!(proof_history_sync_target(200, 150), None);
     }
 }

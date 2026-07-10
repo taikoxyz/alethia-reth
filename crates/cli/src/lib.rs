@@ -141,7 +141,13 @@ pub struct TaikoJitArgs {
 impl Default for TaikoJitArgs {
     /// Returns the upstream-compatible JIT defaults with compilation disabled.
     fn default() -> Self {
-        let config = JitConfig::default();
+        JitConfig::default().into()
+    }
+}
+
+impl From<JitConfig> for TaikoJitArgs {
+    /// Converts runtime JIT settings into their CLI argument representation.
+    fn from(config: JitConfig) -> Self {
         Self {
             enabled: config.enabled,
             hot_threshold: config.hot_threshold,

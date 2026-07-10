@@ -87,7 +87,11 @@ impl RethJitApiServer for RethJitExt {
     /// Applies a runtime control action when a JIT backend is available.
     async fn reth_jit(&self, action: RethJitAction) -> RpcResult<()> {
         let Some(backend) = self.evm_config.jit_backend() else {
-            return Ok(());
+            return Err(ErrorObjectOwned::owned(
+                ErrorCode::InternalError.code(),
+                "JIT support is not compiled into this binary",
+                None::<()>,
+            ));
         };
 
         apply_action(backend, action).map_err(internal_error)
@@ -166,5 +170,22 @@ mod tests {
             *backend.actions.lock().expect("actions lock"),
             ["enable", "disable", "pause", "unpause", "clear"]
         );
+    }
+
+    #[tokio::test]
+    async fn reth_jit_succeeds_only_when_a_backend_is_compiled_in() {
+        let ext =
+            RethJitExt::new(TaikoEvmConfig::new(alethia_reth_chainspec::TAIKO_MAINNET.clone()));
+        let has_backend = ext.evm_config.jit_backend().is_some();
+
+        let result = ext.reth_jit(RethJitAction::Pause).await;
+
+        if has_backend {
+            result.expect("pause should succeed against a compiled-in backend");
+        } else {
+            let error =
+                result.expect_err("reth_jit should error when JIT support is not compiled in");
+            assert!(error.message().contains("not compiled"));
+        }
     }
 }

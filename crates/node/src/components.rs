@@ -35,6 +35,30 @@ impl TaikoExecutorBuilder {
     pub const fn new(jit: JitConfig) -> Self {
         Self { jit }
     }
+
+    /// Builds an EVM configuration whose executor factory dispatches to the shared revmc
+    /// backend created from the configured JIT settings.
+    #[cfg(feature = "jit")]
+    fn build_jit_evm_config(
+        &self,
+        chain_spec: Arc<TaikoChainSpec>,
+        dump_dir: Option<std::path::PathBuf>,
+    ) -> eyre::Result<TaikoEvmConfig> {
+        let backend = self.jit.build_backend(dump_dir)?;
+
+        if self.jit.enabled {
+            warn!(
+                target: "reth::taiko::cli",
+                hot_threshold = self.jit.hot_threshold,
+                workers = ?self.jit.worker_count,
+                blocking = self.jit.blocking,
+                "Started experimental revmc JIT backend; this may cause instability"
+            );
+        }
+
+        let factory = alethia_reth_evm::factory::TaikoEvmFactory::new(backend);
+        Ok(TaikoEvmConfig::new_with_evm_factory(chain_spec, factory))
+    }
 }
 
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
@@ -55,23 +79,10 @@ where
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
         #[cfg(feature = "jit")]
-        let result = (|| {
-            let dump_dir = self.jit.debug.then(|| ctx.config().datadir().data_dir().join("jit"));
-            let backend = self.jit.build_backend(dump_dir)?;
-
-            if self.jit.enabled {
-                warn!(
-                    target: "reth::taiko::cli",
-                    hot_threshold = self.jit.hot_threshold,
-                    workers = ?self.jit.worker_count,
-                    blocking = self.jit.blocking,
-                    "Started experimental revmc JIT backend; this may cause instability"
-                );
-            }
-
-            let factory = alethia_reth_evm::factory::TaikoEvmFactory::new(backend);
-            Ok(TaikoEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory))
-        })();
+        let result = self.build_jit_evm_config(
+            ctx.chain_spec(),
+            self.jit.debug.then(|| ctx.config().datadir().data_dir().join("jit")),
+        );
 
         #[cfg(not(feature = "jit"))]
         let result = if self.jit.enabled {

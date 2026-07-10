@@ -106,7 +106,9 @@ enabled, `reth_jit` accepts `enable`, `disable`, `pause`, `unpause`, or `clear` 
 Taiko's Unzen execution uses consensus-critical zk-gas metering that requires per-opcode
 interpreter hooks. JIT dispatch therefore falls back to the interpreter for Unzen blocks and
 ordinary RPC call/trace execution. Pre-Unzen canonical execution, payload building, and block
-replay use the shared revmc backend.
+replay use the shared revmc backend. Compiled code bakes in upstream mainnet gas and opcode
+semantics, so hardforks are JIT-eligible only through an explicit allowlist: new forks stay
+interpreter-only until they are deliberately marked JIT-safe in `TaikoEvmFactory`.
 
 ## License
 

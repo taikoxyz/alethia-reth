@@ -435,6 +435,41 @@ fn jit_requires_local_support_and_falls_back_for_unzen() {
     assert!(unzen_evm.meter().is_some());
 }
 
+#[cfg(feature = "jit")]
+#[test]
+fn jit_execution_matches_interpreter_execution() {
+    use revmc::runtime::{JitBackend, JitMode, RuntimeConfig};
+
+    let backend = JitBackend::new(RuntimeConfig {
+        enabled: true,
+        blocking: true,
+        jit_mode: JitMode::InProcess,
+        ..RuntimeConfig::default()
+    })
+    .expect("blocking JIT backend should start");
+    let jit_factory = TaikoEvmFactory::new(backend.clone()).with_jit_support();
+    let interpreter_factory = TaikoEvmFactory::default();
+
+    for (name, bytecode) in [
+        ("arithmetic", simple_arithmetic_bytecode()),
+        ("staticcall", staticcall_identity_bytecode()),
+    ] {
+        let mut jit_evm = jit_factory
+            .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
+        let jit_output = jit_evm.transact(tx_env(100_000)).expect("JIT execution should succeed");
+
+        let mut interpreter_evm = interpreter_factory
+            .create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::SHASTA));
+        let interpreter_output = interpreter_evm
+            .transact(tx_env(100_000))
+            .expect("interpreter execution should succeed");
+
+        assert_eq!(jit_output, interpreter_output, "JIT and interpreter diverged for {name}");
+    }
+
+    assert!(backend.stats().lookup_hits >= 1, "expected the JIT path to serve compiled code");
+}
+
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {
     let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
     env.cfg_env.spec = spec;

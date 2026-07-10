@@ -47,6 +47,11 @@ type InnerTaikoEvm<DB, I, P> = BaseTaikoEvm<DB, I, P>;
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// Wrapped Taiko EVM instance implementing execution behavior.
+    ///
+    /// WARNING (jit builds): revmc's `JitEvm` publicly implements `ExecuteEvm`/`InspectEvm`
+    /// backed by revm's `MainnetHandler`. Never call those entry points on this field — always
+    /// drive it with [`TaikoEvmHandler`] (see `transact_raw`), otherwise Taiko's anchor and
+    /// fee-share semantics are silently dropped.
     inner: InnerTaikoEvm<DB, I, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
@@ -281,18 +286,22 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         self.ctx_mut().set_tx(tx);
-        let extra_execution_ctx = self.base_evm().extra_execution_ctx.clone();
+        // Run [`TaikoEvmHandler`] against the (possibly JIT-dispatching) inner EVM directly:
+        // revmc's own `ExecuteEvm`/`InspectEvm` entry points would run revm's `MainnetHandler`
+        // and silently drop Taiko's anchor and fee-share semantics.
+        //
+        // Those entry points also re-validate revmc's per-instance lookup cache against the
+        // active spec (`JitEvm::invalidate_cache`, private upstream). Skipping that here is
+        // sound only because reth constructs a fresh EVM per block environment, so the spec
+        // never changes within this instance's lifetime.
+        let mut handler = TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(
+            self.base_evm().extra_execution_ctx.clone(),
+        );
         let result = if self.inspect {
-            TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(
-                extra_execution_ctx,
-            )
-            .inspect_run(&mut self.inner)?
+            handler.inspect_run(&mut self.inner)
         } else {
-            TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(
-                extra_execution_ctx,
-            )
-            .run(&mut self.inner)?
-        };
+            handler.run(&mut self.inner)
+        }?;
         let state = self.ctx_mut().journal_mut().finalize();
         Ok(ResultAndState::new(result, state))
     }

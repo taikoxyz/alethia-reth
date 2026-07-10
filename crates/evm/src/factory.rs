@@ -75,11 +75,33 @@ impl TaikoEvmFactory {
     /// Selects the backend for an uninspected execution at the given Taiko fork.
     #[cfg(feature = "jit")]
     fn backend_for_spec(&self, spec_id: TaikoSpecId) -> JitBackend {
-        if !self.jit_support || schedule_for(spec_id).is_some() {
-            self.disabled_backend.clone()
-        } else {
+        // `schedule_for` is re-checked as a belt-and-suspenders guard: a spec with a zk-gas
+        // schedule must never reach compiled code even if the allowlist says otherwise.
+        if self.jit_support && spec_supports_jit(spec_id) && schedule_for(spec_id).is_none() {
             self.backend.clone()
+        } else {
+            self.disabled_backend.clone()
         }
+    }
+}
+
+/// Returns whether execution under `spec_id` may dispatch to revmc-compiled code.
+///
+/// Compiled programs bake in upstream mainnet gas and opcode semantics, so only forks that
+/// execute with exactly those semantics are eligible. Unzen is excluded because its zk-gas
+/// metering needs per-opcode interpreter hooks.
+///
+/// This match is deliberately exhaustive: adding a fork variant fails compilation here so that
+/// every new fork is classified explicitly. Any fork that reprices gas or changes opcode
+/// behavior in any way must stay interpreter-only — compiled code would silently diverge from
+/// consensus otherwise.
+#[cfg(feature = "jit")]
+const fn spec_supports_jit(spec_id: TaikoSpecId) -> bool {
+    match spec_id {
+        TaikoSpecId::GENESIS | TaikoSpecId::ONTAKE | TaikoSpecId::PACAYA | TaikoSpecId::SHASTA => {
+            true
+        }
+        TaikoSpecId::UNZEN => false,
     }
 }
 
@@ -161,5 +183,19 @@ impl EvmFactory for TaikoEvmFactory {
         let evm = revmc::revm_evm::JitEvm::new(evm, self.disabled_backend.clone());
 
         TaikoEvmWrapper::new_with_inner(evm, true)
+    }
+}
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jit_dispatch_is_allowlisted_to_pre_unzen_specs() {
+        assert!(spec_supports_jit(TaikoSpecId::GENESIS));
+        assert!(spec_supports_jit(TaikoSpecId::ONTAKE));
+        assert!(spec_supports_jit(TaikoSpecId::PACAYA));
+        assert!(spec_supports_jit(TaikoSpecId::SHASTA));
+        assert!(!spec_supports_jit(TaikoSpecId::UNZEN));
     }
 }

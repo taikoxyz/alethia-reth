@@ -98,10 +98,14 @@ impl TaikoEvmConfig {
         chain_spec: Arc<TaikoChainSpec>,
         evm_factory: TaikoEvmFactory,
     ) -> Self {
-        // Keep direct EVM construction (notably RPC calls) interpreter-only while enabling JIT for
-        // the executor factory used by canonical execution, payload building, and block replay.
+        // Direct EVM construction (notably RPC calls) must stay interpreter-only, so JIT support
+        // is force-disabled on the stored factory regardless of how the caller configured it.
+        // Only the executor factory used by canonical execution, payload building, and block
+        // replay may dispatch to the shared backend.
         #[cfg(feature = "jit")]
         let executor_evm_factory = evm_factory.clone().with_jit_support();
+        #[cfg(feature = "jit")]
+        let evm_factory = evm_factory.with_jit_support_enabled(false);
         #[cfg(not(feature = "jit"))]
         let executor_evm_factory = evm_factory.clone();
 
@@ -499,6 +503,18 @@ mod tests {
     #[test]
     fn jit_support_is_scoped_to_block_execution() {
         let config = TaikoEvmConfig::new(TAIKO_DEVNET.clone());
+
+        assert!(!config.evm_factory.jit_support_enabled());
+        assert!(config.executor_factory.evm_factory().jit_support_enabled());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn direct_evm_factory_jit_support_is_force_disabled() {
+        let config = TaikoEvmConfig::new_with_evm_factory(
+            TAIKO_DEVNET.clone(),
+            TaikoEvmFactory::default().with_jit_support(),
+        );
 
         assert!(!config.evm_factory.jit_support_enabled());
         assert!(config.executor_factory.evm_factory().jit_support_enabled());

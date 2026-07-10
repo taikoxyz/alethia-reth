@@ -15,6 +15,13 @@ cd alethia-reth
 
 ### 2. Build
 
+The default build includes revmc JIT support and requires Rust 1.95 plus LLVM 22. On Ubuntu or
+Debian, install LLVM with the same helper used by CI and Docker:
+
+```bash
+.github/scripts/install_llvm.sh ubuntu
+```
+
 Build by `Cargo`:
 
 ```bash
@@ -83,6 +90,23 @@ Use `--chain` with one of the supported presets:
 - `--metrics <addr:port>` to expose Prometheus metrics.
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
+
+### revmc JIT
+
+Start the node with upstream-compatible JIT flags:
+
+```bash
+./target/release/alethia-reth node --jit [OPTIONS]
+```
+
+The main tuning flags are `--jit.hot-threshold`, `--jit.worker-count`,
+`--jit.code-cache-bytes`, and `--jit.idle-evict-duration`. When the `reth` RPC namespace is
+enabled, `reth_jit` accepts `enable`, `disable`, `pause`, `unpause`, or `clear` at runtime.
+
+Taiko's Unzen execution uses consensus-critical zk-gas metering that requires per-opcode
+interpreter hooks. JIT dispatch therefore falls back to the interpreter for Unzen blocks and
+ordinary RPC call/trace execution. Pre-Unzen canonical execution, payload building, and block
+replay use the shared revmc backend.
 
 ## License
 

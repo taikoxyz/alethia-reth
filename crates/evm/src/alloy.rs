@@ -6,22 +6,23 @@ use alloy_primitives::{Address, Bytes, TxKind, U256};
 // Re-export from primitives so downstream consumers can use the lighter crate.
 pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
-    Context, ExecuteEvm, InspectEvm, Inspector,
+    Context, Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
+        BlockEnv, CfgEnv, ContextSetters, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
     },
-    handler::PrecompileProvider,
-    interpreter::InterpreterResult,
+    handler::{EthFrame, Handler, PrecompileProvider},
+    inspector::InspectorHandler,
+    interpreter::{InterpreterResult, interpreter::EthInterpreter},
     state::EvmState,
 };
 use tracing::debug;
 
 use crate::{
     evm::TaikoEvm,
-    handler::get_treasury_address,
+    handler::{TaikoEvmHandler, get_treasury_address},
     spec::TaikoSpecId,
     zk_gas::{
         adapter::ZkGasInspector,
@@ -32,36 +33,84 @@ use crate::{
 /// Maximum transaction gas limit enforced once Osaka/Unzen semantics are active.
 const MAX_SYSTEM_CALL_GAS_LIMIT: u64 = 16_777_216;
 
+/// Base Taiko EVM implementation before optional JIT dispatch is applied.
+type BaseTaikoEvm<DB, I, P> = TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>;
+
+/// Taiko EVM implementation used by the Alloy adapter when JIT support is compiled in.
+#[cfg(feature = "jit")]
+type InnerTaikoEvm<DB, I, P> = revmc::revm_evm::JitEvm<BaseTaikoEvm<DB, I, P>>;
+
+/// Taiko EVM implementation used by the Alloy adapter without JIT support.
+#[cfg(not(feature = "jit"))]
+type InnerTaikoEvm<DB, I, P> = BaseTaikoEvm<DB, I, P>;
+
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// Wrapped Taiko EVM instance implementing execution behavior.
-    inner: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
+    inner: InnerTaikoEvm<DB, I, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
-    /// Creates a new [`TaikoEvmWrapper`] instance.
-    pub const fn new(
-        evm: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
-        inspect: bool,
-    ) -> Self {
+    /// Creates an interpreter-backed [`TaikoEvmWrapper`] instance.
+    #[cfg(feature = "jit")]
+    pub fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self
+    where
+        P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
+    {
+        Self { inner: revmc::revm_evm::JitEvm::disabled(evm), inspect }
+    }
+
+    /// Creates an interpreter-backed [`TaikoEvmWrapper`] instance.
+    #[cfg(not(feature = "jit"))]
+    pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
+        Self { inner: evm, inspect }
+    }
+
+    /// Creates a wrapper around an already configured optional JIT dispatcher.
+    pub(crate) fn new_with_inner(evm: InnerTaikoEvm<DB, I, P>, inspect: bool) -> Self {
         Self { inner: evm, inspect }
     }
 
     /// Consumes self and return the inner EVM instance.
-    pub fn into_inner(self) -> TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P> {
+    pub fn into_inner(self) -> BaseTaikoEvm<DB, I, P> {
+        #[cfg(feature = "jit")]
+        {
+            self.inner.into_inner()
+        }
+        #[cfg(not(feature = "jit"))]
         self.inner
     }
 
+    /// Returns the base Taiko EVM wrapped by the optional JIT dispatcher.
+    fn base_evm(&self) -> &BaseTaikoEvm<DB, I, P> {
+        #[cfg(feature = "jit")]
+        {
+            self.inner.inner()
+        }
+        #[cfg(not(feature = "jit"))]
+        &self.inner
+    }
+
+    /// Returns the mutable base Taiko EVM wrapped by the optional JIT dispatcher.
+    fn base_evm_mut(&mut self) -> &mut BaseTaikoEvm<DB, I, P> {
+        #[cfg(feature = "jit")]
+        {
+            self.inner.inner_mut()
+        }
+        #[cfg(not(feature = "jit"))]
+        &mut self.inner
+    }
+
     /// Provides a reference to the EVM context.
-    pub const fn ctx(&self) -> &TaikoEvmContext<DB> {
-        &self.inner.inner.ctx
+    pub fn ctx(&self) -> &TaikoEvmContext<DB> {
+        &self.base_evm().inner.ctx
     }
 
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TaikoEvmContext<DB> {
-        &mut self.inner.inner.ctx
+        &mut self.base_evm_mut().inner.ctx
     }
 
     /// Returns a reference to the active zk gas meter, if metering is enabled.
@@ -69,7 +118,8 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Returns `None` when the active spec/chain combination has no zk gas schedule
     /// (pre-Unzen specs).
     pub fn meter(&self) -> Option<&ZkGasMeter<'static>> {
-        self.inner.zk_gas_meter().or_else(|| self.inner.inner.inspector.meter())
+        let evm = self.base_evm();
+        evm.zk_gas_meter().or_else(|| evm.inner.inspector.meter())
     }
 
     /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
@@ -77,10 +127,10 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Returns `None` when the active spec/chain combination has no zk gas schedule
     /// (pre-Unzen specs).
     pub fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
-        if self.inner.zk_gas_meter().is_some() {
-            self.inner.zk_gas_meter_mut()
+        if self.base_evm().zk_gas_meter().is_some() {
+            self.base_evm_mut().zk_gas_meter_mut()
         } else {
-            self.inner.inner.inspector.meter_mut()
+            self.base_evm_mut().inner.inspector.meter_mut()
         }
     }
 }
@@ -207,19 +257,21 @@ where
 
     /// Provides immutable references to the database, inspector and precompiles.
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
+        let evm = self.base_evm();
         (
-            &self.inner.inner.ctx.journaled_state.database,
-            self.inner.inner.inspector.inner(),
-            &self.inner.inner.precompiles,
+            &evm.inner.ctx.journaled_state.database,
+            evm.inner.inspector.inner(),
+            &evm.inner.precompiles,
         )
     }
 
     /// Provides mutable references to the database, inspector and precompiles.
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
+        let evm = self.base_evm_mut();
         (
-            &mut self.inner.inner.ctx.journaled_state.database,
-            self.inner.inner.inspector.inner_mut(),
-            &mut self.inner.inner.precompiles,
+            &mut evm.inner.ctx.journaled_state.database,
+            evm.inner.inspector.inner_mut(),
+            &mut evm.inner.precompiles,
         )
     }
 
@@ -228,7 +280,21 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
+        self.ctx_mut().set_tx(tx);
+        let extra_execution_ctx = self.base_evm().extra_execution_ctx.clone();
+        let result = if self.inspect {
+            TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(
+                extra_execution_ctx,
+            )
+            .inspect_run(&mut self.inner)?
+        } else {
+            TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(
+                extra_execution_ctx,
+            )
+            .run(&mut self.inner)?
+        };
+        let state = self.ctx_mut().journal_mut().finalize();
+        Ok(ResultAndState::new(result, state))
     }
 
     /// Executes a system call.
@@ -256,7 +322,11 @@ where
             debug!(target: "taiko_evm", "Anchor system call detected: base_fee_share_pctg = {}, caller_nonce = {}", base_fee_share_pctg, caller_nonce);
 
             // Set the Anchor transaction information for the later EVM execution.
-            self.inner.with_extra_execution_context(base_fee_share_pctg, caller, caller_nonce);
+            self.base_evm_mut().with_extra_execution_context(
+                base_fee_share_pctg,
+                caller,
+                caller_nonce,
+            );
 
             // Load both system-call participants through the journal so witness generation can
             // include the same pre-execution dependencies that stateless validation will read
@@ -353,7 +423,8 @@ where
     where
         Self: Sized,
     {
-        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.inner.ctx;
+        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } =
+            self.into_inner().inner.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }
@@ -365,7 +436,7 @@ where
         // `create_evm` installs zk-gas on the production TaikoEvm wrapper and keeps the inner
         // inspector unmetered. Enabling the NoOp inspector would route around that production
         // meter, so only EVMs built through `create_evm_with_inspector` may switch to inspect mode.
-        if enabled && self.inner.zk_gas_meter().is_some() {
+        if enabled && self.base_evm().zk_gas_meter().is_some() {
             return;
         }
         self.inspect = enabled;
@@ -373,22 +444,22 @@ where
 
     /// Getter of precompiles.
     fn precompiles(&self) -> &Self::Precompiles {
-        &self.inner.inner.precompiles
+        &self.base_evm().inner.precompiles
     }
 
     /// Mutable getter of precompiles.
     fn precompiles_mut(&mut self) -> &mut Self::Precompiles {
-        &mut self.inner.inner.precompiles
+        &mut self.base_evm_mut().inner.precompiles
     }
 
     /// Getter of inspector.
     fn inspector(&self) -> &Self::Inspector {
-        self.inner.inner.inspector.inner()
+        self.base_evm().inner.inspector.inner()
     }
 
     /// Mutable getter of inspector.
     fn inspector_mut(&mut self) -> &mut Self::Inspector {
-        self.inner.inner.inspector.inner_mut()
+        self.base_evm_mut().inner.inspector.inner_mut()
     }
 }
 
@@ -437,7 +508,7 @@ mod tests {
 
         let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
         env.cfg_env.chain_id = chain_id;
-        let mut evm = TaikoEvmFactory.create_evm(db, env);
+        let mut evm = TaikoEvmFactory::default().create_evm(db, env);
 
         evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
             .expect("anchor system call should short-circuit successfully");

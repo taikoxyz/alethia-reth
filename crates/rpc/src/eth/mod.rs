@@ -8,6 +8,8 @@ pub mod error;
 #[allow(clippy::module_inception)]
 /// Public Taiko `eth` namespace methods.
 pub mod eth;
+/// Runtime control for the revmc JIT backend.
+pub mod jit;
 /// Proof-history backed `eth_getProof` override.
 pub mod proofs;
 

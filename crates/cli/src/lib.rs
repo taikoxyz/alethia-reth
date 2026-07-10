@@ -25,6 +25,7 @@ use alethia_reth_node::{
     TaikoNode,
     components::ProviderTaikoBlockReader,
     consensus::validation::TaikoBeaconConsensus,
+    evm::jit::JitConfig,
     proof_history::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
@@ -47,6 +48,10 @@ pub use parser::TaikoChainSpecParser;
 /// Additional Taiko CLI arguments layered on top of the base CLI.
 #[derive(Debug, clap::Args)]
 pub struct TaikoCliExtArgs {
+    /// revmc JIT configuration.
+    #[command(flatten)]
+    pub jit: TaikoJitArgs,
+
     /// Proof-history sidecar configuration.
     #[command(flatten)]
     pub proof_history: TaikoProofHistoryArgs,
@@ -60,6 +65,114 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_unzen_timestamp: u64,
+}
+
+/// CLI arguments controlling revmc JIT compilation of EVM bytecode.
+#[derive(Debug, Clone, clap::Args, PartialEq, Eq)]
+#[command(next_help_heading = "JIT")]
+pub struct TaikoJitArgs {
+    /// Enables JIT compilation of EVM bytecode.
+    #[arg(id = "jit.enabled", long = "jit", default_value_t = false, help_heading = "JIT")]
+    pub enabled: bool,
+
+    /// Number of observed misses before bytecode is promoted for compilation.
+    #[arg(
+        long = "jit.hot-threshold",
+        default_value_t = JitConfig::DEFAULT_HOT_THRESHOLD,
+        help_heading = "JIT"
+    )]
+    pub hot_threshold: usize,
+
+    /// Number of background compilation workers, or the revmc default when unset.
+    #[arg(long = "jit.worker-count", help_heading = "JIT")]
+    pub worker_count: Option<usize>,
+
+    /// Capacity of the non-blocking lookup-observation channel.
+    #[arg(
+        long = "jit.channel-capacity",
+        default_value_t = JitConfig::DEFAULT_CHANNEL_CAPACITY,
+        help_heading = "JIT"
+    )]
+    pub channel_capacity: usize,
+
+    /// Maximum number of compilation jobs that may be pending concurrently.
+    #[arg(
+        long = "jit.max-pending-jobs",
+        default_value_t = JitConfig::DEFAULT_MAX_PENDING_JOBS,
+        help_heading = "JIT"
+    )]
+    pub max_pending_jobs: usize,
+
+    /// Maximum eligible bytecode length in bytes, where zero means unlimited.
+    #[arg(
+        long = "jit.max-bytecode-len",
+        default_value_t = JitConfig::DEFAULT_MAX_BYTECODE_LEN,
+        help_heading = "JIT"
+    )]
+    pub max_bytecode_len: usize,
+
+    /// Maximum resident compiled-code size in bytes, where zero means unlimited.
+    #[arg(
+        long = "jit.code-cache-bytes",
+        default_value_t = JitConfig::DEFAULT_CODE_CACHE_BYTES,
+        help_heading = "JIT"
+    )]
+    pub code_cache_bytes: usize,
+
+    /// Idle duration after which an unused compiled program may be evicted.
+    #[arg(
+        long = "jit.idle-evict-duration",
+        default_value = "1h",
+        value_parser = humantime::parse_duration,
+        help_heading = "JIT"
+    )]
+    pub idle_evict_duration: Duration,
+
+    /// Enables compiler IR, assembly, and bytecode dumps under the node data directory.
+    #[arg(long = "jit.debug", default_value_t = false, help_heading = "JIT")]
+    pub debug: bool,
+
+    /// Compiles synchronously on the first miss for diagnostics.
+    #[doc(hidden)]
+    #[arg(long = "jit.blocking", default_value_t = false, help_heading = "JIT", hide = true)]
+    pub blocking: bool,
+}
+
+impl Default for TaikoJitArgs {
+    /// Returns the upstream-compatible JIT defaults with compilation disabled.
+    fn default() -> Self {
+        let config = JitConfig::default();
+        Self {
+            enabled: config.enabled,
+            hot_threshold: config.hot_threshold,
+            worker_count: config.worker_count,
+            channel_capacity: config.channel_capacity,
+            max_pending_jobs: config.max_pending_jobs,
+            max_bytecode_len: config.max_bytecode_len,
+            code_cache_bytes: config.code_cache_bytes,
+            idle_evict_duration: config.idle_evict_duration,
+            debug: config.debug,
+            blocking: config.blocking,
+        }
+    }
+}
+
+impl From<TaikoJitArgs> for JitConfig {
+    /// Converts parsed CLI arguments into runtime JIT settings.
+    fn from(args: TaikoJitArgs) -> Self {
+        Self {
+            enabled: args.enabled,
+            hot_threshold: args.hot_threshold,
+            worker_count: args.worker_count,
+            channel_capacity: args.channel_capacity,
+            max_pending_jobs: args.max_pending_jobs,
+            max_bytecode_len: args.max_bytecode_len,
+            code_cache_bytes: args.code_cache_bytes,
+            idle_evict_duration: args.idle_evict_duration,
+            debug: args.debug,
+            blocking: args.blocking,
+        }
+    }
 }
 
 /// CLI arguments controlling the optional proof-history sidecar.
@@ -369,6 +482,38 @@ mod tests {
         assert_eq!(config.prune_interval, Duration::from_secs(15));
         assert_eq!(config.verification_interval, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL);
         assert_eq!(config.max_startup_prune_blocks, DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS);
+    }
+
+    #[test]
+    fn test_default_jit_config_is_disabled() {
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
+        let config = cli.ext.jit_config();
+
+        assert!(!config.enabled);
+        assert_eq!(config.hot_threshold, 8);
+        assert_eq!(config.code_cache_bytes, 1024 * 1024 * 1024);
+        assert_eq!(config.idle_evict_duration, Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn test_parse_jit_flags() {
+        let cli = TestCli::try_parse_from([
+            "alethia-reth",
+            "--jit",
+            "--jit.hot-threshold",
+            "3",
+            "--jit.worker-count",
+            "2",
+            "--jit.idle-evict-duration",
+            "30m",
+        ])
+        .expect("JIT args should parse");
+        let config = cli.ext.jit_config();
+
+        assert!(config.enabled);
+        assert_eq!(config.hot_threshold, 3);
+        assert_eq!(config.worker_count, Some(2));
+        assert_eq!(config.idle_evict_duration, Duration::from_secs(30 * 60));
     }
 
     #[test]

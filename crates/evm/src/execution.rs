@@ -8,13 +8,49 @@ use reth_revm::{
         },
     },
     handler::{EthFrame, Handler, PrecompileProvider},
-    inspector::{InspectorHandler, JournalExt},
+    inspector::{InspectorEvmTr, InspectorHandler, JournalExt},
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
     state::EvmState,
 };
 use revm_database_interface::Database;
 
 use crate::{evm::TaikoEvm, handler::TaikoEvmHandler};
+
+impl<CTX, INSP, P> InspectorEvmTr for TaikoEvm<CTX, INSP, P>
+where
+    CTX: ContextSetters<Journal: JournalTr<State = EvmState> + JournalExt>,
+    INSP: Inspector<CTX, EthInterpreter>,
+    P: PrecompileProvider<CTX, Output = InterpreterResult>,
+{
+    /// Inspector installed on the wrapped revm engine.
+    type Inspector = INSP;
+
+    /// Returns shared references to every component required by inspected execution.
+    fn all_inspector(
+        &self,
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &reth_revm::context::FrameStack<Self::Frame>,
+        &Self::Inspector,
+    ) {
+        self.inner.all_inspector()
+    }
+
+    /// Returns mutable references to every component required by inspected execution.
+    fn all_mut_inspector(
+        &mut self,
+    ) -> (
+        &mut Self::Context,
+        &mut Self::Instructions,
+        &mut Self::Precompiles,
+        &mut reth_revm::context::FrameStack<Self::Frame>,
+        &mut Self::Inspector,
+    ) {
+        self.inner.all_mut_inspector()
+    }
+}
 
 // Trait that allows to replay and transact the transaction, we
 // use [`TaikoEvmHandler`] to handle the transactions execution, besides

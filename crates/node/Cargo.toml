@@ -12,6 +12,7 @@ path = "src/lib.rs"
 default = ["serde"]
 arbitrary = []
 client = []
+jit = ["alethia-reth-block/jit", "alethia-reth-evm/jit"]
 prover = []
 serde = ["dep:serde", "alethia-reth-chainspec/serde", "alethia-reth-primitives/serde"]
 

@@ -10,6 +10,7 @@ use alethia_reth_node::{
     rpc::eth::{
         auth::{TaikoAuthExt, TaikoAuthExtApiServer},
         eth::{TaikoExt, TaikoExtApiServer},
+        jit::install_reth_jit_rpc,
     },
 };
 use reth::api::FullNodeComponents;
@@ -21,6 +22,18 @@ use tracing::info;
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
+    #[cfg(feature = "jit")]
+    {
+        match alethia_reth_node::maybe_run_jit_helper() {
+            Ok(std::ops::ControlFlow::Break(())) => return,
+            Ok(std::ops::ControlFlow::Continue(())) => {}
+            Err(err) => {
+                eprintln!("Error: {err:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
@@ -29,12 +42,15 @@ fn main() {
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
         async move |builder, ext_args| {
             info!(target: "reth::taiko::cli", "Launching Taiko node");
-            let node_builder = builder.node(TaikoNode);
+            let node_builder = builder.node(TaikoNode::new(ext_args.jit_config()));
             let (node_builder, proof_history_handles) =
                 install_proof_history(node_builder, ext_args.proof_history_config())?;
             let handle = node_builder
                 .extend_rpc_modules(move |mut ctx| {
                     let provider = ctx.node().provider().clone();
+                    let evm_config = ctx.node().evm_config().clone();
+
+                    install_reth_jit_rpc(ctx.modules, evm_config)?;
 
                     // Extend the RPC modules with `taiko_` namespace RPCs extensions.
                     let taiko_rpc_ext = TaikoExt::new(provider.clone());

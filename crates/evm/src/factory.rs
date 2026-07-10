@@ -14,13 +14,86 @@ use reth_revm::{
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
+    jit::JitBackendControl,
     spec::TaikoSpecId,
     zk_gas::{adapter::ZkGasInspector, schedule::schedule_for},
 };
 
+#[cfg(feature = "jit")]
+use crate::jit::JitBackend;
+
 /// A factory type for creating instances of the Taiko EVM given a certain input.
-#[derive(Default, Debug, Clone, Copy)]
-pub struct TaikoEvmFactory;
+#[derive(Debug, Clone)]
+pub struct TaikoEvmFactory {
+    /// Shared runtime backend used for pre-Unzen execution.
+    #[cfg(feature = "jit")]
+    backend: JitBackend,
+    /// Disabled backend used for Unzen, direct RPC, and inspected execution.
+    #[cfg(feature = "jit")]
+    disabled_backend: JitBackend,
+    /// Whether locally created EVMs may dispatch to the shared JIT backend.
+    #[cfg(feature = "jit")]
+    jit_support: bool,
+}
+
+impl TaikoEvmFactory {
+    /// Creates a factory backed by the supplied revmc runtime.
+    #[cfg(feature = "jit")]
+    pub fn new(backend: JitBackend) -> Self {
+        Self { backend, disabled_backend: JitBackend::disabled(), jit_support: false }
+    }
+
+    /// Enables or disables JIT dispatch for EVMs subsequently created by this factory.
+    #[cfg(feature = "jit")]
+    pub const fn with_jit_support_enabled(mut self, enabled: bool) -> Self {
+        self.jit_support = enabled;
+        self
+    }
+
+    /// Enables JIT dispatch for EVMs subsequently created by this factory.
+    #[cfg(feature = "jit")]
+    pub const fn with_jit_support(self) -> Self {
+        self.with_jit_support_enabled(true)
+    }
+
+    /// Returns whether this factory selects the shared backend for eligible execution.
+    #[cfg(feature = "jit")]
+    pub const fn jit_support_enabled(&self) -> bool {
+        self.jit_support
+    }
+
+    /// Returns the runtime controls when JIT support was compiled in.
+    pub fn jit_backend(&self) -> Option<&dyn JitBackendControl> {
+        #[cfg(feature = "jit")]
+        {
+            Some(&self.backend)
+        }
+        #[cfg(not(feature = "jit"))]
+        None
+    }
+
+    /// Selects the backend for an uninspected execution at the given Taiko fork.
+    #[cfg(feature = "jit")]
+    fn backend_for_spec(&self, spec_id: TaikoSpecId) -> JitBackend {
+        if !self.jit_support || schedule_for(spec_id).is_some() {
+            self.disabled_backend.clone()
+        } else {
+            self.backend.clone()
+        }
+    }
+}
+
+impl Default for TaikoEvmFactory {
+    /// Creates an interpreter-only factory.
+    fn default() -> Self {
+        #[cfg(feature = "jit")]
+        {
+            Self::new(JitBackend::disabled())
+        }
+        #[cfg(not(feature = "jit"))]
+        Self {}
+    }
+}
 
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.
@@ -58,7 +131,11 @@ impl EvmFactory for TaikoEvmFactory {
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false)
+        let evm = TaikoEvm::new(evm).with_zk_gas_schedule(schedule);
+        #[cfg(feature = "jit")]
+        let evm = revmc::revm_evm::JitEvm::new(evm, self.backend_for_spec(spec_id));
+
+        TaikoEvmWrapper::new_with_inner(evm, false)
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -79,6 +156,10 @@ impl EvmFactory for TaikoEvmFactory {
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
+        let evm = TaikoEvm::new(evm);
+        #[cfg(feature = "jit")]
+        let evm = revmc::revm_evm::JitEvm::new(evm, self.disabled_backend.clone());
+
+        TaikoEvmWrapper::new_with_inner(evm, true)
     }
 }

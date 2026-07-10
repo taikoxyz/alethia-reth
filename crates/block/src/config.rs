@@ -90,7 +90,7 @@ pub struct TaikoEvmConfig {
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::default())
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
@@ -98,15 +98,27 @@ impl TaikoEvmConfig {
         chain_spec: Arc<TaikoChainSpec>,
         evm_factory: TaikoEvmFactory,
     ) -> Self {
+        // Keep direct EVM construction (notably RPC calls) interpreter-only while enabling JIT for
+        // the executor factory used by canonical execution, payload building, and block replay.
+        #[cfg(feature = "jit")]
+        let executor_evm_factory = evm_factory.clone().with_jit_support();
+        #[cfg(not(feature = "jit"))]
+        let executor_evm_factory = evm_factory.clone();
+
         Self {
             block_assembler: TaikoBlockAssembler,
             executor_factory: TaikoBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,
-                evm_factory,
+                executor_evm_factory,
             ),
             evm_factory,
         }
+    }
+
+    /// Returns runtime controls for the configured JIT backend, when available.
+    pub fn jit_backend(&self) -> Option<&dyn alethia_reth_evm::jit::JitBackendControl> {
+        self.evm_factory.jit_backend()
     }
 
     /// Returns the chain spec associated with this configuration.
@@ -481,6 +493,15 @@ mod tests {
 
         assert_eq!(blob_env.excess_blob_gas, 0);
         assert_eq!(blob_env.blob_gasprice, 1);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_support_is_scoped_to_block_execution() {
+        let config = TaikoEvmConfig::new(TAIKO_DEVNET.clone());
+
+        assert!(!config.evm_factory.jit_support_enabled());
+        assert!(config.executor_factory.evm_factory().jit_support_enabled());
     }
 
     #[test]

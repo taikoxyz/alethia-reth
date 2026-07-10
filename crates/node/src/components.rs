@@ -4,6 +4,7 @@ use std::{fmt::Debug, future, sync::Arc};
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{TaikoBeaconConsensus, TaikoBlockReader};
+use alethia_reth_evm::jit::JitConfig;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 use alloy_primitives::B256;
 use reth::{
@@ -19,10 +20,22 @@ use reth_node_builder::{
 use reth_primitives_traits::{AlloyBlockHeader, Block};
 use reth_provider::BlockReader;
 use tracing::info;
+#[cfg(feature = "jit")]
+use tracing::warn;
 
 /// A builder for the Taiko block executor.
 #[derive(Debug, Clone, Default)]
-pub struct TaikoExecutorBuilder;
+pub struct TaikoExecutorBuilder {
+    /// Runtime configuration used to create the shared revmc backend.
+    jit: JitConfig,
+}
+
+impl TaikoExecutorBuilder {
+    /// Creates an executor builder with the supplied JIT runtime settings.
+    pub const fn new(jit: JitConfig) -> Self {
+        Self { jit }
+    }
+}
 
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
 where
@@ -41,7 +54,35 @@ where
         self,
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
-        future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
+        #[cfg(feature = "jit")]
+        let result = (|| {
+            let dump_dir = self.jit.debug.then(|| ctx.config().datadir().data_dir().join("jit"));
+            let backend = self.jit.build_backend(dump_dir)?;
+
+            if self.jit.enabled {
+                warn!(
+                    target: "reth::taiko::cli",
+                    hot_threshold = self.jit.hot_threshold,
+                    workers = ?self.jit.worker_count,
+                    blocking = self.jit.blocking,
+                    "Started experimental revmc JIT backend; this may cause instability"
+                );
+            }
+
+            let factory = alethia_reth_evm::factory::TaikoEvmFactory::new(backend);
+            Ok(TaikoEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory))
+        })();
+
+        #[cfg(not(feature = "jit"))]
+        let result = if self.jit.enabled {
+            Err(eyre::eyre!(
+                "JIT compilation was requested with --jit, but this binary was built without the `jit` feature"
+            ))
+        } else {
+            Ok(TaikoEvmConfig::new(ctx.chain_spec()))
+        };
+
+        future::ready(result)
     }
 }
 
@@ -121,8 +162,8 @@ mod tests {
     use reth_storage_api::noop::NoopProvider;
 
     #[test]
-    fn taiko_executor_builder_is_zero_sized() {
-        assert_eq!(std::mem::size_of::<TaikoExecutorBuilder>(), 0);
+    fn taiko_executor_builder_disables_jit_by_default() {
+        assert!(!TaikoExecutorBuilder::default().jit.enabled);
     }
 
     #[test]

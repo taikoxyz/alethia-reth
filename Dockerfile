@@ -1,15 +1,18 @@
-FROM rust:1.94.0-bookworm AS build
+FROM rust:1.95.0-bookworm AS build
 
 WORKDIR /app
 
-RUN apt-get update && \
+COPY .github/scripts/install_llvm_ubuntu.sh /tmp/install_llvm.sh
+
+RUN /tmp/install_llvm.sh && rm /tmp/install_llvm.sh && \
+  apt-get update && \
   apt-get -y upgrade && \
   apt-get install -y git libclang-dev pkg-config curl build-essential && \
   rm -rf /var/lib/apt/lists/*
 
 COPY ./ .
 
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 

@@ -230,7 +230,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 #[test]
 fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
-    let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         StepGasProbeInspector::default(),
@@ -268,13 +268,13 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
-    let mut production_evm = TaikoEvmFactory
+    let mut production_evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -288,13 +288,13 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
-    let mut production_evm = TaikoEvmFactory
+    let mut production_evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
         db_with_contract(simple_arithmetic_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -308,7 +308,7 @@ fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
 
 #[test]
 fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
-    let mut evm = TaikoEvmFactory.create_evm(
+    let mut evm = TaikoEvmFactory::default().create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -325,7 +325,7 @@ fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
 
 #[test]
 fn unzen_default_create_evm_path_is_metered() {
-    let mut evm = TaikoEvmFactory.create_evm(
+    let mut evm = TaikoEvmFactory::default().create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -336,7 +336,7 @@ fn unzen_default_create_evm_path_is_metered() {
 
 #[test]
 fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
-    let mut evm = TaikoEvmFactory.create_evm(
+    let mut evm = TaikoEvmFactory::default().create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -354,7 +354,8 @@ fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
 #[test]
 fn factory_installs_unzen_schedule() {
     let env = evm_env(TaikoSpecId::UNZEN);
-    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
+    let evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
     let meter = evm.meter().expect("Unzen schedule should install a meter");
 
     assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));
@@ -365,7 +366,7 @@ fn factory_installs_unzen_schedule() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let mut evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
@@ -377,7 +378,7 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let mut evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
@@ -386,11 +387,52 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
 
 #[test]
 fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
-    let mut evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_requires_local_support_and_falls_back_for_unzen() {
+    use revmc::runtime::{JitBackend, JitMode, RuntimeConfig};
+
+    let backend = JitBackend::new(RuntimeConfig {
+        enabled: true,
+        blocking: true,
+        jit_mode: JitMode::InProcess,
+        ..RuntimeConfig::default()
+    })
+    .expect("blocking JIT backend should start");
+    let factory = TaikoEvmFactory::new(backend.clone());
+
+    let mut unsupported_evm = factory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    unsupported_evm
+        .transact(tx_env(100_000))
+        .expect("locally disabled JIT execution should use the interpreter");
+    assert_eq!(backend.stats().compilations_succeeded, 0);
+
+    let factory = factory.with_jit_support();
+
+    let mut pre_unzen_evm = factory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    pre_unzen_evm.transact(tx_env(100_000)).expect("pre-Unzen JIT execution should succeed");
+
+    let compiled = backend.stats();
+    assert_eq!(compiled.compilations_succeeded, 1);
+    assert_eq!(compiled.lookup_hits, 1);
+
+    let mut unzen_evm = factory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    unzen_evm.transact(tx_env(100_000)).expect("Unzen interpreter execution should succeed");
+
+    let after_unzen = backend.stats();
+    assert_eq!(after_unzen.compilations_succeeded, compiled.compilations_succeeded);
+    assert_eq!(after_unzen.lookup_hits, compiled.lookup_hits);
+    assert!(unzen_evm.meter().is_some());
 }
 
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {

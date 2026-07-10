@@ -9,12 +9,17 @@ use reth_cli_commands::{NodeCommand, launcher::Launcher, node::NoArgs};
 use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 
-use alethia_reth_node::{chainspec::spec::TaikoDevnetConfigExt, proof_history::ProofHistoryConfig};
+use alethia_reth_node::{
+    chainspec::spec::TaikoDevnetConfigExt, evm::jit::JitConfig, proof_history::ProofHistoryConfig,
+};
 
 use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
 /// Trait implemented by CLI extensions that can tweak Taiko-specific runtime options.
 pub trait TaikoNodeExtArgs {
+    /// Returns the revmc JIT runtime configuration.
+    fn jit_config(&self) -> JitConfig;
+
     /// Returns the configured devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64;
 
@@ -23,6 +28,11 @@ pub trait TaikoNodeExtArgs {
 }
 
 impl TaikoNodeExtArgs for NoArgs {
+    /// Returns a disabled JIT configuration for commands without Taiko options.
+    fn jit_config(&self) -> JitConfig {
+        JitConfig::default()
+    }
+
     /// Returns the default devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64 {
         0
@@ -35,6 +45,11 @@ impl TaikoNodeExtArgs for NoArgs {
 }
 
 impl TaikoNodeExtArgs for TaikoCliExtArgs {
+    /// Returns JIT runtime settings derived from parsed Taiko CLI flags.
+    fn jit_config(&self) -> JitConfig {
+        self.jit.clone().into()
+    }
+
     /// Returns the configured devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64 {
         self.devnet_unzen_timestamp

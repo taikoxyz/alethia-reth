@@ -312,7 +312,7 @@ mod tests {
             ]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),

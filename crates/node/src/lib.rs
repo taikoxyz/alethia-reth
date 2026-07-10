@@ -12,6 +12,8 @@ pub use alethia_reth_evm as evm;
 pub use alethia_reth_payload as payload;
 pub use alethia_reth_primitives as primitives;
 pub use alethia_reth_rpc as rpc;
+#[cfg(feature = "jit")]
+pub use evm::jit::maybe_run_jit_helper;
 
 use chainspec::spec::TaikoChainSpec;
 use components::{TaikoConsensusBuilder, TaikoExecutorBuilder, TaikoNetworkBuilder};
@@ -38,7 +40,17 @@ use std::sync::Arc;
 
 /// The main node type for a Taiko network node, implementing the `NodeTypes` trait.
 #[derive(Debug, Clone, Default)]
-pub struct TaikoNode;
+pub struct TaikoNode {
+    /// Runtime settings used by the node's shared revmc backend.
+    jit: evm::jit::JitConfig,
+}
+
+impl TaikoNode {
+    /// Creates a Taiko node with the supplied revmc JIT runtime settings.
+    pub const fn new(jit: evm::jit::JitConfig) -> Self {
+        Self { jit }
+    }
+}
 
 impl NodeTypes for TaikoNode {
     /// The node's primitive types, defining basic operations and structures.
@@ -82,7 +94,7 @@ where
         ComponentsBuilder::default()
             .node_types()
             .pool(EthereumPoolBuilder::default())
-            .executor(TaikoExecutorBuilder)
+            .executor(TaikoExecutorBuilder::new(self.jit.clone()))
             .payload(BasicPayloadServiceBuilder::new(TaikoPayloadBuilderBuilder))
             .network(TaikoNetworkBuilder)
             .consensus(TaikoConsensusBuilder)

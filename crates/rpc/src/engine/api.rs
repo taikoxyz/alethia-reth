@@ -1,12 +1,16 @@
 //! Taiko engine API RPC methods and persistence hooks.
-use std::{io, sync::Arc};
+use std::{
+    collections::VecDeque,
+    io,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use alethia_reth_primitives::{
     decode_shasta_proposal_id, engine::types::TaikoExecutionData,
     payload::attributes::TaikoPayloadAttributes,
 };
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::BlockNumber;
+use alloy_primitives::{B256, BlockNumber};
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV2, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
 };
@@ -76,6 +80,8 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     chain_spec: Arc<TaikoChainSpec>,
     /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
+    /// L1 origins of locally built payloads, buffered until their block is canonically promoted.
+    pending_l1_origins: Mutex<PendingL1Origins>,
 }
 
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
@@ -97,7 +103,13 @@ where
     where
         Provider: Clone,
     {
-        Self { inner: engine_api, provider, chain_spec, payload_store }
+        Self {
+            inner: engine_api,
+            provider,
+            chain_spec,
+            payload_store,
+            pending_l1_origins: Mutex::new(PendingL1Origins::default()),
+        }
     }
 }
 
@@ -147,6 +159,14 @@ where
             Some(Ok(payload)) => Ok(payload),
             _ => Err(EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload)),
         }
+    }
+
+    /// Lock the pending-origin buffer, recovering the data from a poisoned lock.
+    ///
+    /// The buffer holds no invariants that a panicking thread could break mid-update badly
+    /// enough to justify failing every subsequent engine call, so poison is recovered.
+    fn lock_pending_l1_origins(&self) -> MutexGuard<'_, PendingL1Origins> {
+        self.pending_l1_origins.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Persists the L1 origin for the given built payload in a single transaction, updating the
@@ -226,6 +246,10 @@ where
         let status =
             self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?;
 
+        // Buffer the freshly built payload's L1 origin instead of persisting it here: at this
+        // point the block has only been built, not imported or canonicalized, so persisting
+        // would record custom-table rows for blocks that may never exist on the canonical
+        // chain (e.g. build-only previews that are never submitted via `newPayload`).
         if let Some(mut stored_l1_origin) = stored_l1_origin {
             let payload_id = status
                 .payload_id
@@ -236,10 +260,31 @@ where
                 .await
                 .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
 
-            stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
+            let block_hash = built_payload.block().hash_slow();
+            stored_l1_origin.l2_block_hash = block_hash;
 
-            self.persist_l1_origin(stored_l1_origin, is_preconf_block, batch_id)
-                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+            self.lock_pending_l1_origins().stash(
+                block_hash,
+                PendingL1Origin { stored_l1_origin, is_preconf_block, batch_id },
+            );
+        }
+
+        // Persist the buffered origin for the block this update just promoted to canonical
+        // head, if that block was built locally.
+        if status.payload_status.is_valid() {
+            let pending = self.lock_pending_l1_origins().take(fork_choice_state.head_block_hash);
+            if let Some(pending) = pending {
+                if let Err(err) = self.persist_l1_origin(
+                    pending.stored_l1_origin.clone(),
+                    pending.is_preconf_block,
+                    pending.batch_id,
+                ) {
+                    // Re-buffer the row so an idempotent forkchoice retry can persist it.
+                    self.lock_pending_l1_origins()
+                        .stash(fork_choice_state.head_block_hash, pending);
+                    return Err(ErrorObjectOwned::from(err).into());
+                }
+            }
         }
 
         Ok(status)
@@ -291,6 +336,54 @@ fn convert_built_payload_to_execution_payload_envelope_v2(
     envelope
 }
 
+/// A single locally built payload's L1 origin awaiting canonical promotion of its block.
+#[derive(Debug, Clone)]
+struct PendingL1Origin {
+    /// The stored L1 origin row, with `l2_block_hash` set to the built block hash.
+    stored_l1_origin: StoredL1Origin,
+    /// Whether the built block is a preconfirmation block (skips head/batch pointer updates).
+    is_preconf_block: bool,
+    /// The Shasta proposal id decoded from the payload extra data, when Shasta is active.
+    batch_id: Option<u64>,
+}
+
+/// L1-origin rows for locally built payloads, buffered until their block becomes canonical.
+///
+/// Rows are persisted to the custom tables only once a forkchoice update promotes the built
+/// block to canonical head with a VALID status. Entries whose block is never promoted (e.g.
+/// build-only previews) are evicted once the buffer exceeds capacity and never reach the
+/// database.
+#[derive(Debug, Default)]
+struct PendingL1Origins {
+    /// Pending entries in insertion order, keyed by built block hash.
+    entries: VecDeque<(B256, PendingL1Origin)>,
+}
+
+impl PendingL1Origins {
+    /// Maximum number of buffered entries retained while awaiting promotion.
+    ///
+    /// Locally built blocks are normally promoted within the same insert sequence, so the
+    /// buffer only accumulates when payloads are built without being imported; the cap bounds
+    /// that growth while retaining plenty of slack for in-flight blocks.
+    const CAPACITY: usize = 64;
+
+    /// Buffer a built payload's origin, replacing any entry for the same block hash and
+    /// evicting the oldest entry beyond capacity.
+    fn stash(&mut self, block_hash: B256, pending: PendingL1Origin) {
+        self.entries.retain(|(hash, _)| *hash != block_hash);
+        self.entries.push_back((block_hash, pending));
+        while self.entries.len() > Self::CAPACITY {
+            self.entries.pop_front();
+        }
+    }
+
+    /// Remove and return the buffered entry for the given block hash, if any.
+    fn take(&mut self, block_hash: B256) -> Option<PendingL1Origin> {
+        let index = self.entries.iter().position(|(hash, _)| *hash == block_hash)?;
+        self.entries.remove(index).map(|(_, pending)| pending)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +420,70 @@ mod tests {
         );
 
         assert_eq!(envelope.block_value, U256::from(1_u64));
+    }
+
+    #[test]
+    fn pending_take_returns_stashed_entry_once() {
+        let mut pending = PendingL1Origins::default();
+        let hash = B256::with_last_byte(0x01);
+        pending.stash(hash, sample_pending(7, Some(3)));
+
+        let taken = pending.take(hash).expect("entry must be present");
+        assert_eq!(taken.stored_l1_origin, sample_stored_l1_origin(7));
+        assert_eq!(taken.batch_id, Some(3));
+        assert!(pending.take(hash).is_none(), "entry must be removed after take");
+    }
+
+    #[test]
+    fn pending_take_of_unknown_hash_is_none() {
+        let mut pending = PendingL1Origins::default();
+        assert!(pending.take(B256::with_last_byte(0x01)).is_none());
+    }
+
+    #[test]
+    fn pending_stash_replaces_entry_for_same_hash() {
+        let mut pending = PendingL1Origins::default();
+        let hash = B256::with_last_byte(0x01);
+        pending.stash(hash, sample_pending(7, Some(1)));
+        pending.stash(hash, sample_pending(7, Some(2)));
+
+        let taken = pending.take(hash).expect("entry must be present");
+        assert_eq!(taken.batch_id, Some(2));
+        assert!(pending.take(hash).is_none(), "replacement must not leave a duplicate");
+    }
+
+    #[test]
+    fn pending_stash_evicts_oldest_beyond_capacity() {
+        let mut pending = PendingL1Origins::default();
+        for i in 0..=PendingL1Origins::CAPACITY {
+            let hash = B256::from(U256::from(i as u64 + 1));
+            pending.stash(hash, sample_pending(i as u64, None));
+        }
+
+        assert!(pending.take(B256::from(U256::from(1_u64))).is_none(), "oldest entry is evicted");
+        assert!(pending.take(B256::from(U256::from(2_u64))).is_some(), "newer entries survive");
+    }
+
+    /// Build a deterministic stored L1 origin for pending-buffer tests.
+    fn sample_stored_l1_origin(block_id: u64) -> StoredL1Origin {
+        StoredL1Origin {
+            block_id: U256::from(block_id),
+            l2_block_hash: B256::with_last_byte(0xaa),
+            l1_block_height: U256::from(100_u64),
+            l1_block_hash: B256::with_last_byte(0xbb),
+            build_payload_args_id: [0; 8],
+            is_forced_inclusion: false,
+            signature: [0; 65],
+        }
+    }
+
+    /// Build a pending entry wrapping [`sample_stored_l1_origin`].
+    fn sample_pending(block_id: u64, batch_id: Option<u64>) -> PendingL1Origin {
+        PendingL1Origin {
+            stored_l1_origin: sample_stored_l1_origin(block_id),
+            is_preconf_block: false,
+            batch_id,
+        }
     }
 
     fn unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {

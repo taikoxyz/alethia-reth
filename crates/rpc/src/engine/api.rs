@@ -22,7 +22,7 @@ use reth::{
     payload::PayloadStore, rpc::api::IntoEngineApiRpcModule, transaction_pool::TransactionPool,
 };
 use reth_db::transaction::DbTx;
-use reth_db_api::transaction::DbTxMut;
+use reth_db_api::{cursor::DbCursorRO, transaction::DbTxMut};
 use reth_engine_primitives::EngineApiValidator;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
@@ -109,9 +109,9 @@ where
         Provider: Clone,
     {
         // The custom tables commit durably at promotion time while reth may still hold the
-        // promoted block only in memory, so a hard crash can leave the head pointer beyond the
-        // head that survives the restart; reconcile before serving any engine call.
-        reconcile_head_l1_origin(&provider);
+        // promoted block only in memory, so a hard crash can leave rows describing blocks that
+        // do not survive the restart; reconcile all three tables before serving engine calls.
+        reconcile_l1_origin_tables(&provider);
 
         Self {
             inner: engine_api,
@@ -378,10 +378,12 @@ struct PendingL1Origins {
 impl PendingL1Origins {
     /// Maximum number of buffered entries retained while awaiting promotion.
     ///
-    /// Locally built blocks are normally promoted within the same insert sequence, so the
-    /// buffer only accumulates when payloads are built without being imported; the cap bounds
-    /// that growth while retaining plenty of slack for in-flight blocks.
-    const CAPACITY: usize = 64;
+    /// Locally built blocks are promoted within the same insert sequence, so a promotable
+    /// entry is pending for milliseconds; entries that linger belong to builds that were never
+    /// imported (previews), whose rows must not be persisted anyway. Eviction is oldest-first,
+    /// so losing a promotable entry requires this many newer unimported builds to arrive
+    /// inside one build-to-promote window on the JWT-authenticated engine endpoint.
+    const CAPACITY: usize = 1024;
 
     /// Buffer a built payload's origin, replacing any entry for the same block hash and
     /// evicting the oldest entry beyond capacity.
@@ -407,44 +409,87 @@ impl PendingL1Origins {
     }
 }
 
-/// Number of blocks below the persisted chain head scanned for a promotable origin row when
-/// reconciling a stale `head_l1_origin` pointer at startup.
+/// Number of blocks below the persisted chain head swept for stale origin rows (and scanned for
+/// a promotable row when repairing the head pointer) during startup reconciliation.
 const HEAD_L1_ORIGIN_RECONCILE_LOOKBACK: u64 = 1024;
 
-/// Reconcile the durable `head_l1_origin` pointer with the persisted canonical chain.
+/// Reconcile the custom L1-origin tables with the persisted canonical chain at startup.
 ///
 /// Custom-table rows commit durably at promotion time, while reth keeps the newest canonical
 /// blocks in memory until its persistence threshold is reached. A hard crash inside that window
-/// leaves `head_l1_origin` pointing past the head that survives the restart, so driver resume
-/// paths would anchor on a block that no longer exists. Failures are logged rather than
-/// propagated: a reconciliation problem must not prevent the node from starting.
-fn reconcile_head_l1_origin<Provider>(provider: &Provider)
+/// leaves durable rows describing blocks that do not survive the restart: origin rows above the
+/// persisted head, same-height rows preserved from reorged-out blocks, batch mappings pointing
+/// at nonexistent blocks, and a head pointer past the real head. Failures are logged rather
+/// than propagated: a reconciliation problem must not prevent the node from starting.
+fn reconcile_l1_origin_tables<Provider>(provider: &Provider)
 where
     Provider: BlockReader + DatabaseProviderFactory,
 {
-    if let Err(err) = try_reconcile_head_l1_origin(provider) {
-        warn!(err, "failed to reconcile head L1 origin with the persisted canonical chain");
+    if let Err(err) = try_reconcile_l1_origin_tables(provider) {
+        warn!(err, "failed to reconcile L1 origin tables with the persisted canonical chain");
     }
 }
 
-/// Fallible body of [`reconcile_head_l1_origin`], returning a printable error.
-fn try_reconcile_head_l1_origin<Provider>(provider: &Provider) -> Result<(), String>
+/// Fallible body of [`reconcile_l1_origin_tables`], returning a printable error.
+fn try_reconcile_l1_origin_tables<Provider>(provider: &Provider) -> Result<(), String>
 where
     Provider: BlockReader + DatabaseProviderFactory,
 {
     let tx = provider.database_provider_rw().map_err(|err| err.to_string())?.into_tx();
-
-    let Some(stored_head) = tx
-        .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-        .map_err(|err| err.to_string())?
-    else {
-        return Ok(());
-    };
-
     let chain_head = provider.last_block_number().map_err(|err| err.to_string())?;
 
-    // A row can carry the head pointer only when it exists, is not a preconfirmation row, and
-    // still matches the canonical block hash at its height.
+    // Drop origin rows above the persisted head: their blocks do not exist after the restart,
+    // and the driver rewrites them if it re-derives those heights.
+    let mut ghost_rows: u64 = 0;
+    {
+        let mut cursor = tx.cursor_write::<StoredL1OriginTable>().map_err(|err| err.to_string())?;
+        let mut walker =
+            cursor.walk_range(chain_head.saturating_add(1)..).map_err(|err| err.to_string())?;
+        while let Some(entry) = walker.next() {
+            entry.map_err(|err| err.to_string())?;
+            walker.delete_current().map_err(|err| err.to_string())?;
+            ghost_rows += 1;
+        }
+    }
+
+    // Drop recent rows whose hash no longer matches the canonical block at their height: a
+    // crash can preserve the row of a same-height block that was reorged out before the
+    // replacement's promotion-time write reached the database.
+    let mut mismatched_rows: u64 = 0;
+    let sweep_floor = chain_head.saturating_sub(HEAD_L1_ORIGIN_RECONCILE_LOOKBACK);
+    for number in sweep_floor..=chain_head {
+        let Some(row) = tx.get::<StoredL1OriginTable>(number).map_err(|err| err.to_string())?
+        else {
+            continue;
+        };
+        let canonical = provider.block_hash(number).map_err(|err| err.to_string())?;
+        if canonical != Some(row.l2_block_hash) {
+            tx.delete::<StoredL1OriginTable>(number, None).map_err(|err| err.to_string())?;
+            mismatched_rows += 1;
+        }
+    }
+
+    // Drop batch mappings that point above the persisted head: the real last block of those
+    // batches is unknown until the driver re-derives them, and a stale mapping would resolve a
+    // proposal to a nonexistent block during checkpoint resume.
+    let mut ghost_batches: u64 = 0;
+    {
+        let mut cursor = tx.cursor_write::<BatchToLastBlock>().map_err(|err| err.to_string())?;
+        let mut walker = cursor.walk_range(..).map_err(|err| err.to_string())?;
+        while let Some(entry) = walker.next() {
+            let (_, last_block) = entry.map_err(|err| err.to_string())?;
+            if last_block > chain_head {
+                walker.delete_current().map_err(|err| err.to_string())?;
+                ghost_batches += 1;
+            }
+        }
+    }
+
+    // Repair the head pointer against the swept table. A row can carry the head pointer only
+    // when it exists, is not a preconfirmation row, and matches the canonical block hash.
+    let stored_head = tx
+        .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
+        .map_err(|err| err.to_string())?;
     let is_promotable_row = |number: u64| -> bool {
         let row = match tx.get::<StoredL1OriginTable>(number) {
             Ok(Some(row)) => row,
@@ -456,51 +501,85 @@ where
         matches!(provider.block_hash(number), Ok(Some(hash)) if hash == row.l2_block_hash)
     };
 
-    let Some(reconciled) = resolve_reconciled_head_l1_origin(
-        Some(stored_head),
+    let resolution = resolve_reconciled_head_l1_origin(
+        stored_head,
         chain_head,
         HEAD_L1_ORIGIN_RECONCILE_LOOKBACK,
         is_promotable_row,
-    ) else {
-        return Ok(());
-    };
-
-    warn!(
-        stored_head,
-        chain_head,
-        reconciled,
-        "head L1 origin pointed past the persisted canonical head after restart; clamping"
     );
+    match resolution {
+        HeadL1OriginReconciliation::Keep => {}
+        HeadL1OriginReconciliation::ClampTo(reconciled) => {
+            tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, reconciled)
+                .map_err(|err| err.to_string())?;
+        }
+        HeadL1OriginReconciliation::Clear => {
+            // Removing the pointer makes consumers see "unknown" (and fall back to checkpoint
+            // resume) instead of a fabricated confirmed height with no origin row behind it.
+            tx.delete::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, None)
+                .map_err(|err| err.to_string())?;
+        }
+    }
 
-    tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, reconciled)
-        .map_err(|err| err.to_string())?;
+    let repaired_head = resolution != HeadL1OriginReconciliation::Keep;
+    if ghost_rows > 0 || mismatched_rows > 0 || ghost_batches > 0 || repaired_head {
+        warn!(
+            chain_head,
+            ghost_rows,
+            mismatched_rows,
+            ghost_batches,
+            ?stored_head,
+            ?resolution,
+            "reconciled L1 origin tables with the persisted canonical chain after restart"
+        );
+    }
+
     tx.commit().map_err(|err| err.to_string())?;
 
     Ok(())
 }
 
+/// Outcome of reconciling the stored `head_l1_origin` pointer at startup.
+#[derive(Debug, PartialEq, Eq)]
+enum HeadL1OriginReconciliation {
+    /// The stored pointer is consistent with the persisted canonical chain.
+    Keep,
+    /// The pointer must be rewritten to the given block number.
+    ClampTo(u64),
+    /// No promotable origin row exists near the persisted head; the pointer must be removed so
+    /// consumers see "unknown" instead of a fabricated confirmed height without a row.
+    Clear,
+}
+
 /// Decide the startup-reconciled `head_l1_origin` value.
 ///
-/// Returns `Some(new_value)` when the stored pointer lies beyond the persisted chain head and
-/// must be clamped — preferring the highest block within `lookback` of the chain head whose
-/// origin row is promotable, falling back to the chain head itself — or `None` when the stored
-/// pointer is already consistent.
+/// The stored pointer is kept only when it sits at or below the persisted chain head *and* its
+/// row is promotable (present, non-preconfirmation, canonical-hash match) — a same-height reorg
+/// preserved by a crash otherwise leaves a pointer whose row describes a noncanonical block.
+/// When the pointer must move, the highest promotable row within `lookback` of (and never
+/// above) the stored pointer or chain head is preferred; without one the pointer is cleared.
 fn resolve_reconciled_head_l1_origin(
     stored_head: Option<u64>,
     chain_head: u64,
     lookback: u64,
     is_promotable_row: impl Fn(u64) -> bool,
-) -> Option<u64> {
-    let stored_head = stored_head?;
-    if stored_head <= chain_head {
-        return None;
+) -> HeadL1OriginReconciliation {
+    let Some(stored_head) = stored_head else {
+        return HeadL1OriginReconciliation::Keep;
+    };
+
+    if stored_head <= chain_head && is_promotable_row(stored_head) {
+        return HeadL1OriginReconciliation::Keep;
     }
 
-    let floor = chain_head.saturating_sub(lookback);
-    let mut number = chain_head;
+    // Never advance the pointer during repair: scan downward from the lower of the stored
+    // pointer and the persisted head.
+    let top = stored_head.min(chain_head);
+    let floor = top.saturating_sub(lookback);
+    let mut number = top;
     loop {
         if is_promotable_row(number) {
-            return Some(number);
+            return HeadL1OriginReconciliation::ClampTo(number);
         }
         if number <= floor {
             break;
@@ -508,7 +587,7 @@ fn resolve_reconciled_head_l1_origin(
         number -= 1;
     }
 
-    Some(chain_head)
+    HeadL1OriginReconciliation::Clear
 }
 
 #[cfg(test)]
@@ -592,27 +671,42 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_leaves_consistent_head_untouched() {
-        assert_eq!(resolve_reconciled_head_l1_origin(None, 10, 1024, |_| true), None);
-        assert_eq!(resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |_| true), None);
-        assert_eq!(resolve_reconciled_head_l1_origin(Some(10), 10, 1024, |_| true), None);
+    fn reconcile_keeps_consistent_head_untouched() {
+        use HeadL1OriginReconciliation::Keep;
+        assert_eq!(resolve_reconciled_head_l1_origin(None, 10, 1024, |_| true), Keep);
+        assert_eq!(resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |_| true), Keep);
+        assert_eq!(resolve_reconciled_head_l1_origin(Some(10), 10, 1024, |_| true), Keep);
     }
 
     #[test]
-    fn reconcile_clamps_to_highest_promotable_row() {
+    fn reconcile_clamps_a_pointer_past_the_head_to_the_highest_promotable_row() {
         let resolved = resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |n| n == 8 || n == 9);
-        assert_eq!(resolved, Some(9));
+        assert_eq!(resolved, HeadL1OriginReconciliation::ClampTo(9));
     }
 
     #[test]
-    fn reconcile_falls_back_to_chain_head_without_promotable_rows() {
-        assert_eq!(resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |_| false), Some(10));
+    fn reconcile_repairs_a_same_height_mismatch_at_or_below_the_head() {
+        // The stored pointer is within the chain, but its row no longer matches the canonical
+        // block (same-height reorg preserved by a crash): clamp to the closest promotable row
+        // at or below the stored pointer, never advancing it.
+        let resolved = resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |n| n == 4);
+        assert_eq!(resolved, HeadL1OriginReconciliation::ClampTo(4));
     }
 
     #[test]
-    fn reconcile_ignores_rows_below_the_lookback_window() {
+    fn reconcile_clears_the_pointer_without_promotable_rows() {
+        // Fabricating a confirmed head at a height with no origin row would make consumers
+        // dereference a nonexistent row; the pointer must be removed instead.
+        assert_eq!(
+            resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |_| false),
+            HeadL1OriginReconciliation::Clear
+        );
+    }
+
+    #[test]
+    fn reconcile_clears_when_rows_exist_only_below_the_lookback_window() {
         let resolved = resolve_reconciled_head_l1_origin(Some(500), 400, 100, |n| n == 250);
-        assert_eq!(resolved, Some(400));
+        assert_eq!(resolved, HeadL1OriginReconciliation::Clear);
     }
 
     /// Build a deterministic stored L1 origin for pending-buffer tests.

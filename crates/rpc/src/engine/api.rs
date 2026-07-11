@@ -99,28 +99,32 @@ where
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
     /// Creates a new instance of `TaikoEngineApi` with the given parameters.
+    ///
+    /// Returns an error when the durable L1-origin tables cannot be reconciled with the persisted
+    /// canonical chain; callers must not expose the engine endpoint in that state.
     pub fn new(
         engine_api: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
         provider: Provider,
         chain_spec: Arc<TaikoChainSpec>,
         payload_store: PayloadStore<PayloadT>,
-    ) -> Self
+    ) -> Result<Self, EngineApiError>
     where
         Provider: Clone,
     {
         // The custom tables commit durably at promotion time while reth may still hold the
         // promoted block only in memory, so a hard crash can leave rows describing blocks that
         // do not survive the restart; reconcile all three tables before serving engine calls.
-        reconcile_l1_origin_tables(&provider);
+        try_reconcile_l1_origin_tables(&provider)
+            .map_err(|err| EngineApiError::Internal(Box::new(io::Error::other(err))))?;
 
-        Self {
+        Ok(Self {
             inner: engine_api,
             provider,
             chain_spec,
             payload_store,
             pending_l1_origins: Mutex::new(PendingL1Origins::default()),
             fork_choice_lock: tokio::sync::Mutex::new(()),
-        }
+        })
     }
 }
 
@@ -208,6 +212,25 @@ where
 
         Ok(())
     }
+
+    /// Persist and remove the pending origin for `head_block_hash`, re-buffering it on failure so
+    /// an idempotent forkchoice retry can complete the write.
+    fn persist_pending_l1_origin(&self, head_block_hash: B256) -> Result<(), EngineApiError> {
+        let Some(pending) = self.lock_pending_l1_origins().take(head_block_hash) else {
+            return Ok(())
+        };
+
+        if let Err(err) = self.persist_l1_origin(
+            pending.stored_l1_origin.clone(),
+            pending.is_preconf_block,
+            pending.batch_id,
+        ) {
+            self.lock_pending_l1_origins().stash(head_block_hash, pending);
+            return Err(err)
+        }
+
+        Ok(())
+    }
 }
 
 // This is the concrete ethereum engine API implementation.
@@ -260,14 +283,15 @@ where
             None => (None, false, None),
         };
 
-        let status =
-            self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?;
+        let result = self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await;
 
         // Buffer the freshly built payload's L1 origin instead of persisting it here: at this
         // point the block has only been built, not imported or canonicalized, so persisting
         // would record custom-table rows for blocks that may never exist on the canonical
         // chain (e.g. build-only previews that are never submitted via `newPayload`).
-        if let Some(mut stored_l1_origin) = stored_l1_origin {
+        if let Some(mut stored_l1_origin) = stored_l1_origin &&
+            let Ok(status) = result.as_ref()
+        {
             let payload_id = status
                 .payload_id
                 .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
@@ -286,24 +310,14 @@ where
             );
         }
 
-        // Persist the buffered origin for the block this update just promoted to canonical
-        // head, if that block was built locally.
-        if status.payload_status.is_valid() {
-            let pending = self.lock_pending_l1_origins().take(fork_choice_state.head_block_hash);
-            if let Some(pending) = pending &&
-                let Err(err) = self.persist_l1_origin(
-                    pending.stored_l1_origin.clone(),
-                    pending.is_preconf_block,
-                    pending.batch_id,
-                )
-            {
-                // Re-buffer the row so an idempotent forkchoice retry can persist it.
-                self.lock_pending_l1_origins().stash(fork_choice_state.head_block_hash, pending);
-                return Err(ErrorObjectOwned::from(err));
-            }
+        // Persist the buffered origin whenever reth applied this forkchoice, including the Engine
+        // API-mandated path that applies the state before rejecting invalid payload attributes.
+        if forkchoice_applied(&result) {
+            self.persist_pending_l1_origin(fork_choice_state.head_block_hash)
+                .map_err(ErrorObjectOwned::from)?;
         }
 
-        Ok(status)
+        result.map_err(ErrorObjectOwned::from)
     }
 
     /// Retrieves the execution payload by its ID.
@@ -350,6 +364,22 @@ fn convert_built_payload_to_execution_payload_envelope_v2(
     }
 
     envelope
+}
+
+/// Return whether reth applied the requested forkchoice state.
+///
+/// Invalid payload attributes are reported after reth applies a valid forkchoice state without
+/// starting a payload build, so that specific error still requires promotion bookkeeping.
+fn forkchoice_applied(result: &Result<ForkchoiceUpdated, EngineApiError>) -> bool {
+    match result {
+        Ok(status) => status.payload_status.is_valid(),
+        Err(EngineApiError::ForkChoiceUpdate(
+            reth_engine_primitives::BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                alloy_rpc_types_engine::ForkchoiceUpdateError::UpdatedInvalidPayloadAttributes,
+            ),
+        )) => true,
+        _ => false,
+    }
 }
 
 /// A single locally built payload's L1 origin awaiting canonical promotion of its block.
@@ -417,20 +447,8 @@ const HEAD_L1_ORIGIN_RECONCILE_LOOKBACK: u64 = 1024;
 ///
 /// Custom-table rows commit durably at promotion time, while reth keeps the newest canonical
 /// blocks in memory until its persistence threshold is reached. A hard crash inside that window
-/// leaves durable rows describing blocks that do not survive the restart: origin rows above the
-/// persisted head, same-height rows preserved from reorged-out blocks, batch mappings pointing
-/// at nonexistent blocks, and a head pointer past the real head. Failures are logged rather
-/// than propagated: a reconciliation problem must not prevent the node from starting.
-fn reconcile_l1_origin_tables<Provider>(provider: &Provider)
-where
-    Provider: BlockReader + DatabaseProviderFactory,
-{
-    if let Err(err) = try_reconcile_l1_origin_tables(provider) {
-        warn!(err, "failed to reconcile L1 origin tables with the persisted canonical chain");
-    }
-}
-
-/// Fallible body of [`reconcile_l1_origin_tables`], returning a printable error.
+/// leaves durable rows describing blocks that do not survive the restart. Any read or write error
+/// aborts the transaction so engine construction cannot proceed over known-unreconciled tables.
 fn try_reconcile_l1_origin_tables<Provider>(provider: &Provider) -> Result<(), String>
 where
     Provider: BlockReader + DatabaseProviderFactory,
@@ -490,15 +508,16 @@ where
     let stored_head = tx
         .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
         .map_err(|err| err.to_string())?;
-    let is_promotable_row = |number: u64| -> bool {
-        let row = match tx.get::<StoredL1OriginTable>(number) {
-            Ok(Some(row)) => row,
-            _ => return false,
+    let is_promotable_row = |number: u64| -> Result<bool, String> {
+        let Some(row) = tx.get::<StoredL1OriginTable>(number).map_err(|err| err.to_string())?
+        else {
+            return Ok(false)
         };
         if row.l1_block_height.is_zero() {
-            return false;
+            return Ok(false)
         }
-        matches!(provider.block_hash(number), Ok(Some(hash)) if hash == row.l2_block_hash)
+        let canonical = provider.block_hash(number).map_err(|err| err.to_string())?;
+        Ok(canonical == Some(row.l2_block_hash))
     };
 
     let resolution = resolve_reconciled_head_l1_origin(
@@ -506,7 +525,7 @@ where
         chain_head,
         HEAD_L1_ORIGIN_RECONCILE_LOOKBACK,
         is_promotable_row,
-    );
+    )?;
     match resolution {
         HeadL1OriginReconciliation::Keep => {}
         HeadL1OriginReconciliation::ClampTo(reconciled) => {
@@ -558,18 +577,17 @@ enum HeadL1OriginReconciliation {
 /// preserved by a crash otherwise leaves a pointer whose row describes a noncanonical block.
 /// When the pointer must move, the highest promotable row within `lookback` of (and never
 /// above) the stored pointer or chain head is preferred; without one the pointer is cleared.
+/// Predicate errors are propagated so callers never mistake a failed read for an invalid row.
 fn resolve_reconciled_head_l1_origin(
     stored_head: Option<u64>,
     chain_head: u64,
     lookback: u64,
-    is_promotable_row: impl Fn(u64) -> bool,
-) -> HeadL1OriginReconciliation {
-    let Some(stored_head) = stored_head else {
-        return HeadL1OriginReconciliation::Keep;
-    };
+    is_promotable_row: impl Fn(u64) -> Result<bool, String>,
+) -> Result<HeadL1OriginReconciliation, String> {
+    let Some(stored_head) = stored_head else { return Ok(HeadL1OriginReconciliation::Keep) };
 
-    if stored_head <= chain_head && is_promotable_row(stored_head) {
-        return HeadL1OriginReconciliation::Keep;
+    if stored_head <= chain_head && is_promotable_row(stored_head)? {
+        return Ok(HeadL1OriginReconciliation::Keep)
     }
 
     // Never advance the pointer during repair: scan downward from the lower of the stored
@@ -578,8 +596,8 @@ fn resolve_reconciled_head_l1_origin(
     let floor = top.saturating_sub(lookback);
     let mut number = top;
     loop {
-        if is_promotable_row(number) {
-            return HeadL1OriginReconciliation::ClampTo(number);
+        if is_promotable_row(number)? {
+            return Ok(HeadL1OriginReconciliation::ClampTo(number))
         }
         if number <= floor {
             break;
@@ -587,7 +605,7 @@ fn resolve_reconciled_head_l1_origin(
         number -= 1;
     }
 
-    HeadL1OriginReconciliation::Clear
+    Ok(HeadL1OriginReconciliation::Clear)
 }
 
 #[cfg(test)]
@@ -671,16 +689,42 @@ mod tests {
     }
 
     #[test]
+    fn invalid_payload_attributes_error_reports_an_applied_forkchoice() {
+        let result = Err(EngineApiError::ForkChoiceUpdate(
+            reth_engine_primitives::BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                alloy_rpc_types_engine::ForkchoiceUpdateError::UpdatedInvalidPayloadAttributes,
+            ),
+        ));
+
+        assert!(forkchoice_applied(&result));
+    }
+
+    #[test]
+    fn unrelated_forkchoice_error_does_not_report_an_applied_forkchoice() {
+        let result = Err(EngineApiError::Internal(Box::new(io::Error::other("boom"))));
+
+        assert!(!forkchoice_applied(&result));
+    }
+
+    #[test]
     fn reconcile_keeps_consistent_head_untouched() {
         use HeadL1OriginReconciliation::Keep;
-        assert_eq!(resolve_reconciled_head_l1_origin(None, 10, 1024, |_| true), Keep);
-        assert_eq!(resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |_| true), Keep);
-        assert_eq!(resolve_reconciled_head_l1_origin(Some(10), 10, 1024, |_| true), Keep);
+        assert_eq!(resolve_reconciled_head_l1_origin(None, 10, 1024, |_| Ok(true)).unwrap(), Keep);
+        assert_eq!(
+            resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |_| Ok(true)).unwrap(),
+            Keep
+        );
+        assert_eq!(
+            resolve_reconciled_head_l1_origin(Some(10), 10, 1024, |_| Ok(true)).unwrap(),
+            Keep
+        );
     }
 
     #[test]
     fn reconcile_clamps_a_pointer_past_the_head_to_the_highest_promotable_row() {
-        let resolved = resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |n| n == 8 || n == 9);
+        let resolved =
+            resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |n| Ok(n == 8 || n == 9))
+                .unwrap();
         assert_eq!(resolved, HeadL1OriginReconciliation::ClampTo(9));
     }
 
@@ -689,7 +733,8 @@ mod tests {
         // The stored pointer is within the chain, but its row no longer matches the canonical
         // block (same-height reorg preserved by a crash): clamp to the closest promotable row
         // at or below the stored pointer, never advancing it.
-        let resolved = resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |n| n == 4);
+        let resolved =
+            resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |n| Ok(n == 4)).unwrap();
         assert_eq!(resolved, HeadL1OriginReconciliation::ClampTo(4));
     }
 
@@ -698,15 +743,25 @@ mod tests {
         // Fabricating a confirmed head at a height with no origin row would make consumers
         // dereference a nonexistent row; the pointer must be removed instead.
         assert_eq!(
-            resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |_| false),
+            resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |_| Ok(false)).unwrap(),
             HeadL1OriginReconciliation::Clear
         );
     }
 
     #[test]
     fn reconcile_clears_when_rows_exist_only_below_the_lookback_window() {
-        let resolved = resolve_reconciled_head_l1_origin(Some(500), 400, 100, |n| n == 250);
+        let resolved =
+            resolve_reconciled_head_l1_origin(Some(500), 400, 100, |n| Ok(n == 250)).unwrap();
         assert_eq!(resolved, HeadL1OriginReconciliation::Clear);
+    }
+
+    #[test]
+    fn reconcile_propagates_promotable_row_read_errors() {
+        let resolved = resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |_| {
+            Err("origin read failed".to_string())
+        });
+
+        assert_eq!(resolved, Err("origin read failed".to_string()));
     }
 
     /// Build a deterministic stored L1 origin for pending-buffer tests.

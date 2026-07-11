@@ -85,6 +85,6 @@ where
             ctx.node.provider().clone(),
             ctx.config.chain.clone(),
             PayloadStore::new(ctx.node.payload_builder_handle().clone()),
-        ))
+        )?)
     }
 }

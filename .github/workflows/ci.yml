@@ -84,3 +84,14 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo check --locked -p alethia-reth-bin --no-default-features
+
+  llvm-arm64:
+    name: llvm install (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      # Guards the Docker build on ARM64 hosts: apt.llvm.org omits arm64 packages for some
+      # Debian releases (bookworm has no arm64 LLVM 22), which only surfaces when installing
+      # on an ARM64 machine. Runs the same installer inside the Docker base distribution.
+      - run: docker run --rm -v "$PWD/.github/scripts:/scripts:ro" debian:trixie /scripts/install_llvm_ubuntu.sh

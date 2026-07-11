@@ -1,4 +1,7 @@
-FROM rust:1.95.0-bookworm AS build
+# Trixie rather than bookworm: apt.llvm.org publishes arm64 LLVM 22 packages only for trixie
+# (the bookworm arm64 index carries just docs and WASM cross libs), and the runtime stage must
+# share the build stage's glibc.
+FROM rust:1.95.0-trixie AS build
 
 WORKDIR /app
 
@@ -14,7 +17,7 @@ COPY ./ .
 
 RUN cargo build --release --locked
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && \
   apt-get install -y jq curl ca-certificates && \

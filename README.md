@@ -101,7 +101,9 @@ Start the node with upstream-compatible JIT flags:
 
 The main tuning flags are `--jit.hot-threshold`, `--jit.worker-count`,
 `--jit.code-cache-bytes`, and `--jit.idle-evict-duration`. When the `reth` RPC namespace is
-enabled, `reth_jit` accepts `enable`, `disable`, `pause`, `unpause`, or `clear` at runtime.
+enabled, `reth_jit` accepts `enable`, `disable`, `pause`, `unpause`, or `clear` at runtime;
+`pause`, `unpause`, and `clear` require the backend to be enabled and return an error
+otherwise.
 
 Taiko's Unzen execution uses consensus-critical zk-gas metering that requires per-opcode
 interpreter hooks. JIT dispatch therefore falls back to the interpreter for Unzen blocks and
@@ -109,6 +111,13 @@ ordinary RPC call/trace execution. Pre-Unzen canonical execution, payload buildi
 replay use the shared revmc backend. Compiled code bakes in upstream mainnet gas and opcode
 semantics, so hardforks are JIT-eligible only through an explicit allowlist: new forks stay
 interpreter-only until they are deliberately marked JIT-safe in `TaikoEvmFactory`.
+
+> [!WARNING]
+> The pinned revmc revision predates the upstream fix for a confirmed JIT/interpreter
+> execution divergence on adversarial bytecode
+> ([paradigmxyz/revmc#395](https://github.com/paradigmxyz/revmc/pull/395), reproduced in-repo
+> by `jit_pin_still_diverges_on_dynamic_gas_failure_order`). Keep `--jit` disabled on
+> consensus-critical nodes until the pin advances past that fix.
 
 ## License
 

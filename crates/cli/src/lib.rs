@@ -91,6 +91,7 @@ pub struct TaikoJitArgs {
     #[arg(
         long = "jit.channel-capacity",
         default_value_t = JitConfig::DEFAULT_CHANNEL_CAPACITY,
+        value_parser = parse_nonzero_usize,
         help_heading = "JIT"
     )]
     pub channel_capacity: usize,
@@ -136,6 +137,18 @@ pub struct TaikoJitArgs {
     #[doc(hidden)]
     #[arg(long = "jit.blocking", default_value_t = false, help_heading = "JIT", hide = true)]
     pub blocking: bool,
+}
+
+/// Parses a CLI value into a `usize` that must be at least one.
+///
+/// revmc sizes queues from these values and panics on zero even when JIT is disabled, so the
+/// CLI rejects zero up front.
+fn parse_nonzero_usize(value: &str) -> Result<usize, String> {
+    let parsed = value.parse::<usize>().map_err(|error| error.to_string())?;
+    if parsed == 0 {
+        return Err("value must be at least 1".to_string());
+    }
+    Ok(parsed)
 }
 
 impl Default for TaikoJitArgs {
@@ -499,6 +512,14 @@ mod tests {
         assert_eq!(config.hot_threshold, 8);
         assert_eq!(config.code_cache_bytes, 1024 * 1024 * 1024);
         assert_eq!(config.idle_evict_duration, Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn test_zero_jit_channel_capacity_is_rejected() {
+        assert!(
+            TestCli::try_parse_from(["alethia-reth", "--jit.channel-capacity", "0"]).is_err(),
+            "zero JIT channel capacity must be rejected at parse time",
+        );
     }
 
     #[test]

@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[cfg(feature = "jit")]
-pub use revmc::runtime::{JitBackend, maybe_run_jit_helper};
+use revmc::runtime::RuntimeTuning;
 #[cfg(feature = "jit")]
-use revmc::runtime::{JitMode, RuntimeConfig, RuntimeTuning};
+pub use revmc::runtime::{JitBackend, JitMode, RuntimeConfig, maybe_run_jit_helper};
 
 /// Runtime settings for revmc JIT compilation.
 ///
@@ -38,15 +38,40 @@ pub struct JitConfig {
 }
 
 /// Runtime controls shared by JIT-enabled and interpreter-only builds.
+///
+/// Control delivery rides revmc's bounded command channel. When the backend thread has never
+/// been started (JIT never enabled), nothing drains that channel, so a blocking `send` would
+/// stall the caller forever once the channel fills. Implementations must therefore reject
+/// [`Self::pause`], [`Self::resume`], and [`Self::clear`] while the backend is disabled
+/// instead of queueing commands. This mirrors the upstream fix in paradigmxyz/revmc#391,
+/// which our pinned revision predates and which cannot be picked up until the pin can move
+/// past revmc's revm 41 upgrade.
 pub trait JitBackendControl: Send + Sync {
     /// Enables or disables JIT lookups and background compilation.
     fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+    /// Returns whether JIT lookups and background compilation are currently enabled.
+    fn is_enabled(&self) -> bool;
     /// Pauses out-of-process helper execution without discarding compiled code.
-    fn pause(&self);
+    fn pause(&self) -> Result<(), String>;
     /// Resumes out-of-process helper execution.
-    fn resume(&self);
+    fn resume(&self) -> Result<(), String>;
     /// Clears resident and persisted compiled artifacts.
-    fn clear(&self);
+    fn clear(&self) -> Result<(), String>;
+}
+
+/// Runs `control` only when the backend is enabled (and its command-draining thread runs).
+///
+/// See [`JitBackendControl`] for why disabled backends must reject control commands.
+#[cfg(feature = "jit")]
+fn run_enabled_control(
+    backend: &JitBackend,
+    control: impl FnOnce(&JitBackend),
+) -> Result<(), String> {
+    if !JitBackend::enabled(backend) {
+        return Err("JIT backend is not enabled; run `reth_jit enable` first".to_string());
+    }
+    control(backend);
+    Ok(())
 }
 
 #[cfg(feature = "jit")]
@@ -56,19 +81,24 @@ impl JitBackendControl for JitBackend {
         JitBackend::set_enabled(self, enabled).map_err(|error| error.to_string())
     }
 
+    /// Returns whether the revmc backend is enabled.
+    fn is_enabled(&self) -> bool {
+        JitBackend::enabled(self)
+    }
+
     /// Pauses the revmc helper.
-    fn pause(&self) {
-        JitBackend::pause(self);
+    fn pause(&self) -> Result<(), String> {
+        run_enabled_control(self, JitBackend::pause)
     }
 
     /// Resumes the revmc helper.
-    fn resume(&self) {
-        JitBackend::resume(self);
+    fn resume(&self) -> Result<(), String> {
+        run_enabled_control(self, JitBackend::resume)
     }
 
     /// Clears all revmc artifacts.
-    fn clear(&self) {
-        JitBackend::clear_all(self);
+    fn clear(&self) -> Result<(), String> {
+        run_enabled_control(self, JitBackend::clear_all)
     }
 }
 
@@ -89,6 +119,12 @@ impl JitConfig {
     /// Creates the shared revmc backend represented by this configuration.
     #[cfg(feature = "jit")]
     pub fn build_backend(&self, dump_dir: Option<PathBuf>) -> revmc::eyre::Result<JitBackend> {
+        // revmc sizes a `crossbeam` `ArrayQueue` from this value and panics on zero, even when
+        // compilation is disabled, so reject it with an error instead.
+        if self.channel_capacity == 0 {
+            revmc::eyre::bail!("JIT channel capacity must be at least 1");
+        }
+
         let defaults = RuntimeTuning::default();
         let tuning = RuntimeTuning {
             channel_capacity: self.channel_capacity,
@@ -142,5 +178,57 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.hot_threshold, JitConfig::DEFAULT_HOT_THRESHOLD);
         assert_eq!(config.code_cache_bytes, JitConfig::DEFAULT_CODE_CACHE_BYTES);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn build_backend_rejects_zero_jit_channel_capacity() {
+        let config = JitConfig { channel_capacity: 0, ..JitConfig::default() };
+
+        assert!(config.build_backend(None).is_err());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_controls_error_until_the_backend_is_enabled() {
+        let backend = JitBackend::disabled();
+        let control: &dyn JitBackendControl = &backend;
+
+        assert!(!control.is_enabled());
+        control.pause().expect_err("pause must be rejected while the backend is disabled");
+        control.resume().expect_err("resume must be rejected while the backend is disabled");
+        control.clear().expect_err("clear must be rejected while the backend is disabled");
+
+        control.set_enabled(true).expect("enabling should spawn the backend thread");
+        assert!(control.is_enabled());
+        control.pause().expect("pause should reach a running backend");
+        control.resume().expect("resume should reach a running backend");
+        control.clear().expect("clear should reach a running backend");
+
+        control.set_enabled(false).expect("disabling should succeed");
+        assert!(!control.is_enabled());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_controls_never_block_when_the_backend_thread_is_not_running() {
+        let backend = JitBackend::disabled();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // Far more control commands than the bounded command channel can hold: with no
+            // backend thread draining it, blocking sends would stall this loop forever.
+            for _ in 0..5_000 {
+                let _ = JitBackendControl::pause(&backend);
+                let _ = JitBackendControl::resume(&backend);
+                let _ = JitBackendControl::clear(&backend);
+            }
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("JIT controls must not block when the backend thread is not running");
+        worker.join().expect("control worker should finish cleanly");
     }
 }

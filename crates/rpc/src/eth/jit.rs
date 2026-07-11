@@ -57,44 +57,41 @@ fn apply_action(backend: &dyn JitBackendControl, action: RethJitAction) -> Resul
     match action {
         RethJitAction::Enable => backend.set_enabled(true),
         RethJitAction::Disable => backend.set_enabled(false),
-        RethJitAction::Pause => {
-            backend.pause();
-            Ok(())
-        }
-        RethJitAction::Unpause => {
-            backend.resume();
-            Ok(())
-        }
-        RethJitAction::Clear => {
-            backend.clear();
-            Ok(())
-        }
+        RethJitAction::Pause => backend.pause(),
+        RethJitAction::Unpause => backend.resume(),
+        RethJitAction::Clear => backend.clear(),
     }
 }
 
-/// Converts a backend control failure into a non-sensitive JSON-RPC internal error.
-fn internal_error(message: String) -> ErrorObjectOwned {
+/// Converts a backend control failure into a JSON-RPC error carrying the failure reason.
+fn control_error(message: String) -> ErrorObjectOwned {
     error!(%message, "failed to control revmc JIT backend");
-    ErrorObjectOwned::owned(
-        ErrorCode::InternalError.code(),
-        "failed to control JIT backend",
-        None::<()>,
-    )
+    ErrorObjectOwned::owned(ErrorCode::InternalError.code(), message, None::<()>)
 }
 
 #[async_trait]
 impl RethJitApiServer for RethJitExt {
     /// Applies a runtime control action when a JIT backend is available.
     async fn reth_jit(&self, action: RethJitAction) -> RpcResult<()> {
-        let Some(backend) = self.evm_config.jit_backend() else {
+        if self.evm_config.jit_backend().is_none() {
             return Err(ErrorObjectOwned::owned(
                 ErrorCode::InternalError.code(),
                 "JIT support is not compiled into this binary",
                 None::<()>,
             ));
-        };
+        }
 
-        apply_action(backend, action).map_err(internal_error)
+        // Backend controls can block briefly (bounded-channel sends, artifact I/O on enable),
+        // so run them off the async RPC runtime.
+        let evm_config = self.evm_config.clone();
+        tokio::task::spawn_blocking(move || {
+            let backend =
+                evm_config.jit_backend().expect("jit backend presence checked before dispatch");
+            apply_action(backend, action)
+        })
+        .await
+        .map_err(|error| control_error(error.to_string()))?
+        .map_err(control_error)
     }
 }
 
@@ -130,16 +127,23 @@ mod tests {
             Ok(())
         }
 
-        fn pause(&self) {
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn pause(&self) -> Result<(), String> {
             self.actions.lock().expect("actions lock").push("pause");
+            Ok(())
         }
 
-        fn resume(&self) {
+        fn resume(&self) -> Result<(), String> {
             self.actions.lock().expect("actions lock").push("unpause");
+            Ok(())
         }
 
-        fn clear(&self) {
+        fn clear(&self) -> Result<(), String> {
             self.actions.lock().expect("actions lock").push("clear");
+            Ok(())
         }
     }
 
@@ -173,19 +177,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reth_jit_succeeds_only_when_a_backend_is_compiled_in() {
+    async fn reth_jit_requires_compiled_in_and_enabled_backend() {
         let ext =
             RethJitExt::new(TaikoEvmConfig::new(alethia_reth_chainspec::TAIKO_MAINNET.clone()));
         let has_backend = ext.evm_config.jit_backend().is_some();
 
         let result = ext.reth_jit(RethJitAction::Pause).await;
 
+        // Pause needs a running backend thread to drain the control channel: it must be
+        // rejected both without compiled-in JIT support and while the backend is disabled.
+        let error = result.expect_err("pause must be rejected");
         if has_backend {
-            result.expect("pause should succeed against a compiled-in backend");
+            assert!(error.message().contains("not enabled"), "unexpected error: {error}");
         } else {
-            let error =
-                result.expect_err("reth_jit should error when JIT support is not compiled in");
-            assert!(error.message().contains("not compiled"));
+            assert!(error.message().contains("not compiled"), "unexpected error: {error}");
         }
     }
 }

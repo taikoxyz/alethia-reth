@@ -32,6 +32,7 @@ use reth_provider::{
 };
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::EngineApiError;
+use tracing::warn;
 
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
@@ -82,6 +83,10 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     payload_store: PayloadStore<PayloadT>,
     /// L1 origins of locally built payloads, buffered until their block is canonically promoted.
     pending_l1_origins: Mutex<PendingL1Origins>,
+    /// Serializes `fork_choice_updated_v2` so pending-origin persistence decisions observe the
+    /// same order in which the inner engine canonicalizes heads; mirrors go-ethereum's
+    /// `forkchoiceLock`.
+    fork_choice_lock: tokio::sync::Mutex<()>,
 }
 
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
@@ -103,12 +108,18 @@ where
     where
         Provider: Clone,
     {
+        // The custom tables commit durably at promotion time while reth may still hold the
+        // promoted block only in memory, so a hard crash can leave the head pointer beyond the
+        // head that survives the restart; reconcile before serving any engine call.
+        reconcile_head_l1_origin(&provider);
+
         Self {
             inner: engine_api,
             provider,
             chain_spec,
             payload_store,
             pending_l1_origins: Mutex::new(PendingL1Origins::default()),
+            fork_choice_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -227,6 +238,12 @@ where
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
+        // Serialize the whole update (inner engine call + pending-origin bookkeeping): the
+        // inner engine orders canonicalization internally, but without this guard two
+        // overlapping updates could run their persistence decisions in the opposite order and
+        // regress `head_l1_origin` to a block that is no longer the canonical head.
+        let _fork_choice_permit = self.fork_choice_lock.lock().await;
+
         let (stored_l1_origin, is_preconf_block, batch_id) = match payload_attributes.as_ref() {
             Some(payload) => {
                 let batch_id = self
@@ -273,17 +290,16 @@ where
         // head, if that block was built locally.
         if status.payload_status.is_valid() {
             let pending = self.lock_pending_l1_origins().take(fork_choice_state.head_block_hash);
-            if let Some(pending) = pending {
-                if let Err(err) = self.persist_l1_origin(
+            if let Some(pending) = pending &&
+                let Err(err) = self.persist_l1_origin(
                     pending.stored_l1_origin.clone(),
                     pending.is_preconf_block,
                     pending.batch_id,
-                ) {
-                    // Re-buffer the row so an idempotent forkchoice retry can persist it.
-                    self.lock_pending_l1_origins()
-                        .stash(fork_choice_state.head_block_hash, pending);
-                    return Err(ErrorObjectOwned::from(err).into());
-                }
+                )
+            {
+                // Re-buffer the row so an idempotent forkchoice retry can persist it.
+                self.lock_pending_l1_origins().stash(fork_choice_state.head_block_hash, pending);
+                return Err(ErrorObjectOwned::from(err));
             }
         }
 
@@ -373,7 +389,14 @@ impl PendingL1Origins {
         self.entries.retain(|(hash, _)| *hash != block_hash);
         self.entries.push_back((block_hash, pending));
         while self.entries.len() > Self::CAPACITY {
-            self.entries.pop_front();
+            if let Some((evicted_hash, evicted)) = self.entries.pop_front() {
+                warn!(
+                    block_number = %evicted.stored_l1_origin.block_id,
+                    block_hash = %evicted_hash,
+                    "evicting a pending L1 origin that was never canonically promoted; if this \
+                     block is promoted later its origin rows will be missing"
+                );
+            }
         }
     }
 
@@ -382,6 +405,110 @@ impl PendingL1Origins {
         let index = self.entries.iter().position(|(hash, _)| *hash == block_hash)?;
         self.entries.remove(index).map(|(_, pending)| pending)
     }
+}
+
+/// Number of blocks below the persisted chain head scanned for a promotable origin row when
+/// reconciling a stale `head_l1_origin` pointer at startup.
+const HEAD_L1_ORIGIN_RECONCILE_LOOKBACK: u64 = 1024;
+
+/// Reconcile the durable `head_l1_origin` pointer with the persisted canonical chain.
+///
+/// Custom-table rows commit durably at promotion time, while reth keeps the newest canonical
+/// blocks in memory until its persistence threshold is reached. A hard crash inside that window
+/// leaves `head_l1_origin` pointing past the head that survives the restart, so driver resume
+/// paths would anchor on a block that no longer exists. Failures are logged rather than
+/// propagated: a reconciliation problem must not prevent the node from starting.
+fn reconcile_head_l1_origin<Provider>(provider: &Provider)
+where
+    Provider: BlockReader + DatabaseProviderFactory,
+{
+    if let Err(err) = try_reconcile_head_l1_origin(provider) {
+        warn!(err, "failed to reconcile head L1 origin with the persisted canonical chain");
+    }
+}
+
+/// Fallible body of [`reconcile_head_l1_origin`], returning a printable error.
+fn try_reconcile_head_l1_origin<Provider>(provider: &Provider) -> Result<(), String>
+where
+    Provider: BlockReader + DatabaseProviderFactory,
+{
+    let tx = provider.database_provider_rw().map_err(|err| err.to_string())?.into_tx();
+
+    let Some(stored_head) = tx
+        .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
+        .map_err(|err| err.to_string())?
+    else {
+        return Ok(());
+    };
+
+    let chain_head = provider.last_block_number().map_err(|err| err.to_string())?;
+
+    // A row can carry the head pointer only when it exists, is not a preconfirmation row, and
+    // still matches the canonical block hash at its height.
+    let is_promotable_row = |number: u64| -> bool {
+        let row = match tx.get::<StoredL1OriginTable>(number) {
+            Ok(Some(row)) => row,
+            _ => return false,
+        };
+        if row.l1_block_height.is_zero() {
+            return false;
+        }
+        matches!(provider.block_hash(number), Ok(Some(hash)) if hash == row.l2_block_hash)
+    };
+
+    let Some(reconciled) = resolve_reconciled_head_l1_origin(
+        Some(stored_head),
+        chain_head,
+        HEAD_L1_ORIGIN_RECONCILE_LOOKBACK,
+        is_promotable_row,
+    ) else {
+        return Ok(());
+    };
+
+    warn!(
+        stored_head,
+        chain_head,
+        reconciled,
+        "head L1 origin pointed past the persisted canonical head after restart; clamping"
+    );
+
+    tx.put::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY, reconciled)
+        .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+/// Decide the startup-reconciled `head_l1_origin` value.
+///
+/// Returns `Some(new_value)` when the stored pointer lies beyond the persisted chain head and
+/// must be clamped — preferring the highest block within `lookback` of the chain head whose
+/// origin row is promotable, falling back to the chain head itself — or `None` when the stored
+/// pointer is already consistent.
+fn resolve_reconciled_head_l1_origin(
+    stored_head: Option<u64>,
+    chain_head: u64,
+    lookback: u64,
+    is_promotable_row: impl Fn(u64) -> bool,
+) -> Option<u64> {
+    let stored_head = stored_head?;
+    if stored_head <= chain_head {
+        return None;
+    }
+
+    let floor = chain_head.saturating_sub(lookback);
+    let mut number = chain_head;
+    loop {
+        if is_promotable_row(number) {
+            return Some(number);
+        }
+        if number <= floor {
+            break;
+        }
+        number -= 1;
+    }
+
+    Some(chain_head)
 }
 
 #[cfg(test)]
@@ -462,6 +589,30 @@ mod tests {
 
         assert!(pending.take(B256::from(U256::from(1_u64))).is_none(), "oldest entry is evicted");
         assert!(pending.take(B256::from(U256::from(2_u64))).is_some(), "newer entries survive");
+    }
+
+    #[test]
+    fn reconcile_leaves_consistent_head_untouched() {
+        assert_eq!(resolve_reconciled_head_l1_origin(None, 10, 1024, |_| true), None);
+        assert_eq!(resolve_reconciled_head_l1_origin(Some(5), 10, 1024, |_| true), None);
+        assert_eq!(resolve_reconciled_head_l1_origin(Some(10), 10, 1024, |_| true), None);
+    }
+
+    #[test]
+    fn reconcile_clamps_to_highest_promotable_row() {
+        let resolved = resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |n| n == 8 || n == 9);
+        assert_eq!(resolved, Some(9));
+    }
+
+    #[test]
+    fn reconcile_falls_back_to_chain_head_without_promotable_rows() {
+        assert_eq!(resolve_reconciled_head_l1_origin(Some(12), 10, 1024, |_| false), Some(10));
+    }
+
+    #[test]
+    fn reconcile_ignores_rows_below_the_lookback_window() {
+        let resolved = resolve_reconciled_head_l1_origin(Some(500), 400, 100, |n| n == 250);
+        assert_eq!(resolved, Some(400));
     }
 
     /// Build a deterministic stored L1 origin for pending-buffer tests.

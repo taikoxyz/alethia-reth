@@ -4,7 +4,6 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::{BlockHeader, Header};
 #[cfg(feature = "net")]
 use alloy_eips::Decodable2718;
-use alloy_evm::{Database, EvmFactory, block::BlockExecutorFor};
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::Withdrawals;
@@ -13,7 +12,7 @@ use reth_ethereum_forks::Hardforks;
 use reth_ethereum_primitives::EthPrimitives;
 #[cfg(feature = "net")]
 use reth_evm::ConfigureEngineEvm;
-use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor, EvmFactoryFor, EvmFor, execute::BlockBuilder};
+use reth_evm::{ConfigureEvm, EvmEnv, EvmEnvFor};
 #[cfg(feature = "net")]
 use reth_evm::{ExecutableTxIterator, ExecutionCtxFor};
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -27,7 +26,6 @@ use reth_primitives_traits::{SignedTransaction, TxTy};
 use reth_revm::{
     context::{BlockEnv, CfgEnv},
     context_interface::block::BlobExcessGasAndPrice,
-    db::State,
     primitives::{Address, B256, U256, hardfork::SpecId},
 };
 #[cfg(feature = "net")]
@@ -85,8 +83,6 @@ pub struct TaikoEvmConfig {
     pub executor_factory: TaikoBlockExecutorFactory,
     /// Block assembler used to construct finalized block objects.
     pub block_assembler: TaikoBlockAssembler,
-    /// EVM factory used to instantiate Taiko EVM instances.
-    pub evm_factory: TaikoEvmFactory,
 }
 
 impl TaikoEvmConfig {
@@ -100,31 +96,45 @@ impl TaikoEvmConfig {
         chain_spec: Arc<TaikoChainSpec>,
         evm_factory: TaikoEvmFactory,
     ) -> Self {
-        // Direct EVM construction (notably RPC calls) must stay interpreter-only, so JIT support
-        // is force-disabled on the stored factory regardless of how the caller configured it.
-        // Only the executor factory used by canonical execution, payload building, and block
-        // replay may dispatch to the shared backend.
         #[cfg(feature = "jit")]
-        let executor_evm_factory = evm_factory.clone().with_jit_support();
-        #[cfg(feature = "jit")]
-        let evm_factory = evm_factory.with_jit_support_enabled(false);
+        let evm_factory = evm_factory.with_jit_support();
         #[cfg(not(feature = "jit"))]
-        let executor_evm_factory = evm_factory.clone();
+        let evm_factory = evm_factory;
 
         Self {
             block_assembler: TaikoBlockAssembler,
             executor_factory: TaikoBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,
-                executor_evm_factory,
+                evm_factory,
             ),
-            evm_factory,
+        }
+    }
+
+    /// Creates an interpreter-only copy for untrusted Ethereum RPC execution.
+    ///
+    /// The copy shares the chain specification and runtime backend handle, but both direct EVM
+    /// construction and next-block building select the disabled backend structurally.
+    pub fn for_rpc(&self) -> Self {
+        #[cfg(feature = "jit")]
+        let evm_factory =
+            self.executor_factory.evm_factory().clone().with_jit_support_enabled(false);
+        #[cfg(not(feature = "jit"))]
+        let evm_factory = self.executor_factory.evm_factory().clone();
+
+        Self {
+            executor_factory: TaikoBlockExecutorFactory::new(
+                RethReceiptBuilder::default(),
+                self.chain_spec().clone(),
+                evm_factory,
+            ),
+            block_assembler: self.block_assembler,
         }
     }
 
     /// Returns runtime controls for the configured JIT backend, when available.
     pub fn jit_backend(&self) -> Option<&dyn alethia_reth_evm::jit::JitBackendControl> {
-        self.evm_factory.jit_backend()
+        self.executor_factory.evm_factory().jit_backend()
     }
 
     /// Returns the chain spec associated with this configuration.
@@ -175,48 +185,6 @@ impl ConfigureEvm for TaikoEvmConfig {
     /// Returns reference to the configured [`BlockAssembler`].
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
-    }
-
-    /// Provides the [`EvmFactory`] used for direct EVM construction — notably RPC call,
-    /// estimate, and simulate execution via [`ConfigureEvm::evm_with_env`].
-    ///
-    /// reth's default implementation hands out the executor factory's JIT-enabled instance,
-    /// which would let remote RPC execution trigger compilation. This override keeps direct
-    /// construction interpreter-only; canonical execution and block building opt back into the
-    /// shared revmc backend via [`Self::evm_for_block`] and [`Self::builder_for_next_block`].
-    fn evm_factory(&self) -> &EvmFactoryFor<Self> {
-        &self.evm_factory
-    }
-
-    /// Creates an EVM for executing a canonical block, dispatching through the JIT-enabled
-    /// executor factory rather than the interpreter-only [`Self::evm_factory`].
-    fn evm_for_block<DB: Database>(
-        &self,
-        db: DB,
-        header: &Header,
-    ) -> Result<EvmFor<Self, DB>, Self::Error> {
-        let evm_env = self.evm_env(header)?;
-        Ok(self.executor_factory.evm_factory().create_evm(db, evm_env))
-    }
-
-    /// Creates a block builder for building a new block, dispatching through the JIT-enabled
-    /// executor factory rather than the interpreter-only [`Self::evm_factory`].
-    fn builder_for_next_block<'a, DB: Database + 'a>(
-        &'a self,
-        db: &'a mut State<DB>,
-        parent: &'a SealedHeader<Header>,
-        attributes: Self::NextBlockEnvCtx,
-    ) -> Result<
-        impl BlockBuilder<
-            Primitives = Self::Primitives,
-            Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, &'a mut State<DB>>,
-        >,
-        Self::Error,
-    > {
-        let evm_env = self.next_evm_env(parent, &attributes)?;
-        let evm = self.executor_factory.evm_factory().create_evm(db, evm_env);
-        let ctx = self.context_for_next_block(parent, attributes)?;
-        Ok(self.create_block_builder(evm, parent, ctx))
     }
 
     /// Creates a new [`EvmEnv`] for the given header.
@@ -545,30 +513,22 @@ mod tests {
 
     #[cfg(feature = "jit")]
     #[test]
-    fn jit_support_is_scoped_to_block_execution() {
+    fn canonical_and_rpc_configs_scope_jit_support() {
         let config = TaikoEvmConfig::new(TAIKO_DEVNET.clone());
 
-        // `ConfigureEvm::evm_factory` is what `evm_with_env` (RPC call/estimate/simulate
-        // execution) constructs EVMs from — it must stay interpreter-only.
-        assert!(!ConfigureEvm::evm_factory(&config).jit_support_enabled());
+        assert!(ConfigureEvm::evm_factory(&config).jit_support_enabled());
         assert!(config.executor_factory.evm_factory().jit_support_enabled());
+
+        let rpc_config = config.for_rpc();
+
+        assert!(!ConfigureEvm::evm_factory(&rpc_config).jit_support_enabled());
+        assert!(!rpc_config.executor_factory.evm_factory().jit_support_enabled());
+        assert!(Arc::ptr_eq(config.chain_spec(), rpc_config.chain_spec()));
     }
 
     #[cfg(feature = "jit")]
     #[test]
-    fn direct_evm_factory_jit_support_is_force_disabled() {
-        let config = TaikoEvmConfig::new_with_evm_factory(
-            TAIKO_DEVNET.clone(),
-            TaikoEvmFactory::default().with_jit_support(),
-        );
-
-        assert!(!ConfigureEvm::evm_factory(&config).jit_support_enabled());
-        assert!(config.executor_factory.evm_factory().jit_support_enabled());
-    }
-
-    #[cfg(feature = "jit")]
-    #[test]
-    fn rpc_evm_construction_never_dispatches_to_the_shared_jit_backend() {
+    fn rpc_config_is_interpreter_only_while_engine_config_uses_jit() {
         use alethia_reth_evm::jit::{JitBackend, JitMode, RuntimeConfig};
         use alloy_evm::Evm as _;
         use reth_revm::{
@@ -629,6 +589,7 @@ mod tests {
             Arc::new(chain_spec),
             TaikoEvmFactory::new(backend.clone()),
         );
+        let rpc_config = config.for_rpc();
         let header = Header {
             number: 1,
             timestamp: 1,
@@ -637,10 +598,10 @@ mod tests {
             ..Header::default()
         };
 
-        // `evm_with_env` is the construction path for RPC call/estimate/simulate execution;
-        // it must never consult the shared backend.
-        let env = config.evm_env(&header).expect("pre-Unzen env should build");
-        let mut rpc_evm = config.evm_with_env(contract_db(), env);
+        // RPC call/estimate/simulate and pending-block execution receive the RPC-scoped config,
+        // which must never consult the shared backend.
+        let env = rpc_config.evm_env(&header).expect("pre-Unzen RPC env should build");
+        let mut rpc_evm = rpc_config.evm_with_env(contract_db(), env);
         rpc_evm.transact(call_tx()).expect("RPC-style execution should succeed");
         let rpc_stats = backend.stats();
         assert_eq!(
@@ -649,15 +610,15 @@ mod tests {
             "RPC EVM construction must stay interpreter-only",
         );
 
-        // `evm_for_block` is the canonical-execution and replay path; it must dispatch to the
-        // shared backend.
-        let mut block_evm =
-            config.evm_for_block(contract_db(), &header).expect("block EVM should build");
-        block_evm.transact(call_tx()).expect("block-style execution should succeed");
-        let block_stats = backend.stats();
+        // Engine payload validation calls `evm_with_env` on the canonical config, so that direct
+        // factory must remain JIT-capable along with the block executor factory.
+        let env = config.evm_env(&header).expect("pre-Unzen Engine env should build");
+        let mut engine_evm = config.evm_with_env(contract_db(), env);
+        engine_evm.transact(call_tx()).expect("Engine-style execution should succeed");
+        let engine_stats = backend.stats();
         assert!(
-            block_stats.compilations_succeeded >= 1 && block_stats.lookup_hits >= 1,
-            "canonical block execution should dispatch to the shared JIT backend: {block_stats:?}",
+            engine_stats.compilations_succeeded >= 1 && engine_stats.lookup_hits >= 1,
+            "Engine execution should dispatch to the shared JIT backend: {engine_stats:?}",
         );
     }
 

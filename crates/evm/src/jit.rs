@@ -43,9 +43,8 @@ pub struct JitConfig {
 /// been started (JIT never enabled), nothing drains that channel, so a blocking `send` would
 /// stall the caller forever once the channel fills. Implementations must therefore reject
 /// [`Self::pause`], [`Self::resume`], and [`Self::clear`] while the backend is disabled
-/// instead of queueing commands. This mirrors the upstream fix in paradigmxyz/revmc#391,
-/// which our pinned revision predates and which cannot be picked up until the pin can move
-/// past revmc's revm 41 upgrade.
+/// and deliver controls with a non-blocking operation. The vendored runtime backports the
+/// compatible upstream fix from paradigmxyz/revmc#391 and extends it to cache clearing.
 pub trait JitBackendControl: Send + Sync {
     /// Enables or disables JIT lookups and background compilation.
     fn set_enabled(&self, enabled: bool) -> Result<(), String>;
@@ -57,21 +56,6 @@ pub trait JitBackendControl: Send + Sync {
     fn resume(&self) -> Result<(), String>;
     /// Clears resident and persisted compiled artifacts.
     fn clear(&self) -> Result<(), String>;
-}
-
-/// Runs `control` only when the backend is enabled (and its command-draining thread runs).
-///
-/// See [`JitBackendControl`] for why disabled backends must reject control commands.
-#[cfg(feature = "jit")]
-fn run_enabled_control(
-    backend: &JitBackend,
-    control: impl FnOnce(&JitBackend),
-) -> Result<(), String> {
-    if !JitBackend::enabled(backend) {
-        return Err("JIT backend is not enabled; run `reth_jit enable` first".to_string());
-    }
-    control(backend);
-    Ok(())
 }
 
 #[cfg(feature = "jit")]
@@ -88,17 +72,17 @@ impl JitBackendControl for JitBackend {
 
     /// Pauses the revmc helper.
     fn pause(&self) -> Result<(), String> {
-        run_enabled_control(self, JitBackend::pause)
+        JitBackend::try_pause(self).map_err(|error| error.to_string())
     }
 
     /// Resumes the revmc helper.
     fn resume(&self) -> Result<(), String> {
-        run_enabled_control(self, JitBackend::resume)
+        JitBackend::try_resume(self).map_err(|error| error.to_string())
     }
 
     /// Clears all revmc artifacts.
     fn clear(&self) -> Result<(), String> {
-        run_enabled_control(self, JitBackend::clear_all)
+        JitBackend::try_clear_all(self).map_err(|error| error.to_string())
     }
 }
 
@@ -142,6 +126,7 @@ impl JitConfig {
             tuning,
             dump_dir,
             debug_assertions: self.debug,
+            single_error: false,
             blocking: self.blocking,
             jit_mode: JitMode::OutOfProcess,
             ..RuntimeConfig::default()
@@ -170,6 +155,43 @@ impl Default for JitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "jit")]
+    struct FailingStore;
+
+    #[cfg(feature = "jit")]
+    impl revmc::runtime::ArtifactStore for FailingStore {
+        fn load_all(
+            &self,
+        ) -> revmc::eyre::Result<Vec<(revmc::runtime::ArtifactKey, revmc::runtime::StoredArtifact)>>
+        {
+            Err(std::io::Error::other("intentional startup failure").into())
+        }
+
+        fn load(
+            &self,
+            _key: &revmc::runtime::ArtifactKey,
+        ) -> revmc::eyre::Result<Option<revmc::runtime::StoredArtifact>> {
+            Ok(None)
+        }
+
+        fn store(
+            &self,
+            _key: &revmc::runtime::ArtifactKey,
+            _manifest: &revmc::runtime::ArtifactManifest,
+            _dylib_bytes: &[u8],
+        ) -> revmc::eyre::Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _key: &revmc::runtime::ArtifactKey) -> revmc::eyre::Result<()> {
+            Ok(())
+        }
+
+        fn clear(&self) -> revmc::eyre::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn defaults_keep_jit_disabled() {
@@ -230,5 +252,22 @@ mod tests {
             .recv_timeout(Duration::from_secs(30))
             .expect("JIT controls must not block when the backend thread is not running");
         worker.join().expect("control worker should finish cleanly");
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn failed_backend_start_does_not_enable_runtime_controls() {
+        let backend = JitBackend::new(RuntimeConfig {
+            store: Some(std::sync::Arc::new(FailingStore)),
+            ..RuntimeConfig::default()
+        })
+        .expect("disabled backend construction should defer artifact loading");
+        let control: &dyn JitBackendControl = &backend;
+
+        control.set_enabled(true).expect_err("artifact preload should prevent startup");
+        assert!(!control.is_enabled(), "a failed worker start must leave JIT disabled");
+        control.pause().expect_err("pause must reject a backend whose worker failed to start");
+        control.resume().expect_err("resume must reject a backend whose worker failed to start");
+        control.clear().expect_err("clear must reject a backend whose worker failed to start");
     }
 }

@@ -52,9 +52,7 @@ impl TaikoExecutorBuilder {
                 hot_threshold = self.jit.hot_threshold,
                 workers = ?self.jit.worker_count,
                 blocking = self.jit.blocking,
-                "Started experimental revmc JIT backend; the pinned revmc has a known \
-                 JIT/interpreter execution divergence (paradigmxyz/revmc#395) — do not enable \
-                 on consensus-critical nodes"
+                "Started experimental revmc JIT backend"
             );
         }
 

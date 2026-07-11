@@ -402,6 +402,7 @@ fn jit_requires_local_support_and_falls_back_for_unzen() {
     let backend = JitBackend::new(RuntimeConfig {
         enabled: true,
         blocking: true,
+        single_error: false,
         jit_mode: JitMode::InProcess,
         ..RuntimeConfig::default()
     })
@@ -450,6 +451,7 @@ fn jit_and_interpreter_outputs(
     let backend = JitBackend::new(RuntimeConfig {
         enabled: true,
         blocking: true,
+        single_error: false,
         jit_mode: JitMode::InProcess,
         ..RuntimeConfig::default()
     })
@@ -482,28 +484,18 @@ fn jit_execution_matches_interpreter_execution() {
     }
 }
 
-/// Documents the pinned revmc's dynamic-gas failure-order bug: compiled execution returns a
-/// different halt reason and storage-touch journal than the interpreter for this bytecode
-/// (PUSH1 1, PUSH1 0xea, SSTORE, ADD — the regression case from paradigmxyz/revmc#395).
-///
-/// The upstream fix landed after our pinned revision and cannot be picked up until the pin can
-/// move past revmc's revm 41 upgrade. Until then `--jit` must not be enabled on
-/// consensus-critical nodes. When a pin bump makes this test fail, delete it and move the
-/// bytecode into [`jit_execution_matches_interpreter_execution`].
+/// Ensures JIT execution preserves the interpreter's dynamic-gas failure ordering.
 #[cfg(feature = "jit")]
 #[test]
-fn jit_pin_still_diverges_on_dynamic_gas_failure_order() {
+fn jit_matches_interpreter_on_dynamic_gas_failure_order() {
     let bytecode = Bytecode::new_raw([0x60, 0x01, 0x60, 0xea, 0x55, 0x01].into());
 
     let (jit_output, interpreter_output, _) = jit_and_interpreter_outputs(bytecode);
 
-    assert_ne!(
+    assert_eq!(
         jit_output, interpreter_output,
-        "revmc#395 appears fixed at this pin — move this bytecode into the differential test",
+        "JIT and interpreter must agree on halt reason, gas, and journaled state",
     );
-    // Both sides burn the entire gas limit for this exact shape, so receipts do not diverge
-    // here; the divergence is the halt reason and the storage-touch journal.
-    assert_eq!(jit_output.result.gas_used(), interpreter_output.result.gas_used());
 }
 
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {

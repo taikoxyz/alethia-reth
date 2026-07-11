@@ -107,17 +107,15 @@ otherwise.
 
 Taiko's Unzen execution uses consensus-critical zk-gas metering that requires per-opcode
 interpreter hooks. JIT dispatch therefore falls back to the interpreter for Unzen blocks and
-ordinary RPC call/trace execution. Pre-Unzen canonical execution, payload building, and block
-replay use the shared revmc backend. Compiled code bakes in upstream mainnet gas and opcode
-semantics, so hardforks are JIT-eligible only through an explicit allowlist: new forks stay
-interpreter-only until they are deliberately marked JIT-safe in `TaikoEvmFactory`.
+ordinary RPC call, trace, simulation, estimation, and pending-block execution. Pre-Unzen
+canonical Engine execution, payload building, and block replay use the shared revmc backend.
+Compiled code bakes in upstream mainnet gas and opcode semantics, so hardforks are JIT-eligible
+only through an explicit allowlist: new forks stay interpreter-only until they are deliberately
+marked JIT-safe in `TaikoEvmFactory`.
 
-> [!WARNING]
-> The pinned revmc revision predates the upstream fix for a confirmed JIT/interpreter
-> execution divergence on adversarial bytecode
-> ([paradigmxyz/revmc#395](https://github.com/paradigmxyz/revmc/pull/395), reproduced in-repo
-> by `jit_pin_still_diverges_on_dynamic_gas_failure_order`). Keep `--jit` disabled on
-> consensus-critical nodes until the pin advances past that fix.
+The compatible vendored revmc source includes the upstream dynamic-gas failure-order and
+non-blocking runtime-control fixes; its provenance is recorded in
+`vendor/revmc/TAIKO-PROVENANCE.md`.
 
 ## License
 

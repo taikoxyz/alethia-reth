@@ -759,7 +759,7 @@ mod test {
                     },
                 )
                 .expect("next block env should build");
-            let evm = config.evm_factory.create_evm(db, evm_env);
+            let evm = config.evm_factory().create_evm(db, evm_env);
 
             TaikoBlockExecutor::new(
                 evm,

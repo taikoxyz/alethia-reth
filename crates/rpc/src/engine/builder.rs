@@ -6,13 +6,12 @@ use reth_node_api::{AddOnsContext, FullNodeComponents, NodeTypes};
 use reth_node_builder::rpc::{EngineApiBuilder, PayloadValidatorBuilder};
 use reth_node_core::version::{CLIENT_CODE, version_metadata};
 use reth_rpc::EngineApi;
-use reth_rpc_engine_api::EngineCapabilities;
 
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 use reth_ethereum::EthPrimitives;
 
-use crate::engine::api::TaikoEngineApi;
+use crate::engine::api::{TaikoEngineApi, taiko_engine_capabilities};
 
 /// Builder for basic [`EngineApi`] implementation.
 ///
@@ -74,7 +73,7 @@ where
             ctx.node.pool().clone(),
             ctx.node.task_executor().clone(),
             client,
-            EngineCapabilities::default(),
+            taiko_engine_capabilities(),
             engine_validator,
             ctx.config.engine.accept_execution_requests_hash,
             ctx.node.network().clone(),

@@ -133,11 +133,9 @@ where
     let mut best_txs = pool
         .best_transactions_with_attributes(BestTransactionsAttributes::new(config.base_fee, None));
 
-    let mut lists = Vec::with_capacity(config.max_lists.max(1));
-    lists.push(ExecutedTxList::default());
+    let mut lists = vec![ExecutedTxList::default()];
     // Per-list state for adaptive DA size calibration.
-    let mut da_guard_states = Vec::with_capacity(config.max_lists.max(1));
-    da_guard_states.push(DaRatioState::default());
+    let mut da_guard_states = vec![DaRatioState::default()];
 
     while let Some(pool_tx) = best_txs.next() {
         // 1. Check cancellation
@@ -299,6 +297,44 @@ mod tests {
     const BENCH_INCLUDED_CALLER: Address = Address::with_last_byte(0x31);
     const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x32);
     const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x33);
+
+    #[test]
+    fn tx_selection_does_not_preallocate_the_caller_supplied_list_limit() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state =
+            State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            unzen_execution_ctx(),
+            chain_spec,
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let pool = testing_pool();
+
+        let outcome = select_and_execute_pool_transactions(
+            &mut builder,
+            &pool,
+            &TxSelectionConfig {
+                base_fee: 0,
+                gas_limit_per_list: 1,
+                max_da_bytes_per_list: 1,
+                da_size_zlib_guard_bytes: 0,
+                max_lists: usize::MAX,
+                min_tip: 0,
+                locals: vec![],
+            },
+            || false,
+        )
+        .expect("an empty pool should complete without allocating the maximum list count");
+
+        let SelectionOutcome::Completed(lists) = outcome else {
+            panic!("selection should not cancel")
+        };
+        assert_eq!(lists.len(), 1);
+        assert!(lists[0].transactions.is_empty());
+    }
 
     #[test]
     fn tx_selection_breaks_on_zk_gas_error_but_keeps_skipping_invalid_txs() {

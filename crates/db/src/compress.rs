@@ -88,11 +88,13 @@ impl reth_db_api::table::Compress for StoredL1Origin {
 impl reth_db_api::table::Decompress for StoredL1Origin {
     /// Decompresses owned data coming from the database.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
-        // `from_compact` reads a fixed-size layout with panicking cursor reads, so a
-        // truncated/corrupt row must be rejected here where an error can be returned.
-        if value.len() < STORED_L1_ORIGIN_COMPACT_LEN {
+        // `from_compact` reads a fixed-size layout with panicking cursor reads and returns any
+        // trailing bytes separately, so reject every non-exact row here instead of panicking or
+        // silently ignoring corruption.
+        if value.len() != STORED_L1_ORIGIN_COMPACT_LEN {
             return Err(DecompressError::new(std::io::Error::other(format!(
-                "StoredL1Origin row too short: got {} bytes, expected {STORED_L1_ORIGIN_COMPACT_LEN}",
+                "StoredL1Origin row has invalid length: got {} bytes, expected \
+                 {STORED_L1_ORIGIN_COMPACT_LEN}",
                 value.len()
             ))));
         }
@@ -150,6 +152,25 @@ mod test {
                 "decompress of {len}-byte row should fail"
             );
         }
+    }
+
+    #[test]
+    fn test_decompress_oversized_row_returns_error() {
+        let stored = StoredL1Origin {
+            block_id: U256::random(),
+            l2_block_hash: B256::random(),
+            l1_block_height: U256::random(),
+            l1_block_hash: B256::random(),
+            build_payload_args_id: [1u8; 8],
+            is_forced_inclusion: true,
+            signature: [1u8; 65],
+        };
+
+        let mut buf = Vec::new();
+        stored.compress_to_buf(&mut buf);
+        buf.push(0xff);
+
+        assert!(StoredL1Origin::decompress(&buf).is_err());
     }
 
     #[test]

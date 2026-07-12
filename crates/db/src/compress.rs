@@ -4,6 +4,11 @@ use reth_codecs::{Compact, DecompressError};
 
 use crate::model::StoredL1Origin;
 
+/// Fixed byte length of a `Compact`-encoded [`StoredL1Origin`] row: `block_id` (32) +
+/// `l2_block_hash` (32) + `l1_block_height` (32) + `l1_block_hash` (32) +
+/// `build_payload_args_id` (8) + `is_forced_inclusion` (1) + `signature` (65).
+const STORED_L1_ORIGIN_COMPACT_LEN: usize = 32 + 32 + 32 + 32 + 8 + 1 + 65;
+
 impl Compact for StoredL1Origin {
     /// Takes a buffer which can be written to. *Ideally*, it returns the length written to.
     fn to_compact<B>(&self, buf: &mut B) -> usize
@@ -83,6 +88,14 @@ impl reth_db_api::table::Compress for StoredL1Origin {
 impl reth_db_api::table::Decompress for StoredL1Origin {
     /// Decompresses owned data coming from the database.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
+        // `from_compact` reads a fixed-size layout with panicking cursor reads, so a
+        // truncated/corrupt row must be rejected here where an error can be returned.
+        if value.len() < STORED_L1_ORIGIN_COMPACT_LEN {
+            return Err(DecompressError::new(std::io::Error::other(format!(
+                "StoredL1Origin row too short: got {} bytes, expected {STORED_L1_ORIGIN_COMPACT_LEN}",
+                value.len()
+            ))));
+        }
         let (obj, _) = Compact::from_compact(value, value.len());
         Ok(obj)
     }
@@ -113,6 +126,30 @@ mod test {
         let (decompressed, remaining) = StoredL1Origin::from_compact(&buf, len);
         assert!(remaining.is_empty());
         assert_eq!(stored, decompressed);
+    }
+
+    #[test]
+    fn test_decompress_truncated_row_returns_error() {
+        let stored = StoredL1Origin {
+            block_id: U256::random(),
+            l2_block_hash: B256::random(),
+            l1_block_height: U256::random(),
+            l1_block_hash: B256::random(),
+            build_payload_args_id: [1u8; 8],
+            is_forced_inclusion: true,
+            signature: [1u8; 65],
+        };
+
+        let mut buf = Vec::new();
+        stored.compress_to_buf(&mut buf);
+
+        // A corrupt/truncated row must surface as a `DecompressError`, not a panic.
+        for len in [0, 1, 32, buf.len() - 1] {
+            assert!(
+                StoredL1Origin::decompress(&buf[..len]).is_err(),
+                "decompress of {len}-byte row should fail"
+            );
+        }
     }
 
     #[test]

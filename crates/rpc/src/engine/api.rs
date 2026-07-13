@@ -594,15 +594,10 @@ fn resolve_reconciled_head_l1_origin(
     // pointer and the persisted head.
     let top = stored_head.min(chain_head);
     let floor = top.saturating_sub(lookback);
-    let mut number = top;
-    loop {
+    for number in (floor..=top).rev() {
         if is_promotable_row(number)? {
             return Ok(HeadL1OriginReconciliation::ClampTo(number))
         }
-        if number <= floor {
-            break;
-        }
-        number -= 1;
     }
 
     Ok(HeadL1OriginReconciliation::Clear)

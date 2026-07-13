@@ -174,12 +174,63 @@ fn unzen_header_allows_nonzero_difficulty() {
         difficulty: U256::from(7_u64),
         base_fee_per_gas: Some(1),
         gas_limit: 30_000_000,
+        extra_data: shasta_extra_data(),
         ..Default::default()
     };
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(header))
         .expect("Unzen headers should allow nonzero difficulty");
+}
+
+#[test]
+fn shasta_header_requires_exact_extra_data_len() {
+    let consensus = test_consensus(devnet_chain_spec());
+    let base = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        ..Default::default()
+    };
+
+    consensus
+        .validate_header(&SealedHeader::new_unhashed(Header {
+            extra_data: shasta_extra_data(),
+            ..base.clone()
+        }))
+        .expect("the 7-byte extraData layout should validate");
+
+    for (name, extra) in [
+        ("empty", Bytes::new()),
+        ("2 bytes", Bytes::from_static(&[75, 0])),
+        ("3 bytes", Bytes::from_static(&[75, 0, 1])),
+        ("12 bytes", Bytes::from_static(&[0; 12])),
+    ] {
+        let err = consensus
+            .validate_header(&SealedHeader::new_unhashed(Header {
+                extra_data: extra,
+                ..base.clone()
+            }))
+            .expect_err(name);
+        assert!(matches!(err, ConsensusError::Other(_)), "{name}: unexpected error {err:?}");
+    }
+}
+
+#[test]
+fn pre_shasta_header_has_no_extra_data_len_rule() {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Never);
+    let consensus = test_consensus(chain_spec);
+    let header = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        ..Default::default()
+    };
+
+    consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect("pre-Shasta headers have no extraData length rule");
 }
 
 #[test]
@@ -271,6 +322,10 @@ fn make_legacy_tx() -> TransactionSigned {
 
 fn test_consensus(chain_spec: TaikoChainSpec) -> TaikoBeaconConsensus {
     TaikoBeaconConsensus::new(Arc::new(chain_spec), Arc::new(NullBlockReader))
+}
+
+fn shasta_extra_data() -> Bytes {
+    Bytes::from_static(&[75, 0, 0, 0, 0, 0x4c, 0x81])
 }
 
 fn devnet_chain_spec() -> TaikoChainSpec {

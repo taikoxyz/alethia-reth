@@ -54,6 +54,19 @@ pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipPara
 #[cfg(test)]
 mod tests;
 
+/// Computes the combined gas budget across all requested candidate tx lists, rejecting
+/// parameter combinations whose product does not fit in a `u64`.
+fn combined_tx_lists_gas_limit(
+    block_max_gas_limit: u64,
+    max_transactions_lists: u64,
+) -> Result<u64, EthApiError> {
+    block_max_gas_limit.checked_mul(max_transactions_lists).ok_or_else(|| {
+        EthApiError::InvalidParams(
+            "`blockMaxGasLimit` * `maxTransactionsLists` overflows u64".to_string(),
+        )
+    })
+}
+
 /// trait interface for a custom auth rpc namespace: `taikoAuth`
 ///
 /// This defines the Taiko namespace where all methods are configured as trait functions.
@@ -298,6 +311,8 @@ where
             )
             .into());
         }
+        let combined_gas_limit =
+            combined_tx_lists_gas_limit(block_max_gas_limit, max_transactions_lists)?;
 
         // Fetch the parent block and its state, for building the prebuilt transaction lists later.
         let parent_block = self
@@ -328,7 +343,7 @@ where
                     timestamp: parent.timestamp(),
                     suggested_fee_recipient: beneficiary,
                     prev_randao: parent.mix_hash().unwrap_or_default(),
-                    gas_limit: block_max_gas_limit * max_transactions_lists,
+                    gas_limit: combined_gas_limit,
                     extra_data: parent.extra_data().clone(),
                     base_fee_per_gas: base_fee,
                 },

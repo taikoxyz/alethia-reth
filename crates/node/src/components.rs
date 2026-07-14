@@ -24,6 +24,44 @@ use tracing::info;
 #[derive(Debug, Clone, Default)]
 pub struct TaikoExecutorBuilder;
 
+impl TaikoExecutorBuilder {
+    /// Builds an EVM configuration whose factory owns the shared revmc backend created from
+    /// the node's `--jit` CLI settings.
+    #[cfg(feature = "jit")]
+    fn build_jit_evm_config(
+        chain_spec: Arc<TaikoChainSpec>,
+        jit: &reth_node_core::args::JitArgs,
+        dump_dir: Option<std::path::PathBuf>,
+    ) -> eyre::Result<TaikoEvmConfig> {
+        let config = alethia_reth_evm::jit::JitConfig {
+            enabled: jit.enabled,
+            hot_threshold: jit.hot_threshold,
+            worker_count: jit.worker_count,
+            channel_capacity: jit.channel_capacity,
+            max_pending_jobs: jit.max_pending_jobs,
+            max_bytecode_len: jit.max_bytecode_len,
+            code_cache_bytes: jit.code_cache_bytes,
+            idle_evict_duration: jit.idle_evict_duration,
+            debug: jit.debug,
+            blocking: jit.blocking,
+        };
+        let backend = config.build_backend(dump_dir)?;
+
+        if config.enabled {
+            tracing::warn!(
+                target: "reth::taiko::cli",
+                hot_threshold = config.hot_threshold,
+                workers = ?config.worker_count,
+                blocking = config.blocking,
+                "Started experimental revmc JIT backend; this may cause instability"
+            );
+        }
+
+        let factory = alethia_reth_evm::factory::TaikoEvmFactory::new(backend);
+        Ok(TaikoEvmConfig::new_with_evm_factory(chain_spec, factory))
+    }
+}
+
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
 where
     Types: NodeTypes<
@@ -36,12 +74,30 @@ where
     /// The EVM config to use.
     type EVM = TaikoEvmConfig;
 
-    /// Creates the EVM config.
+    /// Creates the EVM config from the node's `--jit` CLI settings.
     fn build_evm(
         self,
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
-        future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
+        let jit = &ctx.config().jit;
+
+        #[cfg(feature = "jit")]
+        let result = Self::build_jit_evm_config(
+            ctx.chain_spec(),
+            jit,
+            jit.debug.then(|| ctx.config().datadir().data_dir().join("jit")),
+        );
+
+        #[cfg(not(feature = "jit"))]
+        let result = if jit.enabled {
+            Err(eyre::eyre!(
+                "JIT compilation was requested with --jit, but this binary was built without the `jit` feature"
+            ))
+        } else {
+            Ok(TaikoEvmConfig::new(ctx.chain_spec()))
+        };
+
+        future::ready(result)
     }
 }
 

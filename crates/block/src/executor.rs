@@ -616,7 +616,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         assert_eq!(evm.block_zk_gas_used(), Some(0));
         let ctx = unzen_execution_ctx();
         let mut executor = TaikoBlockExecutor::new(
@@ -655,7 +655,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let ctx = unzen_execution_ctx();
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
@@ -679,7 +679,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let ctx = unzen_execution_ctx();
         let executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
@@ -703,7 +703,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let mut ctx = unzen_execution_ctx();
         ctx.expected_difficulty = Some(U256::ZERO);
         let mut executor =
@@ -767,7 +767,7 @@ mod test {
                     },
                 )
                 .expect("next block env should build");
-            let evm = config.evm_factory.create_evm(db, evm_env);
+            let evm = config.evm_factory().create_evm(db, evm_env);
 
             TaikoBlockExecutor::new(
                 evm,

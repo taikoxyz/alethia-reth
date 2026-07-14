@@ -154,6 +154,13 @@ reth-optimism-trie = { path = "vendor/reth-optimism-trie", default-features = fa
 # revm
 revm-database-interface = { version = "41.0.0", default-features = false }
 
+# revmc JIT: pinned to the fast-forward of reth v2.4.0's locked revision (7e3536d) that adds
+# revmc#395 (dynamic-gas failure ordering). revmc#391 (non-blocking runtime controls) is
+# already included. Bump alongside the reth pin.
+revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "56ed00631c4542507f7198bdc9d53dd6471a2ef8", default-features = false, features = [
+    "llvm-prefer-static",
+] }
+
 # serialization
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

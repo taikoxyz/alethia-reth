@@ -303,7 +303,7 @@ mod tests {
         let chain_spec = Arc::new(unzen_chain_spec());
         let mut state =
             State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),
@@ -348,7 +348,7 @@ mod tests {
             ]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),

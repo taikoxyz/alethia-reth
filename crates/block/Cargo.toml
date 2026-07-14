@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["net"]
+jit = ["alethia-reth-evm/jit"]
 prover = ["dep:alethia-reth-primitives", "dep:reth-storage-api", "dep:reth-trie-common"]
 test-utils = ["dep:reth-storage-api", "dep:reth-trie-common"]
 net = [

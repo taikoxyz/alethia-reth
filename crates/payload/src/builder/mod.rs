@@ -195,6 +195,10 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
+    // Opt payload building into JIT dispatch (mirrors reth's engine tree and upstream payload
+    // builder). Unzen blocks still execute through the interpreter via the fork allowlist, and
+    // this local support flag is one of several gates before compiled code can run.
+    let evm_config = evm_config.clone().with_jit_support();
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,

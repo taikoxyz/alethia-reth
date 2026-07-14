@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.3.0](https://github.com/taikoxyz/alethia-reth/compare/v1.2.0...v1.3.0) (2026-07-14)
+
+
+### Features
+
+* **block:** backfill from local executed head + eth_getProof fallback ([#214](https://github.com/taikoxyz/alethia-reth/issues/214)) ([4937e26](https://github.com/taikoxyz/alethia-reth/commit/4937e26eb0ff02a5c584d0cf1dce5576f0a38403))
+* **chainspec:** set Mainnet Unzen fork time ([#217](https://github.com/taikoxyz/alethia-reth/issues/217)) ([6c4d199](https://github.com/taikoxyz/alethia-reth/commit/6c4d19979ca632a169627c8463c7452c4b82214c))
+* **consensus:** require the exact 7-byte Shasta extraData layout ([#221](https://github.com/taikoxyz/alethia-reth/issues/221)) ([84f4709](https://github.com/taikoxyz/alethia-reth/commit/84f4709dc112cab8334f83e0cc7884870be963cc))
+* **rpc:** engine capabilities routing, tx-list gas overflow, and L1-origin row decoding ([#220](https://github.com/taikoxyz/alethia-reth/issues/220)) ([2bc92e6](https://github.com/taikoxyz/alethia-reth/commit/2bc92e66303ff998781f83bbe6c38d4ed4f94064))
+
+
+### Chores
+
+* **block:** harden proof-history recovery and proof RPCs ([#215](https://github.com/taikoxyz/alethia-reth/issues/215)) ([ab87808](https://github.com/taikoxyz/alethia-reth/commit/ab878083f8adc8e4d05d505b65cb6cfdfba5b177))
+
+
+### Code Refactoring
+
+* **block:** simplify `TaikoBlockAssembler` and `StoredL1Origin` conversions ([#211](https://github.com/taikoxyz/alethia-reth/issues/211)) ([2c791d8](https://github.com/taikoxyz/alethia-reth/commit/2c791d83843e81828411ca7a4aaadb7f6149983f))
+* simplify TaikoBlockAssembler and StoredL1Origin conversions ([2c791d8](https://github.com/taikoxyz/alethia-reth/commit/2c791d83843e81828411ca7a4aaadb7f6149983f))
+
+
+### Workflow
+
+* **repo:** add gitleaks secret scanning CI gate ([#216](https://github.com/taikoxyz/alethia-reth/issues/216)) ([9926492](https://github.com/taikoxyz/alethia-reth/commit/9926492709db10da9c1fda29b45e93a98dbc6164))
+
 ## [1.2.0](https://github.com/taikoxyz/alethia-reth/compare/v1.1.0...v1.2.0) (2026-06-12)
 
 

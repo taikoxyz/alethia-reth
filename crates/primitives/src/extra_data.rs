@@ -1,6 +1,7 @@
 //! Helpers for decoding Taiko-specific block `extraData` fields.
 
-/// Minimum number of bytes required for Shasta extra data.
+/// Exact length of the Shasta extra data layout: `[basefeeSharingPctg | proposalId(6)]`.
+/// Header validation rejects Shasta headers whose extra data has any other length.
 pub const SHASTA_EXTRA_DATA_LEN: usize = 7;
 
 /// Returns the base fee sharing percentage encoded in Shasta extra data.

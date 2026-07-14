@@ -22,7 +22,7 @@ use crate::eip4396::{
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
-use alethia_reth_primitives::transaction::is_allowed_tx_type;
+use alethia_reth_primitives::{SHASTA_EXTRA_DATA_LEN, transaction::is_allowed_tx_type};
 
 /// Anchor transaction selectors, gas rules, and validation functions.
 mod anchor;
@@ -152,6 +152,20 @@ where
         }
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
+
+        // Shasta extraData must be the 7-byte [pctg | proposalId(6)] layout — the only shape the
+        // drivers produce and the live chains carry. Reject anything else at import so a
+        // misbehaving block producer fails loudly here instead of minting headers whose embedded
+        // proposalId consumers cannot decode.
+        if self.chain_spec.is_shasta_active(header.timestamp()) &&
+            header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
+        {
+            return Err(ConsensusError::Other(format!(
+                "invalid Shasta extra-data length: have {}, want {SHASTA_EXTRA_DATA_LEN}",
+                header.extra_data().len()
+            )));
+        }
+
         validate_header_gas(header)?;
         validate_header_base_fee(header, &self.chain_spec)
     }

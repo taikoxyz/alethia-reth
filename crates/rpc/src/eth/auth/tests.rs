@@ -201,6 +201,13 @@ fn tx_pool_content_params_conversion_defaults_min_tip_to_zero() {
     assert_eq!(with_tip.min_tip, 0);
 }
 
+#[test]
+/// Ensures the combined tx-list gas limit multiplies normally and rejects u64 overflow.
+fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
+    assert_eq!(super::combined_tx_lists_gas_limit(30_000_000, 4).unwrap(), 120_000_000);
+    assert!(super::combined_tx_lists_gas_limit(u64::MAX, 2).is_err());
+}
+
 // ---------------------------------------------------------------------------
 // Proposal ID decoding tests
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ use reth_provider::{
     BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
 };
 use reth_rpc::EngineApi;
-use reth_rpc_engine_api::EngineApiError;
+use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
 
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
@@ -36,8 +36,15 @@ use alethia_reth_db::model::{
 };
 
 /// The list of all supported Engine capabilities available over the engine endpoint.
+///
+/// Per the Engine API spec, `engine_exchangeCapabilities` itself is served but never listed.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
     &["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"];
+
+/// Returns the Engine API capabilities advertised by the Taiko engine endpoint.
+pub fn taiko_engine_capabilities() -> EngineCapabilities {
+    EngineCapabilities::new(TAIKO_ENGINE_CAPABILITIES.iter().copied())
+}
 
 /// Extension trait that gives access to Taiko engine API RPC methods.
 ///
@@ -64,6 +71,10 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
         &self,
         payload_id: PayloadId,
     ) -> RpcResult<Engine::ExecutionPayloadEnvelopeV2>;
+
+    /// Exchange the list of supported Engine API methods with the connected driver.
+    #[method(name = "exchangeCapabilities")]
+    async fn exchange_capabilities(&self, capabilities: Vec<String>) -> RpcResult<Vec<String>>;
 }
 
 /// A concrete implementation of the `TaikoEngineApi` trait.
@@ -254,6 +265,13 @@ where
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
         Ok(self.convert_built_payload_to_execution_payload_envelope_v2(built_payload))
     }
+
+    /// Exchanges supported Engine API methods with the driver, returning this node's list.
+    async fn exchange_capabilities(&self, capabilities: Vec<String>) -> RpcResult<Vec<String>> {
+        let el_capabilities = self.inner.capabilities();
+        el_capabilities.log_capability_mismatches(&capabilities);
+        Ok(el_capabilities.list())
+    }
 }
 
 impl<Provider, EngineT, Pool, Validator, ChainSpec> IntoEngineApiRpcModule
@@ -302,6 +320,19 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, U256};
     use reth_primitives_traits::Block as _;
     use std::sync::Arc;
+
+    #[test]
+    fn engine_capabilities_advertise_exactly_the_served_methods() {
+        let mut capabilities = taiko_engine_capabilities().list();
+        capabilities.sort();
+
+        // Exactly the methods routed by `TaikoEngineApiServer::into_rpc`; per the Engine API
+        // spec, `engine_exchangeCapabilities` itself must not be part of the list.
+        assert_eq!(
+            capabilities,
+            vec!["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"]
+        );
+    }
 
     #[test]
     fn unzen_payload_overwrites_block_value_with_header_difficulty() {

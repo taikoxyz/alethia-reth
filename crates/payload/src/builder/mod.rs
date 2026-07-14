@@ -315,6 +315,7 @@ mod tests {
                 withdrawals: Some(Vec::new()),
                 parent_beacon_block_root: Some(B256::repeat_byte(0x33)),
                 slot_number: None,
+                target_gas_limit: None,
             },
             base_fee_per_gas,
             block_metadata: TaikoBlockMetadata {

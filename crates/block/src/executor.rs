@@ -225,6 +225,7 @@ where
             Transaction: Transaction + Encodable2718 + Clone,
             Receipt: TxReceipt<Log = Log>,
         >,
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Executes a prover candidate block and returns the transactions that were actually committed.
     pub fn execute_block_with_committed_transactions<'tx>(
@@ -272,6 +273,7 @@ where
         > + TaikoZkGasEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Executes `tx` and returns `Ok(true)` if it committed, `Ok(false)` if it was filtered as a
     /// recoverable non-anchor failure, or `Err` for fatal / anchor errors.

@@ -431,7 +431,10 @@ mod tests {
     use super::*;
     use alloy_consensus::Header;
     use reth_ethereum_primitives::EthPrimitives;
-    use reth_optimism_trie::{InMemoryProofsStorage, OpProofsStorage, api::OpProofsProviderRw};
+    use reth_optimism_trie::{
+        InMemoryProofsStorage, OpProofsStorage,
+        api::OpProofsInitProvider,
+    };
     use reth_provider::test_utils::MockEthProvider;
 
     #[test]
@@ -441,9 +444,12 @@ mod tests {
 
         assert!(proof_history_storage_needs_initialization(&storage).unwrap());
 
-        let provider_rw = storage.provider_rw().expect("provider_rw");
-        provider_rw.set_earliest_block_number(0, B256::ZERO).expect("set earliest block");
-        provider_rw.commit().expect("commit");
+        let initializer = storage.initialization_provider().expect("initialization provider");
+        initializer
+            .set_initial_state_anchor(alloy_eips::BlockNumHash::new(0, B256::ZERO))
+            .expect("set initial state anchor");
+        initializer.commit_initial_state().expect("commit initial state");
+        initializer.commit().expect("commit");
 
         assert!(!proof_history_storage_needs_initialization(&storage).unwrap());
     }

@@ -184,9 +184,9 @@ where
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
         f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result) -> reth_evm::block::CommitChanges,
-    ) -> Result<Option<u64>, BlockExecutionError> {
+    ) -> Result<Option<reth_evm::block::GasOutput>, BlockExecutionError> {
         let tx = tx.into_parts();
-        Ok(self.executor.execute_transaction_with_commit_condition(tx, f)?.map(|g| g.tx_gas_used()))
+        self.executor.execute_transaction_with_commit_condition(tx, f)
     }
 
     fn finish(

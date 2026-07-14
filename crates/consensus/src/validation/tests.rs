@@ -254,7 +254,7 @@ fn unzen_post_execution_rejects_body_past_truncation_point() {
 
     let err =
         <TaikoBeaconConsensus as FullConsensus<EthPrimitives>>::validate_block_post_execution(
-            &consensus, &recovered, &result, None,
+            &consensus, &recovered, &result, None, None,
         )
         .expect_err("Unzen blocks must reject bodies that extend past the truncation point");
     assert!(matches!(err, ConsensusError::Other(_)));

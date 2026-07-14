@@ -290,7 +290,7 @@ mod tests {
             &mut self,
             tx: impl ExecutorTx<Self::Executor>,
             f: impl FnOnce(&<Self::Executor as BlockExecutor>::Result) -> CommitChanges,
-        ) -> Result<Option<u64>, BlockExecutionError> {
+        ) -> Result<Option<reth_evm::block::GasOutput>, BlockExecutionError> {
             if self.fail_next_execution {
                 self.fail_next_execution = false;
                 return Err(BlockExecutionError::other(ZkGasLimitExceeded));

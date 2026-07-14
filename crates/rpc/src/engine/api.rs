@@ -322,7 +322,6 @@ mod tests {
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, U256};
-    use reth_primitives_traits::Block as _;
     use std::sync::Arc;
 
     #[test]
@@ -378,9 +377,10 @@ mod tests {
 
     fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {
         let block = sample_unzen_block(difficulty, timestamp);
-        let sealed_block = Arc::new(block.seal_slow());
+        let recovered_block =
+            Arc::new(reth_primitives_traits::RecoveredBlock::new_unhashed(block, Vec::new()));
 
-        EthBuiltPayload::new(sealed_block, fees, None, None)
+        EthBuiltPayload::new(recovered_block, fees, None, None)
     }
 
     fn sample_unzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {

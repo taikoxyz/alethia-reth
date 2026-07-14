@@ -464,7 +464,7 @@ mod tests {
         );
 
         let next_tx_id = journal.transaction_id;
-        assert_eq!(next_tx_id, 1, "synthetic pre-execution load should advance tx id");
+        assert_eq!(next_tx_id.get(), 1, "synthetic pre-execution load should advance tx id");
 
         let golden_touch_account = witness_state
             .get(&golden_touch)

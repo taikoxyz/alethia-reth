@@ -54,8 +54,8 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
         }
     };
 
-    if let Some(result) = halt
-        && interpreter.bytecode.action().is_none()
+    if let Some(result) = halt &&
+        interpreter.bytecode.action().is_none()
     {
         interpreter.halt(result);
     }

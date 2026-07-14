@@ -123,7 +123,12 @@ where
     >;
     /// Executor type created by this factory.
     type Executor<'a, DB: StateDB, I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>>> =
-        TaikoBlockExecutor<'a, <TaikoEvmFactory as EvmFactory>::Evm<DB, I>, Spec, &'a RethReceiptBuilder>;
+        TaikoBlockExecutor<
+            'a,
+            <TaikoEvmFactory as EvmFactory>::Evm<DB, I>,
+            Spec,
+            &'a RethReceiptBuilder,
+        >;
 
     /// Reference to EVM factory used by the executor.
     fn evm_factory(&self) -> &Self::EvmFactory {

@@ -623,8 +623,12 @@ where
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
         let pruner = Arc::new(
-            OpProofStoragePruner::new(self.storage.clone(), self.provider.clone(), self.config.window)
-                .with_batch_size(PROOF_HISTORY_PRUNE_BATCH_SIZE),
+            OpProofStoragePruner::new(
+                self.storage.clone(),
+                self.provider.clone(),
+                self.config.window,
+            )
+            .with_batch_size(PROOF_HISTORY_PRUNE_BATCH_SIZE),
         );
         let prune_interval = self.config.prune_interval;
         let retention_window = self.config.window;

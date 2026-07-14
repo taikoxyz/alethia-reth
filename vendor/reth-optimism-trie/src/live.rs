@@ -116,7 +116,6 @@ where
             operation_durations.state_root_duration_seconds -
             operation_durations.execution_duration_seconds;
 
-
         info!(
             block_number = block.number(),
             ?operation_durations,
@@ -145,7 +144,6 @@ where
         let write_duration = start.elapsed();
         operation_durations.total_duration_seconds = write_duration;
         operation_durations.write_duration_seconds = write_duration;
-
 
         info!(
             block_number = block.block.number,
@@ -199,7 +197,6 @@ where
         let write_duration = start.elapsed();
         operation_durations.total_duration_seconds = write_duration;
         operation_durations.write_duration_seconds = write_duration;
-
 
         info!(
             start_block_number = block_updates.first().map(|(b, _, _)| b.block.number),

@@ -61,10 +61,9 @@ pub fn validate_anchor_transaction(
     }
 
     // Ensure the tip is equal to zero.
-    let anchor_transaction_tip =
-        anchor_transaction.effective_tip_per_gas(ctx.base_fee_per_gas).ok_or_else(|| {
-            other_consensus_error("Anchor transaction tip must be set to zero")
-        })?;
+    let anchor_transaction_tip = anchor_transaction
+        .effective_tip_per_gas(ctx.base_fee_per_gas)
+        .ok_or_else(|| other_consensus_error("Anchor transaction tip must be set to zero"))?;
 
     if anchor_transaction_tip != 0 {
         return Err(other_consensus_error(format!(
@@ -104,9 +103,10 @@ where
         AnchorValidationContext {
             timestamp: block.header().timestamp(),
             block_number: block.number(),
-            base_fee_per_gas: block.header().base_fee_per_gas().ok_or_else(|| {
-                other_consensus_error("Block base fee per gas must be set")
-            })?,
+            base_fee_per_gas: block
+                .header()
+                .base_fee_per_gas()
+                .ok_or_else(|| other_consensus_error("Block base fee per gas must be set"))?,
         },
     )
 }

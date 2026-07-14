@@ -8,8 +8,9 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 
 ## Key Technologies
 
-- Language: Rust (`1.93.1` toolchain via `rust-toolchain.toml` / `justfile`)
-- Framework: Reth v2.0.0 APIs (`reth_node_builder`, `reth_rpc`, `reth_engine_primitives`, etc.)
+- Language: Rust (`1.95.0` toolchain via `rust-toolchain.toml` / `justfile`)
+- Framework: Reth v2.4.0 APIs (`reth_node_builder`, `reth_rpc`, `reth_engine_primitives`, etc.)
+- Optional revmc JIT execution (`jit` feature, on by default in the binary; needs LLVM 22)
 - Target protocol: Taiko rollup networks
 - Build & dependency manager: Cargo + `just`
 
@@ -18,18 +19,20 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 ```
 /                      Workspace root, Dockerfile, justfile, docs
 ├── bin/alethia-reth   Binary crate producing `alethia-reth`
-└── crates/
-    ├── node           Public API surface (`TaikoNode`, add-ons, component builders)
-    ├── block          Block execution/assembly
-    ├── chainspec      Chain specs + genesis data
-    ├── cli            CLI wrapper (`TaikoCli`)
-    ├── consensus      Beacon consensus extensions
-    ├── db             Taiko-specific tables & codecs
-    ├── evm            EVM config, handlers, execution helpers
-    ├── payload        Payload builder service
-    ├── primitives     Shared types (engine, payload attributes)
-    ├── rpc            Taiko RPC (eth / engine / auth)
-    └── rpc-types      Lightweight `taikoAuth` request/response types
+├── crates/
+│   ├── node           Public API surface (`TaikoNode`, add-ons, component builders)
+│   ├── block          Block execution/assembly
+│   ├── chainspec      Chain specs + genesis data
+│   ├── cli            CLI wrapper (`TaikoCli`)
+│   ├── consensus      Beacon consensus extensions
+│   ├── db             Taiko-specific tables & codecs
+│   ├── evm            EVM config, handlers, execution helpers, revmc JIT integration
+│   ├── payload        Payload builder service
+│   ├── primitives     Shared types (engine, payload attributes)
+│   ├── rpc            Taiko RPC (eth / engine / auth)
+│   └── rpc-types      Lightweight `taikoAuth` request/response types
+└── vendor/
+    └── reth-optimism-trie  Vendored OP proofs-storage crate (see its TAIKO-PROVENANCE.md)
 ```
 
 ## Development Guidelines

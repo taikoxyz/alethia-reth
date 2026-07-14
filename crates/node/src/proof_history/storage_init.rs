@@ -431,10 +431,7 @@ mod tests {
     use super::*;
     use alloy_consensus::Header;
     use reth_ethereum_primitives::EthPrimitives;
-    use reth_optimism_trie::{
-        InMemoryProofsStorage, OpProofsStorage,
-        api::OpProofsInitProvider,
-    };
+    use reth_optimism_trie::{InMemoryProofsStorage, OpProofsStorage, api::OpProofsInitProvider};
     use reth_provider::test_utils::MockEthProvider;
 
     #[test]

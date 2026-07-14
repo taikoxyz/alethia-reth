@@ -163,9 +163,7 @@ where
         if !is_allowed_tx_type(tx.inner()) {
             best_txs.mark_invalid(
                 &pool_tx,
-                InvalidPoolTransactionError::Consensus(
-                    InvalidTransactionError::TxTypeNotSupported,
-                ),
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
             );
             continue;
         }

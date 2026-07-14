@@ -93,9 +93,12 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>
 where
-    Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory
-            + BalProvider + 'static,
+    Provider: HeaderProvider
+        + BlockReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BalProvider
+        + 'static,
     PayloadT: PayloadTypes,
     Pool: TransactionPool + 'static,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -118,9 +121,12 @@ where
 impl<Provider, EngineT, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
-    Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory
-            + BalProvider + 'static,
+    Provider: HeaderProvider
+        + BlockReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BalProvider
+        + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
@@ -198,9 +204,12 @@ where
 impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT>
     for TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
-    Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory
-            + BalProvider + 'static,
+    Provider: HeaderProvider
+        + BlockReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BalProvider
+        + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,

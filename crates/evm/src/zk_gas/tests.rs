@@ -354,7 +354,8 @@ fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
 #[test]
 fn factory_installs_unzen_schedule() {
     let env = evm_env(TaikoSpecId::UNZEN);
-    let evm = TaikoEvmFactory::default().create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
+    let evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
     let meter = evm.meter().expect("Unzen schedule should install a meter");
 
     assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));

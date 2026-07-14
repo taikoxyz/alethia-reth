@@ -1,4 +1,5 @@
 //! Engine API type adapters for Taiko execution payloads.
+use alloy_primitives::Bytes;
 use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
     ExecutionPayloadEnvelopeV5, ExecutionPayloadEnvelopeV6, ExecutionPayloadV1,
@@ -7,6 +8,7 @@ use reth_engine_primitives::EngineTypes;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_payload_primitives::{BuiltPayload, PayloadTypes};
 use reth_primitives_traits::{NodePrimitives, SealedBlock};
+use std::sync::Arc;
 
 use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
 use crate::payload::attributes::TaikoPayloadAttributes;
@@ -28,10 +30,14 @@ impl PayloadTypes for TaikoEngineTypes {
     type PayloadAttributes = TaikoPayloadAttributes;
 
     /// Converts a block into an execution payload.
+    ///
+    /// The Amsterdam block access list is discarded: Taiko networks schedule no Amsterdam
+    /// fork and [`TaikoExecutionData`] carries no BAL field.
     fn block_to_payload(
         block: SealedBlock<
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
         >,
+        _bal: Option<Bytes>,
     ) -> Self::ExecutionData {
         let tx_hash = block.transactions_root;
         let withdrawals_hash = block.withdrawals_root;
@@ -48,6 +54,15 @@ impl PayloadTypes for TaikoEngineTypes {
                 taiko_block: Some(true),
             },
         }
+    }
+}
+
+impl From<EthBuiltPayload> for TaikoExecutionData {
+    /// Converts a built payload into Taiko execution data, discarding any Amsterdam block
+    /// access list (Taiko networks schedule no Amsterdam fork).
+    fn from(value: EthBuiltPayload) -> Self {
+        let block = Arc::unwrap_or_clone(value.into_block_arc()).into_sealed_block();
+        TaikoEngineTypes::block_to_payload(block, None)
     }
 }
 

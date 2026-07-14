@@ -6,7 +6,7 @@ use reth_basic_payload_builder::{
 use reth_ethereum::EthPrimitives;
 use reth_evm::{
     ConfigureEvm,
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutor},
+    execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_execution_cache::{CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider};
@@ -173,20 +173,20 @@ where
     let BuildArguments {
         mut cached_reads,
         execution_cache,
-        trie_handle,
+        mut state_root_handle,
         config,
         cancel,
         best_payload: _,
     } = args;
     let attributes = normalize_payload_config(&config)?;
-    let PayloadConfig { parent_header, attributes: _, payload_id } = config;
+    let PayloadConfig { parent_header, attributes: _, payload_id, .. } = config;
 
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
         state_provider = Box::new(CachedStateProvider::new(
             state_provider,
             execution_cache.cache().clone(),
-            CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+            Some(CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder)),
         ));
     }
     let state = StateProviderDatabase::new(state_provider.as_ref());
@@ -210,8 +210,11 @@ where
         )
         .map_err(PayloadBuilderError::other)?;
 
-    if let Some(ref handle) = trie_handle {
-        builder.executor_mut().set_state_hook(Some(Box::new(handle.state_hook())));
+    // If we have a state-root task, wire a state hook that streams per-tx state diffs. Hooks
+    // are delivered through the `State` database in reth v2.4.0.
+    if let Some(task) = state_root_handle.as_mut() {
+        reth_evm::Evm::db_mut(builder.evm_mut())
+            .set_state_hook(Some(Box::new(task.take_state_hook())));
     }
 
     builder.apply_pre_execution_changes().map_err(PayloadBuilderError::other)?;
@@ -252,10 +255,10 @@ where
     };
 
     let BlockBuilderOutcome { execution_result: _, block, .. } = if let Some(mut handle) =
-        trie_handle
+        state_root_handle
     {
         // Drop the state hook so the trie task sees the final state updates and can finalize.
-        builder.executor_mut().set_state_hook(None);
+        reth_evm::Evm::db_mut(builder.evm_mut()).set_state_hook(None);
 
         // The sparse trie computes alongside transaction execution, so this usually just waits
         // for the last root/trie update. If that pipeline fails, fall back to synchronous state
@@ -277,10 +280,9 @@ where
         builder.finish(state_provider.as_ref(), None)?
     };
 
-    let sealed_block = Arc::new(block.into_sealed_block());
-    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?block.sealed_header(), "sealed built block");
 
-    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(sealed_block, total_fees, None, None)))
+    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(Arc::new(block), total_fees, None, None)))
 }
 
 #[cfg(test)]

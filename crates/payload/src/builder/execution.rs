@@ -82,7 +82,7 @@ pub(super) fn execute_provided_transactions(
 
         let recovered_tx: Recovered<<EthPrimitives as NodePrimitives>::SignedTx> = tx.clone();
         let gas_used = match builder.execute_transaction(recovered_tx) {
-            Ok(gas_used) => gas_used,
+            Ok(gas_output) => gas_output.tx_gas_used(),
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
                 debug!(
                     target: "payload_builder",
@@ -150,9 +150,9 @@ where
     // Execute the anchor transaction as the first transaction in the block
     // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
     match builder.execute_transaction(ctx.anchor_tx.clone()) {
-        Ok(gas_used) => {
+        Ok(gas_output) => {
             // Note: Anchor transaction has zero priority fee (tip), so no fees to add
-            debug!(target: "payload_builder", id=%ctx.payload_id, gas_used, "anchor transaction executed successfully");
+            debug!(target: "payload_builder", id=%ctx.payload_id, gas_used = gas_output.tx_gas_used(), "anchor transaction executed successfully");
         }
         Err(err) if is_zk_gas_limit_exceeded(&err) => {
             debug!(

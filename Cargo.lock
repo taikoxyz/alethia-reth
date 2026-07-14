@@ -348,6 +348,7 @@ dependencies = [
  "jsonrpsee-types",
  "op-alloy-flz",
  "reth",
+ "reth-chain-state",
  "reth-db",
  "reth-db-api",
  "reth-engine-primitives",

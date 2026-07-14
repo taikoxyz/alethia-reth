@@ -93,6 +93,11 @@ pub trait TaikoZkGasEvm {
     /// Commits the current transaction's zk gas into the block total and returns the new total.
     fn commit_transaction_zk_gas(&mut self) -> Result<Option<u64>, ZkGasOutcome>;
 
+    /// Returns `true` when committing the current transaction's zk gas would exceed the block
+    /// budget, i.e. when [`Self::commit_transaction_zk_gas`] would fail. Always `false` when no
+    /// meter is installed (pre-Unzen specs).
+    fn transaction_zk_gas_commit_would_exceed(&self) -> bool;
+
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
@@ -122,6 +127,11 @@ where
         };
         meter.commit_transaction()?;
         Ok(Some(meter.block_zk_gas_used()))
+    }
+
+    /// Returns whether committing the current transaction's zk gas would exceed the budget.
+    fn transaction_zk_gas_commit_would_exceed(&self) -> bool {
+        self.meter().is_some_and(|m| m.commit_would_exceed_block_limit())
     }
 
     /// Returns the finalized block zk gas that has already been committed.

@@ -32,7 +32,7 @@ use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
+use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorage};
 use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
@@ -44,6 +44,18 @@ use tracing::info;
 
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
 pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorage>>;
+
+/// Adapts the storage bound accessors' `NoBlocksFound` error back to the `Option` shape the
+/// reconciliation logic in this module was written against.
+pub(crate) fn opt_block(
+    result: Result<alloy_eips::NumHash, OpProofsStorageError>,
+) -> Result<Option<(u64, alloy_primitives::B256)>, OpProofsStorageError> {
+    match result {
+        Ok(numhash) => Ok(Some((numhash.number, numhash.hash))),
+        Err(OpProofsStorageError::NoBlocksFound) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
 
 /// Storage and reconciliation-readiness handles shared with the proof-history RPC overrides.
 pub type ProofHistoryRpcHandles = (ProofHistoryStorage, ProofHistoryReadiness);

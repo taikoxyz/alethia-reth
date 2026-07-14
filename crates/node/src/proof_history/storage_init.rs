@@ -28,8 +28,8 @@ where
     Storage: OpProofsStore,
 {
     let provider_ro = storage.provider_ro()?;
-    Ok(provider_ro.get_earliest_block_number()?.is_none() ||
-        provider_ro.get_latest_block_number()?.is_none())
+    Ok(super::opt_block(provider_ro.get_earliest_block())?.is_none() ||
+        super::opt_block(provider_ro.get_latest_block())?.is_none())
 }
 
 /// File stored beside the proof-history MDBX database to validate historical init resume targets.

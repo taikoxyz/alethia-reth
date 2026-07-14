@@ -2,6 +2,7 @@
 
 use super::{
     config::ProofHistoryConfig,
+    opt_block,
     storage_init::{
         DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
         finalized_block_number, initialize_historical_proof_history_storage,
@@ -405,8 +406,8 @@ where
     /// Computes the reconciliation action for the current proof-history storage bounds.
     fn startup_action(&self) -> eyre::Result<ProofHistoryStartupAction> {
         let provider_ro = self.storage.provider_ro()?;
-        let earliest = provider_ro.get_earliest_block_number()?;
-        let latest = provider_ro.get_latest_block_number()?;
+        let earliest = opt_block(provider_ro.get_earliest_block())?;
+        let latest = opt_block(provider_ro.get_latest_block())?;
         let canonical_best = self.provider.best_block_number()?;
         let canonical_earliest_hash =
             earliest.map(|(number, _)| self.provider.block_hash(number)).transpose()?.flatten();
@@ -427,10 +428,7 @@ where
 
     /// Unwinds proof-history storage so its latest retained block is the canonical earliest block.
     async fn unwind_to_earliest(&self, earliest: BlockNumHash) -> eyre::Result<()> {
-        let latest = self
-            .storage
-            .provider_ro()?
-            .get_latest_block_number()?
+        let latest = opt_block(self.storage.provider_ro()?.get_latest_block())?
             .ok_or_else(|| eyre!("no latest proof-history block to unwind"))?
             .0;
         if latest <= earliest.number {
@@ -600,12 +598,10 @@ where
     /// Verifies the proof-history database is initialized and safe to prune automatically.
     fn ensure_initialized(&self) -> eyre::Result<()> {
         let provider_ro = self.storage.provider_ro()?;
-        let earliest_block_number = provider_ro
-            .get_earliest_block_number()?
+        let earliest_block_number = opt_block(provider_ro.get_earliest_block())?
             .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
             .0;
-        let latest_block_number = provider_ro
-            .get_latest_block_number()?
+        let latest_block_number = opt_block(provider_ro.get_latest_block())?
             .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
             .0;
 
@@ -626,12 +622,10 @@ where
 
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
-        let pruner = Arc::new(OpProofStoragePruner::new(
-            self.storage.clone(),
-            self.provider.clone(),
-            self.config.window,
-            PROOF_HISTORY_PRUNE_BATCH_SIZE,
-        ));
+        let pruner = Arc::new(
+            OpProofStoragePruner::new(self.storage.clone(), self.provider.clone(), self.config.window)
+                .with_batch_size(PROOF_HISTORY_PRUNE_BATCH_SIZE),
+        );
         let prune_interval = self.config.prune_interval;
         let retention_window = self.config.window;
         let write_lock = self.write_lock.clone();
@@ -733,9 +727,9 @@ where
 
         loop {
             let write_guard = write_lock.lock().await;
-            let latest = match storage.provider_ro().and_then(|p| p.get_latest_block_number()) {
-                Ok(Some((number, _))) => number,
-                Ok(None) => {
+            let latest = match storage.provider_ro().and_then(|p| p.get_latest_block()) {
+                Ok(numhash) => numhash.number,
+                Err(OpProofsStorageError::NoBlocksFound) => {
                     error!(target: "reth::taiko::proof_history", "proof-history sync loop found no stored blocks; stopping sync loop");
                     return;
                 }
@@ -912,11 +906,9 @@ where
     ) -> eyre::Result<()> {
         let _write_guard = self.write_lock.lock().await;
         let provider_ro = self.storage.provider_ro()?;
-        let earliest_stored = provider_ro
-            .get_earliest_block_number()?
+        let earliest_stored = opt_block(provider_ro.get_earliest_block())?
             .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
-        let latest_stored = provider_ro
-            .get_latest_block_number()?
+        let latest_stored = opt_block(provider_ro.get_latest_block())?
             .ok_or_else(|| eyre!("no latest proof-history block stored"))?
             .0;
         let earliest_stored = BlockNumHash::new(earliest_stored.0, earliest_stored.1);
@@ -979,7 +971,7 @@ where
             let Some(block) = chain.blocks().get(&block_number) &&
             let Some(trie_data) = chain.trie_data_at(block_number)
         {
-            let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
             collector.store_block_updates(
                 block.block_with_parent(),
                 (**trie_updates).clone(),
@@ -1041,7 +1033,7 @@ where
                 }
                 return Ok(());
             };
-            let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
             block_updates.push((
                 block.block_with_parent(),
                 trie_updates.clone(),

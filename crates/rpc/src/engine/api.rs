@@ -24,7 +24,8 @@ use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
 use reth_payload_primitives::PayloadKind;
 use reth_provider::{
-    BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
+    BalProvider, BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
+    StateProviderFactory,
 };
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
@@ -93,7 +94,8 @@ impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>
 where
     Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory
+            + BalProvider + 'static,
     PayloadT: PayloadTypes,
     Pool: TransactionPool + 'static,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -117,7 +119,8 @@ impl<Provider, EngineT, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
     Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory
+            + BalProvider + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
@@ -196,7 +199,8 @@ impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT
     for TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
     Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory
+            + BalProvider + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,

@@ -12,6 +12,7 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
 use alloy_rpc_types_eth::Withdrawals;
 use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
+use reth_chain_state::StateTrieOverlayManager;
 use reth_engine_primitives::EngineApiValidator;
 use reth_engine_tree::tree::{TreeConfig, payload_validator::BasicEngineValidator};
 use reth_ethereum::{Block, EthPrimitives};
@@ -82,6 +83,7 @@ where
         ctx: &AddOnsContext<'_, N>,
         tree_config: TreeConfig,
         changeset_cache: ChangesetCache,
+        state_trie_overlays: StateTrieOverlayManager<<N::Types as NodeTypes>::Primitives>,
     ) -> eyre::Result<Self::EngineValidator> {
         let validator = <Self as PayloadValidatorBuilder<N>>::build(self, ctx).await?;
         let data_dir = ctx.config.datadir.clone().resolve_datadir(ctx.config.chain.chain());
@@ -94,6 +96,7 @@ where
             tree_config,
             invalid_block_hook,
             changeset_cache,
+            state_trie_overlays,
             ctx.node.task_executor().clone(),
         ))
     }

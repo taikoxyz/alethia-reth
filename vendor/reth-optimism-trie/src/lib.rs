@@ -33,6 +33,10 @@ pub use backfill::{BackfillError, BackfillJob, DEFAULT_BACKFILL_BATCH_SIZE};
 pub mod snapshot;
 pub use snapshot::{SnapshotError, SnapshotInitJob, SnapshotInitOutcome};
 
+/// Taiko: retained from upstream `bcf489ea` (upstream moved live collection into `engine`);
+/// see the module docs for details.
+pub mod live;
+
 pub mod in_memory;
 pub use in_memory::{
     InMemoryAccountCursor, InMemoryProofsStorage, InMemoryStorageCursor, InMemoryTrieCursor,

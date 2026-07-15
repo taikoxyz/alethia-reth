@@ -4,10 +4,12 @@
 use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_consensus::Header;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use reth::{
     CliRunner,
+    args::DatadirArgs,
     cli::{Cli, Commands},
+    dirs::{DataDirPath, MaybePlatformPath},
     prometheus_exporter::install_prometheus_recorder,
 };
 use reth_cli::chainspec::ChainSpecParser;
@@ -134,6 +136,8 @@ pub struct TaikoCli<
 > {
     /// Wrapped `reth` CLI structure containing parsed commands and global options.
     pub inner: Cli<C, Ext>,
+    /// Parsed data directory for the re-execute command, retained for JIT debug dump placement.
+    reexecute_datadir: Option<MaybePlatformPath<DataDirPath>>,
 }
 
 impl<C, Ext> TaikoCli<C, Ext>
@@ -143,7 +147,7 @@ where
 {
     /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
-        Self { inner: Cli::<C, Ext>::parse() }
+        Self::try_parse_args_from(std::env::args_os()).unwrap_or_else(|err| err.exit())
     }
 
     /// Parsers only the default CLI arguments from the given iterator
@@ -152,7 +156,14 @@ where
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        Cli::<C, Ext>::try_parse_from(itr).map(|inner| Self { inner })
+        let mut matches = Cli::<C, Ext>::command().try_get_matches_from(itr)?;
+        let reexecute_datadir = matches
+            .subcommand_matches("re-execute")
+            .and_then(|matches| matches.get_one::<MaybePlatformPath<DataDirPath>>("datadir"))
+            .cloned();
+        let inner = Cli::<C, Ext>::from_arg_matches_mut(&mut matches)?;
+
+        Ok(Self { inner, reexecute_datadir })
     }
 }
 
@@ -161,6 +172,24 @@ impl<
     Ext: clap::Args + fmt::Debug + TaikoNodeExtArgs,
 > TaikoCli<C, Ext>
 {
+    /// Returns the JIT compiler dump directory requested by the re-execute command.
+    fn reexecute_jit_dump_dir(&self) -> Option<PathBuf> {
+        let Commands::ReExecute(command) = &self.inner.command else {
+            return None;
+        };
+        if !command.jit.debug {
+            return None;
+        }
+
+        let chain = command.chain_spec()?.inner.chain;
+        let datadir = DatadirArgs {
+            datadir: self.reexecute_datadir.clone().unwrap_or_default(),
+            ..Default::default()
+        }
+        .resolve_datadir(chain);
+        Some(datadir.data_dir().join("jit"))
+    }
+
     /// Execute the configured cli command.
     ///
     /// This accepts a closure that is used to launch the node via the
@@ -211,6 +240,7 @@ impl<
         // Install the prometheus recorder to be sure to record all metrics
         let _ = install_prometheus_recorder();
         let rt = runner.runtime();
+        let reexecute_jit_dump_dir = self.reexecute_jit_dump_dir();
 
         let components = |spec: Arc<C::ChainSpec>| {
             let evm = TaikoEvmConfig::new(spec.clone());
@@ -266,7 +296,8 @@ impl<
                     .chain_spec()
                     .cloned()
                     .ok_or_else(|| eyre::eyre!("re-execute requires a chain spec"))?;
-                let evm = evm_config_from_jit_args(chain_spec, &command.jit, None)?;
+                let evm =
+                    evm_config_from_jit_args(chain_spec, &command.jit, reexecute_jit_dump_dir)?;
                 let components = move |spec: Arc<C::ChainSpec>| {
                     let block_reader = Arc::new(ProviderTaikoBlockReader(NoopProvider::<
                         TaikoChainSpec,
@@ -304,7 +335,8 @@ mod tests {
 
     use super::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
-        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
+        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
     };
     use crate::command::TaikoNodeExtArgs;
 
@@ -336,6 +368,21 @@ mod tests {
         let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
 
         assert_eq!(cli.ext.devnet_unzen_timestamp, 0);
+    }
+
+    #[test]
+    fn test_reexecute_jit_debug_resolves_dump_dir_from_datadir() {
+        let cli = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_args_from([
+            "alethia-reth",
+            "re-execute",
+            "--datadir",
+            "/tmp/alethia-reth",
+            "--jit",
+            "--jit.debug",
+        ])
+        .expect("re-execute JIT arguments should parse");
+
+        assert_eq!(cli.reexecute_jit_dump_dir(), Some(PathBuf::from("/tmp/alethia-reth/jit")));
     }
 
     #[test]

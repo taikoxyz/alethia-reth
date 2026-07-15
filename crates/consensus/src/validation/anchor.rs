@@ -8,8 +8,6 @@ use reth_primitives_traits::{Block, BlockBody, RecoveredBlock, SignedTransaction
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
-use super::other_consensus_error;
-
 pub use crate::anchor_constants::{
     ANCHOR_V1_SELECTOR, ANCHOR_V1_V2_GAS_LIMIT, ANCHOR_V2_SELECTOR, ANCHOR_V3_SELECTOR,
     ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR,
@@ -44,7 +42,7 @@ pub fn validate_anchor_transaction(
 
     // Ensure the value is zero.
     if anchor_transaction.value() != U256::ZERO {
-        return Err(other_consensus_error("Anchor transaction value must be zero"));
+        return Err(ConsensusError::msg("Anchor transaction value must be zero"));
     }
 
     // Ensure the gas limit is correct.
@@ -54,7 +52,7 @@ pub fn validate_anchor_transaction(
         ANCHOR_V1_V2_GAS_LIMIT
     };
     if anchor_transaction.gas_limit() != gas_limit {
-        return Err(other_consensus_error(format!(
+        return Err(ConsensusError::msg(format!(
             "Anchor transaction gas limit must be {gas_limit}, got {}",
             anchor_transaction.gas_limit()
         )));
@@ -63,20 +61,20 @@ pub fn validate_anchor_transaction(
     // Ensure the tip is equal to zero.
     let anchor_transaction_tip = anchor_transaction
         .effective_tip_per_gas(ctx.base_fee_per_gas)
-        .ok_or_else(|| other_consensus_error("Anchor transaction tip must be set to zero"))?;
+        .ok_or_else(|| ConsensusError::msg("Anchor transaction tip must be set to zero"))?;
 
     if anchor_transaction_tip != 0 {
-        return Err(other_consensus_error(format!(
+        return Err(ConsensusError::msg(format!(
             "Anchor transaction tip must be zero, got {anchor_transaction_tip}"
         )));
     }
 
     // Ensure the sender is the treasury address.
     let sender = anchor_transaction.try_recover().map_err(|err| {
-        other_consensus_error(format!("Anchor transaction sender must be recoverable: {err}"))
+        ConsensusError::msg(format!("Anchor transaction sender must be recoverable: {err}"))
     })?;
     if sender != Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) {
-        return Err(other_consensus_error(format!(
+        return Err(ConsensusError::msg(format!(
             "Anchor transaction sender must be the treasury address, got {sender}"
         )));
     }
@@ -106,7 +104,7 @@ where
             base_fee_per_gas: block
                 .header()
                 .base_fee_per_gas()
-                .ok_or_else(|| other_consensus_error("Block base fee per gas must be set"))?,
+                .ok_or_else(|| ConsensusError::msg("Block base fee per gas must be set"))?,
         },
     )
 }
@@ -117,7 +115,7 @@ pub(super) fn validate_input_selector(
     expected_selector: &[u8; 4],
 ) -> Result<(), ConsensusError> {
     if !input.starts_with(expected_selector) {
-        return Err(other_consensus_error(format!(
+        return Err(ConsensusError::msg(format!(
             "Anchor transaction input data does not match the expected selector: {expected_selector:?}"
         )));
     }

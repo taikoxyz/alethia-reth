@@ -36,24 +36,6 @@ pub use anchor::{
 #[cfg(test)]
 mod tests;
 
-/// Free-form message carried by Taiko-specific [`ConsensusError::Other`] violations.
-#[derive(Debug)]
-struct TaikoConsensusMessage(String);
-
-impl core::fmt::Display for TaikoConsensusMessage {
-    /// Writes the violation message verbatim.
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl core::error::Error for TaikoConsensusMessage {}
-
-/// Builds a [`ConsensusError::Other`] from a Taiko validation message.
-pub(crate) fn other_consensus_error(message: impl Into<String>) -> ConsensusError {
-    ConsensusError::Other(Arc::new(TaikoConsensusMessage(message.into())))
-}
-
 /// Minimal block reader interface used by Taiko consensus.
 pub trait TaikoBlockReader: Send + Sync + Debug {
     /// Returns the timestamp of the block referenced by the given hash, if present.
@@ -185,7 +167,7 @@ where
         if self.chain_spec.is_shasta_active(header.timestamp()) &&
             header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
         {
-            return Err(other_consensus_error(format!(
+            return Err(ConsensusError::msg(format!(
                 "invalid Shasta extra-data length: have {}, want {SHASTA_EXTRA_DATA_LEN}",
                 header.extra_data().len()
             )));
@@ -284,7 +266,7 @@ where
         return Ok(());
     }
 
-    Err(other_consensus_error(format!(
+    Err(ConsensusError::msg(format!(
         "Unzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
     )))
 }
@@ -332,7 +314,7 @@ fn validate_no_blob_transactions<Tx: SignedTransaction>(
     transactions: &[Tx],
 ) -> Result<(), ConsensusError> {
     if transactions.iter().any(|tx| !is_allowed_tx_type(tx)) {
-        return Err(other_consensus_error("Blob transactions are not allowed"));
+        return Err(ConsensusError::msg("Blob transactions are not allowed"));
     }
     Ok(())
 }

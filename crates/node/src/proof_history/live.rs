@@ -235,7 +235,7 @@ mod tests {
     };
     use reth_primitives_traits::Block as _;
     use reth_provider::{
-        ProviderFactory, StorageSettingsCache,
+        StorageSettingsCache,
         providers::BlockchainProvider,
         test_utils::{MockNodeTypesWithDB, create_test_provider_factory_with_chain_spec},
     };
@@ -262,10 +262,10 @@ mod tests {
         .expect("empty block recovers without senders")
     }
 
-    /// Genesis-initialized provider factory plus proofs storage seeded at block zero.
+    /// Genesis-initialized blockchain provider plus proofs storage seeded at block zero.
     fn genesis_fixture(
         chain_spec: &Arc<ChainSpec>,
-    ) -> (ProviderFactory<MockNodeTypesWithDB>, OpProofsStorage<Arc<MdbxProofsStorage>>) {
+    ) -> (BlockchainProvider<MockNodeTypesWithDB>, OpProofsStorage<Arc<MdbxProofsStorage>>) {
         let factory = create_test_provider_factory_with_chain_spec(chain_spec.clone());
         init_genesis(&factory).expect("genesis state initializes");
 
@@ -283,7 +283,8 @@ mod tests {
             .run(0, chain_spec.genesis_hash())
             .expect("proofs storage initializes to genesis");
 
-        (factory, storage)
+        let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+        (provider, storage)
     }
 
     /// Latest block recorded in the proofs storage window.
@@ -299,8 +300,7 @@ mod tests {
     #[test]
     fn collector_executes_and_stores_an_empty_block() {
         let chain_spec = test_chain_spec();
-        let (factory, storage) = genesis_fixture(&chain_spec);
-        let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+        let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 
@@ -314,8 +314,7 @@ mod tests {
     #[test]
     fn collector_rejects_a_block_beyond_the_stored_window() {
         let chain_spec = test_chain_spec();
-        let (factory, storage) = genesis_fixture(&chain_spec);
-        let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+        let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 
@@ -328,8 +327,7 @@ mod tests {
     #[test]
     fn collector_rejects_a_block_with_a_wrong_state_root() {
         let chain_spec = test_chain_spec();
-        let (factory, storage) = genesis_fixture(&chain_spec);
-        let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+        let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 
@@ -341,8 +339,7 @@ mod tests {
     #[test]
     fn collector_stores_precomputed_updates_and_unwinds_them() {
         let chain_spec = test_chain_spec();
-        let (factory, storage) = genesis_fixture(&chain_spec);
-        let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+        let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 
@@ -365,8 +362,7 @@ mod tests {
     #[test]
     fn collector_replaces_blocks_after_the_common_ancestor() {
         let chain_spec = test_chain_spec();
-        let (factory, storage) = genesis_fixture(&chain_spec);
-        let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+        let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 

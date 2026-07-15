@@ -170,8 +170,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     /// fork allowlist in [`TaikoEvmFactory`].
     #[cfg(feature = "jit")]
     fn with_jit_support_enabled(self, enabled: bool) -> Self {
-        let evm_factory =
-            self.executor_factory.evm_factory().clone().with_jit_support_enabled(enabled);
+        let evm_factory = self.evm_factory().clone().with_jit_support_enabled(enabled);
         Self::new_with_evm_factory(self.chain_spec().clone(), evm_factory)
     }
 
@@ -179,7 +178,7 @@ impl ConfigureEvm for TaikoEvmConfig {
     /// RPC action against this configuration.
     #[cfg(feature = "jit")]
     fn jit_backend(&self) -> Option<&dyn reth_evm::JitBackend> {
-        Some(self.executor_factory.evm_factory())
+        Some(self.evm_factory())
     }
 
     /// Creates a new [`EvmEnv`] for the given header.

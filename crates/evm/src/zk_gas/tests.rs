@@ -394,19 +394,25 @@ fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
 }
 
+/// Builds a blocking, in-process JIT backend so tests observe compilation synchronously.
 #[cfg(feature = "jit")]
-#[test]
-fn jit_requires_local_support_and_falls_back_for_unzen() {
+fn blocking_jit_backend() -> revmc::runtime::JitBackend {
     use revmc::runtime::{JitBackend, JitMode, RuntimeConfig};
 
-    let backend = JitBackend::new(RuntimeConfig {
+    JitBackend::new(RuntimeConfig {
         enabled: true,
         blocking: true,
         single_error: false,
         jit_mode: JitMode::InProcess,
         ..RuntimeConfig::default()
     })
-    .expect("blocking JIT backend should start");
+    .expect("blocking JIT backend should start")
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_requires_local_support_and_falls_back_for_unzen() {
+    let backend = blocking_jit_backend();
     let factory = TaikoEvmFactory::new(backend.clone());
 
     let mut unsupported_evm = factory
@@ -446,16 +452,7 @@ fn jit_and_interpreter_outputs(
     reth_revm::context::result::ResultAndState<reth_revm::context::result::HaltReason>,
     revmc::runtime::RuntimeStatsSnapshot,
 ) {
-    use revmc::runtime::{JitBackend, JitMode, RuntimeConfig};
-
-    let backend = JitBackend::new(RuntimeConfig {
-        enabled: true,
-        blocking: true,
-        single_error: false,
-        jit_mode: JitMode::InProcess,
-        ..RuntimeConfig::default()
-    })
-    .expect("blocking JIT backend should start");
+    let backend = blocking_jit_backend();
 
     let mut jit_evm = TaikoEvmFactory::new(backend.clone())
         .with_jit_support()

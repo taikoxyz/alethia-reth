@@ -27,9 +27,6 @@
   - files under `tests/**`
   - `#[cfg(test)]` items and test-only helpers
   - examples
-  - vendored third-party crates under `vendor/**` — kept close to upstream so re-vendoring
-    stays a clean diff; still linted with `-D warnings`, but exempt from the missing-docs
-    gates (see the `just clippy` recipe and each crate's provenance note)
 - The docs gate is required before completion: run `just clippy`.
 
 ## Testing Guidelines

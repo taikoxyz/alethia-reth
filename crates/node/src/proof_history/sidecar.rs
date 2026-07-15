@@ -2,6 +2,7 @@
 
 use super::{
     config::ProofHistoryConfig,
+    live::LiveTrieCollector,
     opt_block,
     storage_init::{
         DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
@@ -30,7 +31,6 @@ use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
     OpProofStoragePruner, OpProofsStorage, OpProofsStorageError, OpProofsStore,
     api::{OpProofsProviderRO, OpProofsProviderRw},
-    live::LiveTrieCollector,
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,

@@ -2,6 +2,7 @@
 
 mod config;
 mod init;
+mod live;
 mod sidecar;
 mod storage_init;
 

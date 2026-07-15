@@ -29,6 +29,7 @@ alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
+derive_more = { workspace = true }
 eyre = { workspace = true }
 futures-util = { workspace = true }
 reth = { workspace = true }
@@ -37,6 +38,7 @@ reth-engine-local = { workspace = true }
 reth-engine-primitives = { workspace = true }
 reth-ethereum = { workspace = true }
 reth-ethereum-primitives = { workspace = true }
+reth-evm = { workspace = true }
 reth-execution-types = { workspace = true }
 reth-node-api = { workspace = true }
 reth-node-builder = { workspace = true }
@@ -45,6 +47,7 @@ reth-node-ethereum = { workspace = true }
 reth-optimism-trie = { workspace = true, features = ["metrics"] }
 reth-primitives-traits = { workspace = true }
 reth-provider = { workspace = true }
+reth-revm = { workspace = true }
 reth-rpc = { workspace = true }
 reth-rpc-builder = { workspace = true }
 reth-rpc-eth-api = { workspace = true }
@@ -57,5 +60,8 @@ tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+reth-chainspec = { workspace = true }
+reth-db-common = { workspace = true }
+reth-evm-ethereum = { workspace = true }
 reth-provider = { workspace = true, features = ["test-utils"] }
 tempfile = { workspace = true }

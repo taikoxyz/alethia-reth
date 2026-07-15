@@ -23,7 +23,7 @@ use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_node::{
     TaikoNode,
-    components::ProviderTaikoBlockReader,
+    components::{ProviderTaikoBlockReader, evm_config_from_jit_args},
     consensus::validation::TaikoBeaconConsensus,
     proof_history::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
@@ -258,6 +258,25 @@ impl<
                 runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
             }
             Commands::ReExecute(command) => {
+                // reth's re-execute never consumes its own `--jit` args (v2.4.0), and the
+                // components closure it accepts cannot see them, so the JIT-aware EVM config
+                // must be built here. Mirrors the node's executor builder, including the hard
+                // error when `--jit` is requested on a non-jit build.
+                let chain_spec = command
+                    .chain_spec()
+                    .cloned()
+                    .ok_or_else(|| eyre::eyre!("re-execute requires a chain spec"))?;
+                let evm = evm_config_from_jit_args(chain_spec, &command.jit, None)?;
+                let components = move |spec: Arc<C::ChainSpec>| {
+                    let block_reader = Arc::new(ProviderTaikoBlockReader(NoopProvider::<
+                        TaikoChainSpec,
+                        EthPrimitives,
+                    >::new(
+                        spec.clone()
+                    )));
+                    let consensus = Arc::new(TaikoBeaconConsensus::new(spec, block_reader));
+                    (evm.clone(), consensus)
+                };
                 runner.run_until_ctrl_c(command.execute::<TaikoNode>(components, rt))
             }
         }

@@ -1,10 +1,13 @@
 toolchain := "1.95.0"
 fmt_toolchain := "nightly"
 
+# `cargo sort` lists the Alethia crates explicitly so it skips the vendored
+# reth-optimism-trie manifest, which keeps upstream's dependency grouping (mirrors the
+# vendored-crate clippy exemption below).
 fmt:
   rustup toolchain install {{fmt_toolchain}} --component rustfmt && \
   cargo +{{fmt_toolchain}} fmt && \
-  cargo sort --workspace --grouped
+  cargo sort --grouped . bin/alethia-reth crates/*
 
 fmt-check:
   rustup toolchain install {{fmt_toolchain}} --component rustfmt && \

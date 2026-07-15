@@ -24,15 +24,23 @@ use tracing::info;
 #[derive(Debug, Clone, Default)]
 pub struct TaikoExecutorBuilder;
 
-impl TaikoExecutorBuilder {
-    /// Builds an EVM configuration whose factory owns the shared revmc backend created from
-    /// the node's `--jit` CLI settings.
+/// Builds the EVM configuration honoring the runtime `--jit` CLI settings.
+///
+/// With the `jit` Cargo feature, the returned config's factory owns a shared revmc backend
+/// created from `jit` (`dump_dir` receives debug artifacts when `--jit.debug` is set). Without
+/// the feature this errors when `--jit` was requested, and otherwise returns the plain
+/// interpreter config.
+///
+/// Shared by the node's [`ExecutorBuilder`] and by CLI subcommands that execute blocks outside
+/// the node builder (`re-execute`), whose reth-provided components closure cannot see the
+/// command's own `JitArgs`.
+pub fn evm_config_from_jit_args(
+    chain_spec: Arc<TaikoChainSpec>,
+    jit: &reth_node_core::args::JitArgs,
+    dump_dir: Option<std::path::PathBuf>,
+) -> eyre::Result<TaikoEvmConfig> {
     #[cfg(feature = "jit")]
-    fn build_jit_evm_config(
-        chain_spec: Arc<TaikoChainSpec>,
-        jit: &reth_node_core::args::JitArgs,
-        dump_dir: Option<std::path::PathBuf>,
-    ) -> eyre::Result<TaikoEvmConfig> {
+    {
         let config = alethia_reth_evm::jit::JitConfig {
             enabled: jit.enabled,
             hot_threshold: jit.hot_threshold,
@@ -60,6 +68,18 @@ impl TaikoExecutorBuilder {
         let factory = alethia_reth_evm::factory::TaikoEvmFactory::new(backend);
         Ok(TaikoEvmConfig::new_with_evm_factory(chain_spec, factory))
     }
+
+    #[cfg(not(feature = "jit"))]
+    {
+        let _ = dump_dir;
+        if jit.enabled {
+            Err(eyre::eyre!(
+                "JIT compilation was requested with --jit, but this binary was built without the `jit` feature"
+            ))
+        } else {
+            Ok(TaikoEvmConfig::new(chain_spec))
+        }
+    }
 }
 
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
@@ -80,24 +100,9 @@ where
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
         let jit = &ctx.config().jit;
+        let dump_dir = jit.debug.then(|| ctx.config().datadir().data_dir().join("jit"));
 
-        #[cfg(feature = "jit")]
-        let result = Self::build_jit_evm_config(
-            ctx.chain_spec(),
-            jit,
-            jit.debug.then(|| ctx.config().datadir().data_dir().join("jit")),
-        );
-
-        #[cfg(not(feature = "jit"))]
-        let result = if jit.enabled {
-            Err(eyre::eyre!(
-                "JIT compilation was requested with --jit, but this binary was built without the `jit` feature"
-            ))
-        } else {
-            Ok(TaikoEvmConfig::new(ctx.chain_spec()))
-        };
-
-        future::ready(result)
+        future::ready(evm_config_from_jit_args(ctx.chain_spec(), jit, dump_dir))
     }
 }
 
@@ -191,5 +196,39 @@ mod tests {
         let provider = NoopProvider::<TaikoChainSpec, EthPrimitives>::new(TAIKO_MAINNET.clone());
         let reader = ProviderTaikoBlockReader(provider);
         assert_eq!(reader.block_timestamp_by_hash(B256::ZERO), None);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn evm_config_from_jit_args_wires_the_runtime_enabled_flag() {
+        use reth_node_core::args::JitArgs;
+
+        let enabled = evm_config_from_jit_args(
+            TAIKO_MAINNET.clone(),
+            &JitArgs { enabled: true, ..Default::default() },
+            None,
+        )
+        .expect("jit build constructs a backend");
+        assert!(enabled.evm_factory().backend().enabled());
+
+        let disabled = evm_config_from_jit_args(TAIKO_MAINNET.clone(), &JitArgs::default(), None)
+            .expect("jit build constructs a backend");
+        assert!(!disabled.evm_factory().backend().enabled());
+    }
+
+    #[cfg(not(feature = "jit"))]
+    #[test]
+    fn evm_config_from_jit_args_rejects_jit_on_non_jit_builds() {
+        use reth_node_core::args::JitArgs;
+
+        let err = evm_config_from_jit_args(
+            TAIKO_MAINNET.clone(),
+            &JitArgs { enabled: true, ..Default::default() },
+            None,
+        )
+        .expect_err("non-jit build must reject --jit");
+        assert!(err.to_string().contains("`jit` feature"));
+
+        assert!(evm_config_from_jit_args(TAIKO_MAINNET.clone(), &JitArgs::default(), None).is_ok());
     }
 }

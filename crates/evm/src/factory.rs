@@ -184,9 +184,9 @@ impl EvmFactory for TaikoEvmFactory {
 
     /// Creates a new instance of an EVM with an inspector.
     ///
-    /// Inspected execution always selects the disabled backend: compiled code cannot deliver
-    /// per-step inspector callbacks (only log forwarding), which tracers and the zk-gas
-    /// inspector depend on.
+    /// Inspected execution always selects the disabled backend as a correctness requirement:
+    /// compiled code cannot deliver the per-step inspector callbacks (revmc forwards only log,
+    /// selfdestruct, and frame-end events) that tracers and the zk-gas inspector depend on.
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,

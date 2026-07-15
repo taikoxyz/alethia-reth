@@ -308,6 +308,16 @@ where
             self.base_evm().extra_execution_ctx.clone(),
         );
         let result = if self.inspect {
+            // Trace correctness requires inspected execution to run on the disabled JIT backend:
+            // compiled code cannot deliver per-step inspector callbacks (revmc forwards only
+            // log, selfdestruct, and frame-end events). `create_evm_with_inspector` and
+            // `set_inspector_enabled` both pin the disabled backend; this guards the invariant
+            // against future refactors.
+            #[cfg(feature = "jit")]
+            debug_assert!(
+                !self.inner.backend().enabled(),
+                "inspected execution must run with the disabled JIT backend",
+            );
             handler.inspect_run(&mut self.inner)
         } else {
             handler.run(&mut self.inner)
@@ -457,6 +467,14 @@ where
         // meter, so only EVMs built through `create_evm_with_inspector` may switch to inspect mode.
         if enabled && self.base_evm().zk_gas_meter().is_some() {
             return;
+        }
+        // Inspected execution cannot dispatch to compiled code (no per-step inspector
+        // callbacks), so switching an instance to inspect mode permanently downgrades it to a
+        // disabled backend. EVMs built through `create_evm_with_inspector` already hold one;
+        // this covers EVMs built through `create_evm` on non-metered specs.
+        #[cfg(feature = "jit")]
+        if enabled {
+            self.inner.set_backend(crate::jit::JitBackend::disabled());
         }
         self.inspect = enabled;
     }

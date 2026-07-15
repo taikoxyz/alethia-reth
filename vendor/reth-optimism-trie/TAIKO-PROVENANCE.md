@@ -4,7 +4,8 @@ This directory vendors the `reth-optimism-trie` crate from the Optimism monorepo
 commit `9b802fdb62c96a1cd70b2144ce89979d4e41f4ec`
 (<https://github.com/ethereum-optimism/optimism>, path `rust/op-reth/crates/trie`).
 
-It retains the crate's original MIT license.
+It retains the crate's original MIT license; the upstream notice is vendored alongside the
+sources as `LICENSE-MIT` (copied from `rust/op-reth/LICENSE-MIT` at the same commit).
 
 ## Why vendored
 

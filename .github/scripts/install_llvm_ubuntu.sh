@@ -21,8 +21,8 @@ rm -f "$llvm_installer"
 
 for bin in "${bins[@]}"; do
     if ! command -v "$bin-$version" &>/dev/null; then
-        echo "Warning: $bin-$version not found" >&2
-        continue
+        echo "Error: $bin-$version not found after install" >&2
+        exit 1
     fi
     ln -fs "$(command -v "$bin-$version")" "/usr/bin/$bin"
 done

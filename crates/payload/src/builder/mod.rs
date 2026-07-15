@@ -258,9 +258,7 @@ where
         }
     };
 
-    let BlockBuilderOutcome { execution_result: _, block, .. } = if let Some(mut handle) =
-        state_root_handle
-    {
+    let outcome = if let Some(mut handle) = state_root_handle {
         // Drop the state hook so the trie task sees the final state updates and can finalize.
         reth_evm::Evm::db_mut(builder.evm_mut()).set_state_hook(None);
 
@@ -283,6 +281,14 @@ where
     } else {
         builder.finish(state_provider.as_ref(), None)?
     };
+
+    // Taiko schedules no Amsterdam fork, so the builder never produces an EIP-7928 block
+    // access list; the named discard is a tripwire for that assumption.
+    let BlockBuilderOutcome { execution_result: _, block, block_access_list, .. } = outcome;
+    debug_assert!(
+        block_access_list.is_none(),
+        "unexpected EIP-7928 block access list for a Taiko block"
+    );
 
     debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?block.sealed_header(), "sealed built block");
 

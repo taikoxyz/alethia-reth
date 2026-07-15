@@ -158,11 +158,11 @@ reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", re
 # revm
 revm-database-interface = { version = "41.0.0", default-features = false }
 
-# revmc JIT: pinned to the fast-forward of reth v2.4.0's locked revision (7e3536d) that adds
-# revmc#395 (dynamic-gas failure ordering). revmc#391 (non-blocking runtime controls) is
-# already included. reth f2eecc6 locks a newer revmc (520462a4); bump ours deliberately —
-# the JIT integration needs revalidation — rather than in lockstep with the reth pin.
-revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "56ed00631c4542507f7198bdc9d53dd6471a2ef8", default-features = false, features = [
+# revmc JIT: pinned to the revision reth f2eecc6 locks. Includes revmc#391 (non-blocking
+# runtime controls), #395 (dynamic-gas failure ordering), #394 (stack sync for diverging
+# builtins), and #400 (LOG memory operands in gas analysis) — the latter two fix compiled
+# code diverging from the interpreter. Keep matched to the reth pin's locked revmc.
+revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "520462a463523a3bcd0a47226ddbc3200d62232e", default-features = false, features = [
     "llvm-prefer-static",
 ] }
 

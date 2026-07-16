@@ -28,13 +28,13 @@ use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
     OpProofStoragePruner, OpProofsBackfillStore, OpProofsStorage, OpProofsStorageError,
     OpProofsStore,
-    api::{OpProofsProviderRO, OpProofsProviderRw},
+    api::{OpProofsProviderRO, OpProofsProviderRw, ProofWindowRange},
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_trie_common::{HashedPostStateSorted, SortedTrieData, updates::TrieUpdatesSorted};
-use std::{panic, sync::Arc, time::Duration};
+use std::{panic, path::Path, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify, broadcast},
     task,
@@ -92,16 +92,10 @@ pub(super) enum ProofHistoryStartupAction {
     Uninitialized,
     /// Stored proof-history bounds match canonical state and can be served as-is.
     Ready,
-    /// Stored proof-history must be unwound to its retained earliest block before syncing forward.
-    UnwindToEarliest {
-        /// Earliest retained proof-history block that still matches canonical state.
-        earliest: BlockNumHash,
-    },
-    /// Canonical chain has not yet reached the stored earliest block; reconciliation must retry
-    /// once the chain database catches up (e.g. a chain re-sync that kept proof-history storage).
-    WaitForCanonicalEarliest {
-        /// Earliest retained proof-history block number missing from the canonical chain.
-        earliest: u64,
+    /// Stored proof-history must remove a divergent suffix before syncing forward.
+    Unwind {
+        /// First stored block removed by the unwind, including its validated canonical parent.
+        first_removed: BlockWithParent,
     },
     /// Canonical chain is still behind the stored latest block; reconciliation must retry once
     /// the node catches back up (e.g. right after a restart where the persisted head lags the
@@ -115,37 +109,39 @@ pub(super) enum ProofHistoryStartupAction {
     },
 }
 
+/// Canonical facts captured from one persisted main-database read transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProofHistoryCanonicalSnapshot {
+    /// Highest canonical block persisted in the snapshot.
+    canonical_best: u64,
+    /// Canonical hash at the stored earliest height, when that height is persisted.
+    canonical_earliest_hash: Option<B256>,
+    /// Canonical hash at the stored latest height, when that height is persisted.
+    canonical_latest_hash: Option<B256>,
+    /// Canonical child immediately above the stored earliest block, resolved for a possible
+    /// suffix unwind and validated to descend from the retained anchor.
+    first_removed: Option<BlockWithParent>,
+}
+
 /// Determines how proof-history storage should be reconciled against canonical block hashes.
 pub(super) fn proof_history_startup_action(
-    earliest: Option<(u64, B256)>,
-    latest: Option<(u64, B256)>,
+    proof_window: Option<ProofWindowRange>,
     canonical_best: u64,
     canonical_earliest_hash: Option<B256>,
     canonical_latest_hash: Option<B256>,
+    first_removed: Option<BlockWithParent>,
+    storage_path: &Path,
 ) -> eyre::Result<ProofHistoryStartupAction> {
-    let (Some((earliest_number, earliest_hash)), Some((latest_number, latest_hash))) =
-        (earliest, latest)
-    else {
+    let Some(ProofWindowRange { earliest, latest }) = proof_window else {
         return Ok(ProofHistoryStartupAction::Uninitialized);
     };
 
-    if earliest_number > latest_number {
+    if earliest.number > latest.number {
         return Err(eyre!(
-            "proof-history storage has earliest block {earliest_number} after latest block {latest_number}"
-        ));
-    }
-
-    // No canonical header at the earliest height yet: the chain database is (re-)syncing and has
-    // not reached the retained range. Failing here would crash the node before it could ever sync
-    // past this point, so wait instead; a *mismatching* hash stays a hard error below.
-    let Some(canonical_earliest) = canonical_earliest_hash else {
-        return Ok(ProofHistoryStartupAction::WaitForCanonicalEarliest {
-            earliest: earliest_number,
-        });
-    };
-    if canonical_earliest != earliest_hash {
-        return Err(eyre!(
-            "proof-history earliest stored block {earliest_number} hash {earliest_hash:?} is not canonical; wipe proof-history storage and restart initialization"
+            "proof-history storage at {} has earliest block {} after latest block {}; wipe that proof-history directory or use a fresh path and restart initialization",
+            storage_path.display(),
+            earliest.number,
+            latest.number,
         ));
     }
 
@@ -154,27 +150,158 @@ pub(super) fn proof_history_startup_action(
     // head by up to the engine persistence threshold. Wait for canonical state to catch back up
     // and only then decide between `Ready` and an unwind — discarding the retained window here
     // would trade a few seconds of catch-up for days of re-execution.
-    if latest_number > canonical_best {
+    //
+    // When the persisted chain has already reached the retained earliest height, still validate
+    // that anchor before waiting for the latest height. A stale earliest block cannot become
+    // canonical merely by allowing the chain to advance.
+    if earliest.number > canonical_best {
         return Ok(ProofHistoryStartupAction::WaitForCanonicalLatest {
-            latest: latest_number,
+            latest: latest.number,
+            canonical_best,
+        });
+    }
+
+    if canonical_earliest_hash != Some(earliest.hash) {
+        let label = if earliest == latest {
+            "one-block initialization anchor"
+        } else {
+            "earliest stored block"
+        };
+        return Err(eyre!(
+            "proof-history {label} {} hash {:?} is not canonical in the persisted database; wipe proof-history storage at {} or use a fresh path and restart initialization",
+            earliest.number,
+            earliest.hash,
+            storage_path.display(),
+        ));
+    }
+
+    if latest.number > canonical_best {
+        return Ok(ProofHistoryStartupAction::WaitForCanonicalLatest {
+            latest: latest.number,
             canonical_best,
         });
     }
 
     let Some(canonical_latest) = canonical_latest_hash else {
         return Err(eyre!(
-            "canonical chain has no canonical hash for stored proof-history latest block {latest_number} at or below canonical best {canonical_best}"
+            "canonical database snapshot has no header for stored proof-history latest block {} at or below canonical best {}; wipe proof-history storage at {} or use a fresh path and restart initialization",
+            latest.number,
+            canonical_best,
+            storage_path.display(),
         ));
     };
 
-    if canonical_latest == latest_hash {
+    if canonical_latest == latest.hash {
         return Ok(ProofHistoryStartupAction::Ready);
     }
 
+    if earliest == latest {
+        return Err(eyre!(
+            "proof-history one-block initialization anchor {} hash {:?} is not canonical in the persisted database; wipe proof-history storage at {} or use a fresh path and restart initialization",
+            earliest.number,
+            earliest.hash,
+            storage_path.display(),
+        ));
+    }
+
+    let first_removed = first_removed.ok_or_else(|| {
+        eyre!(
+            "canonical database snapshot has no validated child above proof-history earliest block {} hash {:?}; wipe proof-history storage at {} or use a fresh path and restart initialization",
+            earliest.number,
+            earliest.hash,
+            storage_path.display(),
+        )
+    })?;
+
     // The canonical chain reached the stored height with a different block: real divergence
-    // (a reorg happened while the sidecar was down). Rewind to the validated earliest anchor.
-    Ok(ProofHistoryStartupAction::UnwindToEarliest {
-        earliest: BlockNumHash::new(earliest_number, earliest_hash),
+    // (a reorg happened while the sidecar was down). Carry the child resolved from the same
+    // snapshot so the unwind cannot switch branches before its write transaction opens.
+    Ok(ProofHistoryStartupAction::Unwind { first_removed })
+}
+
+/// Reads a proof range and its canonical reconciliation inputs exactly once each.
+fn proof_history_startup_reconciliation<ReadProofWindow, ReadCanonicalSnapshot>(
+    read_proof_window: ReadProofWindow,
+    read_canonical_snapshot: ReadCanonicalSnapshot,
+    storage_path: &Path,
+) -> eyre::Result<ProofHistoryStartupAction>
+where
+    ReadProofWindow: FnOnce() -> eyre::Result<Option<ProofWindowRange>>,
+    ReadCanonicalSnapshot: FnOnce(ProofWindowRange) -> eyre::Result<ProofHistoryCanonicalSnapshot>,
+{
+    let proof_window = read_proof_window()?;
+    let Some(range) = proof_window else {
+        return Ok(ProofHistoryStartupAction::Uninitialized);
+    };
+    let snapshot = read_canonical_snapshot(range)?;
+    proof_history_startup_action(
+        Some(range),
+        snapshot.canonical_best,
+        snapshot.canonical_earliest_hash,
+        snapshot.canonical_latest_hash,
+        snapshot.first_removed,
+        storage_path,
+    )
+}
+
+/// Captures canonical endpoint hashes and a possible unwind child from one main-database snapshot.
+fn proof_history_canonical_snapshot<Provider>(
+    provider: &Provider,
+    proof_window: ProofWindowRange,
+    storage_path: &Path,
+) -> eyre::Result<ProofHistoryCanonicalSnapshot>
+where
+    Provider: BlockNumReader + HeaderProvider,
+{
+    let canonical_best = provider.best_block_number()?;
+    let canonical_earliest = (proof_window.earliest.number <= canonical_best)
+        .then(|| provider.sealed_header(proof_window.earliest.number))
+        .transpose()?
+        .flatten();
+    let canonical_latest = (proof_window.latest.number <= canonical_best)
+        .then(|| provider.sealed_header(proof_window.latest.number))
+        .transpose()?
+        .flatten();
+    let canonical_earliest_hash = canonical_earliest.as_ref().map(|header| header.hash());
+    let canonical_latest_hash = canonical_latest.as_ref().map(|header| header.hash());
+
+    let first_removed = if proof_window.earliest.number < proof_window.latest.number &&
+        canonical_earliest_hash == Some(proof_window.earliest.hash) &&
+        canonical_latest_hash != Some(proof_window.latest.hash) &&
+        proof_window.latest.number <= canonical_best
+    {
+        let child_number = proof_window
+            .earliest
+            .number
+            .checked_add(1)
+            .ok_or_else(|| eyre!("cannot resolve a proof-history child beyond u64::MAX"))?;
+        let child = provider.sealed_header(child_number)?.ok_or_else(|| {
+            eyre!(
+                "canonical database snapshot has no proof-history unwind child at block {child_number}; wipe proof-history storage at {} or use a fresh path and restart initialization",
+                storage_path.display(),
+            )
+        })?;
+        if child.parent_hash() != proof_window.earliest.hash {
+            return Err(eyre!(
+                "canonical proof-history unwind child {child_number} has parent {:?}, expected retained earliest hash {:?}; wipe proof-history storage at {} or use a fresh path and restart initialization",
+                child.parent_hash(),
+                proof_window.earliest.hash,
+                storage_path.display(),
+            ));
+        }
+        Some(BlockWithParent::new(
+            child.parent_hash(),
+            BlockNumHash::new(child_number, child.hash()),
+        ))
+    } else {
+        None
+    };
+
+    Ok(ProofHistoryCanonicalSnapshot {
+        canonical_best,
+        canonical_earliest_hash,
+        canonical_latest_hash,
+        first_removed,
     })
 }
 
@@ -371,20 +498,10 @@ where
                 self.ensure_initialized()?;
                 Ok(true)
             }
-            ProofHistoryStartupAction::UnwindToEarliest { earliest } => {
-                self.unwind_to_earliest(earliest).await?;
+            ProofHistoryStartupAction::Unwind { first_removed } => {
+                self.unwind_to_earliest(first_removed).await?;
                 self.ensure_initialized()?;
                 Ok(true)
-            }
-            ProofHistoryStartupAction::WaitForCanonicalEarliest { earliest } => {
-                // Common during a chain re-sync that kept proof-history storage: stay quiet at
-                // debug level, this state can last for days and resolves on its own.
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    earliest,
-                    "canonical chain has not reached the proof-history earliest block; waiting for sync"
-                );
-                Ok(false)
             }
             ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
                 // Expected briefly after an ungraceful restart while the driver re-derives the
@@ -402,60 +519,37 @@ where
 
     /// Computes the reconciliation action for the current proof-history storage bounds.
     fn startup_action(&self) -> eyre::Result<ProofHistoryStartupAction> {
-        let provider_ro = self.storage.provider_ro()?;
-        let earliest = opt_block(provider_ro.get_earliest_block())?;
-        let latest = opt_block(provider_ro.get_latest_block())?;
-        let canonical_best = self.provider.best_block_number()?;
-        let canonical_earliest_hash =
-            earliest.map(|(number, _)| self.provider.block_hash(number)).transpose()?.flatten();
-        let canonical_latest_hash = latest
-            .filter(|(number, _)| *number <= canonical_best)
-            .map(|(number, _)| self.provider.block_hash(number))
-            .transpose()?
-            .flatten();
-
-        proof_history_startup_action(
-            earliest,
-            latest,
-            canonical_best,
-            canonical_earliest_hash,
-            canonical_latest_hash,
+        let storage_path = self.config.required_storage_path()?;
+        proof_history_startup_reconciliation(
+            || {
+                let provider_ro = self.storage.provider_ro()?;
+                match provider_ro.get_proof_window() {
+                    Ok(range) => Ok(Some(range)),
+                    Err(OpProofsStorageError::NoBlocksFound) => Ok(None),
+                    Err(error) => Err(error.into()),
+                }
+            },
+            |proof_window| {
+                let provider_ro = self.provider.database_provider_ro()?;
+                proof_history_canonical_snapshot(&provider_ro, proof_window, storage_path)
+            },
+            storage_path,
         )
     }
 
-    /// Unwinds proof-history storage so its latest retained block is the canonical earliest block.
-    async fn unwind_to_earliest(&self, earliest: BlockNumHash) -> eyre::Result<()> {
-        let latest = opt_block(self.storage.provider_ro()?.get_latest_block())?
-            .ok_or_else(|| eyre!("no latest proof-history block to unwind"))?
-            .0;
-        if latest <= earliest.number {
-            return Ok(());
-        }
-
+    /// Removes the divergent suffix beginning at a child resolved by startup reconciliation.
+    async fn unwind_to_earliest(&self, first_removed: BlockWithParent) -> eyre::Result<()> {
         info!(
             target: "reth::taiko::proof_history",
-            latest,
-            earliest = earliest.number,
+            first_removed = first_removed.block.number,
+            retained_parent = ?first_removed.parent,
             "unwinding proof-history storage to retained canonical earliest block"
-        );
-
-        let unwind_block_number = earliest
-            .number
-            .checked_add(1)
-            .ok_or_else(|| eyre!("cannot unwind proof-history beyond u64::MAX block"))?;
-        let unwind_block_hash = self
-            .provider
-            .block_hash(unwind_block_number)?
-            .ok_or_else(|| eyre!("missing proof-history unwind block {unwind_block_number}"))?;
-        let unwind_to = BlockWithParent::new(
-            earliest.hash,
-            BlockNumHash::new(unwind_block_number, unwind_block_hash),
         );
 
         let storage = self.storage.clone();
         let unwind_task = task::spawn_blocking(move || -> Result<(), OpProofsStorageError> {
             let provider_rw = storage.provider_rw()?;
-            provider_rw.unwind_history(unwind_to)?;
+            provider_rw.unwind_history(first_removed)?;
             provider_rw.commit()
         });
         blocking_join_result(unwind_task.await, "proof-history unwind worker")??;
@@ -491,12 +585,11 @@ where
     /// Verifies the proof-history database is initialized and safe to prune automatically.
     fn ensure_initialized(&self) -> eyre::Result<()> {
         let provider_ro = self.storage.provider_ro()?;
-        let earliest_block_number = opt_block(provider_ro.get_earliest_block())?
-            .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
-            .0;
-        let latest_block_number = opt_block(provider_ro.get_latest_block())?
-            .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
-            .0;
+        let window = provider_ro
+            .get_proof_window()
+            .map_err(|error| eyre!("proof-history storage is not initialized: {error}"))?;
+        let earliest_block_number = window.earliest.number;
+        let latest_block_number = window.latest.number;
 
         let target_earliest = latest_block_number.saturating_sub(self.config.window);
         if target_earliest > earliest_block_number {
@@ -988,14 +1081,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryStartupAction, committed_chain_is_contiguous,
+        ProofHistoryCanonicalSnapshot, ProofHistoryStartupAction, committed_chain_is_contiguous,
         ensure_canonical_update_above_earliest, proof_history_startup_action,
+        proof_history_startup_reconciliation,
     };
-    use alloy_eips::BlockNumHash;
+    use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
+    use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
     use alloy_primitives::B256;
+    use reth_optimism_trie::api::ProofWindowRange;
+    use std::{cell::Cell, path::Path};
 
     fn hash(byte: u8) -> B256 {
         B256::with_last_byte(byte)
+    }
+
+    fn proof_window(earliest: (u64, u8), latest: (u64, u8)) -> ProofWindowRange {
+        ProofWindowRange {
+            earliest: BlockNumHash::new(earliest.0, hash(earliest.1)),
+            latest: BlockNumHash::new(latest.0, hash(latest.1)),
+        }
+    }
+
+    fn unwind_marker(earliest: (u64, u8), child_hash: u8) -> BlockWithParent {
+        BlockWithParent::new(hash(earliest.1), BlockNumHash::new(earliest.0 + 1, hash(child_hash)))
+    }
+
+    fn storage_path() -> &'static Path {
+        Path::new("/configured/proof-history")
     }
 
     #[test]
@@ -1057,65 +1169,50 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_ready_when_latest_is_canonical() {
+    fn startup_action_ready_when_both_window_endpoints_are_canonical() {
         let action = proof_history_startup_action(
-            Some((10, hash(10))),
-            Some((20, hash(20))),
+            Some(proof_window((10, 10), (20, 20))),
             20,
             Some(hash(10)),
             Some(hash(20)),
+            Some(unwind_marker((10, 10), 11)),
+            storage_path(),
         )
-        .expect("canonical latest should be ready");
+        .expect("canonical endpoints should be ready");
 
         assert_eq!(action, ProofHistoryStartupAction::Ready);
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_latest_canonical_but_earliest_noncanonical() {
+    fn startup_action_refuses_noncanonical_earliest() {
         let error = proof_history_startup_action(
-            Some((10, hash(11))),
-            Some((20, hash(20))),
+            Some(proof_window((10, 11), (20, 20))),
             20,
             Some(hash(10)),
             Some(hash(20)),
+            Some(unwind_marker((10, 11), 12)),
+            storage_path(),
         )
         .expect_err("noncanonical earliest must fail even when latest is canonical");
 
-        assert!(error.to_string().contains("earliest stored block"));
+        let message = error.to_string();
+        assert!(message.contains("earliest stored block"));
+        assert!(message.contains(&storage_path().display().to_string()));
+        assert!(message.contains("wipe"));
+        assert!(message.contains("fresh path"));
     }
 
     #[test]
-    fn proof_history_startup_action_unwinds_when_latest_mismatches_and_earliest_is_canonical() {
+    fn startup_action_waits_when_latest_is_above_snapshot_best() {
         let action = proof_history_startup_action(
-            Some((10, hash(10))),
-            Some((20, hash(21))),
-            20,
-            Some(hash(10)),
-            Some(hash(20)),
-        )
-        .expect("canonical earliest should allow retained-window rewind");
-
-        assert_eq!(
-            action,
-            ProofHistoryStartupAction::UnwindToEarliest {
-                earliest: BlockNumHash::new(10, hash(10))
-            }
-        );
-    }
-
-    #[test]
-    fn proof_history_startup_action_waits_when_latest_is_ahead_of_canonical_best() {
-        // An ungraceful restart leaves the persisted head a few blocks behind the previously
-        // indexed in-memory tip. The driver re-derives the same blocks within seconds, so wait
-        // for canonical state to catch up instead of discarding the whole retained window.
-        let action = proof_history_startup_action(
-            Some((10, hash(10))),
-            Some((25, hash(25))),
+            Some(proof_window((10, 10), (25, 25))),
             20,
             Some(hash(10)),
             None,
+            Some(unwind_marker((10, 10), 11)),
+            storage_path(),
         )
-        .expect("latest ahead of canonical best should wait for the node to catch up");
+        .expect("latest above the persisted best should wait");
 
         assert_eq!(
             action,
@@ -1124,46 +1221,100 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_waits_when_canonical_has_not_reached_earliest() {
-        // A re-synced chain database (with retained proof-history storage) has no header at the
-        // stored earliest height yet. Wait for sync instead of failing: the node could never
-        // sync past this point if reconciliation kept crashing it.
-        let action =
-            proof_history_startup_action(Some((10, hash(10))), Some((20, hash(20))), 5, None, None)
-                .expect("canonical chain below stored earliest should wait for sync");
-
-        assert_eq!(action, ProofHistoryStartupAction::WaitForCanonicalEarliest { earliest: 10 });
-    }
-
-    #[test]
-    fn proof_history_startup_action_errors_when_earliest_is_noncanonical() {
-        let error = proof_history_startup_action(
-            Some((10, hash(11))),
-            Some((20, hash(21))),
+    fn startup_action_unwinds_when_latest_mismatches() {
+        let first_removed = unwind_marker((10, 10), 11);
+        let action = proof_history_startup_action(
+            Some(proof_window((10, 10), (20, 21))),
             20,
             Some(hash(10)),
             Some(hash(20)),
+            Some(first_removed),
+            storage_path(),
         )
-        .expect_err("noncanonical earliest must not be served");
+        .expect("canonical earliest should allow a retained-window unwind");
 
-        let message = error.to_string();
-        assert!(message.contains("earliest stored block"));
-        assert!(message.contains("wipe proof-history storage"));
+        assert_eq!(action, ProofHistoryStartupAction::Unwind { first_removed });
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_latest_hash_is_missing_within_canonical_range() {
-        // The stored latest height is within the canonical chain, yet the canonical hash lookup
-        // returned nothing: a provider inconsistency that waiting cannot repair. Fail closed.
-        let error = proof_history_startup_action(
-            Some((10, hash(10))),
-            Some((20, hash(20))),
-            20,
-            Some(hash(10)),
-            None,
+    fn startup_reconciliation_opens_one_canonical_snapshot() {
+        let opens = Cell::new(0);
+        let action = proof_history_startup_reconciliation(
+            || Ok(Some(proof_window((10, 10), (20, 20)))),
+            |_| {
+                opens.set(opens.get() + 1);
+                Ok(ProofHistoryCanonicalSnapshot {
+                    canonical_best: 20,
+                    canonical_earliest_hash: Some(hash(10)),
+                    canonical_latest_hash: Some(hash(20)),
+                    first_removed: Some(unwind_marker((10, 10), 11)),
+                })
+            },
+            storage_path(),
         )
-        .expect_err("missing canonical hash below best must fail closed");
+        .expect("canonical proof window should reconcile");
 
-        assert!(error.to_string().contains("no canonical hash"));
+        assert_eq!(action, ProofHistoryStartupAction::Ready);
+        assert_eq!(opens.get(), 1, "reconciliation must open one canonical snapshot");
+    }
+
+    #[test]
+    fn startup_unwind_uses_child_hash_from_reconciliation_snapshot() {
+        let opens = Cell::new(0);
+        let first_snapshot_child = unwind_marker((10, 10), 11);
+        let later_snapshot_child = unwind_marker((10, 10), 12);
+        let action = proof_history_startup_reconciliation(
+            || Ok(Some(proof_window((10, 10), (20, 21)))),
+            |_| {
+                let snapshot = if opens.replace(opens.get() + 1) == 0 {
+                    first_snapshot_child
+                } else {
+                    later_snapshot_child
+                };
+                Ok(ProofHistoryCanonicalSnapshot {
+                    canonical_best: 20,
+                    canonical_earliest_hash: Some(hash(10)),
+                    canonical_latest_hash: Some(hash(20)),
+                    first_removed: Some(snapshot),
+                })
+            },
+            storage_path(),
+        )
+        .expect("canonical earliest should allow an unwind");
+
+        assert_eq!(
+            action,
+            ProofHistoryStartupAction::Unwind { first_removed: first_snapshot_child }
+        );
+        assert_eq!(opens.get(), 1, "unwind must not reopen the canonical provider");
+    }
+
+    #[test]
+    fn post_init_reconciliation_detects_noncanonical_anchor_before_readiness() {
+        let readiness = ProofHistoryReadiness::new();
+        let result = proof_history_startup_reconciliation(
+            || Ok(Some(proof_window((20, 21), (20, 21)))),
+            |_| {
+                Ok(ProofHistoryCanonicalSnapshot {
+                    canonical_best: 20,
+                    canonical_earliest_hash: Some(hash(20)),
+                    canonical_latest_hash: Some(hash(20)),
+                    first_removed: None,
+                })
+            },
+            storage_path(),
+        )
+        .and_then(|action| {
+            if action == ProofHistoryStartupAction::Ready {
+                readiness.set_ready();
+            }
+            Ok(action)
+        });
+
+        let error = result.expect_err("a moved initialization anchor must fail closed").to_string();
+        assert!(!readiness.is_ready());
+        assert!(error.contains(&storage_path().display().to_string()));
+        assert!(error.contains("wipe"));
+        assert!(error.contains("fresh path"));
     }
 }

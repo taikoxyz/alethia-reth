@@ -1,6 +1,7 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
+mod engine;
 mod live;
 mod prune;
 mod sidecar;

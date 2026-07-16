@@ -63,5 +63,6 @@ tracing = { workspace = true }
 reth-chainspec = { workspace = true }
 reth-db-common = { workspace = true }
 reth-evm-ethereum = { workspace = true }
+reth-optimism-trie = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 tempfile = { workspace = true }

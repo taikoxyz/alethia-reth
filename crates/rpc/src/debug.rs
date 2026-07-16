@@ -1,7 +1,8 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
 use crate::proof_state::{
-    ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider, run_proof_task,
+    ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider,
+    ResolvedBlockState, canonical_state_changed, complete_guarded_work, run_proof_task,
 };
 use alethia_reth_block::{
     executor::{
@@ -13,7 +14,7 @@ use alethia_reth_primitives::{
     payload::builder::decode_recovered_transactions, transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, transaction::Recovered};
-use alloy_eips::{BlockId, BlockNumberOrTag, eip4844::BYTES_PER_BLOB};
+use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag, eip4844::BYTES_PER_BLOB};
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
@@ -26,7 +27,7 @@ use reth_evm::{
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::HeaderProvider;
+use reth_provider::{HeaderProvider, ProviderResult};
 use reth_revm::{
     State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
     witness::ExecutionWitnessRecord,
@@ -35,7 +36,7 @@ use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
 use reth_trie_common::ExecutionWitnessMode;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 /// Block-level tx-list DA limit: the zlib-compressed transaction list must fit in one blob.
 ///
@@ -50,6 +51,75 @@ const MAX_TX_LIST_COMPRESSED_BYTES: usize = BYTES_PER_BLOB;
 /// A valid single block's decompressed tx list is far smaller — a 45M-gas block holds at most
 /// ~11 MiB of zero-byte calldata — so this never rejects a legitimately proposed block.
 const MAX_TX_LIST_RAW_BYTES: usize = 16 * 1024 * 1024;
+
+/// Exact original witness target and the canonical parent state it must execute against.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WitnessTarget {
+    /// Number-and-hash identity recovered before any synthetic transaction replacement.
+    block: BlockNumHash,
+    /// Expected parent number paired with the target header's original parent hash.
+    parent: BlockNumHash,
+}
+
+impl WitnessTarget {
+    /// Captures an exact non-genesis target and derives its required parent identity.
+    fn from_parts(number: u64, hash: B256, parent_hash: B256) -> Result<Self, EthApiError> {
+        let parent_number = number.checked_sub(1).ok_or_else(|| {
+            EthApiError::EvmCustom("genesis block has no parent state".to_string())
+        })?;
+        Ok(Self {
+            block: BlockNumHash::new(number, hash),
+            parent: BlockNumHash::new(parent_number, parent_hash),
+        })
+    }
+
+    /// Captures target and parent identities from the original recovered canonical block.
+    fn from_block(block: &RecoveredBlock<Block>) -> Result<Self, EthApiError> {
+        Self::from_parts(block.header().number(), block.hash(), block.parent_hash())
+    }
+}
+
+/// Prevalidates an exact witness target, then resolves and verifies its original parent identity.
+async fn prepare_witness_parent_with<ValidateTarget, ResolveParent, ResolveFuture>(
+    target: WitnessTarget,
+    mut validate_target: ValidateTarget,
+    resolve_parent: ResolveParent,
+) -> ProviderResult<ResolvedBlockState>
+where
+    ValidateTarget: FnMut(BlockNumHash) -> ProviderResult<()>,
+    ResolveParent: FnOnce(BlockId) -> ResolveFuture,
+    ResolveFuture: Future<Output = ProviderResult<ResolvedBlockState>>,
+{
+    validate_target(target.block)?;
+    let resolved = match resolve_parent(BlockId::Hash(target.parent.hash.into())).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            // Prefer the stable reorg signal when the target moved while its parent was resolving;
+            // otherwise preserve the underlying provider failure.
+            validate_target(target.block)?;
+            return Err(error)
+        }
+    };
+    match &resolved {
+        ResolvedBlockState::Canonical { block, .. } if *block == target.parent => Ok(resolved),
+        ResolvedBlockState::Pending(_) | ResolvedBlockState::Canonical { .. } => {
+            Err(canonical_state_changed())
+        }
+    }
+}
+
+/// Completes a witness and validates the captured original target before exposing the result.
+fn complete_witness_work<Work, Validate, Output, Error>(
+    target: BlockNumHash,
+    work: Work,
+    validate: Validate,
+) -> Result<Output, Error>
+where
+    Work: FnOnce() -> Result<Output, Error>,
+    Validate: FnOnce(BlockNumHash) -> Result<(), Error>,
+{
+    complete_guarded_work(work, || validate(target))
+}
 
 /// RPC server trait for Taiko proof-history backed `debug_` witness methods.
 #[cfg_attr(not(test), rpc(server, namespace = "debug"))]
@@ -142,7 +212,8 @@ where
             .recovered_block(block_id)
             .await?
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
-        self.execution_witness_for_block(block, mode).await
+        let target = WitnessTarget::from_block(&block)?;
+        self.execution_witness_for_block(block, target, mode).await
     }
 
     /// Replays the explicit transaction list on top of the requested block's parent state.
@@ -158,7 +229,8 @@ where
             .recovered_block(block_id)
             .await?
             .ok_or(EthApiError::HeaderNotFound(block_id))?;
-        self.execution_witness_for_tx_list_block(block, tx_list, mode, options).await
+        let target = WitnessTarget::from_block(&block)?;
+        self.execution_witness_for_tx_list_block(block, target, tx_list, mode, options).await
     }
 
     /// Re-executes the provided block against proof-history backed parent state and returns the
@@ -166,15 +238,16 @@ where
     async fn execution_witness_for_block(
         &self,
         block: Arc<RecoveredBlock<Block>>,
+        target: WitnessTarget,
         mode: ExecutionWitnessMode,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        let block_number = block.header().number();
-        let parent_block = BlockId::Hash(block.parent_hash().into());
-        let resolved_parent = self
-            .state_provider_factory
-            .resolve_block_state(parent_block)
-            .await
-            .map_err(EthApiError::from)?;
+        let resolved_parent = prepare_witness_parent_with(
+            target,
+            |block| self.state_provider_factory.validate_canonical_block(block),
+            |parent_id| self.state_provider_factory.resolve_block_state(parent_id),
+        )
+        .await
+        .map_err(EthApiError::from)?;
         let factory = self.state_provider_factory.clone();
         let evm_config = self.eth_api.evm_config().clone();
         let header_provider = self.provider.clone();
@@ -182,24 +255,42 @@ where
         // RPC workers and share Reth's configured proof execution limit.
         run_proof_task(&self.eth_api, move || {
             let selected = factory.state_provider_at(resolved_parent).map_err(EthApiError::from)?;
-            let state_provider = match selected {
-                ProofStateProvider::Pending(state) => state,
-                ProofStateProvider::Canonical { state, guard: _guard } => state,
+            let (state_provider, guard) = match selected {
+                ProofStateProvider::Pending(_) => {
+                    return Err(EthApiError::from(canonical_state_changed()).into())
+                }
+                ProofStateProvider::Canonical { state, guard } => (state, guard),
             };
-            let db = StateProviderDatabase::new(&*state_provider);
-            let block_executor = evm_config.executor(db);
-            let mut witness_record = ExecutionWitnessRecord::default();
+            complete_witness_work(
+                target.block,
+                || {
+                    let db = StateProviderDatabase::new(&*state_provider);
+                    let block_executor = evm_config.executor(db);
+                    let mut witness_record = ExecutionWitnessRecord::default();
 
-            block_executor
-                .execute_with_state_closure(&*block, |statedb: &State<_>| {
-                    witness_record.record_executed_state(statedb, mode);
-                })
-                .map_err(EthApiError::from)?;
+                    block_executor
+                        .execute_with_state_closure(&*block, |statedb: &State<_>| {
+                            witness_record.record_executed_state(statedb, mode);
+                        })
+                        .map_err(EthApiError::from)?;
 
-            let witness = witness_record
-                .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
-                .map_err(EthApiError::from)?;
-            Ok(witness)
+                    witness_record
+                        .into_execution_witness(
+                            &*state_provider,
+                            &header_provider,
+                            target.block.number,
+                            mode,
+                        )
+                        .map_err(EthApiError::from)
+                        .map_err(Into::into)
+                },
+                |target| {
+                    factory
+                        .validate_after_work(guard, Some(target))
+                        .map_err(EthApiError::from)
+                        .map_err(Into::into)
+                },
+            )
         })
         .await
     }
@@ -215,83 +306,110 @@ where
     async fn execution_witness_for_tx_list_block(
         &self,
         canonical_block: Arc<RecoveredBlock<Block>>,
+        target: WitnessTarget,
         tx_list: Bytes,
         mode: ExecutionWitnessMode,
         options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
-        let block_number = canonical_block.header().number();
-        let parent_block = BlockId::Hash(canonical_block.parent_hash().into());
-        let resolved_parent = self
-            .state_provider_factory
-            .resolve_block_state(parent_block)
-            .await
-            .map_err(EthApiError::from)?;
+        let resolved_parent = prepare_witness_parent_with(
+            target,
+            |block| self.state_provider_factory.validate_canonical_block(block),
+            |parent_id| self.state_provider_factory.resolve_block_state(parent_id),
+        )
+        .await
+        .map_err(EthApiError::from)?;
         let factory = self.state_provider_factory.clone();
         let evm_config = self.eth_api.evm_config().clone();
         let header_provider = self.provider.clone();
         // Tx-list validation/decode, transaction replay, and witness assembly are CPU/I/O
         // heavy; keep them off the async RPC workers and under Reth's shared proof limit.
         run_proof_task(&self.eth_api, move || {
-            let txs = decode_recovered_tx_list(tx_list)?;
-            let block = block_with_tx_list(canonical_block.as_ref().clone(), txs);
             let selected = factory.state_provider_at(resolved_parent).map_err(EthApiError::from)?;
-            let state_provider = match selected {
-                ProofStateProvider::Pending(state) => state,
-                ProofStateProvider::Canonical { state, guard: _guard } => state,
+            let (state_provider, guard) = match selected {
+                ProofStateProvider::Pending(_) => {
+                    return Err(EthApiError::from(canonical_state_changed()).into())
+                }
+                ProofStateProvider::Canonical { state, guard } => (state, guard),
             };
-            let db = StateProviderDatabase::new(&*state_provider);
-            let mut state = State::builder().with_database(db).with_bundle_update().build();
-            let mut witness_record = ExecutionWitnessRecord::default();
+            complete_witness_work(
+                target.block,
+                || {
+                    let txs = decode_recovered_tx_list(tx_list)?;
+                    let block = block_with_tx_list(canonical_block.as_ref().clone(), txs);
+                    let db = StateProviderDatabase::new(&*state_provider);
+                    let mut state = State::builder().with_database(db).with_bundle_update().build();
+                    let mut witness_record = ExecutionWitnessRecord::default();
 
-            {
-                let mut block_executor = evm_config
-                    .executor_for_block(&mut state, block.sealed_block())
-                    .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
+                    {
+                        let mut block_executor = evm_config
+                            .executor_for_block(&mut state, block.sealed_block())
+                            .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
 
-                block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
+                        block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
 
-                for (idx, tx) in block.transactions_recovered().enumerate() {
-                    let is_anchor_transaction = idx == 0;
+                        for (idx, tx) in block.transactions_recovered().enumerate() {
+                            let is_anchor_transaction = idx == 0;
 
-                    // Taiko blocks never contain blob transactions: the build paths skip
-                    // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
-                    // validation rejects any block that includes one. Keep the same filtering,
-                    // but never silently discard the mandatory anchor transaction.
-                    match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
-                        Ok(true) => {
-                            continue;
-                        }
-                        Ok(false) => {}
-                        Err(err) => return Err(err.into()),
-                    }
+                            // Taiko blocks never contain blob transactions: the build paths skip
+                            // non-anchor ones (crates/payload/src/builder/execution.rs) and
+                            // consensus validation rejects any block
+                            // that includes one. Keep the same
+                            // filtering, but never silently discard the mandatory anchor
+                            // transaction.
+                            match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction)
+                            {
+                                Ok(true) => {
+                                    continue;
+                                }
+                                Ok(false) => {}
+                                Err(err) => return Err(err.into()),
+                            }
 
-                    match block_executor.execute_transaction(tx) {
-                        Ok(_) => {}
-                        Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
-                            if is_zk_gas_limit_exceeded(&err) {
-                                break;
+                            match block_executor.execute_transaction(tx) {
+                                Ok(_) => {}
+                                Err(err)
+                                    if is_recoverable_tx_list_error(
+                                        &err,
+                                        is_anchor_transaction,
+                                    ) =>
+                                {
+                                    if is_zk_gas_limit_exceeded(&err) {
+                                        break
+                                    }
+                                }
+                                Err(err) => return Err(EthApiError::from(err).into()),
                             }
                         }
-                        Err(err) => return Err(EthApiError::from(err).into()),
+
+                        match block_executor.apply_post_execution_changes() {
+                            Ok(_) => {}
+                            Err(err)
+                                if options.skip_zk_gas_difficulty_check &&
+                                    is_zk_gas_difficulty_mismatch(&err) => {}
+                            Err(err) => return Err(EthApiError::from(err).into()),
+                        }
                     }
-                }
 
-                match block_executor.apply_post_execution_changes() {
-                    Ok(_) => {}
-                    Err(err)
-                        if options.skip_zk_gas_difficulty_check &&
-                            is_zk_gas_difficulty_mismatch(&err) => {}
-                    Err(err) => return Err(EthApiError::from(err).into()),
-                }
-            }
+                    state.merge_transitions(BundleRetention::Reverts);
+                    witness_record.record_executed_state(&state, mode);
 
-            state.merge_transitions(BundleRetention::Reverts);
-            witness_record.record_executed_state(&state, mode);
-
-            let witness = witness_record
-                .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
-                .map_err(EthApiError::from)?;
-            Ok(witness)
+                    witness_record
+                        .into_execution_witness(
+                            &*state_provider,
+                            &header_provider,
+                            target.block.number,
+                            mode,
+                        )
+                        .map_err(EthApiError::from)
+                        .map_err(Into::into)
+                },
+                |target| {
+                    factory
+                        .validate_after_work(guard, Some(target))
+                        .map_err(EthApiError::from)
+                        .map_err(Into::into)
+                },
+            )
         })
         .await
     }
@@ -442,11 +560,208 @@ fn should_skip_disallowed_tx_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proof_state::ResolvedBlockState;
     use alloy_consensus::{Signed, TxEip4844, TxLegacy};
+    use alloy_eips::BlockNumHash;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_rlp::Encodable;
     use reth_evm::execute::BlockValidationError;
+    use reth_provider::{ProviderError, test_utils::MockEthProvider};
     use serde_json::json;
+    use std::{
+        cell::{Cell, RefCell},
+        sync::{Arc, Mutex},
+    };
+
+    #[test]
+    fn witness_target_rejects_genesis_without_a_parent() {
+        let err = WitnessTarget::from_parts(0, B256::repeat_byte(0x10), B256::ZERO)
+            .expect_err("genesis has no parent state to execute against");
+
+        assert!(err.to_string().contains("genesis block has no parent state"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn witness_target_prevalidation_happens_before_parent_resolution() {
+        let target =
+            WitnessTarget::from_parts(10, B256::repeat_byte(0x10), B256::repeat_byte(0x09))
+                .expect("non-genesis target has an exact parent");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let validation_calls = calls.clone();
+        let parent_calls = calls.clone();
+
+        let resolved = prepare_witness_parent_with(
+            target,
+            |block| {
+                validation_calls.lock().unwrap().push("target");
+                assert_eq!(block, target.block);
+                Ok(())
+            },
+            |block_id| async move {
+                parent_calls.lock().unwrap().push("parent");
+                assert_eq!(block_id, BlockId::Hash(target.parent.hash.into()));
+                Ok(ResolvedBlockState::Canonical {
+                    block: target.parent,
+                    state: Box::new(MockEthProvider::default()),
+                })
+            },
+        )
+        .await
+        .expect("an exact canonical parent resolves");
+        calls.lock().unwrap().push("execution");
+
+        assert!(
+            matches!(resolved, ResolvedBlockState::Canonical { block, .. } if block == target.parent)
+        );
+        assert_eq!(*calls.lock().unwrap(), vec!["target", "parent", "execution"]);
+    }
+
+    #[tokio::test]
+    async fn noncanonical_by_hash_target_is_rejected_before_execution() {
+        let target =
+            WitnessTarget::from_parts(10, B256::repeat_byte(0x10), B256::repeat_byte(0x09))
+                .expect("non-genesis target has an exact parent");
+        let parent_called = Cell::new(false);
+
+        let err = prepare_witness_parent_with(
+            target,
+            |_| Err(canonical_state_changed()),
+            |_| async {
+                parent_called.set(true);
+                unreachable!("parent resolution must follow successful target validation")
+            },
+        )
+        .await
+        .expect_err("a noncanonical target fails before parent resolution");
+
+        assert_eq!(err.to_string(), "canonical state changed; retry");
+        assert!(!parent_called.get());
+    }
+
+    #[tokio::test]
+    async fn target_reorg_while_parent_disappears_returns_retry_error() {
+        let target =
+            WitnessTarget::from_parts(10, B256::repeat_byte(0x10), B256::repeat_byte(0x09))
+                .expect("non-genesis target has an exact parent");
+        let validations = Cell::new(0);
+
+        let err = prepare_witness_parent_with(
+            target,
+            |_| {
+                validations.set(validations.get() + 1);
+                if validations.get() == 1 { Ok(()) } else { Err(canonical_state_changed()) }
+            },
+            |_| async { Err(ProviderError::other(std::io::Error::other("parent disappeared"))) },
+        )
+        .await
+        .expect_err("a target reorg must supersede the transient parent lookup error");
+
+        assert_eq!(err.to_string(), "canonical state changed; retry");
+        assert_eq!(validations.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn wrong_or_pending_witness_parent_is_rejected() {
+        let target =
+            WitnessTarget::from_parts(10, B256::repeat_byte(0x10), B256::repeat_byte(0x09))
+                .expect("non-genesis target has an exact parent");
+
+        for wrong_parent in [
+            BlockNumHash::new(target.parent.number, B256::repeat_byte(0xee)),
+            BlockNumHash::new(target.parent.number - 1, target.parent.hash),
+        ] {
+            let wrong_err = prepare_witness_parent_with(
+                target,
+                |_| Ok(()),
+                |_| async {
+                    Ok(ResolvedBlockState::Canonical {
+                        block: wrong_parent,
+                        state: Box::new(MockEthProvider::default()),
+                    })
+                },
+            )
+            .await
+            .expect_err("a different parent identity must fail closed");
+            assert_eq!(wrong_err.to_string(), "canonical state changed; retry");
+        }
+
+        let pending_err = prepare_witness_parent_with(
+            target,
+            |_| Ok(()),
+            |_| async { Ok(ResolvedBlockState::Pending(Box::new(MockEthProvider::default()))) },
+        )
+        .await
+        .expect_err("pending state cannot back a canonical witness target");
+        assert_eq!(pending_err.to_string(), "canonical state changed; retry");
+    }
+
+    #[test]
+    fn witness_target_reorg_is_rejected_after_parent_work() {
+        let target = BlockNumHash::new(10, B256::repeat_byte(0x10));
+        let calls = RefCell::new(Vec::new());
+
+        let err = complete_witness_work(
+            target,
+            || {
+                calls.borrow_mut().push("parent-work");
+                Ok::<_, ProviderError>(())
+            },
+            |validated| {
+                calls.borrow_mut().push("target-validation");
+                assert_eq!(validated, target);
+                Err(canonical_state_changed())
+            },
+        )
+        .expect_err("a target reorg after witness assembly must reject the result");
+
+        assert_eq!(err.to_string(), "canonical state changed; retry");
+        assert_eq!(*calls.borrow(), vec!["parent-work", "target-validation"]);
+    }
+
+    #[test]
+    fn tx_list_witness_target_reorg_is_rejected_after_parent_work() {
+        let original_target = BlockNumHash::new(10, B256::repeat_byte(0x10));
+        let synthetic_output = BlockNumHash::new(10, B256::repeat_byte(0xee));
+        let assembled = Cell::new(false);
+        let validated = Cell::new(None);
+
+        let err = complete_witness_work(
+            original_target,
+            || {
+                assembled.set(true);
+                Ok::<_, ProviderError>(synthetic_output)
+            },
+            |target| {
+                validated.set(Some(target));
+                Err(canonical_state_changed())
+            },
+        )
+        .expect_err("a target reorg after tx-list assembly must reject the result");
+
+        assert_eq!(err.to_string(), "canonical state changed; retry");
+        assert!(assembled.get());
+        assert_eq!(validated.get(), Some(original_target));
+    }
+
+    #[test]
+    fn tx_list_witness_validates_the_original_target_not_synthetic_output() {
+        let original_target = BlockNumHash::new(10, B256::repeat_byte(0x10));
+        let synthetic_output = BlockNumHash::new(10, B256::repeat_byte(0xee));
+        let validated = Cell::new(None);
+
+        let output = complete_witness_work(
+            original_target,
+            || Ok::<_, ProviderError>(synthetic_output),
+            |target| {
+                validated.set(Some(target));
+                Ok(())
+            },
+        )
+        .expect("completed witness validates");
+
+        assert_eq!(output, synthetic_output);
+        assert_eq!(validated.get(), Some(original_target));
+    }
 
     #[test]
     fn decode_recovered_tx_list_accepts_empty_rlp_list() {

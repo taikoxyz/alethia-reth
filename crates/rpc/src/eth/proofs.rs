@@ -1,7 +1,8 @@
 //! Proof-history backed override for `eth_getProof`.
 
 use crate::proof_state::{
-    ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider, run_proof_task,
+    ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider,
+    complete_guarded_work, run_proof_task,
 };
 use alloy_eips::BlockId;
 use alloy_primitives::Address;
@@ -53,6 +54,18 @@ where
     }
 }
 
+/// Completes the full account trie walk before validating its canonical-state guard.
+fn complete_account_proof<Work, Validate, Proof, Error>(
+    work: Work,
+    validate: Validate,
+) -> Result<Proof, Error>
+where
+    Work: FnOnce() -> Result<Proof, Error>,
+    Validate: FnOnce() -> Result<(), Error>,
+{
+    complete_guarded_work(work, validate)
+}
+
 #[async_trait]
 impl<Eth, Storage> TaikoEthProofApiServer for TaikoEthProofExt<Eth, Storage>
 where
@@ -77,18 +90,58 @@ where
         // Reth's configured proof execution limit with the upstream `eth_getProof` path.
         let proof = run_proof_task(self.state_provider_factory.eth_api(), move || {
             let selected = factory.state_provider_at(resolved).map_err(EthApiError::from)?;
-            let state_provider = match selected {
-                ProofStateProvider::Pending(state) => state,
-                ProofStateProvider::Canonical { state, guard: _guard } => state,
-            };
-            let proof = state_provider
-                .proof(Default::default(), address, &storage_keys)
-                .map_err(EthApiError::from)?;
-            Ok(proof)
+            match selected {
+                ProofStateProvider::Pending(state) => state
+                    .proof(Default::default(), address, &storage_keys)
+                    .map_err(EthApiError::from)
+                    .map_err(Into::into),
+                ProofStateProvider::Canonical { state, guard } => complete_account_proof(
+                    || {
+                        state
+                            .proof(Default::default(), address, &storage_keys)
+                            .map_err(EthApiError::from)
+                            .map_err(Into::into)
+                    },
+                    || {
+                        factory
+                            .validate_after_work(guard, None)
+                            .map_err(EthApiError::from)
+                            .map_err(Into::into)
+                    },
+                ),
+            }
         })
         .await
         .map_err(Into::into)?;
 
         Ok(proof.into_eip1186_response(keys))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::complete_account_proof;
+    use reth_provider::ProviderError;
+    use std::cell::RefCell;
+
+    #[test]
+    fn get_proof_postvalidates_after_trie_walk() {
+        let calls = RefCell::new(Vec::new());
+
+        let proof = complete_account_proof(
+            || {
+                calls.borrow_mut().push("trie");
+                Ok::<_, ProviderError>(7)
+            },
+            || {
+                calls.borrow_mut().push("validate");
+                Ok(())
+            },
+        )
+        .expect("a completed proof validates");
+        calls.borrow_mut().push("convert");
+
+        assert_eq!(proof, 7);
+        assert_eq!(*calls.borrow(), vec!["trie", "validate", "convert"]);
     }
 }

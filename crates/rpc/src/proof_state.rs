@@ -116,6 +116,24 @@ where
         .await
 }
 
+/// Completes proof or witness work before validating the canonical identities that guard it.
+///
+/// The returned value is produced before `validate` runs and is exposed to the caller only after
+/// validation succeeds. Consumers should perform no branch-dependent work after this helper
+/// returns, making validation the request's final canonical-chain linearization point.
+pub(crate) fn complete_guarded_work<Work, Validate, Output, Error>(
+    work: Work,
+    validate: Validate,
+) -> Result<Output, Error>
+where
+    Work: FnOnce() -> Result<Output, Error>,
+    Validate: FnOnce() -> Result<(), Error>,
+{
+    let output = work()?;
+    validate()?;
+    Ok(output)
+}
+
 /// State resolved for the exact block identity requested by an RPC method.
 pub(crate) enum ResolvedBlockState {
     /// Pending state, which has no stable canonical block identity.
@@ -207,13 +225,6 @@ impl ProofStateGuard {
     ///
     /// The optional debug target is deliberately checked last. Equal identities are not
     /// deduplicated because each check protects a distinct phase of the request.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "RPC consumers install final postvalidation in the next change"
-        )
-    )]
     pub(crate) fn validate_with<CanonicalHash>(
         &self,
         target: Option<BlockNumHash>,
@@ -234,7 +245,7 @@ impl ProofStateGuard {
 }
 
 /// Returns the stable transient error used whenever a captured canonical identity changes.
-fn canonical_state_changed() -> ProviderError {
+pub(crate) fn canonical_state_changed() -> ProviderError {
     ProviderError::other(CanonicalStateChangedError)
 }
 
@@ -483,6 +494,24 @@ where
         .await
     }
 
+    /// Verifies that one exact block identity is still canonical in the live Eth provider.
+    pub(crate) fn validate_canonical_block(&self, block: BlockNumHash) -> ProviderResult<()> {
+        ensure_canonical_identity(block, &mut |number| self.eth_api.provider().block_hash(number))
+    }
+
+    /// Revalidates a completed proof or witness against the live canonical chain.
+    ///
+    /// The proof snapshot endpoint and state block recorded by `guard` are checked before the
+    /// optional witness target. The target remains the final lookup even when it equals another
+    /// guarded identity.
+    pub(crate) fn validate_after_work(
+        &self,
+        guard: ProofStateGuard,
+        target: Option<BlockNumHash>,
+    ) -> ProviderResult<()> {
+        guard.validate_with(target, |number| self.eth_api.provider().block_hash(number))
+    }
+
     /// Selects pending state directly or wraps exact canonical state with proof-history state.
     ///
     /// The returned provider serves account and storage reads from proof-history storage while
@@ -520,10 +549,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryReadiness, ProofStateProvider, ResolvedBlockState, proof_history_covers,
-        proof_history_fallback_allowed, proof_history_miss_is_pruned, resolve_block_state_with,
-        resolve_exact_canonical_state_with, run_proof_task, select_canonical_state_with,
-        select_resolved_state_with,
+        ProofHistoryReadiness, ProofStateProvider, ResolvedBlockState, complete_guarded_work,
+        proof_history_covers, proof_history_fallback_allowed, proof_history_miss_is_pruned,
+        resolve_block_state_with, resolve_exact_canonical_state_with, run_proof_task,
+        select_canonical_state_with, select_resolved_state_with,
     };
     use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag, eip1898::BlockWithParent};
     use alloy_primitives::{B256, map::HashMap};
@@ -674,6 +703,27 @@ mod tests {
             .expect("unchanged identities validate");
 
         assert_eq!(*calls.borrow(), vec![5, 4, 4]);
+    }
+
+    #[test]
+    fn guarded_work_finishes_before_validation_and_return() {
+        let calls = RefCell::new(Vec::new());
+
+        let output = complete_guarded_work(
+            || {
+                calls.borrow_mut().push("work");
+                Ok::<_, ProviderError>(7)
+            },
+            || {
+                calls.borrow_mut().push("validate");
+                Ok(())
+            },
+        )
+        .expect("completed guarded work validates");
+        calls.borrow_mut().push("return");
+
+        assert_eq!(output, 7);
+        assert_eq!(*calls.borrow(), vec!["work", "validate", "return"]);
     }
 
     #[test]

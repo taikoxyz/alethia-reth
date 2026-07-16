@@ -200,9 +200,12 @@ the replacement suffix visible.
 ### Buffered notifications and lag
 
 Notifications buffered during initialization can describe work already
-incorporated by post-init reconciliation. Before applying a reorg/revert, if the
-committed proof latest hash is already canonical, the notification is treated
-as consumed and the engine is synced to the persisted executed head. Commit
+incorporated by post-init reconciliation. A reorg/revert notification is treated
+as consumed only when the committed canonical proof range demonstrably covers
+the affected work, such as when its latest block is at or beyond the replacement
+tip. If the committed latest block is only the common ancestor, the adapter
+still sends the reorg or unwind so an unpersisted old-fork suffix is removed from
+the engine buffer; a fresh engine safely treats that request as a no-op. Commit
 handling also skips an already-covered committed suffix.
 
 On broadcast lag:

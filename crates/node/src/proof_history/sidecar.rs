@@ -456,10 +456,44 @@ pub(super) enum ProofHistoryStartupAction {
 enum ReconciliationOutcome {
     /// Persisted canonical state and committed proof storage agree without replacing the engine.
     Ready,
-    /// Persisted canonical state has not reached the committed proof head yet.
+    /// The proof engine or persisted canonical database has not crossed the routed update yet.
     WaitingForPersistence,
     /// A conflicting persisted branch required receiver-first live engine recovery.
     Recovered,
+}
+
+/// Persisted identities that prove one routed canonical update is no longer in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CanonicalUpdateBarrier {
+    /// Highest replacement block the proof engine must have committed, or the common ancestor for
+    /// a pure revert.
+    target: BlockNumHash,
+    /// First block removed from the displaced branch, used to distinguish a persisted update from
+    /// the still-canonical old branch.
+    first_removed: BlockNumHash,
+}
+
+/// Startup classification plus the post-notification persistence barrier observed with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InstalledReconciliation {
+    /// Reconciliation action for the proof window and persisted canonical snapshot.
+    action: ProofHistoryStartupAction,
+    /// Whether proof storage reached the routed target and the persisted database displaced the
+    /// first old-fork block.
+    update_persisted: bool,
+}
+
+/// Returns whether proof storage and persisted canonical state both crossed a routed update.
+fn canonical_update_barrier_persisted(
+    proof_latest: BlockNumHash,
+    canonical_first_removed_hash: Option<B256>,
+    barrier: CanonicalUpdateBarrier,
+) -> bool {
+    let proof_reached_target = proof_latest.number > barrier.target.number ||
+        (proof_latest.number == barrier.target.number &&
+            proof_latest.hash == barrier.target.hash);
+    let old_branch_displaced = canonical_first_removed_hash != Some(barrier.first_removed.hash);
+    proof_reached_target && old_branch_displaced
 }
 
 /// Whether routing one notification requires a persisted-state reconciliation pass.
@@ -468,30 +502,34 @@ enum NotificationHandlingOutcome {
     /// The notification needs no persisted-state barrier before another event is consumed.
     Complete,
     /// A reorg or revert was routed and must be checked against persisted canonical state.
-    ReconcilePersistedState,
+    ReconcilePersistedState(
+        /// Exact replacement target and displaced-branch identity for the persistence check.
+        CanonicalUpdateBarrier,
+    ),
 }
 
-/// Whether canonical notifications may be consumed while reorg persistence catches up.
+/// Whether canonical notifications may be consumed while both reorg persistence paths catch up.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ReconciliationState {
     /// Persisted state is reconciled, so the notification receiver may advance.
     #[default]
     Reconciled,
-    /// Persisted state trails a routed reorg, so notifications must remain buffered.
-    Pending,
-}
-
-impl From<ReconciliationOutcome> for ReconciliationState {
-    /// Converts one reconciliation attempt into the receiver-consumption state for the next loop.
-    fn from(outcome: ReconciliationOutcome) -> Self {
-        match outcome {
-            ReconciliationOutcome::WaitingForPersistence => Self::Pending,
-            ReconciliationOutcome::Ready | ReconciliationOutcome::Recovered => Self::Reconciled,
-        }
-    }
+    /// At least one persisted state trails a routed reorg, so notifications remain buffered.
+    Pending(
+        /// Routed update that must cross both storage engines before consumption resumes.
+        CanonicalUpdateBarrier,
+    ),
 }
 
 impl ReconciliationState {
+    /// Converts one reconciliation attempt into the receiver-consumption state for the next loop.
+    const fn after(outcome: ReconciliationOutcome, barrier: CanonicalUpdateBarrier) -> Self {
+        match outcome {
+            ReconciliationOutcome::WaitingForPersistence => Self::Pending(barrier),
+            ReconciliationOutcome::Ready | ReconciliationOutcome::Recovered => Self::Reconciled,
+        }
+    }
+
     /// Returns whether the sidecar may consume another canonical notification.
     const fn should_receive_notifications(self) -> bool {
         matches!(self, Self::Reconciled)
@@ -500,11 +538,11 @@ impl ReconciliationState {
 
 /// Reconciles an installed engine without using startup mutation while its sender remains live.
 ///
-/// A persisted-state lag is retryable and leaves readiness clear. A divergent persisted branch
-/// replaces the notification receiver before dropping the engine and running atomic live
-/// reconciliation, so no startup unwind races an installed engine generation.
+/// A proof-engine or canonical-database persistence lag is retryable and leaves readiness clear.
+/// A divergent persisted branch replaces the notification receiver before dropping the engine and
+/// running atomic live reconciliation, so no startup unwind races an installed engine generation.
 async fn reconcile_installed_engine<EnsureReady, ReplaceReceiver, Recover, RecoverFuture>(
-    action: ProofHistoryStartupAction,
+    reconciliation: InstalledReconciliation,
     readiness: &ProofHistoryReadiness,
     ensure_ready: EnsureReady,
     replace_receiver: ReplaceReceiver,
@@ -516,12 +554,25 @@ where
     Recover: FnOnce() -> RecoverFuture,
     RecoverFuture: Future<Output = eyre::Result<()>>,
 {
-    match action {
+    if matches!(reconciliation.action, ProofHistoryStartupAction::Uninitialized) {
+        readiness.set_not_ready();
+        return Err(eyre!(
+            "installed proof-history engine lost its initialized V2 window during canonical reconciliation"
+        ));
+    }
+
+    if !reconciliation.update_persisted {
+        readiness.set_not_ready();
+        warn!(
+            target: "reth::taiko::proof_history",
+            "proof engine or persisted canonical state has not crossed the routed update; buffering notifications until both commits complete"
+        );
+        return Ok(ReconciliationOutcome::WaitingForPersistence)
+    }
+
+    match reconciliation.action {
         ProofHistoryStartupAction::Uninitialized => {
-            readiness.set_not_ready();
-            Err(eyre!(
-                "installed proof-history engine lost its initialized V2 window during canonical reconciliation"
-            ))
+            unreachable!("uninitialized installed reconciliation returned above")
         }
         ProofHistoryStartupAction::Ready => {
             ensure_ready().inspect_err(|_| readiness.set_not_ready())?;
@@ -1276,8 +1327,9 @@ where
                     }
                     let Some(installed_engine) = engine.as_deref_mut() else { continue };
                     let handling = self.handle_notification(notification, installed_engine).await?;
-                    if handling == NotificationHandlingOutcome::ReconcilePersistedState {
+                    if let NotificationHandlingOutcome::ReconcilePersistedState(barrier) = handling {
                         let outcome = self.reconcile_installed_generation(
+                            barrier,
                             || {
                                 // A conflicting persisted branch invalidates the buffered stream.
                                 // Replace it before dropping the old engine and opening the live
@@ -1286,7 +1338,7 @@ where
                             },
                             || self.recover_from_lag(engine),
                         ).await?;
-                        reconciliation_state = outcome.into();
+                        reconciliation_state = ReconciliationState::after(outcome, barrier);
                         match outcome {
                             ReconciliationOutcome::WaitingForPersistence => {
                                 head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
@@ -1310,8 +1362,9 @@ where
                     }
                 }
                 _ = head_poll.tick(), if engine.is_some() => {
-                    if reconciliation_state == ReconciliationState::Pending {
+                    if let ReconciliationState::Pending(barrier) = reconciliation_state {
                         let outcome = self.reconcile_installed_generation(
+                            barrier,
                             || {
                                 // Replace first so notifications published during live recovery
                                 // accumulate on the fresh receiver.
@@ -1319,7 +1372,7 @@ where
                             },
                             || self.recover_from_lag(engine),
                         ).await?;
-                        reconciliation_state = outcome.into();
+                        reconciliation_state = ReconciliationState::after(outcome, barrier);
                         match outcome {
                             ReconciliationOutcome::WaitingForPersistence => continue,
                             ReconciliationOutcome::Recovered => {
@@ -1397,6 +1450,7 @@ where
     /// Rechecks persisted state for a routed reorg while preserving installed-engine ownership.
     async fn reconcile_installed_generation<ReplaceReceiver, Recover, RecoverFuture>(
         &self,
+        barrier: CanonicalUpdateBarrier,
         replace_receiver: ReplaceReceiver,
         recover: Recover,
     ) -> eyre::Result<ReconciliationOutcome>
@@ -1406,13 +1460,72 @@ where
         RecoverFuture: Future<Output = eyre::Result<()>>,
     {
         reconcile_installed_engine(
-            self.startup_action()?,
+            self.installed_reconciliation(barrier)?,
             &self.readiness,
             || self.ensure_initialized(),
             replace_receiver,
             recover,
         )
         .await
+    }
+
+    /// Reads one proof window and one persisted canonical snapshot for an installed-engine
+    /// reconciliation barrier.
+    fn installed_reconciliation(
+        &self,
+        barrier: CanonicalUpdateBarrier,
+    ) -> eyre::Result<InstalledReconciliation> {
+        let storage_path = self.config.required_storage_path()?;
+        let provider_ro = self.storage.provider_ro()?;
+        let proof_window = match provider_ro.get_proof_window() {
+            Ok(range) => range,
+            Err(OpProofsStorageError::NoBlocksFound) => {
+                return Ok(InstalledReconciliation {
+                    action: ProofHistoryStartupAction::Uninitialized,
+                    update_persisted: false,
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        drop(provider_ro);
+
+        let canonical = self.provider.database_provider_ro()?;
+        let snapshot = proof_history_canonical_snapshot(&canonical, proof_window, storage_path)?;
+        let canonical_first_removed_hash = if barrier.first_removed.number <=
+            snapshot.canonical_best
+        {
+            let header = canonical.sealed_header(barrier.first_removed.number)?.ok_or_else(
+                    || {
+                        eyre!(
+                            "canonical database snapshot has no header for routed proof-history old-fork block {} at or below canonical best {}; wipe proof-history storage at {} or use a fresh path and restart initialization",
+                            barrier.first_removed.number,
+                            snapshot.canonical_best,
+                            storage_path.display(),
+                        )
+                    },
+                )?;
+            Some(header.hash())
+        } else {
+            None
+        };
+        drop(canonical);
+
+        let action = proof_history_startup_action(
+            Some(proof_window),
+            snapshot.canonical_best,
+            snapshot.canonical_earliest_hash,
+            snapshot.canonical_latest_hash,
+            snapshot.first_removed,
+            storage_path,
+        )?;
+        Ok(InstalledReconciliation {
+            action,
+            update_persisted: canonical_update_barrier_persisted(
+                proof_window.latest,
+                canonical_first_removed_hash,
+                barrier,
+            ),
+        })
     }
 
     /// Reads the executed head from a fresh persisted main-database snapshot.
@@ -1688,7 +1801,14 @@ where
             // A reorg that replaces the old blocks with nothing is a plain revert.
             CanonStateNotification::Reorg { old, new } if new.is_empty() => {
                 route_chain_revert(old, earliest_stored, engine, &self.readiness)?;
-                NotificationHandlingOutcome::ReconcilePersistedState
+                let first_old = old.first();
+                NotificationHandlingOutcome::ReconcilePersistedState(CanonicalUpdateBarrier {
+                    target: BlockNumHash::new(
+                        first_old.number().saturating_sub(1),
+                        first_old.parent_hash(),
+                    ),
+                    first_removed: BlockNumHash::new(first_old.number(), first_old.hash()),
+                })
             }
             CanonStateNotification::Reorg { old, new } => {
                 route_chain_reorg(
@@ -1704,7 +1824,10 @@ where
                     engine,
                     &self.readiness,
                 )?;
-                NotificationHandlingOutcome::ReconcilePersistedState
+                NotificationHandlingOutcome::ReconcilePersistedState(CanonicalUpdateBarrier {
+                    target: BlockNumHash::new(new.tip().number(), new.tip().hash()),
+                    first_removed: BlockNumHash::new(old.first().number(), old.first().hash()),
+                })
             }
         };
 
@@ -1715,9 +1838,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CommitRoutingSnapshot, EngineSlot, ProofHistoryCanonicalSnapshot, ProofHistoryLiveAction,
-        ProofHistoryStartupAction, ReconciliationOutcome, ReconciliationState,
-        ReorgRoutingSnapshot, committed_chain_is_contiguous,
+        CanonicalUpdateBarrier, CommitRoutingSnapshot, EngineSlot, InstalledReconciliation,
+        ProofHistoryCanonicalSnapshot, ProofHistoryLiveAction, ProofHistoryStartupAction,
+        ReconciliationOutcome, ReconciliationState, ReorgRoutingSnapshot,
+        canonical_update_barrier_persisted, committed_chain_is_contiguous,
         ensure_canonical_update_above_earliest, install_engine_generation,
         prepare_notification_readiness, proof_history_live_action, proof_history_startup_action,
         proof_history_startup_reconciliation, read_notification_routing_snapshot,
@@ -1926,6 +2050,13 @@ mod tests {
 
     fn hash(byte: u8) -> B256 {
         B256::with_last_byte(byte)
+    }
+
+    fn reconciliation_barrier() -> CanonicalUpdateBarrier {
+        CanonicalUpdateBarrier {
+            target: BlockNumHash::new(25, hash(25)),
+            first_removed: BlockNumHash::new(21, hash(21)),
+        }
     }
 
     fn proof_window(earliest: (u64, u8), latest: (u64, u8)) -> ProofWindowRange {
@@ -3111,7 +3242,10 @@ mod tests {
         let reconciliation_observed_not_ready = Cell::new(false);
 
         let outcome = reconcile_installed_engine(
-            ProofHistoryStartupAction::Ready,
+            InstalledReconciliation {
+                action: ProofHistoryStartupAction::Ready,
+                update_persisted: true,
+            },
             &readiness,
             || {
                 reconciliation_observed_not_ready.set(!readiness.is_ready());
@@ -3134,7 +3268,10 @@ mod tests {
         readiness.set_not_ready();
 
         let _error = reconcile_installed_engine(
-            ProofHistoryStartupAction::Ready,
+            InstalledReconciliation {
+                action: ProofHistoryStartupAction::Ready,
+                update_persisted: true,
+            },
             &readiness,
             || Err(eyre::eyre!("injected reconciliation failure")),
             || unreachable!("failed ready reconciliation must not replace the receiver"),
@@ -3163,7 +3300,7 @@ mod tests {
         )
         .expect("persisted canonical state behind the proof head must classify as a wait");
         let outcome = reconcile_installed_engine(
-            startup_action,
+            InstalledReconciliation { action: startup_action, update_persisted: true },
             &readiness,
             || unreachable!("waiting must not perform ready validation"),
             || unreachable!("waiting must not replace the receiver"),
@@ -3176,7 +3313,10 @@ mod tests {
         assert!(engine.is_some());
         assert!(events.lock().expect("lifecycle event lock is available").is_empty());
         assert_eq!(outcome, ReconciliationOutcome::WaitingForPersistence);
-        assert_eq!(ReconciliationState::from(outcome), ReconciliationState::Pending);
+        assert_eq!(
+            ReconciliationState::after(outcome, reconciliation_barrier()),
+            ReconciliationState::Pending(reconciliation_barrier())
+        );
     }
 
     #[tokio::test]
@@ -3187,7 +3327,13 @@ mod tests {
         let engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
 
         let waiting = reconcile_installed_engine(
-            ProofHistoryStartupAction::WaitForCanonicalLatest { latest: 25, canonical_best: 20 },
+            InstalledReconciliation {
+                action: ProofHistoryStartupAction::WaitForCanonicalLatest {
+                    latest: 25,
+                    canonical_best: 20,
+                },
+                update_persisted: true,
+            },
             &readiness,
             || unreachable!("waiting must not perform ready validation"),
             || unreachable!("waiting must not replace the receiver"),
@@ -3195,10 +3341,16 @@ mod tests {
         )
         .await
         .expect("the first persisted snapshot remains behind");
-        assert_eq!(ReconciliationState::from(waiting), ReconciliationState::Pending);
+        assert_eq!(
+            ReconciliationState::after(waiting, reconciliation_barrier()),
+            ReconciliationState::Pending(reconciliation_barrier())
+        );
 
         let ready = reconcile_installed_engine(
-            ProofHistoryStartupAction::Ready,
+            InstalledReconciliation {
+                action: ProofHistoryStartupAction::Ready,
+                update_persisted: true,
+            },
             &readiness,
             || Ok(()),
             || unreachable!("same-branch catch-up must retain the receiver"),
@@ -3208,10 +3360,96 @@ mod tests {
         .expect("a later same-branch snapshot reconciles");
 
         assert_eq!(ready, ReconciliationOutcome::Ready);
-        assert_eq!(ReconciliationState::from(ready), ReconciliationState::Reconciled);
+        assert_eq!(
+            ReconciliationState::after(ready, reconciliation_barrier()),
+            ReconciliationState::Reconciled
+        );
         assert!(readiness.is_ready());
         assert!(engine.is_some());
         assert!(events.lock().expect("lifecycle event lock is available").is_empty());
+    }
+
+    #[tokio::test]
+    async fn transient_common_ancestor_keeps_reorg_notifications_buffered() {
+        use tokio::sync::broadcast::error::TryRecvError;
+
+        let target = BlockNumHash::new(12, hash(0x32));
+        let first_removed = BlockNumHash::new(11, hash(0x21));
+        let barrier = CanonicalUpdateBarrier { target, first_removed };
+        let common_ancestor = BlockNumHash::new(10, hash(0x10));
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+        let (notifications, mut receiver) = tokio::sync::broadcast::channel(1);
+
+        let first = InstalledReconciliation {
+            action: ProofHistoryStartupAction::Ready,
+            update_persisted: canonical_update_barrier_persisted(
+                common_ancestor,
+                Some(first_removed.hash),
+                barrier,
+            ),
+        };
+        let waiting = reconcile_installed_engine(
+            first,
+            &readiness,
+            || unreachable!("a transient common ancestor must not pass ready validation"),
+            || unreachable!("a persistence wait must retain the receiver"),
+            || async { unreachable!("a persistence wait must retain the engine") },
+        )
+        .await
+        .expect("the transient common ancestor is a retryable persistence wait");
+        let state = ReconciliationState::after(waiting, barrier);
+        assert_eq!(state, ReconciliationState::Pending(barrier));
+        assert!(!state.should_receive_notifications());
+        assert!(!readiness.is_ready());
+
+        notifications.send(1_u64).expect("first follow-on notification buffers");
+        notifications.send(2_u64).expect("second follow-on notification buffers");
+
+        let proof_only = InstalledReconciliation {
+            action: ProofHistoryStartupAction::Unwind {
+                first_removed: unwind_marker((10, 0x10), 0x31),
+            },
+            update_persisted: canonical_update_barrier_persisted(
+                target,
+                Some(first_removed.hash),
+                barrier,
+            ),
+        };
+        let still_waiting = reconcile_installed_engine(
+            proof_only,
+            &readiness,
+            || unreachable!("the old canonical branch cannot pass ready validation"),
+            || unreachable!("the old canonical branch must not replace the receiver"),
+            || async { unreachable!("the old canonical branch must not rebuild the engine") },
+        )
+        .await
+        .expect("proof persistence ahead of the canonical database remains retryable");
+        assert_eq!(
+            ReconciliationState::after(still_waiting, barrier),
+            ReconciliationState::Pending(barrier)
+        );
+        assert!(!readiness.is_ready());
+
+        let second = InstalledReconciliation {
+            action: ProofHistoryStartupAction::Ready,
+            update_persisted: canonical_update_barrier_persisted(target, Some(hash(0x31)), barrier),
+        };
+        let ready = reconcile_installed_engine(
+            second,
+            &readiness,
+            || Ok(()),
+            || unreachable!("the persisted replacement must retain the receiver"),
+            || async { unreachable!("the persisted replacement must retain the engine") },
+        )
+        .await
+        .expect("the exact replacement restores readiness");
+        let state = ReconciliationState::after(ready, barrier);
+        assert_eq!(state, ReconciliationState::Reconciled);
+        assert!(state.should_receive_notifications());
+        assert!(readiness.is_ready());
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Lagged(1))));
+        assert_eq!(receiver.try_recv().expect("latest buffered event remains"), 2);
     }
 
     #[tokio::test]
@@ -3222,7 +3460,12 @@ mod tests {
         readiness.set_not_ready();
 
         let outcome = reconcile_installed_engine(
-            ProofHistoryStartupAction::Unwind { first_removed: unwind_marker((10, 10), 11) },
+            InstalledReconciliation {
+                action: ProofHistoryStartupAction::Unwind {
+                    first_removed: unwind_marker((10, 10), 11),
+                },
+                update_persisted: true,
+            },
             &readiness,
             || unreachable!("divergence must not use startup ready validation"),
             {
@@ -3275,7 +3518,10 @@ mod tests {
         .expect("conflicting catch-up uses live recovery");
 
         assert_eq!(outcome, ReconciliationOutcome::Recovered);
-        assert_eq!(ReconciliationState::from(outcome), ReconciliationState::Reconciled);
+        assert_eq!(
+            ReconciliationState::after(outcome, reconciliation_barrier()),
+            ReconciliationState::Reconciled
+        );
         assert!(readiness.is_ready());
         assert!(engine.is_some());
         assert_eq!(
@@ -3296,7 +3542,7 @@ mod tests {
         use tokio::sync::broadcast::error::TryRecvError;
 
         let (notifications, mut receiver) = tokio::sync::broadcast::channel(1);
-        let state = ReconciliationState::Pending;
+        let state = ReconciliationState::Pending(reconciliation_barrier());
         assert!(!state.should_receive_notifications());
 
         notifications.send(1_u64).expect("first notification buffers");

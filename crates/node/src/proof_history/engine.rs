@@ -11,18 +11,10 @@ use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use std::sync::Arc;
 
 /// Precomputed trie and hashed-state updates for a replacement chain in ascending block order.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the adapter precedes the sidecar ownership cutover")
-)]
 pub(super) type ReorgBlockUpdates =
     Vec<(BlockWithParent, Arc<TrieUpdatesSorted>, Arc<HashedPostStateSorted>)>;
 
 /// Narrow engine contract used by proof-history notification orchestration.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the adapter precedes the sidecar ownership cutover")
-)]
 pub(super) trait ProofHistoryEngine<Block>: Send + 'static
 where
     Block: reth_primitives_traits::Block,
@@ -92,10 +84,6 @@ where
 ///
 /// Alethia runs its finality-aware pruner separately, so `u64::MAX` prevents the engine's
 /// persistence worker from pruning against an unsafe moving latest-block boundary.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the adapter precedes the sidecar ownership cutover")
-)]
 pub(super) fn spawn_proof_history_engine<Block, Evm, Provider, Store>(
     evm_config: Evm,
     provider: Provider,

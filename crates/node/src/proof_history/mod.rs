@@ -2,7 +2,6 @@
 
 mod config;
 mod engine;
-mod live;
 mod prune;
 mod sidecar;
 mod storage_init;
@@ -11,6 +10,7 @@ pub use config::{
     DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
     DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
+use engine::{ProofHistoryEngine, spawn_proof_history_engine};
 use sidecar::ProofHistorySidecar;
 
 use crate::TaikoNode;
@@ -34,7 +34,7 @@ use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorageV2};
+use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorageV2};
 use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
@@ -46,18 +46,6 @@ use tracing::info;
 
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
 pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorageV2>>;
-
-/// Adapts the storage bound accessors' `NoBlocksFound` error back to the `Option` shape the
-/// reconciliation logic in this module was written against.
-pub(crate) fn opt_block(
-    result: Result<alloy_eips::NumHash, OpProofsStorageError>,
-) -> Result<Option<(u64, alloy_primitives::B256)>, OpProofsStorageError> {
-    match result {
-        Ok(numhash) => Ok(Some((numhash.number, numhash.hash))),
-        Err(OpProofsStorageError::NoBlocksFound) => Ok(None),
-        Err(err) => Err(err),
-    }
-}
 
 /// Storage and reconciliation-readiness handles shared with the proof-history RPC overrides.
 pub type ProofHistoryRpcHandles = (ProofHistoryStorage, ProofHistoryReadiness);
@@ -120,14 +108,27 @@ where
                 mdbx,
                 node.config.metrics.push_gateway_interval,
             );
-            let sidecar = ProofHistorySidecar::<NodeAdapter<T, CB::Components>, _>::new(
-                node.provider,
-                node.evm_config,
+            let provider = node.provider;
+            let engine_provider = provider.clone();
+            let engine_storage = storage_for_sidecar.clone();
+            let evm_config = node.evm_config;
+            let engine_factory = move || -> eyre::Result<
+                Box<dyn ProofHistoryEngine<reth_ethereum_primitives::Block>>,
+            > {
+                Ok(Box::new(spawn_proof_history_engine(
+                    evm_config.clone(),
+                    engine_provider.clone(),
+                    engine_storage.clone(),
+                )))
+            };
+            let sidecar = ProofHistorySidecar::<NodeAdapter<T, CB::Components>, _, _>::new(
+                provider,
                 task_executor.clone(),
                 storage_for_sidecar,
                 storage_for_init,
                 config,
                 readiness_for_sidecar,
+                engine_factory,
             );
             task_executor.spawn_critical_with_graceful_shutdown_signal(
                 "taiko::proof_history::sidecar",

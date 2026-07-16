@@ -49,17 +49,6 @@ pub(super) fn refuse_legacy_v1_storage(path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Returns the next block proof-history should backfill toward, or `None` when caught up.
-///
-/// The target is always the node's locally executed on-disk head: canonical notifications only
-/// wake the sync loop, they never extend its target, so re-execution can never read a block that
-/// is not yet persisted. Deriving the target from the executed head (rather than the last
-/// notification) also means a pipeline/staged-sync gap is backfilled even when no live
-/// notification arrives, e.g. right after a restart or while the consensus feed is down.
-pub(super) fn proof_history_sync_target(latest_stored: u64, executed_head: u64) -> Option<u64> {
-    (executed_head > latest_stored).then_some(executed_head)
-}
-
 /// Returns the persisted DB block used to label current-state proof-history initialization.
 fn proof_history_current_state_anchor<Provider>(provider: &Provider) -> eyre::Result<BlockNumHash>
 where
@@ -522,39 +511,6 @@ mod tests {
             .expect("proof window exists");
         assert_eq!(window.earliest, blocks[2]);
         assert_eq!(window.latest, blocks[5]);
-    }
-
-    #[test]
-    fn proof_history_backfill_waits_when_executed_head_has_no_next_parent_state() {
-        // Nothing is executed locally beyond the stored anchor, so there is nothing to backfill
-        // regardless of how far ahead the notified canonical tip is.
-        assert_eq!(proof_history_sync_target(0, 0), None);
-    }
-
-    #[test]
-    fn proof_history_sync_target_tracks_executed_head_when_notification_is_stale() {
-        // Incident: no live notification arrived after a stall, but the node pipeline-synced
-        // ahead. Proof-history must still backfill up to the executed head.
-        assert_eq!(proof_history_sync_target(8_108_771, 8_110_008), Some(8_110_008));
-    }
-
-    #[test]
-    fn proof_history_sync_target_waits_when_caught_up_to_executed_head() {
-        assert_eq!(proof_history_sync_target(8_110_008, 8_110_008), None);
-    }
-
-    #[test]
-    fn proof_history_sync_target_backfills_to_executed_head() {
-        assert_eq!(proof_history_sync_target(100, 150), Some(150));
-    }
-
-    #[test]
-    fn proof_history_sync_target_reports_none_when_executed_head_regressed_below_stored() {
-        // Reorg/unwind rolled the on-disk executed head back below what proof-history already
-        // stored. There is nothing to backfill (`None`), but this is a divergence, not healthy
-        // idle: the sync loop logs it because the notification-driven reorg handlers that would
-        // unwind `latest_stored` only run on live notifications.
-        assert_eq!(proof_history_sync_target(200, 150), None);
     }
 
     /// Writes selected V1 proof-window rows into a fresh proof-history MDBX database.

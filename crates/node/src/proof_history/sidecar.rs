@@ -4,6 +4,7 @@ use super::{
     config::ProofHistoryConfig,
     live::LiveTrieCollector,
     opt_block,
+    prune::{FinalityProofHistoryPruner, FinalityPruneOutcome, startup_prune_exposure},
     storage_init::{
         initialize_finalized_window_proof_history_storage, initialize_proof_history_storage,
         proof_history_sync_target,
@@ -26,8 +27,7 @@ use reth_db::Database;
 use reth_execution_types::Chain;
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    OpProofStoragePruner, OpProofsBackfillStore, OpProofsStorage, OpProofsStorageError,
-    OpProofsStore,
+    OpProofsBackfillStore, OpProofsStorage, OpProofsStorageError, OpProofsStore,
     api::{OpProofsProviderRO, OpProofsProviderRw, ProofWindowRange},
 };
 use reth_storage_api::{
@@ -54,14 +54,33 @@ fn blocking_join_result<T>(
     }
 }
 
-/// Logs a join failure from the proof-history pruner worker, preserving panics.
-fn log_prune_join_result(result: Result<(), task::JoinError>) {
-    if let Err(error) = blocking_join_result(result, "proof-history pruner worker") {
-        error!(
-            target: "reth::taiko::proof_history",
-            ?error,
-            "proof-history pruner task failed to join blocking worker"
-        );
+/// Logs one finality-aware pruner result while preserving blocking-worker panics.
+fn log_prune_join_result(result: Result<eyre::Result<FinalityPruneOutcome>, task::JoinError>) {
+    match blocking_join_result(result, "proof-history pruner worker").and_then(|result| result) {
+        Ok(FinalityPruneOutcome::MissingFinality) => {
+            debug!(target: "reth::taiko::proof_history", "proof-history prune deferred until persisted finality is available");
+        }
+        Ok(FinalityPruneOutcome::UpToDate) => {
+            debug!(target: "reth::taiko::proof_history", "proof-history finalized retention boundary is up to date");
+        }
+        Ok(FinalityPruneOutcome::CanonicalMismatch) => {
+            warn!(target: "reth::taiko::proof_history", "proof-history prune canonical snapshot did not match stored bounds; retrying on a later tick");
+        }
+        Ok(FinalityPruneOutcome::Pruned { from, to }) => {
+            info!(
+                target: "reth::taiko::proof_history",
+                from = from.number,
+                to = to.number,
+                "advanced proof-history finalized retention boundary"
+            );
+        }
+        Err(error) => {
+            error!(
+                target: "reth::taiko::proof_history",
+                ?error,
+                "proof-history finality-aware prune pass failed; retrying on a later tick"
+            );
+        }
     }
 }
 
@@ -80,9 +99,6 @@ const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs
 /// Delay between polls of the node's executed head while proof-history is caught up, so a
 /// staged-sync gap is backfilled even when no live canonical notification arrives.
 const PROOF_HISTORY_HEAD_POLL_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Number of proof-history blocks pruned in one pruning transaction.
-const PROOF_HISTORY_PRUNE_BATCH_SIZE: u64 = 200;
 
 /// Startup reconciliation action for existing proof-history storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -585,22 +601,18 @@ where
     /// Verifies the proof-history database is initialized and safe to prune automatically.
     fn ensure_initialized(&self) -> eyre::Result<()> {
         let provider_ro = self.storage.provider_ro()?;
-        let window = provider_ro
+        let proof_window = provider_ro
             .get_proof_window()
             .map_err(|error| eyre!("proof-history storage is not initialized: {error}"))?;
-        let earliest_block_number = window.earliest.number;
-        let latest_block_number = window.latest.number;
-
-        let target_earliest = latest_block_number.saturating_sub(self.config.window);
-        if target_earliest > earliest_block_number {
-            let blocks_to_prune = target_earliest - earliest_block_number;
-            if blocks_to_prune > self.config.max_startup_prune_blocks {
-                return Err(eyre!(
-                    "configuration requires pruning {} proof-history blocks, which exceeds the safety threshold of {}; raise --proofs-history.max-startup-prune-blocks or restore the previous --proofs-history.window to proceed",
-                    blocks_to_prune,
-                    self.config.max_startup_prune_blocks
-                ));
-            }
+        let canonical_snapshot = self.provider.database_provider_ro()?;
+        let blocks_to_prune =
+            startup_prune_exposure(proof_window, &canonical_snapshot, self.config.window)?;
+        if blocks_to_prune > self.config.max_startup_prune_blocks {
+            return Err(eyre!(
+                "configuration requires pruning {} proof-history blocks, which exceeds the safety threshold of {}; raise --proofs-history.max-startup-prune-blocks or restore the previous --proofs-history.window to proceed",
+                blocks_to_prune,
+                self.config.max_startup_prune_blocks
+            ));
         }
 
         Ok(())
@@ -608,14 +620,11 @@ where
 
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
-        let pruner = Arc::new(
-            OpProofStoragePruner::new(
-                self.storage.clone(),
-                self.provider.clone(),
-                self.config.window,
-            )
-            .with_batch_size(PROOF_HISTORY_PRUNE_BATCH_SIZE),
-        );
+        let pruner = Arc::new(FinalityProofHistoryPruner::new(
+            self.storage.clone(),
+            self.provider.clone(),
+            self.config.window,
+        ));
         let prune_interval = self.config.prune_interval;
         let retention_window = self.config.window;
         let write_lock = self.write_lock.clone();
@@ -643,7 +652,8 @@ where
                             _ = interval.tick() => {
                                 let _write_guard = write_lock.lock().await;
                                 let pruner = pruner.clone();
-                                let mut prune_task = task::spawn_blocking(move || pruner.run());
+                                let mut prune_task =
+                                    task::spawn_blocking(move || pruner.run_once());
                                 tokio::select! {
                                     result = &mut prune_task => log_prune_join_result(result),
                                     _ = &mut signal => {

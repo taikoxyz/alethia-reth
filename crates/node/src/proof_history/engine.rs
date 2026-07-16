@@ -345,4 +345,21 @@ mod tests {
         assert_eq!(stored.sorted_trie_updates, *updates_one);
         assert_eq!(stored.sorted_post_state, *state_one);
     }
+
+    #[test]
+    fn engine_acknowledges_updates_above_tip_without_advancing_storage() {
+        let chain_spec = test_chain_spec();
+        let (_provider, storage, engine) = genesis_fixture(&chain_spec);
+        let skipped_parent = B256::repeat_byte(0x51);
+        let replacement = block_ref(2, 0x52, skipped_parent);
+        let (trie_updates, post_state) = non_empty_updates(0x52);
+
+        ProofHistoryEngine::reorg(&engine, vec![(replacement, trie_updates, post_state)])
+            .expect("upstream acknowledges a reorg starting above its proof tip");
+        ProofHistoryEngine::unwind(&engine, replacement)
+            .expect("upstream acknowledges a revert starting above its proof tip");
+        engine.flush();
+
+        assert_eq!(stored_latest(&storage), NumHash::new(0, chain_spec.genesis_hash()));
+    }
 }

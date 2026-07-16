@@ -147,13 +147,14 @@ reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d", default-features = false }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d" }
 
-# Consumed from the Optimism monorepo (path rust/op-reth/crates/trie). The rev is the head of
-# ethereum-optimism/optimism#21766, their post-v2.4.0 reth bump: the crate's reth dependencies
-# resolve inside that workspace, so this rev and the reth pin above must reference the same
-# paradigmxyz/reth commit (spelled identically) or the graph gets two incompatible reth copies.
-# Move this to the merge commit once #21766 lands; the Taiko live collector the crate used to
-# carry for us lives in crates/node/src/proof_history/live.rs.
-reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", rev = "43795a4eae8bf5515a7ced196879385b05237ba9", default-features = false, features = ["serde-bincode-compat"] }
+# Consumed from the Optimism monorepo (path rust/op-reth/crates/trie). The rev is the merge
+# commit of ethereum-optimism/optimism#21766, their post-v2.4.0 reth bump: the crate's reth
+# dependencies resolve inside that workspace, so this rev and the reth pin above must reference
+# the same paradigmxyz/reth commit (spelled identically) or the graph gets two incompatible reth
+# copies. Future reth bumps are OP-first — match the rev they pin rather than picking our own.
+# The Taiko live collector the crate used to carry for us lives in
+# crates/node/src/proof_history/live.rs.
+reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", rev = "4f21ce6b9574ffc3473dd3b622ec9f7bd0c72fad", default-features = false, features = ["serde-bincode-compat"] }
 
 # revm
 revm-database-interface = { version = "41.0.0", default-features = false }

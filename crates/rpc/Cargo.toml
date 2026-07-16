@@ -71,3 +71,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
+tempfile = { workspace = true }

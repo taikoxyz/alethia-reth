@@ -1,7 +1,8 @@
 //! Proof-history backed overrides for selected `debug_` RPC methods.
 
 use crate::proof_state::{
-    ProofHistoryReadiness, ProofHistoryStateProviderFactory, flatten_blocking_task,
+    ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider,
+    flatten_blocking_task,
 };
 use alethia_reth_block::{
     executor::{
@@ -177,7 +178,7 @@ where
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block_number = block.header().number();
         let parent_block = BlockId::Hash(block.parent_hash().into());
-        let (parent_number, canonical_state) = self
+        let resolved_parent = self
             .state_provider_factory
             .resolve_block_state(parent_block)
             .await
@@ -199,9 +200,11 @@ where
         // RPC workers.
         let witness_task = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let state_provider = factory
-                .state_provider_at(canonical_state, parent_number)
-                .map_err(EthApiError::from)?;
+            let selected = factory.state_provider_at(resolved_parent).map_err(EthApiError::from)?;
+            let state_provider = match selected {
+                ProofStateProvider::Pending(state) => state,
+                ProofStateProvider::Canonical { state, guard: _guard } => state,
+            };
             let db = StateProviderDatabase::new(&*state_provider);
             let block_executor = evm_config.executor(db);
             let mut witness_record = ExecutionWitnessRecord::default();
@@ -238,7 +241,7 @@ where
     ) -> Result<ExecutionWitness, Eth::Error> {
         let block_number = canonical_block.header().number();
         let parent_block = BlockId::Hash(canonical_block.parent_hash().into());
-        let (parent_number, canonical_state) = self
+        let resolved_parent = self
             .state_provider_factory
             .resolve_block_state(parent_block)
             .await
@@ -260,9 +263,11 @@ where
             let _permit = permit;
             let txs = decode_recovered_tx_list(tx_list)?;
             let block = block_with_tx_list(canonical_block.as_ref().clone(), txs);
-            let state_provider = factory
-                .state_provider_at(canonical_state, parent_number)
-                .map_err(EthApiError::from)?;
+            let selected = factory.state_provider_at(resolved_parent).map_err(EthApiError::from)?;
+            let state_provider = match selected {
+                ProofStateProvider::Pending(state) => state,
+                ProofStateProvider::Canonical { state, guard: _guard } => state,
+            };
             let db = StateProviderDatabase::new(&*state_provider);
             let mut state = State::builder().with_database(db).with_bundle_update().build();
             let mut witness_record = ExecutionWitnessRecord::default();

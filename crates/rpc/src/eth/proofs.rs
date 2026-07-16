@@ -1,7 +1,8 @@
 //! Proof-history backed override for `eth_getProof`.
 
 use crate::proof_state::{
-    ProofHistoryReadiness, ProofHistoryStateProviderFactory, flatten_blocking_task,
+    ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider,
+    flatten_blocking_task,
 };
 use alloy_eips::BlockId;
 use alloy_primitives::Address;
@@ -88,7 +89,7 @@ where
             .expect("proof request semaphore is never closed");
         let storage_keys = keys.iter().map(JsonStorageKey::as_b256).collect::<Vec<_>>();
         let factory = self.state_provider_factory.clone();
-        let (block_number, canonical_state) = factory
+        let resolved = factory
             .resolve_block_state(block_id.unwrap_or_default())
             .await
             .map_err(EthApiError::from)?;
@@ -96,9 +97,11 @@ where
         // The trie walk is synchronous MDBX I/O; keep it off the async RPC workers.
         let proof_task = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let state_provider = factory
-                .state_provider_at(canonical_state, block_number)
-                .map_err(EthApiError::from)?;
+            let selected = factory.state_provider_at(resolved).map_err(EthApiError::from)?;
+            let state_provider = match selected {
+                ProofStateProvider::Pending(state) => state,
+                ProofStateProvider::Canonical { state, guard: _guard } => state,
+            };
             state_provider
                 .proof(Default::default(), address, &storage_keys)
                 .map_err(EthApiError::from)

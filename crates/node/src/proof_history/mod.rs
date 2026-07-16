@@ -95,6 +95,7 @@ where
         + StorageSettingsCache,
     <T::DB as Database>::TX: Sync,
 {
+    config.validate()?;
     if !config.enabled {
         return Ok((node_builder, None));
     }

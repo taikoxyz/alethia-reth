@@ -37,6 +37,15 @@ use reth_storage_api::noop::NoopProvider;
 
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
 
+/// Parses a wall-clock duration and rejects zero-length timer intervals.
+fn parse_nonzero_duration(value: &str) -> Result<Duration, String> {
+    let duration = humantime::parse_duration(value).map_err(|error| error.to_string())?;
+    if duration.is_zero() {
+        return Err("duration must be greater than zero".to_string())
+    }
+    Ok(duration)
+}
+
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
 /// Chain-spec parser implementations for Taiko network names and genesis input.
@@ -101,7 +110,7 @@ pub struct TaikoProofHistoryArgs {
         long = "proofs-history.prune-interval",
         value_name = "DURATION",
         default_value = "15s",
-        value_parser = humantime::parse_duration,
+        value_parser = parse_nonzero_duration,
         help_heading = "Taiko Proof History"
     )]
     pub prune_interval: Duration,
@@ -421,6 +430,16 @@ mod tests {
         assert_eq!(cli.ext.proof_history.prune_interval, Duration::from_secs(30));
         assert_eq!(cli.ext.proof_history.verification_interval, 16);
         assert_eq!(cli.ext.proof_history.max_startup_prune_blocks, 5000);
+    }
+
+    #[test]
+    fn test_rejects_zero_proof_history_prune_interval() {
+        let err =
+            TestCli::try_parse_from(["alethia-reth", "--proofs-history.prune-interval", "0s"])
+                .expect_err("a zero prune interval would panic when the sidecar starts its timer");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(err.to_string().contains("greater than zero"));
     }
 
     #[test]

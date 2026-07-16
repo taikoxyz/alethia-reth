@@ -7,9 +7,9 @@ use super::{
     storage_init::{
         DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
         finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, migrate_legacy_proof_history_storage,
-        proof_history_historical_init_metadata_path, proof_history_storage_needs_initialization,
-        proof_history_sync_target, read_historical_init_metadata,
+        initialize_proof_history_storage, proof_history_historical_init_metadata_path,
+        proof_history_storage_needs_initialization, proof_history_sync_target,
+        read_historical_init_metadata,
     },
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -283,10 +283,6 @@ where
 {
     /// Runs proof-history indexing until the node shuts down.
     pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
-        // Databases initialized under the previous storage dependency may lack a `LatestBlock`
-        // row; repair them before any reconciliation reads the storage bounds.
-        migrate_legacy_proof_history_storage(&self.storage)?;
-
         let collector =
             LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
         let mut notifications = self.provider.subscribe_to_canonical_state();

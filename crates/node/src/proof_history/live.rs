@@ -261,7 +261,7 @@ mod tests {
     use reth_ethereum_primitives::{Block, BlockBody};
     use reth_evm_ethereum::EthEvmConfig;
     use reth_optimism_trie::{
-        RethTrieStorageLayout, db::MdbxProofsStorage, initialize::InitializationJob,
+        RethTrieStorageLayout, db::MdbxProofsStorageV2, initialize::InitializationJob,
     };
     use reth_primitives_traits::Block as _;
     use reth_provider::{
@@ -295,13 +295,13 @@ mod tests {
     /// Genesis-initialized blockchain provider plus proofs storage seeded at block zero.
     fn genesis_fixture(
         chain_spec: &Arc<ChainSpec>,
-    ) -> (BlockchainProvider<MockNodeTypesWithDB>, OpProofsStorage<Arc<MdbxProofsStorage>>) {
+    ) -> (BlockchainProvider<MockNodeTypesWithDB>, OpProofsStorage<Arc<MdbxProofsStorageV2>>) {
         let factory = create_test_provider_factory_with_chain_spec(chain_spec.clone());
         init_genesis(&factory).expect("genesis state initializes");
 
         let path = TempDir::new().expect("temp dir").keep();
-        let storage: OpProofsStorage<Arc<MdbxProofsStorage>> =
-            Arc::new(MdbxProofsStorage::new(&path).expect("mdbx proofs storage opens")).into();
+        let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> =
+            Arc::new(MdbxProofsStorageV2::new(&path).expect("mdbx proofs storage opens")).into();
 
         let layout = if factory.cached_storage_settings().is_v2() {
             RethTrieStorageLayout::Packed
@@ -318,7 +318,7 @@ mod tests {
     }
 
     /// Latest block recorded in the proofs storage window.
-    fn stored_latest(storage: &OpProofsStorage<Arc<MdbxProofsStorage>>) -> NumHash {
+    fn stored_latest(storage: &OpProofsStorage<Arc<MdbxProofsStorageV2>>) -> NumHash {
         storage
             .provider_ro()
             .expect("read provider opens")

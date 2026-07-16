@@ -8,8 +8,9 @@ use eyre::{WrapErr, eyre};
 use reth::providers::{BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider};
 use reth_db::Database;
 use reth_optimism_trie::{
-    OpProofsStore,
+    OpProofsStorageError, OpProofsStore,
     api::{InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO},
+    db::MdbxProofsStorage,
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
@@ -35,58 +36,34 @@ where
         super::opt_block(provider_ro.get_latest_block())?.is_none())
 }
 
-/// Migrates proof-history storage written before `LatestBlock` was persisted separately.
+/// Rejects a configured proof-history path when it contains legacy V1 data.
 ///
-/// The previous storage dependency recorded only `EarliestBlock` when initialization completed
-/// and fell back to it as the latest block, so a database that finished initializing but never
-/// stored a live block has no `LatestBlock` row. The current dependency reads `LatestBlock`
-/// strictly: such a database looks uninitialized, while its completed anchor makes the
-/// initialization job a no-op, leaving startup permanently failing. Re-committing the completed
-/// anchor rewrites `EarliestBlock` and the missing `LatestBlock` in one transaction, matching
-/// the fallback semantics the database was written under. Returns whether a migration ran.
-pub(super) fn migrate_legacy_proof_history_storage<Storage>(storage: &Storage) -> eyre::Result<bool>
-where
-    Storage: OpProofsStore,
-{
-    let provider_ro = storage.provider_ro()?;
-    let Some((earliest_number, earliest_hash)) =
-        super::opt_block(provider_ro.get_earliest_block())?
-    else {
-        return Ok(false);
-    };
-    if super::opt_block(provider_ro.get_latest_block())?.is_some() {
-        return Ok(false);
-    }
-    drop(provider_ro);
+/// An empty V1 schema may coexist with the V2 schema, but any V1 initialization state or retained
+/// bound requires an explicit operator-selected wipe or fresh path. The probe closes every V1
+/// handle before returning and never removes the configured directory.
+pub(super) fn refuse_legacy_v1_storage(path: &Path) -> eyre::Result<()> {
+    let legacy = MdbxProofsStorage::new(path)?;
+    let initializer = legacy.initialization_provider()?;
+    let anchor = initializer.initial_state_anchor()?;
+    drop(initializer);
 
-    let init_provider = storage.initialization_provider()?;
-    let anchor = init_provider.initial_state_anchor()?;
-    if !matches!(anchor.status, InitialStateStatus::Completed) {
-        // Not a completed legacy layout; leave it to the initialization state machine.
-        return Ok(false);
-    }
-    let anchor_block = anchor
-        .block
-        .ok_or_else(|| eyre!("completed proof-history initialization has no anchor block"))?;
-    if anchor_block.number != earliest_number || anchor_block.hash != earliest_hash {
+    let provider = legacy.provider_ro()?;
+    let earliest = provider.get_earliest_block();
+    let latest = provider.get_latest_block();
+    let populated = !matches!(anchor.status, InitialStateStatus::NotStarted) ||
+        !matches!(earliest, Err(OpProofsStorageError::NoBlocksFound)) ||
+        !matches!(latest, Err(OpProofsStorageError::NoBlocksFound));
+    drop(provider);
+    drop(legacy);
+
+    if populated {
         return Err(eyre!(
-            "legacy proof-history anchor ({}, {:?}) does not match earliest block ({}, {:?}); wipe proof-history storage and restart initialization",
-            anchor_block.number,
-            anchor_block.hash,
-            earliest_number,
-            earliest_hash
+            "legacy proof-history V1 storage at {} contains data; remove the directory or use a fresh path and restart",
+            path.display()
         ));
     }
 
-    init_provider.commit_initial_state()?;
-    OpProofsInitProvider::commit(init_provider)?;
-    info!(
-        target: "reth::taiko::proof_history",
-        block = anchor_block.number,
-        hash = ?anchor_block.hash,
-        "migrated legacy proof-history storage: recorded the completed anchor as the latest block"
-    );
-    Ok(true)
+    Ok(())
 }
 
 /// File stored beside the proof-history MDBX database to validate historical init resume targets.
@@ -489,9 +466,9 @@ mod tests {
     use alloy_consensus::Header;
     use reth_ethereum_primitives::EthPrimitives;
     use reth_optimism_trie::{
-        InMemoryProofsStorage, OpProofsStorage,
+        InMemoryProofsStorage, OpProofsStorage, OpProofsStorageError,
         api::OpProofsInitProvider,
-        db::{MdbxProofsStorage, ProofWindow, ProofWindowKey, Tables},
+        db::{MdbxProofsStorage, MdbxProofsStorageV2, ProofWindow, ProofWindowKey, Tables},
     };
     use reth_provider::test_utils::MockEthProvider;
     use std::sync::Arc;
@@ -659,10 +636,7 @@ mod tests {
         assert_eq!(proof_history_sync_target(200, 150), None);
     }
 
-    /// Writes the pre-`LatestBlock` legacy layout into a fresh proof-history MDBX database,
-    /// mimicking storage whose initialization completed under the previous
-    /// `reth-optimism-trie` pin: it recorded the anchor and `EarliestBlock` but never wrote a
-    /// `LatestBlock` row (reads fell back to the earliest block).
+    /// Writes selected V1 proof-window rows into a fresh proof-history MDBX database.
     fn write_legacy_mdbx_layout(path: &Path, rows: &[(ProofWindowKey, BlockNumHash)]) {
         use reth_db::{
             Database,
@@ -684,110 +658,99 @@ mod tests {
         Arc::new(MdbxProofsStorage::new(path).expect("mdbx storage opens")).into()
     }
 
+    fn assert_v1_refusal(error: &eyre::Report, path: &Path) {
+        let message = error.to_string();
+        let configured_path = path.display().to_string();
+        assert!(message.contains(&configured_path), "missing {configured_path:?} in {message:?}");
+        assert!(
+            message.contains("remove the directory or use a fresh path and restart"),
+            "missing operator instruction in {message:?}"
+        );
+    }
+
     #[test]
-    fn legacy_storage_missing_latest_block_migrates_to_earliest_anchor() {
+    fn empty_v1_storage_allows_v2_cutover() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(legacy_mdbx_storage(dir.path()));
+
+        refuse_legacy_v1_storage(dir.path()).expect("empty V1 storage allows V2 cutover");
+
+        let storage = MdbxProofsStorageV2::new(dir.path()).expect("V2 storage opens");
+        let provider = storage.provider_ro().expect("V2 read provider opens");
+        assert!(matches!(provider.get_earliest_block(), Err(OpProofsStorageError::NoBlocksFound)));
+        assert!(matches!(provider.get_latest_block(), Err(OpProofsStorageError::NoBlocksFound)));
+    }
+
+    #[test]
+    fn completed_v1_storage_is_refused_with_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = legacy_mdbx_storage(dir.path());
+        let initializer = storage.initialization_provider().expect("initialization provider");
+        initializer
+            .set_initial_state_anchor(BlockNumHash::new(42, B256::with_last_byte(7)))
+            .expect("set initial state anchor");
+        initializer.commit_initial_state().expect("complete initial state");
+        initializer.commit().expect("commit completed V1 storage");
+        drop(storage);
+
+        let error = refuse_legacy_v1_storage(dir.path()).unwrap_err();
+
+        assert_v1_refusal(&error, dir.path());
+    }
+
+    #[test]
+    fn in_progress_v1_storage_is_refused_with_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = legacy_mdbx_storage(dir.path());
+        let initializer = storage.initialization_provider().expect("initialization provider");
+        initializer
+            .set_initial_state_anchor(BlockNumHash::new(42, B256::with_last_byte(7)))
+            .expect("set initial state anchor");
+        initializer.commit().expect("commit in-progress V1 storage");
+        drop(storage);
+
+        let error = refuse_legacy_v1_storage(dir.path()).unwrap_err();
+
+        assert_v1_refusal(&error, dir.path());
+    }
+
+    #[test]
+    fn v1_storage_with_any_window_bound_is_refused() {
+        for bound in [ProofWindowKey::EarliestBlock, ProofWindowKey::LatestBlock] {
+            let dir = tempfile::tempdir().unwrap();
+            write_legacy_mdbx_layout(
+                dir.path(),
+                &[(bound, BlockNumHash::new(42, B256::with_last_byte(7)))],
+            );
+
+            let error = refuse_legacy_v1_storage(dir.path()).unwrap_err();
+
+            assert_v1_refusal(&error, dir.path());
+        }
+    }
+
+    #[test]
+    fn v1_refusal_does_not_delete_storage() {
         let dir = tempfile::tempdir().unwrap();
         let anchor = BlockNumHash::new(42, B256::with_last_byte(7));
-        write_legacy_mdbx_layout(
-            dir.path(),
-            &[
-                (ProofWindowKey::InitialStateAnchor, anchor),
-                (ProofWindowKey::EarliestBlock, anchor),
-            ],
-        );
         let storage = legacy_mdbx_storage(dir.path());
-
-        // The strict `LatestBlock` reads make the completed legacy database look uninitialized.
-        assert!(proof_history_storage_needs_initialization(&storage).unwrap());
-
-        assert!(
-            migrate_legacy_proof_history_storage(&storage).expect("legacy migration succeeds"),
-            "missing latest block must be migrated"
-        );
-
-        let provider_ro = storage.provider_ro().unwrap();
-        assert_eq!(
-            super::super::opt_block(provider_ro.get_earliest_block()).unwrap(),
-            Some((anchor.number, anchor.hash))
-        );
-        assert_eq!(
-            super::super::opt_block(provider_ro.get_latest_block()).unwrap(),
-            Some((anchor.number, anchor.hash))
-        );
-        drop(provider_ro);
-        assert!(!proof_history_storage_needs_initialization(&storage).unwrap());
-
-        // Re-running the migration is a no-op.
-        assert!(!migrate_legacy_proof_history_storage(&storage).expect("second run is a no-op"));
-    }
-
-    #[test]
-    fn legacy_migration_rejects_anchor_mismatching_earliest_block() {
-        let dir = tempfile::tempdir().unwrap();
-        write_legacy_mdbx_layout(
-            dir.path(),
-            &[
-                (
-                    ProofWindowKey::InitialStateAnchor,
-                    BlockNumHash::new(42, B256::with_last_byte(7)),
-                ),
-                (ProofWindowKey::EarliestBlock, BlockNumHash::new(43, B256::with_last_byte(8))),
-            ],
-        );
-        let storage = legacy_mdbx_storage(dir.path());
-
-        let error = migrate_legacy_proof_history_storage(&storage).unwrap_err().to_string();
-
-        assert!(error.contains("does not match"), "got {error}");
-        assert!(error.contains("wipe proof-history storage"), "got {error}");
-    }
-
-    #[test]
-    fn legacy_migration_skips_storage_without_recorded_anchor() {
-        // Earliest present but no anchor row: initialization status reads `NotStarted`, so the
-        // migration must leave the database to the initialization state machine.
-        let dir = tempfile::tempdir().unwrap();
-        write_legacy_mdbx_layout(
-            dir.path(),
-            &[(ProofWindowKey::EarliestBlock, BlockNumHash::new(42, B256::with_last_byte(7)))],
-        );
-        let storage = legacy_mdbx_storage(dir.path());
-
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
-    }
-
-    #[test]
-    fn legacy_migration_skips_empty_storage() {
-        let storage: OpProofsStorage<InMemoryProofsStorage> =
-            InMemoryProofsStorage::default().into();
-
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
-    }
-
-    #[test]
-    fn legacy_migration_skips_in_progress_initialization() {
-        let storage: OpProofsStorage<InMemoryProofsStorage> =
-            InMemoryProofsStorage::default().into();
         let initializer = storage.initialization_provider().expect("initialization provider");
-        initializer
-            .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
-            .expect("set initial state anchor");
-        initializer.commit().expect("commit");
+        initializer.set_initial_state_anchor(anchor).expect("set initial state anchor");
+        initializer.commit_initial_state().expect("complete initial state");
+        initializer.commit().expect("commit completed V1 storage");
+        drop(storage);
 
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
-    }
+        let error = refuse_legacy_v1_storage(dir.path()).unwrap_err();
+        assert_v1_refusal(&error, dir.path());
 
-    #[test]
-    fn legacy_migration_skips_storage_with_latest_block() {
-        let storage: OpProofsStorage<InMemoryProofsStorage> =
-            InMemoryProofsStorage::default().into();
+        let storage = legacy_mdbx_storage(dir.path());
         let initializer = storage.initialization_provider().expect("initialization provider");
-        initializer
-            .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
-            .expect("set initial state anchor");
-        initializer.commit_initial_state().expect("commit initial state");
-        initializer.commit().expect("commit");
-
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
+        let stored_anchor = initializer.initial_state_anchor().expect("read initial state anchor");
+        assert!(matches!(stored_anchor.status, InitialStateStatus::Completed));
+        assert_eq!(stored_anchor.block, Some(anchor));
+        drop(initializer);
+        let provider = storage.provider_ro().expect("read provider opens");
+        assert_eq!(provider.get_earliest_block().unwrap(), anchor);
+        assert_eq!(provider.get_latest_block().unwrap(), anchor);
     }
 }

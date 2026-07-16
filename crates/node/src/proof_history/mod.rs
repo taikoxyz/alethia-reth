@@ -33,7 +33,7 @@ use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorage};
+use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorageV2};
 use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
@@ -44,7 +44,7 @@ use tokio::time::sleep;
 use tracing::info;
 
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
-pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorage>>;
+pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorageV2>>;
 
 /// Adapts the storage bound accessors' `NoBlocksFound` error back to the `Option` shape the
 /// reconciliation logic in this module was written against.
@@ -97,8 +97,9 @@ where
     }
 
     let storage_path = config.required_storage_path()?.clone();
+    storage_init::refuse_legacy_v1_storage(&storage_path)?;
     let mdbx =
-        Arc::new(MdbxProofsStorage::new(&storage_path).wrap_err_with(|| {
+        Arc::new(MdbxProofsStorageV2::new(&storage_path).wrap_err_with(|| {
             format!("failed to create proof-history MDBX at {storage_path:?}")
         })?);
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
@@ -171,7 +172,7 @@ where
 /// Spawns periodic metric collection for the proof-history MDBX database.
 fn spawn_proofs_db_metrics(
     executor: TaskExecutor,
-    storage: Arc<MdbxProofsStorage>,
+    storage: Arc<MdbxProofsStorageV2>,
     metrics_report_interval: Duration,
 ) {
     executor.spawn_critical_task("taiko-proofs-storage-metrics", async move {

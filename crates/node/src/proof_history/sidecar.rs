@@ -451,6 +451,108 @@ pub(super) enum ProofHistoryStartupAction {
     },
 }
 
+/// Result of reconciling an installed engine after a routed reorg or revert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconciliationOutcome {
+    /// Persisted canonical state and committed proof storage agree without replacing the engine.
+    Ready,
+    /// Persisted canonical state has not reached the committed proof head yet.
+    WaitingForPersistence,
+    /// A conflicting persisted branch required receiver-first live engine recovery.
+    Recovered,
+}
+
+/// Whether routing one notification requires a persisted-state reconciliation pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotificationHandlingOutcome {
+    /// The notification needs no persisted-state barrier before another event is consumed.
+    Complete,
+    /// A reorg or revert was routed and must be checked against persisted canonical state.
+    ReconcilePersistedState,
+}
+
+/// Whether canonical notifications may be consumed while reorg persistence catches up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ReconciliationState {
+    /// Persisted state is reconciled, so the notification receiver may advance.
+    #[default]
+    Reconciled,
+    /// Persisted state trails a routed reorg, so notifications must remain buffered.
+    Pending,
+}
+
+impl From<ReconciliationOutcome> for ReconciliationState {
+    /// Converts one reconciliation attempt into the receiver-consumption state for the next loop.
+    fn from(outcome: ReconciliationOutcome) -> Self {
+        match outcome {
+            ReconciliationOutcome::WaitingForPersistence => Self::Pending,
+            ReconciliationOutcome::Ready | ReconciliationOutcome::Recovered => Self::Reconciled,
+        }
+    }
+}
+
+impl ReconciliationState {
+    /// Returns whether the sidecar may consume another canonical notification.
+    const fn should_receive_notifications(self) -> bool {
+        matches!(self, Self::Reconciled)
+    }
+}
+
+/// Reconciles an installed engine without using startup mutation while its sender remains live.
+///
+/// A persisted-state lag is retryable and leaves readiness clear. A divergent persisted branch
+/// replaces the notification receiver before dropping the engine and running atomic live
+/// reconciliation, so no startup unwind races an installed engine generation.
+async fn reconcile_installed_engine<EnsureReady, ReplaceReceiver, Recover, RecoverFuture>(
+    action: ProofHistoryStartupAction,
+    readiness: &ProofHistoryReadiness,
+    ensure_ready: EnsureReady,
+    replace_receiver: ReplaceReceiver,
+    recover: Recover,
+) -> eyre::Result<ReconciliationOutcome>
+where
+    EnsureReady: FnOnce() -> eyre::Result<()>,
+    ReplaceReceiver: FnOnce(),
+    Recover: FnOnce() -> RecoverFuture,
+    RecoverFuture: Future<Output = eyre::Result<()>>,
+{
+    match action {
+        ProofHistoryStartupAction::Uninitialized => {
+            readiness.set_not_ready();
+            Err(eyre!(
+                "installed proof-history engine lost its initialized V2 window during canonical reconciliation"
+            ))
+        }
+        ProofHistoryStartupAction::Ready => {
+            ensure_ready().inspect_err(|_| readiness.set_not_ready())?;
+            readiness.set_ready();
+            Ok(ReconciliationOutcome::Ready)
+        }
+        ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
+            readiness.set_not_ready();
+            warn!(
+                target: "reth::taiko::proof_history",
+                latest,
+                canonical_best,
+                "persisted canonical state is behind a routed proof-history reorg; buffering notifications until it catches up"
+            );
+            Ok(ReconciliationOutcome::WaitingForPersistence)
+        }
+        ProofHistoryStartupAction::Unwind { first_removed } => {
+            readiness.set_not_ready();
+            warn!(
+                target: "reth::taiko::proof_history",
+                first_removed = first_removed.block.number,
+                retained_parent = ?first_removed.parent,
+                "persisted canonical state caught up on a conflicting branch; replacing the proof-history engine generation"
+            );
+            recover_after_lagged_receiver(replace_receiver, recover).await?;
+            readiness.set_ready();
+            Ok(ReconciliationOutcome::Recovered)
+        }
+    }
+}
+
 /// Canonical facts captured from one persisted main-database read transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProofHistoryCanonicalSnapshot {
@@ -910,7 +1012,7 @@ struct ReorgRoutingSnapshot {
 /// confirms both that exact identity and the replacement tip. This prevents a same-height
 /// old-fork proof head or a stale pre-reorg snapshot from consuming a replacement notification.
 /// Readiness is cleared before validation and remains clear until the caller reconciles committed
-/// storage with [`complete_canonical_update`].
+/// storage with [`reconcile_installed_engine`].
 fn route_chain_reorg<Primitives, Engine>(
     old: &Chain<Primitives>,
     new: &Chain<Primitives>,
@@ -996,23 +1098,6 @@ where
     )?;
     ensure_retained_boundary_parent("revert", committed_earliest, old.first().block_with_parent())?;
     engine.unwind(old.first().block_with_parent())
-}
-
-/// Restores readiness only after committed proof-history storage reconciles successfully.
-fn complete_canonical_update<Reconcile>(
-    readiness: &ProofHistoryReadiness,
-    reconcile: Reconcile,
-) -> eyre::Result<()>
-where
-    Reconcile: FnOnce() -> eyre::Result<bool>,
-{
-    if !reconcile()? {
-        return Err(eyre!(
-            "proof-history canonical update completed but committed storage could not be reconciled"
-        ));
-    }
-    readiness.set_ready();
-    Ok(())
 }
 
 /// Clears readiness for a reorg or revert before notification routing begins.
@@ -1142,6 +1227,7 @@ where
         engine: &mut EngineSlot<Primitives::Block>,
     ) -> eyre::Result<()> {
         let mut notifications = self.provider.subscribe_to_canonical_state();
+        let mut reconciliation_state = ReconciliationState::default();
         let mut pruner_spawned = false;
         if self.try_start(engine).await? {
             spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
@@ -1160,7 +1246,7 @@ where
 
         loop {
             tokio::select! {
-                notification = notifications.recv() => {
+                notification = notifications.recv(), if reconciliation_state.should_receive_notifications() => {
                     let notification = match notification {
                         Ok(notification) => notification,
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -1188,8 +1274,33 @@ where
                         spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
                         head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
                     }
-                    let Some(engine) = engine.as_deref_mut() else { continue };
-                    self.handle_notification(notification, engine).await?;
+                    let Some(installed_engine) = engine.as_deref_mut() else { continue };
+                    let handling = self.handle_notification(notification, installed_engine).await?;
+                    if handling == NotificationHandlingOutcome::ReconcilePersistedState {
+                        let outcome = self.reconcile_installed_generation(
+                            || {
+                                // A conflicting persisted branch invalidates the buffered stream.
+                                // Replace it before dropping the old engine and opening the live
+                                // reconciliation snapshot.
+                                notifications = self.provider.subscribe_to_canonical_state();
+                            },
+                            || self.recover_from_lag(engine),
+                        ).await?;
+                        reconciliation_state = outcome.into();
+                        match outcome {
+                            ReconciliationOutcome::WaitingForPersistence => {
+                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                            }
+                            ReconciliationOutcome::Recovered => {
+                                spawn_pruner_once(
+                                    &mut pruner_spawned,
+                                    || self.spawn_pruner_task(),
+                                );
+                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                            }
+                            ReconciliationOutcome::Ready => {}
+                        }
+                    }
                 }
                 _ = &mut *shutdown => break,
                 _ = retry_interval.tick(), if engine.is_none() => {
@@ -1199,6 +1310,29 @@ where
                     }
                 }
                 _ = head_poll.tick(), if engine.is_some() => {
+                    if reconciliation_state == ReconciliationState::Pending {
+                        let outcome = self.reconcile_installed_generation(
+                            || {
+                                // Replace first so notifications published during live recovery
+                                // accumulate on the fresh receiver.
+                                notifications = self.provider.subscribe_to_canonical_state();
+                            },
+                            || self.recover_from_lag(engine),
+                        ).await?;
+                        reconciliation_state = outcome.into();
+                        match outcome {
+                            ReconciliationOutcome::WaitingForPersistence => continue,
+                            ReconciliationOutcome::Recovered => {
+                                spawn_pruner_once(
+                                    &mut pruner_spawned,
+                                    || self.spawn_pruner_task(),
+                                );
+                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                                continue;
+                            }
+                            ReconciliationOutcome::Ready => {}
+                        }
+                    }
                     if let Err(error) = sync_engine_to_persisted_head(
                         engine,
                         &self.readiness,
@@ -1256,6 +1390,27 @@ where
             || self.reconcile_live_storage(),
             || (self.engine_factory)(),
             || self.persisted_executed_head(),
+        )
+        .await
+    }
+
+    /// Rechecks persisted state for a routed reorg while preserving installed-engine ownership.
+    async fn reconcile_installed_generation<ReplaceReceiver, Recover, RecoverFuture>(
+        &self,
+        replace_receiver: ReplaceReceiver,
+        recover: Recover,
+    ) -> eyre::Result<ReconciliationOutcome>
+    where
+        ReplaceReceiver: FnOnce(),
+        Recover: FnOnce() -> RecoverFuture,
+        RecoverFuture: Future<Output = eyre::Result<()>>,
+    {
+        reconcile_installed_engine(
+            self.startup_action()?,
+            &self.readiness,
+            || self.ensure_initialized(),
+            replace_receiver,
+            recover,
         )
         .await
     }
@@ -1470,7 +1625,7 @@ where
         &self,
         notification: CanonStateNotification<Primitives>,
         engine: &mut Engine,
-    ) -> eyre::Result<()>
+    ) -> eyre::Result<NotificationHandlingOutcome>
     where
         Engine: ProofHistoryEngine<Primitives::Block> + ?Sized,
     {
@@ -1515,22 +1670,25 @@ where
             ))
         })?;
 
-        match &notification {
-            CanonStateNotification::Commit { new } => route_chain_commit(
-                new,
-                CommitRoutingSnapshot {
-                    committed_latest: latest_stored,
-                    canonical_latest_hash,
-                    canonical_commit_tip_hash: canonical_notification_tip_hash,
-                },
-                self.config.verification_interval,
-                engine,
-                &self.readiness,
-            )?,
+        let outcome = match &notification {
+            CanonStateNotification::Commit { new } => {
+                route_chain_commit(
+                    new,
+                    CommitRoutingSnapshot {
+                        committed_latest: latest_stored,
+                        canonical_latest_hash,
+                        canonical_commit_tip_hash: canonical_notification_tip_hash,
+                    },
+                    self.config.verification_interval,
+                    engine,
+                    &self.readiness,
+                )?;
+                NotificationHandlingOutcome::Complete
+            }
             // A reorg that replaces the old blocks with nothing is a plain revert.
             CanonStateNotification::Reorg { old, new } if new.is_empty() => {
                 route_chain_revert(old, earliest_stored, engine, &self.readiness)?;
-                self.complete_notification_reconciliation().await?;
+                NotificationHandlingOutcome::ReconcilePersistedState
             }
             CanonStateNotification::Reorg { old, new } => {
                 route_chain_reorg(
@@ -1546,17 +1704,11 @@ where
                     engine,
                     &self.readiness,
                 )?;
-                self.complete_notification_reconciliation().await?;
+                NotificationHandlingOutcome::ReconcilePersistedState
             }
-        }
+        };
 
-        Ok(())
-    }
-
-    /// Reconciles committed proof storage after a reorg or revert, then restores RPC readiness.
-    async fn complete_notification_reconciliation(&self) -> eyre::Result<()> {
-        let reconciled = self.reconcile_or_wait().await?;
-        complete_canonical_update(&self.readiness, || Ok(reconciled))
+        Ok(outcome)
     }
 }
 
@@ -1564,14 +1716,14 @@ where
 mod tests {
     use super::{
         CommitRoutingSnapshot, EngineSlot, ProofHistoryCanonicalSnapshot, ProofHistoryLiveAction,
-        ProofHistoryStartupAction, ReorgRoutingSnapshot, committed_chain_is_contiguous,
-        complete_canonical_update, ensure_canonical_update_above_earliest,
-        install_engine_generation, prepare_notification_readiness, proof_history_live_action,
-        proof_history_startup_action, proof_history_startup_reconciliation,
-        read_notification_routing_snapshot, reconcile_live_storage_atomic,
-        recover_after_lagged_receiver, recover_engine_after_lag, route_chain_commit,
-        route_chain_reorg, route_chain_revert, shutdown_engine, spawn_pruner_once,
-        sync_engine_to_persisted_head,
+        ProofHistoryStartupAction, ReconciliationOutcome, ReconciliationState,
+        ReorgRoutingSnapshot, committed_chain_is_contiguous,
+        ensure_canonical_update_above_earliest, install_engine_generation,
+        prepare_notification_readiness, proof_history_live_action, proof_history_startup_action,
+        proof_history_startup_reconciliation, read_notification_routing_snapshot,
+        reconcile_installed_engine, reconcile_live_storage_atomic, recover_after_lagged_receiver,
+        recover_engine_after_lag, route_chain_commit, route_chain_reorg, route_chain_revert,
+        shutdown_engine, spawn_pruner_once, sync_engine_to_persisted_head,
     };
     use crate::proof_history::engine::{ProofHistoryEngine, ReorgBlockUpdates};
     use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -2952,33 +3104,208 @@ mod tests {
         assert!(!readiness.is_ready());
     }
 
-    #[test]
-    fn successful_reorg_reconciles_before_becoming_ready() {
+    #[tokio::test]
+    async fn successful_reorg_reconciles_before_becoming_ready() {
         let readiness = ready_flag();
         readiness.set_not_ready();
         let reconciliation_observed_not_ready = Cell::new(false);
 
-        complete_canonical_update(&readiness, || {
-            reconciliation_observed_not_ready.set(!readiness.is_ready());
-            Ok(true)
-        })
+        let outcome = reconcile_installed_engine(
+            ProofHistoryStartupAction::Ready,
+            &readiness,
+            || {
+                reconciliation_observed_not_ready.set(!readiness.is_ready());
+                Ok(())
+            },
+            || unreachable!("ready reconciliation must not replace the receiver"),
+            || async { unreachable!("ready reconciliation must not rebuild the engine") },
+        )
+        .await
         .expect("successful reconciliation restores readiness");
 
         assert!(reconciliation_observed_not_ready.get());
         assert!(readiness.is_ready());
+        assert_eq!(outcome, ReconciliationOutcome::Ready);
     }
 
-    #[test]
-    fn reconciliation_failure_leaves_readiness_false() {
+    #[tokio::test]
+    async fn reconciliation_failure_leaves_readiness_false() {
         let readiness = ready_flag();
         readiness.set_not_ready();
 
-        let _error = complete_canonical_update(&readiness, || {
-            Err(eyre::eyre!("injected reconciliation failure"))
-        })
+        let _error = reconcile_installed_engine(
+            ProofHistoryStartupAction::Ready,
+            &readiness,
+            || Err(eyre::eyre!("injected reconciliation failure")),
+            || unreachable!("failed ready reconciliation must not replace the receiver"),
+            || async { unreachable!("failed ready reconciliation must not rebuild the engine") },
+        )
+        .await
         .expect_err("reconciliation failure propagates");
 
         assert!(!readiness.is_ready());
+    }
+
+    #[tokio::test]
+    async fn ahead_proof_latest_waits_without_error_drop_or_readiness() {
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
+
+        let startup_action = proof_history_startup_action(
+            Some(proof_window((10, 10), (25, 25))),
+            20,
+            Some(hash(10)),
+            None,
+            Some(unwind_marker((10, 10), 11)),
+            storage_path(),
+        )
+        .expect("persisted canonical state behind the proof head must classify as a wait");
+        let outcome = reconcile_installed_engine(
+            startup_action,
+            &readiness,
+            || unreachable!("waiting must not perform ready validation"),
+            || unreachable!("waiting must not replace the receiver"),
+            || async { unreachable!("waiting must not drop or rebuild the engine") },
+        )
+        .await
+        .expect("persistence lag is a retryable reconciliation wait");
+
+        assert!(!readiness.is_ready());
+        assert!(engine.is_some());
+        assert!(events.lock().expect("lifecycle event lock is available").is_empty());
+        assert_eq!(outcome, ReconciliationOutcome::WaitingForPersistence);
+        assert_eq!(ReconciliationState::from(outcome), ReconciliationState::Pending);
+    }
+
+    #[tokio::test]
+    async fn same_branch_persistence_catch_up_restores_readiness_without_rebuild() {
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
+
+        let waiting = reconcile_installed_engine(
+            ProofHistoryStartupAction::WaitForCanonicalLatest { latest: 25, canonical_best: 20 },
+            &readiness,
+            || unreachable!("waiting must not perform ready validation"),
+            || unreachable!("waiting must not replace the receiver"),
+            || async { unreachable!("waiting must not rebuild the engine") },
+        )
+        .await
+        .expect("the first persisted snapshot remains behind");
+        assert_eq!(ReconciliationState::from(waiting), ReconciliationState::Pending);
+
+        let ready = reconcile_installed_engine(
+            ProofHistoryStartupAction::Ready,
+            &readiness,
+            || Ok(()),
+            || unreachable!("same-branch catch-up must retain the receiver"),
+            || async { unreachable!("same-branch catch-up must retain the engine") },
+        )
+        .await
+        .expect("a later same-branch snapshot reconciles");
+
+        assert_eq!(ready, ReconciliationOutcome::Ready);
+        assert_eq!(ReconciliationState::from(ready), ReconciliationState::Reconciled);
+        assert!(readiness.is_ready());
+        assert!(engine.is_some());
+        assert!(events.lock().expect("lifecycle event lock is available").is_empty());
+    }
+
+    #[tokio::test]
+    async fn conflicting_persistence_catch_up_replaces_receiver_before_live_recovery() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+
+        let outcome = reconcile_installed_engine(
+            ProofHistoryStartupAction::Unwind { first_removed: unwind_marker((10, 10), 11) },
+            &readiness,
+            || unreachable!("divergence must not use startup ready validation"),
+            {
+                let events = events.clone();
+                move || {
+                    events
+                        .lock()
+                        .expect("lifecycle event lock is available")
+                        .push(LifecycleEvent::ReceiverReplaced);
+                }
+            },
+            || {
+                recover_engine_after_lag(
+                    &mut engine,
+                    &readiness,
+                    {
+                        let events = events.clone();
+                        move || async move {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::Reconcile);
+                            Ok(())
+                        }
+                    },
+                    {
+                        let events = events.clone();
+                        move || {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::Spawn(2));
+                            Ok(lifecycle_engine(2, events.clone()))
+                        }
+                    },
+                    {
+                        let events = events.clone();
+                        move || {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::ReadPersistedHead);
+                            Ok(25)
+                        }
+                    },
+                )
+            },
+        )
+        .await
+        .expect("conflicting catch-up uses live recovery");
+
+        assert_eq!(outcome, ReconciliationOutcome::Recovered);
+        assert_eq!(ReconciliationState::from(outcome), ReconciliationState::Reconciled);
+        assert!(readiness.is_ready());
+        assert!(engine.is_some());
+        assert_eq!(
+            *events.lock().expect("lifecycle event lock is available"),
+            vec![
+                LifecycleEvent::ReceiverReplaced,
+                LifecycleEvent::Drop(1),
+                LifecycleEvent::Reconcile,
+                LifecycleEvent::Spawn(2),
+                LifecycleEvent::ReadPersistedHead,
+                LifecycleEvent::Sync(2, 25),
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_reconciliation_buffers_notifications_and_exposes_lag_after_resume() {
+        use tokio::sync::broadcast::error::TryRecvError;
+
+        let (notifications, mut receiver) = tokio::sync::broadcast::channel(1);
+        let state = ReconciliationState::Pending;
+        assert!(!state.should_receive_notifications());
+
+        notifications.send(1_u64).expect("first notification buffers");
+        notifications.send(2_u64).expect("second notification buffers");
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Lagged(1))));
+
+        let state = ReconciliationState::Reconciled;
+        assert!(state.should_receive_notifications());
+        assert_eq!(receiver.try_recv().expect("latest buffered notification remains"), 2);
     }
 
     #[test]

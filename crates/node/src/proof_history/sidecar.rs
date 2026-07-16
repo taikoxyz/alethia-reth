@@ -2,6 +2,7 @@
 
 use super::{
     config::ProofHistoryConfig,
+    engine::{ProofHistoryEngine, ReorgBlockUpdates},
     live::LiveTrieCollector,
     opt_block,
     prune::{FinalityProofHistoryPruner, FinalityPruneOutcome, startup_prune_exposure},
@@ -19,11 +20,12 @@ use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification,
         CanonStateSubscriptions, DBProvider, DatabaseProviderFactory, HeaderProvider,
-        StageCheckpointReader, TransactionVariant,
+        StageCheckpointReader, StateProviderFactory, StateReader, TransactionVariant,
     },
     tasks::{TaskExecutor, shutdown::GracefulShutdown},
 };
 use reth_db::Database;
+use reth_evm::ConfigureEvm;
 use reth_execution_types::Chain;
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
@@ -87,9 +89,6 @@ fn log_prune_join_result(result: Result<eyre::Result<FinalityPruneOutcome>, task
 /// Number of blocks the proof-history sync task executes in one batch.
 const PROOF_HISTORY_SYNC_BATCH_SIZE: usize = 50;
 
-/// Distance from canonical tip where proof-history can process notification data directly.
-const PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD: u64 = 1024;
-
 /// Delay used when proof-history has no locally executable backfill work.
 const PROOF_HISTORY_SYNC_IDLE_SLEEP: Duration = Duration::from_secs(5);
 
@@ -137,6 +136,86 @@ struct ProofHistoryCanonicalSnapshot {
     /// Canonical child immediately above the stored earliest block, resolved for a possible
     /// suffix unwind and validated to descend from the retained anchor.
     first_removed: Option<BlockWithParent>,
+}
+
+/// Temporary bridge that applies the new notification policy through the existing synchronous
+/// collector until the upstream engine becomes the sole owner in the next migration step.
+///
+/// This adapter deliberately owns clones of every dependency so it satisfies the same `'static`
+/// contract as [`ProofHistoryEngine`] without changing the current sidecar worker lifecycle.
+struct LegacyNotificationEngine<Evm, Provider, Storage> {
+    /// EVM configuration used by the legacy exact-block executor.
+    evm_config: Evm,
+    /// Canonical state provider used to execute exact notification blocks.
+    provider: Provider,
+    /// Proof-history store updated synchronously by legacy collector operations.
+    storage: OpProofsStorage<Storage>,
+    /// Existing background worker wake-up used to bridge engine sync requests.
+    sync_wake: Arc<Notify>,
+}
+
+impl<Evm, Provider, Storage> LegacyNotificationEngine<Evm, Provider, Storage> {
+    /// Creates the narrow notification bridge without spawning another storage owner.
+    fn new(
+        evm_config: Evm,
+        provider: Provider,
+        storage: OpProofsStorage<Storage>,
+        sync_wake: Arc<Notify>,
+    ) -> Self {
+        Self { evm_config, provider, storage, sync_wake }
+    }
+}
+
+impl<Evm, Provider, Storage> ProofHistoryEngine<<Evm::Primitives as NodePrimitives>::Block>
+    for LegacyNotificationEngine<Evm, Provider, Storage>
+where
+    Evm: ConfigureEvm + Clone + Send + 'static,
+    Evm::Primitives: NodePrimitives,
+    Provider: StateReader + DatabaseProviderFactory + StateProviderFactory + Clone + Send + 'static,
+    Storage: OpProofsStore + Clone + Send + 'static,
+{
+    /// Executes and commits the exact notification block through the legacy collector.
+    fn execute_block(
+        &self,
+        block: &reth_primitives_traits::RecoveredBlock<<Evm::Primitives as NodePrimitives>::Block>,
+    ) -> eyre::Result<()> {
+        LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage)
+            .execute_and_store_block_updates(block)?;
+        Ok(())
+    }
+
+    /// Commits precomputed updates through the legacy collector.
+    fn index_block(
+        &self,
+        block: BlockWithParent,
+        trie_updates: TrieUpdatesSorted,
+        post_state: HashedPostStateSorted,
+    ) -> eyre::Result<()> {
+        LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage)
+            .store_block_updates(block, trie_updates, post_state)?;
+        Ok(())
+    }
+
+    /// Applies one precomputed replacement suffix through the legacy collector transaction.
+    fn reorg(&self, updates: ReorgBlockUpdates) -> eyre::Result<()> {
+        LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage)
+            .unwind_and_store_block_updates(updates)?;
+        Ok(())
+    }
+
+    /// Removes the supplied block and all descendants through the legacy collector.
+    fn unwind(&self, from: BlockWithParent) -> eyre::Result<()> {
+        LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage)
+            .unwind_history(from)?;
+        Ok(())
+    }
+
+    /// Wakes the existing sync worker, which intentionally ignores this numeric target because
+    /// it re-reads the persisted database head before every batch.
+    fn sync_to(&self, _target: u64) -> eyre::Result<()> {
+        self.sync_wake.notify_one();
+        Ok(())
+    }
 }
 
 /// Determines how proof-history storage should be reconciled against canonical block hashes.
@@ -351,6 +430,314 @@ const fn committed_chain_is_contiguous(first_block: u64, latest_stored: u64) -> 
     first_block <= latest_stored.saturating_add(1)
 }
 
+/// Returns whether a block must be independently executed to verify precomputed trie data.
+const fn proof_history_verification_due(verification_interval: u64, block_number: u64) -> bool {
+    verification_interval > 0 && block_number.is_multiple_of(verification_interval)
+}
+
+/// Routes one exact recovered notification block through the proof-history engine.
+///
+/// Precomputed updates are accepted only outside configured verification heights. Missing trie
+/// data and verification heights execute the exact block carried by the notification; this
+/// function never resolves a block by number from the mutable canonical provider.
+fn process_notification_block<Primitives, Engine>(
+    block_number: u64,
+    chain: &Chain<Primitives>,
+    verification_interval: u64,
+    engine: &Engine,
+) -> eyre::Result<()>
+where
+    Primitives: NodePrimitives,
+    Engine: ProofHistoryEngine<Primitives::Block>,
+{
+    let block = chain.blocks().get(&block_number).ok_or_else(|| {
+        eyre!(
+            "canonical notification is missing exact proof-history block {block_number}; engine sync is required"
+        )
+    })?;
+
+    if !proof_history_verification_due(verification_interval, block_number) &&
+        let Some(trie_data) = chain.trie_data_at(block_number)
+    {
+        let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
+        engine.index_block(
+            block.block_with_parent(),
+            (**trie_updates).clone(),
+            (**hashed_state).clone(),
+        )?;
+    } else {
+        engine.execute_block(block)?;
+    }
+
+    Ok(())
+}
+
+/// Checks that a commit notification carries a complete parent-linked suffix above the committed
+/// proof head.
+///
+/// A missing height requests canonical engine sync; a conflicting parent or overlapping stored
+/// hash is a malformed commit and fails closed instead of extending the wrong branch.
+fn commit_notification_covers_suffix<Primitives>(
+    new: &Chain<Primitives>,
+    committed_latest: BlockNumHash,
+) -> eyre::Result<bool>
+where
+    Primitives: NodePrimitives,
+{
+    if let Some(overlap) = new.blocks().get(&committed_latest.number) &&
+        overlap.hash() != committed_latest.hash
+    {
+        return Err(eyre!(
+            "canonical commit overlaps proof-history block {} with hash {:?}, expected committed hash {:?}",
+            committed_latest.number,
+            overlap.hash(),
+            committed_latest.hash
+        ));
+    }
+
+    let Some(first_uncovered) = committed_latest.number.checked_add(1) else { return Ok(true) };
+    let mut expected_parent = committed_latest.hash;
+    for number in first_uncovered..=new.tip().number() {
+        let Some(block) = new.blocks().get(&number) else { return Ok(false) };
+        if block.parent_hash() != expected_parent {
+            return Err(eyre!(
+                "canonical commit block {number} has parent {:?}, expected committed suffix parent {:?}",
+                block.parent_hash(),
+                expected_parent
+            ));
+        }
+        expected_parent = block.hash();
+    }
+    Ok(true)
+}
+
+/// Routes a commit notification, processing only the suffix not already present in committed
+/// proof-history storage.
+///
+/// A gap is delegated to the engine's canonical sync path. Engine failures clear readiness so
+/// RPC callers never observe a sidecar that knows notification processing failed.
+fn route_chain_commit<Primitives, Engine>(
+    new: &Chain<Primitives>,
+    committed_latest: BlockNumHash,
+    verification_interval: u64,
+    engine: &Engine,
+    readiness: &ProofHistoryReadiness,
+) -> eyre::Result<()>
+where
+    Primitives: NodePrimitives,
+    Engine: ProofHistoryEngine<Primitives::Block>,
+{
+    if new.is_empty() {
+        readiness.set_not_ready();
+        return Err(eyre!("canonical commit notification contains no blocks"));
+    }
+
+    if new.tip().number() <= committed_latest.number {
+        return Ok(())
+    }
+
+    if !committed_chain_is_contiguous(new.first().number(), committed_latest.number) ||
+        !commit_notification_covers_suffix(new, committed_latest)
+            .inspect_err(|_| readiness.set_not_ready())?
+    {
+        return engine.sync_to(new.tip().number()).inspect_err(|_| readiness.set_not_ready())
+    }
+
+    for block_number in committed_latest.number.saturating_add(1)..=new.tip().number() {
+        process_notification_block(block_number, new, verification_interval, engine)
+            .inspect_err(|_| readiness.set_not_ready())?;
+    }
+
+    Ok(())
+}
+
+/// Validates that a replacement chain describes one contiguous branch from the same fork as the
+/// removed chain.
+///
+/// Validation completes before any engine mutation so malformed notifications fail closed
+/// without partially unwinding proof history.
+fn validate_replacement_chain<Primitives>(
+    old: &Chain<Primitives>,
+    new: &Chain<Primitives>,
+) -> eyre::Result<()>
+where
+    Primitives: NodePrimitives,
+{
+    if old.is_empty() {
+        return Err(eyre!("canonical reorg notification contains no old blocks"));
+    }
+    if new.is_empty() {
+        return Ok(())
+    }
+
+    if old.fork_block() != new.fork_block() {
+        return Err(eyre!(
+            "proof-history fork blocks do not match: old={:?}, new={:?}",
+            old.fork_block(),
+            new.fork_block()
+        ));
+    }
+    if old.first().number() != new.first().number() {
+        return Err(eyre!(
+            "proof-history replacement starts at block {}, expected old branch height {}",
+            new.first().number(),
+            old.first().number()
+        ));
+    }
+    if old.first().parent_hash() != new.first().parent_hash() {
+        return Err(eyre!(
+            "proof-history replacement block {} has parent {:?}, expected old branch parent {:?}",
+            new.first().number(),
+            new.first().parent_hash(),
+            old.first().parent_hash()
+        ));
+    }
+
+    let mut expected_number = new.first().number();
+    let mut expected_parent = new.first().parent_hash();
+    for (number, block) in new.blocks() {
+        if *number != expected_number {
+            return Err(eyre!(
+                "proof-history replacement is not contiguous: found block {number}, expected {expected_number}"
+            ));
+        }
+        if block.parent_hash() != expected_parent {
+            return Err(eyre!(
+                "proof-history replacement block {number} has parent {:?}, expected {:?}",
+                block.parent_hash(),
+                expected_parent
+            ));
+        }
+        expected_parent = block.hash();
+        if *number != new.tip().number() {
+            expected_number = number.checked_add(1).ok_or_else(|| {
+                eyre!("proof-history replacement cannot continue beyond block u64::MAX")
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Proof-window identities and canonical hashes captured before routing one reorg notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReorgRoutingSnapshot {
+    /// Earliest retained proof block, which the replacement must preserve.
+    committed_earliest: BlockNumHash,
+    /// Latest committed proof block used to detect a covered replacement suffix.
+    committed_latest: BlockNumHash,
+    /// Canonical hash at the committed latest height from one pinned main-database snapshot.
+    canonical_latest_hash: Option<B256>,
+    /// Canonical hash at the replacement tip height from the same pinned snapshot.
+    canonical_replacement_tip_hash: Option<B256>,
+}
+
+/// Routes a reorg through either one precomputed engine replacement or an unwind followed by
+/// exact ordered replay.
+///
+/// The committed latest hash is considered covered only when one pinned canonical snapshot
+/// confirms both that exact identity and the replacement tip. This prevents a same-height
+/// old-fork proof head or a stale pre-reorg snapshot from consuming a replacement notification.
+/// Readiness is cleared before validation and remains clear until the caller reconciles committed
+/// storage with [`complete_canonical_update`].
+fn route_chain_reorg<Primitives, Engine>(
+    old: &Chain<Primitives>,
+    new: &Chain<Primitives>,
+    snapshot: ReorgRoutingSnapshot,
+    verification_interval: u64,
+    engine: &Engine,
+    readiness: &ProofHistoryReadiness,
+) -> eyre::Result<()>
+where
+    Primitives: NodePrimitives,
+    Engine: ProofHistoryEngine<Primitives::Block>,
+{
+    readiness.set_not_ready();
+    validate_replacement_chain(old, new)?;
+
+    let first_old = BlockNumHash::new(old.first().number(), old.first().hash());
+    ensure_canonical_update_above_earliest("reorg", snapshot.committed_earliest, first_old)?;
+
+    if new.is_empty() {
+        return engine.unwind(old.first().block_with_parent())
+    }
+
+    if snapshot.committed_latest.number >= new.tip().number() &&
+        snapshot.canonical_latest_hash == Some(snapshot.committed_latest.hash) &&
+        snapshot.canonical_replacement_tip_hash == Some(new.tip().hash())
+    {
+        return Ok(())
+    }
+
+    let can_reorg_directly = new.blocks().keys().all(|number| new.trie_data_at(*number).is_some()) &&
+        new.blocks()
+            .keys()
+            .all(|number| !proof_history_verification_due(verification_interval, *number));
+
+    if can_reorg_directly {
+        let mut updates: ReorgBlockUpdates = Vec::with_capacity(new.len());
+        for (number, block) in new.blocks() {
+            let trie_data = new
+                .trie_data_at(*number)
+                .expect("direct reorg eligibility checked every replacement block");
+            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
+            updates.push((block.block_with_parent(), trie_updates.clone(), hashed_state.clone()));
+        }
+        engine.reorg(updates)?;
+    } else {
+        engine.unwind(old.first().block_with_parent())?;
+        for number in new.blocks().keys().copied() {
+            process_notification_block(number, new, verification_interval, engine)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Routes a retained-range revert through an inclusive engine unwind.
+///
+/// Safe reverts are always forwarded, even when committed storage already ends at the common
+/// ancestor, because the engine may still hold an unpersisted old-fork suffix. Errors and
+/// successful mutations both leave readiness clear until committed storage is reconciled.
+fn route_chain_revert<Primitives, Engine>(
+    old: &Chain<Primitives>,
+    committed_earliest: BlockNumHash,
+    engine: &Engine,
+    readiness: &ProofHistoryReadiness,
+) -> eyre::Result<()>
+where
+    Primitives: NodePrimitives,
+    Engine: ProofHistoryEngine<Primitives::Block>,
+{
+    readiness.set_not_ready();
+    if old.is_empty() {
+        return Err(eyre!("canonical revert notification contains no old blocks"));
+    }
+    ensure_canonical_update_above_earliest(
+        "revert",
+        committed_earliest,
+        BlockNumHash::new(old.first().number(), old.first().hash()),
+    )?;
+    engine.unwind(old.first().block_with_parent())
+}
+
+/// Restores readiness only after committed proof-history storage reconciles successfully.
+fn complete_canonical_update<Reconcile>(
+    readiness: &ProofHistoryReadiness,
+    reconcile: Reconcile,
+) -> eyre::Result<()>
+where
+    Reconcile: FnOnce() -> eyre::Result<bool>,
+{
+    if !reconcile()? {
+        return Err(eyre!(
+            "proof-history canonical update completed but committed storage could not be reconciled"
+        ));
+    }
+    readiness.set_ready();
+    Ok(())
+}
+
 /// Ensures a canonical reorg or revert does not replace the retained proof-history anchor.
 fn ensure_canonical_update_above_earliest(
     update_kind: &'static str,
@@ -420,8 +807,6 @@ where
 {
     /// Runs proof-history indexing until the node shuts down.
     pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
-        let collector =
-            LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
         let mut notifications = self.provider.subscribe_to_canonical_state();
         let mut sync_wake = self.try_start().await?;
         let mut retry_interval = time::interval(PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL);
@@ -460,7 +845,13 @@ where
                         continue;
                     };
 
-                    self.handle_notification(notification, &collector, wake).await?;
+                    let engine = LegacyNotificationEngine::new(
+                        self.evm_config.clone(),
+                        self.provider.clone(),
+                        self.storage.clone(),
+                        Arc::clone(wake),
+                    );
+                    self.handle_notification(notification, &engine).await?;
                 }
                 _ = &mut shutdown => break,
                 _ = retry_interval.tick(), if sync_wake.is_none() => {
@@ -897,209 +1288,260 @@ where
         Ok(end)
     }
 
-    /// Handles a canonical notification and advances proof-history storage or wakes the backfill.
-    async fn handle_notification(
+    /// Handles one canonical notification using exact notification blocks and the engine seam.
+    async fn handle_notification<Engine>(
         &self,
         notification: CanonStateNotification<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-        sync_wake: &Notify,
-    ) -> eyre::Result<()> {
+        engine: &Engine,
+    ) -> eyre::Result<()>
+    where
+        Engine: ProofHistoryEngine<Primitives::Block>,
+    {
         let _write_guard = self.write_lock.lock().await;
         let provider_ro = self.storage.provider_ro()?;
-        let earliest_stored = opt_block(provider_ro.get_earliest_block())?
+        let (earliest_number, earliest_hash) = opt_block(provider_ro.get_earliest_block())?
             .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
-        let latest_stored = opt_block(provider_ro.get_latest_block())?
-            .ok_or_else(|| eyre!("no latest proof-history block stored"))?
-            .0;
-        let earliest_stored = BlockNumHash::new(earliest_stored.0, earliest_stored.1);
+        let (latest_number, latest_hash) = opt_block(provider_ro.get_latest_block())?
+            .ok_or_else(|| eyre!("no latest proof-history block stored"))?;
+        let earliest_stored = BlockNumHash::new(earliest_number, earliest_hash);
+        let latest_stored = BlockNumHash::new(latest_number, latest_hash);
+        drop(provider_ro);
+
+        // Pin the duplicate decision to one persisted canonical snapshot. In particular, a proof
+        // head at the replacement tip is not considered covered merely because the heights
+        // match: its exact hash must still be canonical in this snapshot.
+        let canonical_snapshot = self.provider.database_provider_ro()?;
+        let canonical_latest_hash =
+            canonical_snapshot.sealed_header(latest_stored.number)?.map(|header| header.hash());
+        let canonical_replacement_tip_hash = match &notification {
+            CanonStateNotification::Reorg { new, .. } if !new.is_empty() => {
+                canonical_snapshot.sealed_header(new.tip().number())?.map(|header| header.hash())
+            }
+            _ => None,
+        };
+        drop(canonical_snapshot);
 
         match &notification {
-            CanonStateNotification::Commit { new } => {
-                self.handle_chain_committed(new, latest_stored, collector, sync_wake)?
-            }
+            CanonStateNotification::Commit { new } => route_chain_commit(
+                new,
+                latest_stored,
+                self.config.verification_interval,
+                engine,
+                &self.readiness,
+            )?,
             // A reorg that replaces the old blocks with nothing is a plain revert.
             CanonStateNotification::Reorg { old, new } if new.is_empty() => {
-                self.handle_chain_reverted(old, earliest_stored, latest_stored, collector)?
+                route_chain_revert(old, earliest_stored, engine, &self.readiness)?;
+                self.complete_notification_reconciliation().await?;
             }
             CanonStateNotification::Reorg { old, new } => {
-                self.handle_chain_reorged(old, new, earliest_stored, latest_stored, collector)?
+                route_chain_reorg(
+                    old,
+                    new,
+                    ReorgRoutingSnapshot {
+                        committed_earliest: earliest_stored,
+                        committed_latest: latest_stored,
+                        canonical_latest_hash,
+                        canonical_replacement_tip_hash,
+                    },
+                    self.config.verification_interval,
+                    engine,
+                    &self.readiness,
+                )?;
+                self.complete_notification_reconciliation().await?;
             }
         }
 
         Ok(())
     }
 
-    /// Handles a canonical chain commit notification.
-    fn handle_chain_committed(
-        &self,
-        new: &Chain<Primitives>,
-        latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-        sync_wake: &Notify,
-    ) -> eyre::Result<()> {
-        if new.tip().number() <= latest_stored {
-            return Ok(());
-        }
-
-        let best_block = self.provider.best_block_number()?;
-        let is_contiguous = committed_chain_is_contiguous(new.first().number(), latest_stored);
-        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
-            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
-
-        if is_contiguous && is_near_tip {
-            for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
-                self.process_block(block_number, new, collector)?;
-            }
-        } else {
-            sync_wake.notify_one();
-        }
-
-        Ok(())
-    }
-
-    /// Processes one block from notification trie data when possible, or by execution otherwise.
-    fn process_block(
-        &self,
-        block_number: u64,
-        chain: &Chain<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        let should_verify = self.config.verification_interval > 0 &&
-            block_number.is_multiple_of(self.config.verification_interval);
-
-        if !should_verify &&
-            let Some(block) = chain.blocks().get(&block_number) &&
-            let Some(trie_data) = chain.trie_data_at(block_number)
-        {
-            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
-            collector.store_block_updates(
-                block.block_with_parent(),
-                (**trie_updates).clone(),
-                (**hashed_state).clone(),
-            )?;
-            return Ok(());
-        }
-
-        let block = self
-            .provider
-            .recovered_block(block_number.into(), TransactionVariant::NoHash)?
-            .ok_or_else(|| eyre!("missing block {block_number} in provider"))?;
-        collector.execute_and_store_block_updates(&block)?;
-        Ok(())
-    }
-
-    /// Handles a canonical chain reorg notification.
-    fn handle_chain_reorged(
-        &self,
-        old: &Chain<Primitives>,
-        new: &Chain<Primitives>,
-        earliest_stored: BlockNumHash,
-        latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        if old.first().number() > latest_stored {
-            return Ok(());
-        }
-
-        ensure_canonical_update_above_earliest(
-            "reorg",
-            earliest_stored,
-            BlockNumHash::new(old.first().number(), old.first().hash()),
-        )?;
-
-        if old.fork_block() != new.fork_block() {
-            return Err(eyre!(
-                "proof-history fork blocks do not match: old={:?}, new={:?}",
-                old.fork_block(),
-                new.fork_block()
-            ));
-        }
-
-        // A reorg replacing the whole retained window bases at the earliest stored block, which
-        // `replace_updates` rejects even though `unwind_history` accepts unwinding one block
-        // higher. Route that boundary through the unwind path so the reorg still applies.
-        if old.first().number() == earliest_stored.number + 1 {
-            return self.reorg_by_unwind_and_reprocess(old, new, collector);
-        }
-
-        let mut block_updates: Vec<(
-            BlockWithParent,
-            Arc<TrieUpdatesSorted>,
-            Arc<HashedPostStateSorted>,
-        )> = Vec::with_capacity(new.len());
-
-        for (block_number, block) in new.blocks() {
-            let Some(trie_data) = new.trie_data_at(*block_number) else {
-                // Missing trie data on at least one new block.
-                return self.reorg_by_unwind_and_reprocess(old, new, collector);
-            };
-            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
-            block_updates.push((
-                block.block_with_parent(),
-                trie_updates.clone(),
-                hashed_state.clone(),
-            ));
-        }
-
-        if !block_updates.is_empty() {
-            collector.unwind_and_store_block_updates(block_updates)?;
-        }
-
-        Ok(())
-    }
-
-    /// Applies a reorg by unwinding the old branch first and reprocessing the new blocks
-    /// individually, so each block reads post-unwind parent state instead of stale
-    /// old-branch state. Blocks with notification trie data are stored directly; the rest are
-    /// re-executed.
-    fn reorg_by_unwind_and_reprocess(
-        &self,
-        old: &Chain<Primitives>,
-        new: &Chain<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        collector.unwind_history(old.first().block_with_parent())?;
-        for block_number in new.blocks().keys() {
-            self.process_block(*block_number, new, collector)?;
-        }
-        Ok(())
-    }
-
-    /// Handles a canonical chain revert notification.
-    fn handle_chain_reverted(
-        &self,
-        old: &Chain<Primitives>,
-        earliest_stored: BlockNumHash,
-        latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        if old.first().number() > latest_stored {
-            return Ok(());
-        }
-
-        ensure_canonical_update_above_earliest(
-            "revert",
-            earliest_stored,
-            BlockNumHash::new(old.first().number(), old.first().hash()),
-        )?;
-
-        collector.unwind_history(old.first().block_with_parent())?;
-        Ok(())
+    /// Reconciles committed proof storage after a reorg or revert, then restores RPC readiness.
+    async fn complete_notification_reconciliation(&self) -> eyre::Result<()> {
+        let reconciled = self.reconcile_or_wait().await?;
+        complete_canonical_update(&self.readiness, || Ok(reconciled))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryCanonicalSnapshot, ProofHistoryStartupAction, committed_chain_is_contiguous,
+        ProofHistoryCanonicalSnapshot, ProofHistoryStartupAction, ReorgRoutingSnapshot,
+        committed_chain_is_contiguous, complete_canonical_update,
         ensure_canonical_update_above_earliest, proof_history_startup_action,
-        proof_history_startup_reconciliation,
+        proof_history_startup_reconciliation, route_chain_commit, route_chain_reorg,
+        route_chain_revert,
     };
+    use crate::proof_history::engine::{ProofHistoryEngine, ReorgBlockUpdates};
     use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
+    use alloy_consensus::{BlockHeader, Header};
     use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
     use alloy_primitives::B256;
+    use reth_ethereum_primitives::{Block, BlockBody, EthPrimitives};
+    use reth_execution_types::Chain;
     use reth_optimism_trie::api::ProofWindowRange;
-    use std::{cell::Cell, path::Path};
+    use reth_primitives_traits::{Block as _, RecoveredBlock};
+    use reth_trie_common::{
+        ComputedTrieData, HashedPostStateSorted, LazyTrieData, updates::TrieUpdatesSorted,
+    };
+    use std::{
+        cell::Cell,
+        collections::BTreeMap,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum EngineCall {
+        Execute(BlockNumHash),
+        Index(BlockWithParent),
+        Reorg(Vec<BlockWithParent>),
+        Unwind(BlockWithParent),
+        Sync(u64),
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum EngineMethod {
+        Execute,
+        Index,
+        Reorg,
+        Unwind,
+        Sync,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct RecordingEngine {
+        calls: Arc<Mutex<Vec<EngineCall>>>,
+        failure: Arc<Mutex<Option<EngineMethod>>>,
+    }
+
+    impl RecordingEngine {
+        fn failing(method: EngineMethod) -> Self {
+            Self { failure: Arc::new(Mutex::new(Some(method))), ..Default::default() }
+        }
+
+        fn calls(&self) -> Vec<EngineCall> {
+            self.calls.lock().expect("recording engine lock is available").clone()
+        }
+
+        fn record(&self, method: EngineMethod, call: EngineCall) -> eyre::Result<()> {
+            self.calls.lock().expect("recording engine lock is available").push(call);
+            if self.failure.lock().expect("recording engine failure lock is available").as_ref() ==
+                Some(&method)
+            {
+                return Err(eyre::eyre!("injected {method:?} failure"));
+            }
+            Ok(())
+        }
+    }
+
+    impl ProofHistoryEngine<Block> for RecordingEngine {
+        fn execute_block(&self, block: &RecoveredBlock<Block>) -> eyre::Result<()> {
+            self.record(
+                EngineMethod::Execute,
+                EngineCall::Execute(BlockNumHash::new(block.number(), block.hash())),
+            )
+        }
+
+        fn index_block(
+            &self,
+            block: BlockWithParent,
+            _trie_updates: TrieUpdatesSorted,
+            _post_state: HashedPostStateSorted,
+        ) -> eyre::Result<()> {
+            self.record(EngineMethod::Index, EngineCall::Index(block))
+        }
+
+        fn reorg(&self, updates: ReorgBlockUpdates) -> eyre::Result<()> {
+            self.record(
+                EngineMethod::Reorg,
+                EngineCall::Reorg(updates.into_iter().map(|(block, _, _)| block).collect()),
+            )
+        }
+
+        fn unwind(&self, from: BlockWithParent) -> eyre::Result<()> {
+            self.record(EngineMethod::Unwind, EngineCall::Unwind(from))
+        }
+
+        fn sync_to(&self, target: u64) -> eyre::Result<()> {
+            self.record(EngineMethod::Sync, EngineCall::Sync(target))
+        }
+    }
+
+    fn test_block(number: u64, parent_hash: B256, marker: u8) -> Arc<RecoveredBlock<Block>> {
+        Arc::new(
+            Block {
+                header: Header {
+                    parent_hash,
+                    number,
+                    timestamp: marker.into(),
+                    state_root: B256::repeat_byte(marker),
+                    ..Default::default()
+                },
+                body: BlockBody::default(),
+            }
+            .try_into_recovered()
+            .expect("empty test block recovers without senders"),
+        )
+    }
+
+    fn test_chain(
+        blocks: Vec<Arc<RecoveredBlock<Block>>>,
+        precomputed_blocks: &[u64],
+    ) -> Chain<EthPrimitives> {
+        let trie_data = precomputed_blocks
+            .iter()
+            .copied()
+            .map(|number| {
+                (
+                    number,
+                    LazyTrieData::ready(ComputedTrieData::new(
+                        Arc::new(HashedPostStateSorted::default()),
+                        Arc::new(TrieUpdatesSorted::default()),
+                    )),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        Chain::new(blocks, Default::default(), trie_data)
+    }
+
+    fn linear_chain(
+        first_number: u64,
+        parent_hash: B256,
+        markers: &[u8],
+        precomputed_blocks: &[u64],
+    ) -> Chain<EthPrimitives> {
+        let mut parent = parent_hash;
+        let blocks = markers
+            .iter()
+            .enumerate()
+            .map(|(offset, marker)| {
+                let block = test_block(first_number + offset as u64, parent, *marker);
+                parent = block.hash();
+                block
+            })
+            .collect();
+        test_chain(blocks, precomputed_blocks)
+    }
+
+    fn ready_flag() -> ProofHistoryReadiness {
+        let readiness = ProofHistoryReadiness::new();
+        readiness.set_ready();
+        readiness
+    }
+
+    fn reorg_snapshot(
+        committed_earliest: BlockNumHash,
+        committed_latest: BlockNumHash,
+        canonical_latest_hash: Option<B256>,
+        canonical_replacement_tip_hash: Option<B256>,
+    ) -> ReorgRoutingSnapshot {
+        ReorgRoutingSnapshot {
+            committed_earliest,
+            committed_latest,
+            canonical_latest_hash,
+            canonical_replacement_tip_hash,
+        }
+    }
 
     fn hash(byte: u8) -> B256 {
         B256::with_last_byte(byte)
@@ -1118,6 +1560,636 @@ mod tests {
 
     fn storage_path() -> &'static Path {
         Path::new("/configured/proof-history")
+    }
+
+    #[test]
+    fn commit_indexes_precomputed_notification_data() {
+        let parent = hash(1);
+        let block = test_block(11, parent, 11);
+        let chain = test_chain(vec![block.clone()], &[11]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &readiness)
+            .expect("contiguous precomputed commit is indexed");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Index(block.block_with_parent())]);
+        assert!(readiness.is_ready());
+    }
+
+    #[test]
+    fn commit_executes_at_verification_height() {
+        let parent = hash(1);
+        let block = test_block(12, parent, 12);
+        let chain = test_chain(vec![block.clone()], &[12]);
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(&chain, BlockNumHash::new(11, parent), 3, &engine, &ready_flag())
+            .expect("verification height is executed");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Execute(BlockNumHash::new(12, block.hash()))]);
+    }
+
+    #[test]
+    fn commit_executes_when_trie_data_is_missing() {
+        let parent = hash(1);
+        let block = test_block(11, parent, 13);
+        let chain = test_chain(vec![block.clone()], &[]);
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &ready_flag())
+            .expect("missing trie data falls back to exact execution");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Execute(BlockNumHash::new(11, block.hash()))]);
+    }
+
+    #[test]
+    fn commit_execution_uses_exact_notification_block() {
+        let parent = hash(1);
+        let notification_block = test_block(11, parent, 14);
+        let same_height_other_fork = test_block(11, parent, 15);
+        let chain = test_chain(vec![notification_block.clone()], &[]);
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &ready_flag())
+            .expect("notification block executes");
+
+        assert_ne!(notification_block.hash(), same_height_other_fork.hash());
+        assert_eq!(
+            engine.calls(),
+            vec![EngineCall::Execute(BlockNumHash::new(11, notification_block.hash()))]
+        );
+    }
+
+    #[test]
+    fn overlapping_commit_processes_only_uncovered_suffix() {
+        let chain = linear_chain(10, hash(9), &[10, 11, 12], &[10, 11, 12]);
+        let stored = chain.blocks().get(&11).expect("stored block exists");
+        let uncovered = chain.blocks().get(&12).expect("uncovered block exists");
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(&chain, BlockNumHash::new(11, stored.hash()), 0, &engine, &ready_flag())
+            .expect("overlap processes only its suffix");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Index(uncovered.block_with_parent())]);
+    }
+
+    #[test]
+    fn duplicate_commit_is_a_noop() {
+        let chain = linear_chain(10, hash(9), &[10, 11], &[10, 11]);
+        let tip = chain.tip();
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(
+            &chain,
+            BlockNumHash::new(tip.number(), tip.hash()),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("covered commit is ignored");
+
+        assert!(engine.calls().is_empty());
+    }
+
+    #[test]
+    fn gapped_commit_requests_engine_sync() {
+        let chain = linear_chain(12, hash(11), &[12, 13], &[12, 13]);
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(&chain, BlockNumHash::new(10, hash(10)), 0, &engine, &ready_flag())
+            .expect("gap is delegated to engine sync");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Sync(13)]);
+    }
+
+    #[test]
+    fn gapped_commit_sync_failure_clears_readiness() {
+        let chain = linear_chain(12, hash(11), &[12], &[12]);
+        let engine = RecordingEngine::failing(EngineMethod::Sync);
+        let readiness = ready_flag();
+
+        let _error =
+            route_chain_commit(&chain, BlockNumHash::new(10, hash(10)), 0, &engine, &readiness)
+                .expect_err("sync failure propagates");
+
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn internally_gapped_commit_requests_engine_sync_before_indexing() {
+        let parent = hash(10);
+        let first = test_block(11, parent, 11);
+        let third = test_block(13, first.hash(), 13);
+        let chain = test_chain(vec![first, third], &[11, 13]);
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &ready_flag())
+            .expect("internal notification gap delegates the full suffix to sync");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Sync(13)]);
+    }
+
+    #[test]
+    fn precomputed_reorg_uses_single_engine_reorg() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let new = linear_chain(11, parent, &[31, 32], &[11, 12]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(12, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect("fully precomputed replacement uses direct reorg");
+
+        assert_eq!(
+            engine.calls(),
+            vec![EngineCall::Reorg(
+                new.blocks().values().map(|block| block.block_with_parent()).collect()
+            )]
+        );
+        assert!(!readiness.is_ready(), "reconciliation must run before readiness is restored");
+    }
+
+    #[test]
+    fn verification_height_reorg_unwinds_then_replays_in_order() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let new = linear_chain(11, parent, &[31, 32], &[11, 12]);
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(12, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            2,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("verification height forces unwind and replay");
+
+        assert_eq!(
+            engine.calls(),
+            vec![
+                EngineCall::Unwind(old.first().block_with_parent()),
+                EngineCall::Index(new.first().block_with_parent()),
+                EngineCall::Execute(BlockNumHash::new(12, new.tip().hash())),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_trie_data_reorg_unwinds_then_replays_in_order() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let new = linear_chain(11, parent, &[31, 32], &[11]);
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(12, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("missing data forces unwind and replay");
+
+        assert_eq!(
+            engine.calls(),
+            vec![
+                EngineCall::Unwind(old.first().block_with_parent()),
+                EngineCall::Index(new.first().block_with_parent()),
+                EngineCall::Execute(BlockNumHash::new(12, new.tip().hash())),
+            ]
+        );
+    }
+
+    #[test]
+    fn reorg_replay_uses_exact_notification_blocks() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21], &[]);
+        let new = linear_chain(11, parent, &[31], &[]);
+        let same_height_other_fork = test_block(11, parent, 41);
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(11, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("replacement replays exact notification block");
+
+        assert_ne!(new.tip().hash(), same_height_other_fork.hash());
+        assert_eq!(
+            engine.calls(),
+            vec![
+                EngineCall::Unwind(old.first().block_with_parent()),
+                EngineCall::Execute(BlockNumHash::new(11, new.tip().hash())),
+            ]
+        );
+    }
+
+    #[test]
+    fn revert_above_earliest_unwinds() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        route_chain_revert(&old, BlockNumHash::new(10, parent), &engine, &readiness)
+            .expect("safe retained-range revert unwinds");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Unwind(old.first().block_with_parent())]);
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn successful_reorg_reconciles_before_becoming_ready() {
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+        let reconciliation_observed_not_ready = Cell::new(false);
+
+        complete_canonical_update(&readiness, || {
+            reconciliation_observed_not_ready.set(!readiness.is_ready());
+            Ok(true)
+        })
+        .expect("successful reconciliation restores readiness");
+
+        assert!(reconciliation_observed_not_ready.get());
+        assert!(readiness.is_ready());
+    }
+
+    #[test]
+    fn reconciliation_failure_leaves_readiness_false() {
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+
+        let _error = complete_canonical_update(&readiness, || {
+            Err(eyre::eyre!("injected reconciliation failure"))
+        })
+        .expect_err("reconciliation failure propagates");
+
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn reorg_rejects_empty_old_chain_without_engine_calls() {
+        let old = Chain::<EthPrimitives>::default();
+        let new = linear_chain(11, hash(10), &[31], &[11]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let _error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, hash(10)),
+                BlockNumHash::new(10, hash(10)),
+                Some(hash(10)),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("empty old branch is malformed");
+
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn reorg_rejects_mismatched_fork_blocks() {
+        let old = linear_chain(11, hash(10), &[21], &[]);
+        let new = linear_chain(11, hash(9), &[31], &[11]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, hash(10)),
+                BlockNumHash::new(11, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("different fork blocks must fail before engine mutation");
+
+        assert!(error.to_string().contains("fork blocks do not match"));
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn reorg_rejects_non_contiguous_replacement() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22, 23], &[]);
+        let first = test_block(11, parent, 31);
+        let third = test_block(13, first.hash(), 33);
+        let new = test_chain(vec![first, third], &[11, 13]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(13, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("replacement number gap must fail before engine mutation");
+
+        assert!(error.to_string().contains("not contiguous"));
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn reorg_rejects_broken_replacement_parent_link() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let first = test_block(11, parent, 31);
+        let second = test_block(12, hash(99), 32);
+        let new = test_chain(vec![first, second], &[11, 12]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(12, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("broken parent link must fail before engine mutation");
+
+        assert!(error.to_string().contains("has parent"));
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn reorg_with_common_ancestor_at_earliest_is_allowed() {
+        let earliest = BlockNumHash::new(10, hash(10));
+        let old = linear_chain(11, earliest.hash, &[21], &[]);
+        let new = linear_chain(11, earliest.hash, &[31], &[11]);
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                earliest,
+                BlockNumHash::new(11, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("reorg retaining the earliest anchor is recoverable");
+
+        assert_eq!(engine.calls().len(), 1);
+    }
+
+    #[test]
+    fn reorg_replacing_earliest_fails_closed() {
+        let earliest = BlockNumHash::new(10, hash(10));
+        let old = linear_chain(10, hash(9), &[21], &[]);
+        let new = linear_chain(10, hash(9), &[31], &[10]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let _error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                earliest,
+                BlockNumHash::new(10, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("replacing retained earliest must fail closed");
+
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn revert_replacing_earliest_fails_closed() {
+        let earliest = BlockNumHash::new(10, hash(10));
+        let old = linear_chain(10, hash(9), &[21], &[]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let _error = route_chain_revert(&old, earliest, &engine, &readiness)
+            .expect_err("reverting retained earliest must fail closed");
+
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn engine_failure_after_unwind_leaves_readiness_false() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21], &[]);
+        let new = linear_chain(11, parent, &[31], &[]);
+        let engine = RecordingEngine::failing(EngineMethod::Execute);
+        let readiness = ready_flag();
+
+        let _error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(11, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("replay failure propagates");
+
+        assert_eq!(engine.calls().len(), 2, "one unwind precedes the failed replay");
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn commit_engine_failure_clears_readiness() {
+        let parent = hash(10);
+        let new = linear_chain(11, parent, &[31], &[11]);
+        let engine = RecordingEngine::failing(EngineMethod::Index);
+        let readiness = ready_flag();
+
+        let _error =
+            route_chain_commit(&new, BlockNumHash::new(10, parent), 0, &engine, &readiness)
+                .expect_err("commit engine failure propagates");
+
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn duplicate_reorg_covered_by_committed_canonical_suffix_is_skipped() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let new = linear_chain(11, parent, &[31, 32], &[11, 12]);
+        let committed_latest = BlockNumHash::new(13, hash(13));
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                committed_latest,
+                Some(committed_latest.hash),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("canonical committed suffix consumes duplicate reorg");
+
+        assert!(engine.calls().is_empty());
+    }
+
+    #[test]
+    fn duplicate_reorg_at_committed_common_ancestor_is_forwarded() {
+        let common = BlockNumHash::new(10, hash(10));
+        let old = linear_chain(11, common.hash, &[21, 22], &[]);
+        let new = linear_chain(11, common.hash, &[31, 32], &[11, 12]);
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(common, common, Some(common.hash), Some(new.tip().hash())),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("common-ancestor proof head does not consume private-buffer reorg");
+
+        assert_eq!(engine.calls().len(), 1);
+    }
+
+    #[test]
+    fn same_height_old_fork_hash_does_not_skip_reorg() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let new = linear_chain(11, parent, &[31, 32], &[11, 12]);
+        let committed_old_tip = BlockNumHash::new(12, old.tip().hash());
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                committed_old_tip,
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("same-height old-fork proof head forwards replacement");
+
+        assert_eq!(engine.calls().len(), 1);
+    }
+
+    #[test]
+    fn stale_canonical_snapshot_does_not_skip_same_height_old_fork() {
+        let parent = hash(10);
+        let old = linear_chain(11, parent, &[21, 22], &[]);
+        let new = linear_chain(11, parent, &[31, 32], &[11, 12]);
+        let committed_old_tip = BlockNumHash::new(12, old.tip().hash());
+        let engine = RecordingEngine::default();
+
+        route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                committed_old_tip,
+                Some(committed_old_tip.hash),
+                Some(committed_old_tip.hash),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("stale old-fork snapshot cannot consume the replacement notification");
+
+        assert_eq!(engine.calls().len(), 1);
+    }
+
+    #[test]
+    fn duplicate_revert_at_committed_common_ancestor_is_forwarded() {
+        let common = BlockNumHash::new(10, hash(10));
+        let old = linear_chain(11, common.hash, &[21], &[]);
+        let engine = RecordingEngine::default();
+
+        route_chain_revert(&old, common, &engine, &ready_flag())
+            .expect("safe revert clears a possible private old-fork buffer");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Unwind(old.first().block_with_parent())]);
     }
 
     #[test]

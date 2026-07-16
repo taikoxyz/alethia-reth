@@ -7,9 +7,9 @@ use super::{
     storage_init::{
         DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
         finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, proof_history_historical_init_metadata_path,
-        proof_history_storage_needs_initialization, proof_history_sync_target,
-        read_historical_init_metadata,
+        initialize_proof_history_storage, migrate_legacy_proof_history_storage,
+        proof_history_historical_init_metadata_path, proof_history_storage_needs_initialization,
+        proof_history_sync_target, read_historical_init_metadata,
     },
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -283,6 +283,10 @@ where
 {
     /// Runs proof-history indexing until the node shuts down.
     pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
+        // Databases initialized under the previous storage dependency may lack a `LatestBlock`
+        // row; repair them before any reconciliation reads the storage bounds.
+        migrate_legacy_proof_history_storage(&self.storage)?;
+
         let collector =
             LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
         let mut notifications = self.provider.subscribe_to_canonical_state();
@@ -1019,6 +1023,13 @@ where
             ));
         }
 
+        // A reorg replacing the whole retained window bases at the earliest stored block, which
+        // `replace_updates` rejects even though `unwind_history` accepts unwinding one block
+        // higher. Route that boundary through the unwind path so the reorg still applies.
+        if old.first().number() == earliest_stored.number + 1 {
+            return self.reorg_by_unwind_and_reprocess(old, new, collector);
+        }
+
         let mut block_updates: Vec<(
             BlockWithParent,
             Arc<TrieUpdatesSorted>,
@@ -1027,15 +1038,8 @@ where
 
         for (block_number, block) in new.blocks() {
             let Some(trie_data) = new.trie_data_at(*block_number) else {
-                // Missing trie data on at least one new block: fall back to
-                // unwinding the old branch first, then re-process all new
-                // blocks individually so executions read post-unwind parent
-                // state instead of stale old-branch state.
-                collector.unwind_history(old.first().block_with_parent())?;
-                for block_number in new.blocks().keys() {
-                    self.process_block(*block_number, new, collector)?;
-                }
-                return Ok(());
+                // Missing trie data on at least one new block.
+                return self.reorg_by_unwind_and_reprocess(old, new, collector);
             };
             let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
             block_updates.push((
@@ -1049,6 +1053,23 @@ where
             collector.unwind_and_store_block_updates(block_updates)?;
         }
 
+        Ok(())
+    }
+
+    /// Applies a reorg by unwinding the old branch first and reprocessing the new blocks
+    /// individually, so each block reads post-unwind parent state instead of stale
+    /// old-branch state. Blocks with notification trie data are stored directly; the rest are
+    /// re-executed.
+    fn reorg_by_unwind_and_reprocess(
+        &self,
+        old: &Chain<Primitives>,
+        new: &Chain<Primitives>,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<()> {
+        collector.unwind_history(old.first().block_with_parent())?;
+        for block_number in new.blocks().keys() {
+            self.process_block(*block_number, new, collector)?;
+        }
         Ok(())
     }
 

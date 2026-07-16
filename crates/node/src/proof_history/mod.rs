@@ -1,7 +1,6 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
-mod init;
 mod live;
 mod sidecar;
 mod storage_init;
@@ -22,7 +21,7 @@ use eyre::WrapErr;
 use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateSubscriptions, DBProvider,
-        DatabaseProviderFactory, HeaderProvider,
+        DatabaseProviderFactory, HeaderProvider, StageCheckpointReader,
     },
     tasks::TaskExecutor,
 };
@@ -88,6 +87,7 @@ where
         + ChangeSetReader
         + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
         + StorageSettingsCache,
     <T::DB as Database>::TX: Sync,

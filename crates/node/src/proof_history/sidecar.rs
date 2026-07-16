@@ -5,11 +5,8 @@ use super::{
     live::LiveTrieCollector,
     opt_block,
     storage_init::{
-        DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
-        finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, proof_history_historical_init_metadata_path,
-        proof_history_storage_needs_initialization, proof_history_sync_target,
-        read_historical_init_metadata,
+        initialize_finalized_window_proof_history_storage, initialize_proof_history_storage,
+        proof_history_sync_target,
     },
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -21,7 +18,7 @@ use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification,
         CanonStateSubscriptions, DBProvider, DatabaseProviderFactory, HeaderProvider,
-        TransactionVariant,
+        StageCheckpointReader, TransactionVariant,
     },
     tasks::{TaskExecutor, shutdown::GracefulShutdown},
 };
@@ -29,14 +26,15 @@ use reth_db::Database;
 use reth_execution_types::Chain;
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    OpProofStoragePruner, OpProofsStorage, OpProofsStorageError, OpProofsStore,
+    OpProofStoragePruner, OpProofsBackfillStore, OpProofsStorage, OpProofsStorageError,
+    OpProofsStore,
     api::{OpProofsProviderRO, OpProofsProviderRw},
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_trie_common::{HashedPostStateSorted, SortedTrieData, updates::TrieUpdatesSorted};
-use std::{panic, path::PathBuf, sync::Arc, time::Duration};
+use std::{panic, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify, broadcast},
     task,
@@ -194,12 +192,10 @@ where
     task_executor: TaskExecutor,
     /// Proof-history storage populated by the extension.
     storage: OpProofsStorage<Storage>,
-    /// Raw proof-history storage handle used for the initial current-state snapshot.
+    /// Raw proof-history storage handle used for initialization and backward backfill.
     init_storage: Storage,
     /// Runtime settings that govern proof-history retention and startup behavior.
     config: ProofHistoryConfig,
-    /// Sidecar file that records historical initialization target metadata.
-    historical_init_metadata_path: Option<PathBuf>,
     /// Readiness flag consumed by the RPC layer; set only while storage is reconciled.
     readiness: ProofHistoryReadiness,
     /// Serializes proof-history writers across live notifications, background sync, and pruning.
@@ -245,8 +241,6 @@ where
         config: ProofHistoryConfig,
         readiness: ProofHistoryReadiness,
     ) -> Self {
-        let historical_init_metadata_path =
-            config.storage_path.as_deref().map(proof_history_historical_init_metadata_path);
         Self {
             provider,
             evm_config,
@@ -254,7 +248,6 @@ where
             storage,
             init_storage,
             config,
-            historical_init_metadata_path,
             readiness,
             write_lock: Arc::new(Mutex::new(())),
         }
@@ -274,12 +267,13 @@ where
         + ChangeSetReader
         + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
         + StorageSettingsCache,
     <Node::Provider as DatabaseProviderFactory>::DB: Database,
     <<Node::Provider as DatabaseProviderFactory>::DB as Database>::TX: Sync,
     Primitives: NodePrimitives,
-    Storage: OpProofsStore + Clone + Send + 'static,
+    Storage: OpProofsBackfillStore + Clone + Send + 'static,
 {
     /// Runs proof-history indexing until the node shuts down.
     pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
@@ -337,6 +331,9 @@ where
 
     /// Reconciles storage if possible and spawns the sync and pruner tasks on first success.
     async fn try_start(&self) -> eyre::Result<Option<Arc<Notify>>> {
+        if !self.prepare_storage_or_wait().await? {
+            return Ok(None);
+        }
         if !self.reconcile_or_wait().await? {
             return Ok(None);
         }
@@ -369,7 +366,7 @@ where
     /// Reconciles current proof-history bounds against the canonical database.
     async fn reconcile_or_wait(&self) -> eyre::Result<bool> {
         match self.startup_action()? {
-            ProofHistoryStartupAction::Uninitialized => self.initialize_or_wait().await,
+            ProofHistoryStartupAction::Uninitialized => Ok(false),
             ProofHistoryStartupAction::Ready => {
                 self.ensure_initialized()?;
                 Ok(true)
@@ -465,134 +462,30 @@ where
         Ok(())
     }
 
-    /// Initializes proof-history storage immediately or waits for the finalized window.
-    async fn initialize_or_wait(&self) -> eyre::Result<bool> {
-        if proof_history_storage_needs_initialization(&self.storage)? {
-            let action = if let Some(resume) = self.historical_init_resume_action()? {
-                resume
-            } else if self.config.backfill_window_only {
-                self.finalized_window_initialization_action()?
-            } else {
-                ProofHistoryInitializationAction::CurrentState
-            };
-
-            match action {
-                ProofHistoryInitializationAction::Wait => return Ok(false),
-                ProofHistoryInitializationAction::CurrentState => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_proof_history_storage(&provider, storage)
-                    });
-                    blocking_join_result(init_task.await, "proof-history init worker")??;
-                }
-                ProofHistoryInitializationAction::HistoricalWindow {
-                    start_block,
-                    target_block,
-                } => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let metadata_path = self.historical_init_metadata_path.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_historical_proof_history_storage(
-                            &provider,
-                            storage,
-                            metadata_path.as_deref(),
-                            start_block,
-                            target_block,
-                        )
-                    });
-                    blocking_join_result(init_task.await, "proof-history historical init worker")??;
-                }
-            }
-        }
-        self.ensure_initialized()?;
-        Ok(true)
-    }
-
-    /// Returns the initialization action that resumes an interrupted historical initialization.
+    /// Prepares proof storage with upstream initialization and optional finalized-window backfill.
     ///
-    /// The recorded metadata pins the anchor start block of the interrupted attempt; the target is
-    /// recomputed from the current on-disk executed head because the reverse-changeset overlay is
-    /// rebuilt against the current tables (and re-verified against the anchor state root), so an
-    /// interrupted initialization survives node restarts on a live chain.
-    fn historical_init_resume_action(
-        &self,
-    ) -> eyre::Result<Option<ProofHistoryInitializationAction>> {
-        let Some(path) = self.historical_init_metadata_path.as_deref() else {
-            return Ok(None);
-        };
-        let Some(metadata) = read_historical_init_metadata(path)? else {
-            return Ok(None);
-        };
-
-        let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
-        info!(
-            target: "reth::taiko::proof_history",
-            start_block = metadata.start_block.number,
-            executed_head,
-            "resuming interrupted historical proof-history initialization from recorded metadata"
-        );
-        Ok(Some(ProofHistoryInitializationAction::HistoricalWindow {
-            start_block: metadata.start_block.number,
-            target_block: executed_head,
-        }))
-    }
-
-    /// Returns how empty storage should initialize for a finalized proof-history window.
-    fn finalized_window_initialization_action(
-        &self,
-    ) -> eyre::Result<ProofHistoryInitializationAction> {
-        let finalized_block = finalized_block_number(&self.provider)?;
-        // Use the on-disk best block as `executed_head` so that the historical-init target header
-        // and reverse changesets are guaranteed to be persisted. The in-memory canonical tip from
-        // `provider().best_block_number()` can outpace disk by up to `engine.persistence-threshold`
-        // blocks, which previously caused the historical init to panic on a missing target header.
-        let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
-
-        match delayed_proof_history_start(finalized_block, executed_head, self.config.window) {
-            DelayedProofHistoryStart::WaitForFinalized => {
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    executed_head,
-                    "waiting for finalized head before initializing empty proof-history storage"
-                );
-                Ok(ProofHistoryInitializationAction::Wait)
+    /// Returns `false` for retryable finality/execution waits and `true` only after preparation has
+    /// completed; errors abort startup without changing RPC readiness.
+    async fn prepare_storage_or_wait(&self) -> eyre::Result<bool> {
+        let provider = self.provider.clone();
+        let storage = self.init_storage.clone();
+        let storage_path = self.config.required_storage_path()?.clone();
+        let window = self.config.window;
+        let backfill_window_only = self.config.backfill_window_only;
+        let init_task = task::spawn_blocking(move || {
+            if backfill_window_only {
+                initialize_finalized_window_proof_history_storage(
+                    &provider,
+                    storage,
+                    &storage_path,
+                    window,
+                )
+            } else {
+                initialize_proof_history_storage(&provider, storage, &storage_path)?;
+                Ok(true)
             }
-            DelayedProofHistoryStart::WaitForExecution { start_block } => {
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "waiting for local execution to reach proof-history window start"
-                );
-                Ok(ProofHistoryInitializationAction::Wait)
-            }
-            DelayedProofHistoryStart::MissedStart { start_block } => {
-                info!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "empty proof-history storage missed the finalized window start; building historical proof-history anchor"
-                );
-                Ok(ProofHistoryInitializationAction::HistoricalWindow {
-                    start_block,
-                    target_block: executed_head,
-                })
-            }
-            DelayedProofHistoryStart::Ready { start_block } => {
-                info!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "initializing empty proof-history storage from finalized window"
-                );
-                Ok(ProofHistoryInitializationAction::CurrentState)
-            }
-        }
+        });
+        blocking_join_result(init_task.await, "proof-history preparation worker")?
     }
 
     /// Verifies the proof-history database is initialized and safe to prune automatically.

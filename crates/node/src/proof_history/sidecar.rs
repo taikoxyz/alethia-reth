@@ -89,10 +89,12 @@ const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs
 /// staged-sync gap is backfilled even when no live canonical notification arrives.
 const PROOF_HISTORY_HEAD_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Full head polls allowed after one pending catch-up request before the generation is rebuilt.
-/// Two polls exceed the upstream engine's ten-second idle-flush interval because recovery occurs
-/// on the following poll.
-const PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS: u8 = 2;
+/// Stationary head polls allowed before a pending generation is rebuilt.
+///
+/// Fifteen five-second polls cover the upstream engine's ten-second idle flush plus its
+/// sixty-second persistence timeout. Any committed proof progress or newer persisted sync target
+/// resets the allowance.
+const PROOF_HISTORY_PENDING_STALL_POLLS: u8 = 15;
 
 /// Sole owned upstream proof-history engine generation.
 ///
@@ -300,10 +302,20 @@ where
     Ok(())
 }
 
+/// Readiness policy applied after a fresh engine accepts its initial sync target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EngineInstallReadiness {
+    /// Expose the generation immediately for ordinary startup or lag recovery.
+    Ready,
+    /// Keep RPCs gated until an external persistence barrier is revalidated.
+    Gated,
+}
+
 /// Replaces a lagged engine generation only after committed storage is reconciled.
 ///
 /// The new generation remains local until its initial persisted-head sync request succeeds. Any
 /// error therefore leaves `slot` empty and readiness clear.
+#[cfg(test)]
 async fn recover_engine_after_lag<Block, Reconcile, ReconcileFuture, SpawnEngine, ReadHead>(
     slot: &mut EngineSlot<Block>,
     readiness: &ProofHistoryReadiness,
@@ -318,59 +330,108 @@ where
     SpawnEngine: FnOnce() -> eyre::Result<Box<dyn ProofHistoryEngine<Block>>>,
     ReadHead: FnOnce() -> eyre::Result<u64>,
 {
+    recover_engine_after_lag_with_readiness(
+        slot,
+        readiness,
+        reconcile,
+        spawn_engine,
+        read_persisted_head,
+        EngineInstallReadiness::Ready,
+    )
+    .await
+}
+
+/// Replaces an engine generation and applies the requested post-install readiness policy.
+async fn recover_engine_after_lag_with_readiness<
+    Block,
+    Reconcile,
+    ReconcileFuture,
+    SpawnEngine,
+    ReadHead,
+>(
+    slot: &mut EngineSlot<Block>,
+    readiness: &ProofHistoryReadiness,
+    reconcile: Reconcile,
+    spawn_engine: SpawnEngine,
+    read_persisted_head: ReadHead,
+    install_readiness: EngineInstallReadiness,
+) -> eyre::Result<()>
+where
+    Block: reth_primitives_traits::Block + 'static,
+    Reconcile: FnOnce() -> ReconcileFuture,
+    ReconcileFuture: Future<Output = eyre::Result<()>>,
+    SpawnEngine: FnOnce() -> eyre::Result<Box<dyn ProofHistoryEngine<Block>>>,
+    ReadHead: FnOnce() -> eyre::Result<u64>,
+{
     readiness.set_not_ready();
     clear_engine_slot(slot).await?;
     reconcile().await?;
 
-    install_engine_generation(slot, readiness, spawn_engine, read_persisted_head).await
+    install_engine_generation_with_readiness(
+        slot,
+        readiness,
+        spawn_engine,
+        read_persisted_head,
+        install_readiness,
+    )
+    .await
 }
 
-/// Replaces a lagged notification receiver before rebuilding its engine generation.
-///
-/// Keeping receiver replacement and recovery in one dispatch helper prevents an empty engine slot
-/// from accidentally selecting startup reconciliation, which waits rather than rolling an
-/// unauditable V2 suffix back to its retained anchor.
-async fn recover_after_lagged_receiver<ReplaceReceiver, Recover, RecoverFuture>(
-    replace_receiver: ReplaceReceiver,
-    recover: Recover,
-) -> eyre::Result<()>
-where
-    ReplaceReceiver: FnOnce(),
-    Recover: FnOnce() -> RecoverFuture,
-    RecoverFuture: Future<Output = eyre::Result<()>>,
-{
-    replace_receiver();
-    recover().await
-}
-
-/// Replaces a pending generation while preserving its original readiness barrier.
+/// Replaces a pending generation and rebases its readiness barrier after resubscribing.
 ///
 /// Recovery installs and syncs a fresh engine, but that upstream sync is fire-and-forget. The
-/// caller must recheck committed storage before reopening RPC readiness or notification delivery.
+/// post-subscribe live target covers notifications lost from the old receiver before it was
+/// replaced; the caller must recheck that target in committed storage before reopening RPCs.
 async fn recover_pending_generation<ReplaceReceiver, Recover, RecoverFuture>(
     readiness: &ProofHistoryReadiness,
     replace_receiver: ReplaceReceiver,
     recover: Recover,
-) -> eyre::Result<()>
+) -> eyre::Result<CanonicalUpdateBarrier>
 where
-    ReplaceReceiver: FnOnce(),
+    ReplaceReceiver: FnOnce() -> eyre::Result<BlockNumHash>,
     Recover: FnOnce() -> RecoverFuture,
     RecoverFuture: Future<Output = eyre::Result<()>>,
 {
-    recover_after_lagged_receiver(replace_receiver, recover).await?;
     readiness.set_not_ready();
-    Ok(())
+    let live_target = replace_receiver()?;
+    recover().await?;
+    readiness.set_not_ready();
+    Ok(CanonicalUpdateBarrier::target_only(live_target))
 }
 
 /// Spawns, initially syncs, and then installs one fresh engine generation.
 ///
 /// The generation is kept local and joined on every post-spawn failure, so callers never expose a
 /// partially initialized engine through the owned slot.
+#[cfg(test)]
 async fn install_engine_generation<Block, SpawnEngine, ReadHead>(
     slot: &mut EngineSlot<Block>,
     readiness: &ProofHistoryReadiness,
     spawn_engine: SpawnEngine,
     read_persisted_head: ReadHead,
+) -> eyre::Result<()>
+where
+    Block: reth_primitives_traits::Block + 'static,
+    SpawnEngine: FnOnce() -> eyre::Result<Box<dyn ProofHistoryEngine<Block>>>,
+    ReadHead: FnOnce() -> eyre::Result<u64>,
+{
+    install_engine_generation_with_readiness(
+        slot,
+        readiness,
+        spawn_engine,
+        read_persisted_head,
+        EngineInstallReadiness::Ready,
+    )
+    .await
+}
+
+/// Installs one fresh generation and conditionally opens RPC readiness after its sync request.
+async fn install_engine_generation_with_readiness<Block, SpawnEngine, ReadHead>(
+    slot: &mut EngineSlot<Block>,
+    readiness: &ProofHistoryReadiness,
+    spawn_engine: SpawnEngine,
+    read_persisted_head: ReadHead,
+    install_readiness: EngineInstallReadiness,
 ) -> eyre::Result<()>
 where
     Block: reth_primitives_traits::Block + 'static,
@@ -396,7 +457,9 @@ where
     }
 
     *slot = Some(engine);
-    readiness.set_ready();
+    if install_readiness == EngineInstallReadiness::Ready {
+        readiness.set_ready();
+    }
     Ok(())
 }
 
@@ -409,7 +472,7 @@ async fn sync_engine_to_persisted_head<Block, ReadHead>(
     slot: &mut EngineSlot<Block>,
     readiness: &ProofHistoryReadiness,
     read_persisted_head: ReadHead,
-) -> eyre::Result<()>
+) -> eyre::Result<u64>
 where
     Block: reth_primitives_traits::Block + 'static,
     ReadHead: FnOnce() -> eyre::Result<u64>,
@@ -424,7 +487,40 @@ where
         clear_engine_slot(slot).await?;
         return Err(error)
     }
-    Ok(())
+    Ok(target)
+}
+
+/// Forwards a persisted head only when its block number changed since the preceding request.
+///
+/// Upstream recreates its idle-persistence timer after every action. Suppressing stationary
+/// `SyncTo` actions therefore lets a paused chain flush a sub-threshold in-memory proof batch.
+/// The remembered target is cleared when the engine rejects the request because that generation
+/// is removed from the slot.
+async fn sync_engine_to_changed_persisted_head<Block, ReadHead>(
+    slot: &mut EngineSlot<Block>,
+    readiness: &ProofHistoryReadiness,
+    last_requested_target: &mut Option<u64>,
+    read_persisted_head: ReadHead,
+) -> eyre::Result<Option<u64>>
+where
+    Block: reth_primitives_traits::Block + 'static,
+    ReadHead: FnOnce() -> eyre::Result<u64>,
+{
+    let target = read_persisted_head()?;
+    if *last_requested_target == Some(target) {
+        return Ok(None)
+    }
+
+    match sync_engine_to_persisted_head(slot, readiness, || Ok(target)).await {
+        Ok(target) => {
+            *last_requested_target = Some(target);
+            Ok(Some(target))
+        }
+        Err(error) => {
+            *last_requested_target = None;
+            Err(error)
+        }
+    }
 }
 
 /// Clears readiness and joins the sole installed engine during shutdown or channel closure.
@@ -480,13 +576,20 @@ pub(super) enum ProofHistoryStartupAction {
 enum ReconciliationOutcome {
     /// Persisted canonical state and committed proof storage agree without replacing the engine.
     Ready,
-    /// The proof engine or persisted canonical database has not crossed the routed update yet.
-    WaitingForPersistence {
-        /// Whether the main database has displaced the routed update's first old-fork block.
-        canonical_update_persisted: bool,
+    /// The main database has not reached the current live chain or proof endpoint yet.
+    WaitingForCanonical,
+    /// Canonical persistence crossed the update, but committed proof storage is still behind.
+    WaitingForProof {
+        /// Latest identity committed by proof-history storage in the reconciliation snapshot.
+        proof_latest: BlockNumHash,
+        /// Highest canonical block committed by the main database in the same snapshot.
+        canonical_best: u64,
     },
     /// A conflicting persisted branch required receiver-first live engine recovery.
-    Recovered,
+    Recovered {
+        /// Post-subscribe live target that replaces the routed barrier across the receiver swap.
+        barrier: CanonicalUpdateBarrier,
+    },
 }
 
 /// Next orchestration step while a routed update remains behind its persistence barrier.
@@ -495,46 +598,97 @@ enum PendingReconciliationProgress {
     /// The old branch is still persisted, so driving the engine from that database is unsafe.
     WaitForCanonical,
     /// Canonical persistence crossed the update; request engine catch-up while staying gated.
-    RequestSync,
+    RequestSync {
+        /// Proof identity used as the progress baseline for this request.
+        proof_latest: BlockNumHash,
+        /// Stationary-proof budget retained across a newer canonical sync target.
+        remaining_stall_polls: u8,
+    },
     /// A catch-up request is still within its bounded persistence grace period.
     WaitForProof {
-        /// Full head polls remaining before the generation is considered stuck.
-        remaining_grace_polls: u8,
+        /// Updated committed-head and sync-target progress tracker.
+        progress: PendingSyncProgress,
     },
     /// A prior catch-up request made no committed progress; rebuild from persisted canonical state.
     Recover,
     /// Reconciliation already rebuilt and synced a generation, which must remain gated until its
-    /// committed storage crosses the original barrier.
-    RecoverySyncRequested,
-    /// Both persistence paths agree, so ordinary notification processing may resume.
+    /// committed storage crosses the post-subscribe live target.
+    RecoverySyncRequested {
+        /// Post-subscribe live target that the recovered generation must persist.
+        barrier: CanonicalUpdateBarrier,
+    },
+    /// Both persistence paths agree, so RPC readiness may reopen.
     Complete,
 }
 
+/// Progress observed after requesting pending proof-history catch-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingSyncProgress {
+    /// Latest committed proof identity observed during the preceding poll.
+    proof_latest: BlockNumHash,
+    /// Highest persisted canonical target already forwarded to the engine.
+    sync_target: u64,
+    /// Stationary polls remaining before the generation is considered stuck.
+    remaining_stall_polls: u8,
+}
+
+impl PendingSyncProgress {
+    /// Starts or resets stationary detection after observed committed proof work.
+    const fn reset(proof_latest: BlockNumHash, sync_target: u64) -> Self {
+        Self { proof_latest, sync_target, remaining_stall_polls: PROOF_HISTORY_PENDING_STALL_POLLS }
+    }
+}
+
 /// Chooses how a pending generation advances without reopening readiness prematurely.
-const fn pending_reconciliation_progress(
+fn pending_reconciliation_progress(
     outcome: ReconciliationOutcome,
-    sync_grace_polls: Option<u8>,
+    sync_progress: Option<PendingSyncProgress>,
 ) -> PendingReconciliationProgress {
     match outcome {
-        ReconciliationOutcome::WaitingForPersistence { canonical_update_persisted: false } => {
+        ReconciliationOutcome::WaitingForCanonical => {
             PendingReconciliationProgress::WaitForCanonical
         }
-        ReconciliationOutcome::WaitingForPersistence { canonical_update_persisted: true }
-            if matches!(sync_grace_polls, Some(0)) =>
-        {
-            PendingReconciliationProgress::Recover
-        }
-        ReconciliationOutcome::WaitingForPersistence { canonical_update_persisted: true } => {
-            if let Some(remaining_grace_polls) = sync_grace_polls {
-                PendingReconciliationProgress::WaitForProof {
-                    remaining_grace_polls: remaining_grace_polls.saturating_sub(1),
+        ReconciliationOutcome::WaitingForProof { proof_latest, canonical_best } => {
+            match sync_progress {
+                None => PendingReconciliationProgress::RequestSync {
+                    proof_latest,
+                    remaining_stall_polls: PROOF_HISTORY_PENDING_STALL_POLLS,
+                },
+                Some(progress) if proof_latest != progress.proof_latest => {
+                    if canonical_best > progress.sync_target {
+                        PendingReconciliationProgress::RequestSync {
+                            proof_latest,
+                            remaining_stall_polls: PROOF_HISTORY_PENDING_STALL_POLLS,
+                        }
+                    } else {
+                        PendingReconciliationProgress::WaitForProof {
+                            progress: PendingSyncProgress::reset(
+                                proof_latest,
+                                progress.sync_target,
+                            ),
+                        }
+                    }
                 }
-            } else {
-                PendingReconciliationProgress::RequestSync
+                Some(progress) if progress.remaining_stall_polls == 0 => {
+                    PendingReconciliationProgress::Recover
+                }
+                Some(progress) if canonical_best > progress.sync_target => {
+                    PendingReconciliationProgress::RequestSync {
+                        proof_latest,
+                        remaining_stall_polls: progress.remaining_stall_polls.saturating_sub(1),
+                    }
+                }
+                Some(mut progress) => {
+                    progress.remaining_stall_polls =
+                        progress.remaining_stall_polls.saturating_sub(1);
+                    PendingReconciliationProgress::WaitForProof { progress }
+                }
             }
         }
         ReconciliationOutcome::Ready => PendingReconciliationProgress::Complete,
-        ReconciliationOutcome::Recovered => PendingReconciliationProgress::RecoverySyncRequested,
+        ReconciliationOutcome::Recovered { barrier } => {
+            PendingReconciliationProgress::RecoverySyncRequested { barrier }
+        }
     }
 }
 
@@ -544,9 +698,62 @@ struct CanonicalUpdateBarrier {
     /// Highest replacement block the proof engine must have committed, or the common ancestor for
     /// a pure revert.
     target: BlockNumHash,
-    /// First block removed from the displaced branch, used to distinguish a persisted update from
-    /// the still-canonical old branch.
-    first_removed: BlockNumHash,
+    /// First block removed from the displaced branch, or `None` for a post-recovery exact target.
+    first_removed: Option<BlockNumHash>,
+}
+
+impl CanonicalUpdateBarrier {
+    /// Creates a barrier that requires one exact canonical target without an old-branch marker.
+    const fn target_only(target: BlockNumHash) -> Self {
+        Self { target, first_removed: None }
+    }
+
+    /// Returns whether the routed update removed a suffix without installing a replacement.
+    const fn is_pure_revert(self) -> bool {
+        match self.first_removed {
+            Some(first_removed) => self.target.number < first_removed.number,
+            None => false,
+        }
+    }
+}
+
+/// Routing policy for a commit received while an earlier canonical update remains gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingCommitRouting {
+    /// Replay the suffix because it supersedes a pure revert already applied to the engine.
+    ReplayRevertedSuffix,
+    /// Consume the notification but let persisted-head catch-up cover the ordinary extension.
+    DeferToPersistedHead,
+}
+
+/// Chooses whether a pending commit must mutate the engine to avoid stranding a revert barrier.
+const fn pending_commit_routing(barrier: CanonicalUpdateBarrier) -> PendingCommitRouting {
+    if barrier.is_pure_revert() {
+        PendingCommitRouting::ReplayRevertedSuffix
+    } else {
+        PendingCommitRouting::DeferToPersistedHead
+    }
+}
+
+/// Chooses the barrier after routing a reorg while another canonical update remains pending.
+///
+/// A target-only barrier is captured after subscribing and can already include older notifications
+/// queued on that fresh receiver. Such a covered notification must not downgrade the captured
+/// target. A notification that invalidates the target, or advances beyond it, becomes the new
+/// finite barrier instead.
+const fn pending_reorg_barrier(
+    current: CanonicalUpdateBarrier,
+    routed: CanonicalUpdateBarrier,
+    current_target_is_canonical: bool,
+) -> CanonicalUpdateBarrier {
+    if current.first_removed.is_none() &&
+        routed.target.number <= current.target.number &&
+        current_target_is_canonical
+    {
+        current
+    } else {
+        routed
+    }
 }
 
 /// Startup classification plus the post-notification persistence barrier observed with it.
@@ -554,46 +761,78 @@ struct CanonicalUpdateBarrier {
 struct InstalledReconciliation {
     /// Reconciliation action for the proof window and persisted canonical snapshot.
     action: ProofHistoryStartupAction,
-    /// Whether proof storage reached the routed target and the persisted database displaced the
-    /// first old-fork block.
+    /// Whether proof storage and the persisted database both crossed the routed or recovered
+    /// target.
     update_persisted: bool,
-    /// Whether the persisted canonical database displaced the first old-fork block, making it safe
-    /// to drive or rebuild the proof engine from that database.
+    /// Whether the persisted canonical database crossed the target, making it safe to drive or
+    /// rebuild the proof engine from that database.
     canonical_update_persisted: bool,
+    /// Latest proof identity used to detect catch-up progress while readiness remains gated.
+    proof_latest: BlockNumHash,
+    /// Highest block persisted by the canonical main database in the reconciliation snapshot.
+    canonical_best: u64,
+    /// Whether the committed proof endpoint still belongs to the live in-memory canonical chain.
+    proof_latest_current: bool,
 }
 
 /// Returns whether proof storage and persisted canonical state both crossed a routed update.
 fn canonical_update_barrier_persisted(
     proof_latest: BlockNumHash,
+    canonical_best: u64,
     canonical_first_removed_hash: Option<B256>,
+    canonical_target_hash: Option<B256>,
+    canonical_snapshot_current: bool,
     barrier: CanonicalUpdateBarrier,
     action: ProofHistoryStartupAction,
 ) -> bool {
     let proof_reached_exact_target = proof_latest.number > barrier.target.number ||
         (proof_latest.number == barrier.target.number &&
             proof_latest.hash == barrier.target.hash);
-    // A later same-height reorg may supersede the routed target before either store commits it.
-    // `Ready` proves the stored endpoint matches that persisted successor, so it also satisfies
-    // the original barrier once the displaced old branch is gone.
-    let proof_reached_canonical_successor =
-        proof_latest.number >= barrier.target.number && action == ProofHistoryStartupAction::Ready;
-    (proof_reached_exact_target || proof_reached_canonical_successor) &&
-        canonical_update_persisted(canonical_first_removed_hash, barrier)
+    // A later reorg may supersede the routed target with a shorter branch. `Ready` and equality
+    // with the persisted head prove the endpoint is canonical, while the replacement-start bound
+    // rejects a transient common ancestor observed during the main-database unwind.
+    let proof_reached_canonical_successor = action == ProofHistoryStartupAction::Ready &&
+        proof_latest.number == canonical_best &&
+        barrier
+            .first_removed
+            .is_none_or(|first_removed| proof_latest.number >= first_removed.number);
+    canonical_snapshot_current &&
+        (proof_reached_exact_target || proof_reached_canonical_successor) &&
+        canonical_update_persisted(
+            canonical_best,
+            canonical_first_removed_hash,
+            canonical_target_hash,
+            barrier,
+        )
 }
 
-/// Returns whether the persisted canonical database no longer contains the displaced branch.
+/// Returns whether the persisted canonical database crossed the routed or recovered target.
 fn canonical_update_persisted(
+    canonical_best: u64,
     canonical_first_removed_hash: Option<B256>,
+    canonical_target_hash: Option<B256>,
     barrier: CanonicalUpdateBarrier,
 ) -> bool {
-    canonical_first_removed_hash != Some(barrier.first_removed.hash)
+    match barrier.first_removed {
+        Some(first_removed) if canonical_best < first_removed.number => {
+            barrier.target.number < first_removed.number && canonical_best == barrier.target.number
+        }
+        Some(first_removed) => canonical_first_removed_hash != Some(first_removed.hash),
+        None => canonical_target_hash == Some(barrier.target.hash),
+    }
 }
 
 /// Whether routing one notification requires a persisted-state reconciliation pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NotificationHandlingOutcome {
-    /// The notification needs no persisted-state barrier before another event is consumed.
-    Complete,
+    /// A commit was routed and may replace an older pending reorg barrier with its exact tip.
+    CommitRouted {
+        /// Canonical commit tip handled by the engine.
+        target: BlockNumHash,
+    },
+    /// An ordinary extension arrived behind a finite barrier and will be covered by later
+    /// persisted-head catch-up.
+    CommitDeferred,
     /// A reorg or revert was routed and must be checked against persisted canonical state.
     ReconcilePersistedState(
         /// Exact replacement target and displaced-branch identity for the persistence check.
@@ -601,39 +840,57 @@ enum NotificationHandlingOutcome {
     ),
 }
 
-/// Whether canonical notifications may be consumed while both reorg persistence paths catch up.
+/// Persisted reconciliation state for routed canonical updates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ReconciliationState {
     /// Persisted state is reconciled, so the notification receiver may advance.
     #[default]
     Reconciled,
-    /// At least one persisted state trails a routed reorg, so notifications remain buffered.
+    /// At least one persisted state trails a routed reorg, so RPC readiness remains gated while
+    /// superseding reorgs continue to be consumed.
     Pending {
-        /// Routed update that must cross both storage engines before consumption resumes.
+        /// Latest routed or recovered target that both storage engines must cross before RPCs
+        /// open.
         barrier: CanonicalUpdateBarrier,
-        /// Remaining bounded grace after catch-up was requested; `None` means no safe request yet.
-        sync_grace_polls: Option<u8>,
+        /// Committed proof and persisted-target progress after catch-up was requested.
+        sync_progress: Option<PendingSyncProgress>,
     },
 }
 
 impl ReconciliationState {
-    /// Converts one reconciliation attempt into the receiver-consumption state for the next loop.
+    /// Selects whether a delayed engine installation may expose RPC readiness immediately.
+    const fn install_readiness(self) -> EngineInstallReadiness {
+        match self {
+            Self::Reconciled => EngineInstallReadiness::Ready,
+            Self::Pending { .. } => EngineInstallReadiness::Gated,
+        }
+    }
+
+    /// Converts one reconciliation attempt into the readiness-barrier state for the next loop.
     const fn after(outcome: ReconciliationOutcome, barrier: CanonicalUpdateBarrier) -> Self {
         match outcome {
-            ReconciliationOutcome::WaitingForPersistence { .. } => {
-                Self::Pending { barrier, sync_grace_polls: None }
+            ReconciliationOutcome::WaitingForCanonical |
+            ReconciliationOutcome::WaitingForProof { .. } => {
+                Self::Pending { barrier, sync_progress: None }
             }
-            ReconciliationOutcome::Recovered => Self::Pending {
-                barrier,
-                sync_grace_polls: Some(PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS),
-            },
+            ReconciliationOutcome::Recovered { barrier } => {
+                Self::Pending { barrier, sync_progress: None }
+            }
             ReconciliationOutcome::Ready => Self::Reconciled,
         }
     }
 
-    /// Returns whether the sidecar may consume another canonical notification.
-    const fn should_receive_notifications(self) -> bool {
-        matches!(self, Self::Reconciled)
+    /// Rebases a superseded pure revert onto its recommitted tip without resetting stall
+    /// accounting.
+    const fn after_commit(self, target: BlockNumHash) -> Self {
+        match self {
+            Self::Pending { barrier, sync_progress } if barrier.is_pure_revert() => Self::Pending {
+                barrier: CanonicalUpdateBarrier::target_only(target),
+                sync_progress,
+            },
+            Self::Pending { barrier, sync_progress } => Self::Pending { barrier, sync_progress },
+            Self::Reconciled => Self::Reconciled,
+        }
     }
 }
 
@@ -651,7 +908,7 @@ async fn reconcile_installed_engine<EnsureReady, ReplaceReceiver, Recover, Recov
 ) -> eyre::Result<ReconciliationOutcome>
 where
     EnsureReady: FnOnce() -> eyre::Result<()>,
-    ReplaceReceiver: FnOnce(),
+    ReplaceReceiver: FnOnce() -> eyre::Result<BlockNumHash>,
     Recover: FnOnce() -> RecoverFuture,
     RecoverFuture: Future<Output = eyre::Result<()>>,
 {
@@ -662,25 +919,42 @@ where
         ));
     }
 
-    if !reconciliation.update_persisted {
+    if !reconciliation.canonical_update_persisted {
         readiness.set_not_ready();
         warn!(
             target: "reth::taiko::proof_history",
-            "proof engine or persisted canonical state has not crossed the routed update; buffering notifications until both commits complete"
+            "persisted canonical state has not crossed the routed update on the current in-memory chain; retaining the proof-history readiness barrier"
         );
-        return Ok(ReconciliationOutcome::WaitingForPersistence {
-            canonical_update_persisted: reconciliation.canonical_update_persisted,
-        })
+        return Ok(ReconciliationOutcome::WaitingForCanonical)
     }
 
     match reconciliation.action {
         ProofHistoryStartupAction::Uninitialized => {
             unreachable!("uninitialized installed reconciliation returned above")
         }
-        ProofHistoryStartupAction::Ready => {
+        ProofHistoryStartupAction::Ready if reconciliation.update_persisted => {
             ensure_ready().inspect_err(|_| readiness.set_not_ready())?;
             readiness.set_ready();
             Ok(ReconciliationOutcome::Ready)
+        }
+        ProofHistoryStartupAction::Ready => {
+            readiness.set_not_ready();
+            Ok(ReconciliationOutcome::WaitingForProof {
+                proof_latest: reconciliation.proof_latest,
+                canonical_best: reconciliation.canonical_best,
+            })
+        }
+        ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best }
+            if reconciliation.proof_latest_current =>
+        {
+            readiness.set_not_ready();
+            warn!(
+                target: "reth::taiko::proof_history",
+                latest,
+                canonical_best,
+                "proof-history storage is ahead on the live canonical chain; waiting for main-database persistence"
+            );
+            Ok(ReconciliationOutcome::WaitingForCanonical)
         }
         ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
             readiness.set_not_ready();
@@ -688,11 +962,10 @@ where
                 target: "reth::taiko::proof_history",
                 latest,
                 canonical_best,
-                "persisted canonical state is behind a routed proof-history reorg; buffering notifications until it catches up"
+                "proof-history storage is ahead on a superseded branch; replacing the generation from persisted canonical state"
             );
-            Ok(ReconciliationOutcome::WaitingForPersistence {
-                canonical_update_persisted: reconciliation.canonical_update_persisted,
-            })
+            let barrier = recover_pending_generation(readiness, replace_receiver, recover).await?;
+            Ok(ReconciliationOutcome::Recovered { barrier })
         }
         ProofHistoryStartupAction::Unwind { first_removed } => {
             readiness.set_not_ready();
@@ -702,8 +975,8 @@ where
                 retained_parent = ?first_removed.parent,
                 "persisted canonical state caught up on a conflicting branch; replacing the proof-history engine generation"
             );
-            recover_pending_generation(readiness, replace_receiver, recover).await?;
-            Ok(ReconciliationOutcome::Recovered)
+            let barrier = recover_pending_generation(readiness, replace_receiver, recover).await?;
+            Ok(ReconciliationOutcome::Recovered { barrier })
         }
     }
 }
@@ -1079,6 +1352,67 @@ where
     Ok(())
 }
 
+/// Routes a commit that supersedes an acknowledged pure revert while persistence is gated.
+///
+/// The revert leaves the engine at `barrier.target`, so exact notification blocks can extend it
+/// without consulting a stale persisted canonical snapshot. Ordinary extensions behind reorg or
+/// recovery barriers are deferred instead, keeping readiness tied to a finite target while the
+/// persisted-head poll catches them up later.
+fn route_pending_chain_commit<Primitives, Engine>(
+    new: &Chain<Primitives>,
+    barrier: CanonicalUpdateBarrier,
+    verification_interval: u64,
+    engine: &Engine,
+    readiness: &ProofHistoryReadiness,
+) -> eyre::Result<BlockNumHash>
+where
+    Primitives: NodePrimitives,
+    Engine: ProofHistoryEngine<Primitives::Block> + ?Sized,
+{
+    readiness.set_not_ready();
+    if new.is_empty() {
+        return Err(eyre!("canonical commit notification contains no blocks"));
+    }
+    if !barrier.is_pure_revert() {
+        return Err(eyre!("pending canonical commit replay requires a pure-revert barrier"));
+    }
+
+    let target = BlockNumHash::new(new.tip().number(), new.tip().hash());
+    if target.number < barrier.target.number {
+        return Err(eyre!(
+            "pending canonical commit tip {} precedes routed target {}",
+            target.number,
+            barrier.target.number,
+        ));
+    }
+    if target.number == barrier.target.number {
+        if target != barrier.target {
+            return Err(eyre!(
+                "pending canonical commit changes routed target {} from hash {:?} to {:?}",
+                target.number,
+                barrier.target.hash,
+                target.hash,
+            ));
+        }
+        return Ok(target)
+    }
+
+    if !committed_chain_is_contiguous(new.first().number(), barrier.target.number) ||
+        !commit_notification_covers_suffix(new, barrier.target)?
+    {
+        return Err(eyre!(
+            "pending canonical commit does not carry a complete suffix above routed target {}",
+            barrier.target.number,
+        ));
+    }
+
+    for block_number in barrier.target.number.saturating_add(1)..=target.number {
+        process_notification_block(block_number, new, verification_interval, engine)?;
+    }
+
+    Ok(target)
+}
+
 /// Validates that a replacement chain describes one contiguous branch from the same fork as the
 /// removed chain.
 ///
@@ -1383,8 +1717,9 @@ where
     ) -> eyre::Result<()> {
         let mut notifications = self.provider.subscribe_to_canonical_state();
         let mut reconciliation_state = ReconciliationState::default();
+        let mut last_persisted_sync_target = None;
         let mut pruner_spawned = false;
-        if self.try_start(engine).await? {
+        if self.try_start(engine, EngineInstallReadiness::Ready).await? {
             spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
         }
 
@@ -1401,100 +1736,178 @@ where
 
         loop {
             tokio::select! {
-                notification = notifications.recv(), if reconciliation_state.should_receive_notifications() => {
+                notification = notifications.recv() => {
                     let notification = match notification {
                         Ok(notification) => notification,
                         Err(broadcast::error::RecvError::Closed) => break,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            self.readiness.set_not_ready();
                             warn!(
                                 target: "reth::taiko::proof_history",
                                 skipped,
                                 "proof-history sidecar lagged canonical notifications; replacing its engine generation"
                             );
-                            recover_after_lagged_receiver(
-                                || {
-                                    // Replace first so commits published during recovery buffer in
-                                    // the fresh receiver rather than extending the incomplete stream.
-                                    notifications = self.provider.subscribe_to_canonical_state();
-                                },
-                                || self.recover_from_lag(engine),
-                            ).await?;
+                            // Subscribe first, then capture the current live target. Any update
+                            // published after that snapshot remains buffered on the fresh receiver.
+                            notifications = self.provider.subscribe_to_canonical_state();
+                            last_persisted_sync_target = None;
+                            let live_target: BlockNumHash = self.provider.chain_info()?.into();
+                            if engine.is_none() {
+                                reconciliation_state = ReconciliationState::Pending {
+                                    barrier: CanonicalUpdateBarrier::target_only(live_target),
+                                    sync_progress: None,
+                                };
+                                continue;
+                            }
+                            self.recover_pending_generation(engine).await?;
+                            reconciliation_state = ReconciliationState::Pending {
+                                barrier: CanonicalUpdateBarrier::target_only(live_target),
+                                sync_progress: None,
+                            };
                             spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
                             head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
                             continue;
                         }
                     };
 
-                    if engine.is_none() && self.try_start(engine).await? {
-                        spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
-                        head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                    let pending_barrier = match reconciliation_state {
+                        ReconciliationState::Pending { barrier, .. } => Some(barrier),
+                        ReconciliationState::Reconciled => None,
+                    };
+                    let was_pending = pending_barrier.is_some();
+
+                    if engine.is_none() {
+                        let install_readiness = reconciliation_state.install_readiness();
+                        if self.try_start(engine, install_readiness).await? {
+                            last_persisted_sync_target = None;
+                            spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
+                            head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                        } else if was_pending {
+                            reconciliation_state = ReconciliationState::Pending {
+                                barrier: CanonicalUpdateBarrier::target_only(
+                                    self.provider.chain_info()?.into(),
+                                ),
+                                sync_progress: None,
+                            };
+                        }
                     }
                     let Some(installed_engine) = engine.as_deref_mut() else { continue };
-                    let handling = self.handle_notification(notification, installed_engine).await?;
-                    if let NotificationHandlingOutcome::ReconcilePersistedState(barrier) = handling {
-                        let outcome = self.reconcile_installed_generation(
-                            barrier,
-                            || {
-                                // A conflicting persisted branch invalidates the buffered stream.
-                                // Replace it before dropping the old engine and opening the live
-                                // reconciliation snapshot.
-                                notifications = self.provider.subscribe_to_canonical_state();
-                            },
-                            || self.recover_from_lag(engine),
-                        ).await?;
-                        reconciliation_state = ReconciliationState::after(outcome, barrier);
-                        match outcome {
-                            ReconciliationOutcome::WaitingForPersistence { .. } => {
-                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                    let handling = self
+                        .handle_notification(notification, pending_barrier, installed_engine)
+                        .await?;
+                    match handling {
+                        NotificationHandlingOutcome::CommitRouted { target } if was_pending => {
+                            reconciliation_state = reconciliation_state.after_commit(target);
+                        }
+                        NotificationHandlingOutcome::CommitRouted { .. } => {}
+                        NotificationHandlingOutcome::CommitDeferred => {}
+                        NotificationHandlingOutcome::ReconcilePersistedState(barrier)
+                            if was_pending =>
+                        {
+                            let current = pending_barrier
+                                .expect("pending handling captured an existing reconciliation barrier");
+                            let live_info = self.provider.chain_info()?;
+                            let current_target_is_canonical = current.first_removed.is_none() &&
+                                current.target.number <= live_info.best_number &&
+                                self.provider.block_hash(current.target.number)? ==
+                                    Some(current.target.hash);
+                            let barrier = pending_reorg_barrier(
+                                current,
+                                barrier,
+                                current_target_is_canonical,
+                            );
+                            // Reorg/unwind actions are acknowledged by the upstream engine. Keep
+                            // a post-subscribe target when it already covers this queued event;
+                            // otherwise keep the newest barrier gated while draining successors.
+                            reconciliation_state = ReconciliationState::Pending {
+                                barrier,
+                                sync_progress: None,
+                            };
+                            last_persisted_sync_target = None;
+                            head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                        }
+                        NotificationHandlingOutcome::ReconcilePersistedState(barrier) => {
+                            last_persisted_sync_target = None;
+                            let outcome = self
+                                .reconcile_installed_generation(
+                                    barrier,
+                                    || {
+                                        // Subscribe before capturing the live target. Any update
+                                        // missed since the reconciliation snapshot is represented
+                                        // by the replacement target, while later ones stay queued.
+                                        notifications =
+                                            self.provider.subscribe_to_canonical_state();
+                                        Ok(self.provider.chain_info()?.into())
+                                    },
+                                    || self.recover_pending_generation(engine),
+                                )
+                                .await?;
+                            reconciliation_state = ReconciliationState::after(outcome, barrier);
+                            match outcome {
+                                ReconciliationOutcome::WaitingForCanonical |
+                                ReconciliationOutcome::WaitingForProof { .. } => {
+                                    head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                                }
+                                ReconciliationOutcome::Recovered { .. } => {
+                                    self.readiness.set_not_ready();
+                                    spawn_pruner_once(
+                                        &mut pruner_spawned,
+                                        || self.spawn_pruner_task(),
+                                    );
+                                    head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                                }
+                                ReconciliationOutcome::Ready => {}
                             }
-                            ReconciliationOutcome::Recovered => {
-                                self.readiness.set_not_ready();
-                                spawn_pruner_once(
-                                    &mut pruner_spawned,
-                                    || self.spawn_pruner_task(),
-                                );
-                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
-                            }
-                            ReconciliationOutcome::Ready => {}
                         }
                     }
                 }
                 _ = &mut *shutdown => break,
                 _ = retry_interval.tick(), if engine.is_none() => {
-                    if self.try_start(engine).await? {
+                    let install_readiness = reconciliation_state.install_readiness();
+                    if self.try_start(engine, install_readiness).await? {
+                        last_persisted_sync_target = None;
                         spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
                         head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
                     }
                 }
                 _ = head_poll.tick(), if engine.is_some() => {
-                    if let ReconciliationState::Pending { barrier, sync_grace_polls } = reconciliation_state {
+                    if let ReconciliationState::Pending { barrier, sync_progress } = reconciliation_state {
                         let outcome = self.reconcile_installed_generation(
                             barrier,
                             || {
                                 // Replace first so notifications published during live recovery
                                 // accumulate on the fresh receiver.
                                 notifications = self.provider.subscribe_to_canonical_state();
+                                Ok(self.provider.chain_info()?.into())
                             },
-                            || self.recover_from_lag(engine),
+                            || self.recover_pending_generation(engine),
                         ).await?;
-                        match pending_reconciliation_progress(outcome, sync_grace_polls) {
+                        match pending_reconciliation_progress(outcome, sync_progress) {
                             PendingReconciliationProgress::WaitForCanonical => {
-                                reconciliation_state =
-                                    ReconciliationState::after(outcome, barrier);
+                                reconciliation_state = ReconciliationState::Pending {
+                                    barrier,
+                                    sync_progress,
+                                };
                                 continue;
                             }
-                            PendingReconciliationProgress::RequestSync => {
+                            PendingReconciliationProgress::RequestSync {
+                                proof_latest,
+                                remaining_stall_polls,
+                            } => {
                                 match sync_engine_to_persisted_head(
                                     engine,
                                     &self.readiness,
                                     || self.persisted_executed_head(),
                                 ).await {
-                                    Ok(()) => {
+                                    Ok(sync_target) => {
+                                        last_persisted_sync_target = Some(sync_target);
                                         reconciliation_state = ReconciliationState::Pending {
                                             barrier,
-                                            sync_grace_polls: Some(
-                                                PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS,
-                                            ),
+                                            sync_progress: Some(PendingSyncProgress {
+                                                proof_latest,
+                                                sync_target,
+                                                remaining_stall_polls,
+                                            }),
                                         };
                                     }
                                     Err(error) if engine.is_some() => {
@@ -1505,29 +1918,29 @@ where
                                         );
                                         reconciliation_state = ReconciliationState::Pending {
                                             barrier,
-                                            sync_grace_polls: None,
+                                            sync_progress,
                                         };
                                     }
                                     Err(error) => {
+                                        last_persisted_sync_target = None;
                                         warn!(
                                             target: "reth::taiko::proof_history",
                                             ?error,
                                             "pending proof-history engine rejected its catch-up request; replacing the receiver and generation"
                                         );
-                                        recover_pending_generation(
+                                        let recovery_barrier = recover_pending_generation(
                                             &self.readiness,
                                             || {
                                                 notifications = self
                                                     .provider
                                                     .subscribe_to_canonical_state();
+                                                Ok(self.provider.chain_info()?.into())
                                             },
-                                            || self.recover_from_lag(engine),
+                                            || self.recover_pending_generation(engine),
                                         ).await?;
                                         reconciliation_state = ReconciliationState::Pending {
-                                            barrier,
-                                            sync_grace_polls: Some(
-                                                PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS,
-                                            ),
+                                            barrier: recovery_barrier,
+                                            sync_progress: None,
                                         };
                                         spawn_pruner_once(
                                             &mut pruner_spawned,
@@ -1540,12 +1953,10 @@ where
                                 }
                                 continue;
                             }
-                            PendingReconciliationProgress::WaitForProof {
-                                remaining_grace_polls,
-                            } => {
+                            PendingReconciliationProgress::WaitForProof { progress } => {
                                 reconciliation_state = ReconciliationState::Pending {
                                     barrier,
-                                    sync_grace_polls: Some(remaining_grace_polls),
+                                    sync_progress: Some(progress),
                                 };
                                 continue;
                             }
@@ -1556,19 +1967,19 @@ where
                                     target_hash = ?barrier.target.hash,
                                     "proof-history engine made no committed progress after canonical catch-up; replacing its receiver and generation"
                                 );
-                                recover_pending_generation(
+                                let recovery_barrier = recover_pending_generation(
                                     &self.readiness,
                                     || {
                                         notifications =
                                             self.provider.subscribe_to_canonical_state();
+                                        Ok(self.provider.chain_info()?.into())
                                     },
-                                    || self.recover_from_lag(engine),
+                                    || self.recover_pending_generation(engine),
                                 ).await?;
+                                last_persisted_sync_target = None;
                                 reconciliation_state = ReconciliationState::Pending {
-                                    barrier,
-                                    sync_grace_polls: Some(
-                                        PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS,
-                                    ),
+                                    barrier: recovery_barrier,
+                                    sync_progress: None,
                                 };
                                 spawn_pruner_once(
                                     &mut pruner_spawned,
@@ -1577,13 +1988,14 @@ where
                                 head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
                                 continue;
                             }
-                            PendingReconciliationProgress::RecoverySyncRequested => {
+                            PendingReconciliationProgress::RecoverySyncRequested {
+                                barrier: recovery_barrier,
+                            } => {
                                 self.readiness.set_not_ready();
+                                last_persisted_sync_target = None;
                                 reconciliation_state = ReconciliationState::Pending {
-                                    barrier,
-                                    sync_grace_polls: Some(
-                                        PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS,
-                                    ),
+                                    barrier: recovery_barrier,
+                                    sync_progress: None,
                                 };
                                 spawn_pruner_once(
                                     &mut pruner_spawned,
@@ -1597,9 +2009,10 @@ where
                             }
                         }
                     }
-                    if let Err(error) = sync_engine_to_persisted_head(
+                    if let Err(error) = sync_engine_to_changed_persisted_head(
                         engine,
                         &self.readiness,
+                        &mut last_persisted_sync_target,
                         || self.persisted_executed_head(),
                     ).await {
                         if engine.is_some() {
@@ -1625,7 +2038,11 @@ where
     }
 
     /// Performs startup reconciliation, then spawns and initially syncs one engine generation.
-    async fn try_start(&self, engine: &mut EngineSlot<Primitives::Block>) -> eyre::Result<bool> {
+    async fn try_start(
+        &self,
+        engine: &mut EngineSlot<Primitives::Block>,
+        install_readiness: EngineInstallReadiness,
+    ) -> eyre::Result<bool> {
         if engine.is_some() {
             return Ok(true);
         }
@@ -1633,27 +2050,29 @@ where
         if !self.prepare_storage_or_wait().await? || !self.reconcile_or_wait().await? {
             return Ok(false);
         }
-        install_engine_generation(
+        install_engine_generation_with_readiness(
             engine,
             &self.readiness,
             || (self.engine_factory)(),
             || self.persisted_executed_head(),
+            install_readiness,
         )
         .await?;
         Ok(true)
     }
 
-    /// Drops a lagged generation, atomically reconciles V2, and installs a fresh generation.
-    async fn recover_from_lag(
+    /// Rebuilds a generation while retaining the routed-update readiness barrier.
+    async fn recover_pending_generation(
         &self,
         engine: &mut EngineSlot<Primitives::Block>,
     ) -> eyre::Result<()> {
-        recover_engine_after_lag(
+        recover_engine_after_lag_with_readiness(
             engine,
             &self.readiness,
             || self.reconcile_live_storage(),
             || (self.engine_factory)(),
             || self.persisted_executed_head(),
+            EngineInstallReadiness::Gated,
         )
         .await
     }
@@ -1666,7 +2085,7 @@ where
         recover: Recover,
     ) -> eyre::Result<ReconciliationOutcome>
     where
-        ReplaceReceiver: FnOnce(),
+        ReplaceReceiver: FnOnce() -> eyre::Result<BlockNumHash>,
         Recover: FnOnce() -> RecoverFuture,
         RecoverFuture: Future<Output = eyre::Result<()>>,
     {
@@ -1695,6 +2114,9 @@ where
                     action: ProofHistoryStartupAction::Uninitialized,
                     update_persisted: false,
                     canonical_update_persisted: false,
+                    proof_latest: BlockNumHash::new(0, B256::ZERO),
+                    canonical_best: 0,
+                    proof_latest_current: false,
                 });
             }
             Err(error) => return Err(error.into()),
@@ -1703,24 +2125,56 @@ where
 
         let canonical = self.provider.database_provider_ro()?;
         let snapshot = proof_history_canonical_snapshot(&canonical, proof_window, storage_path)?;
-        let canonical_first_removed_hash = if barrier.first_removed.number <=
-            snapshot.canonical_best
-        {
-            let header = canonical.sealed_header(barrier.first_removed.number)?.ok_or_else(
-                    || {
+        let canonical_best_hash = canonical
+            .sealed_header(snapshot.canonical_best)?
+            .ok_or_else(|| {
+                eyre!(
+                    "canonical database snapshot has no header for its best block {}",
+                    snapshot.canonical_best
+                )
+            })?
+            .hash();
+        let canonical_first_removed_hash = match barrier.first_removed {
+            Some(first_removed) if first_removed.number <= snapshot.canonical_best => {
+                Some(
+                    canonical
+                        .sealed_header(first_removed.number)?
+                        .ok_or_else(|| {
+                            eyre!(
+                                "canonical database snapshot has no header for routed proof-history old-fork block {} at or below canonical best {}",
+                                first_removed.number,
+                                snapshot.canonical_best,
+                            )
+                        })?
+                        .hash(),
+                )
+            }
+            _ => None,
+        };
+        let canonical_target_hash = if barrier.target.number <= snapshot.canonical_best {
+            Some(
+                canonical
+                    .sealed_header(barrier.target.number)?
+                    .ok_or_else(|| {
                         eyre!(
-                            "canonical database snapshot has no header for routed proof-history old-fork block {} at or below canonical best {}; wipe proof-history storage at {} or use a fresh path and restart initialization",
-                            barrier.first_removed.number,
+                            "canonical database snapshot has no header for routed proof-history target block {} at or below canonical best {}",
+                            barrier.target.number,
                             snapshot.canonical_best,
-                            storage_path.display(),
                         )
-                    },
-                )?;
-            Some(header.hash())
+                    })?
+                    .hash(),
+            )
         } else {
             None
         };
         drop(canonical);
+
+        let live_info = self.provider.chain_info()?;
+        let canonical_snapshot_current = snapshot.canonical_best <= live_info.best_number &&
+            self.provider.block_hash(snapshot.canonical_best)? == Some(canonical_best_hash);
+        let proof_latest_current = proof_window.latest.number <= live_info.best_number &&
+            self.provider.block_hash(proof_window.latest.number)? ==
+                Some(proof_window.latest.hash);
 
         let action = proof_history_startup_action(
             Some(proof_window),
@@ -1730,17 +2184,28 @@ where
             snapshot.first_removed,
             storage_path,
         )?;
-        let canonical_update_persisted =
-            canonical_update_persisted(canonical_first_removed_hash, barrier);
+        let canonical_update_persisted = canonical_snapshot_current &&
+            canonical_update_persisted(
+                snapshot.canonical_best,
+                canonical_first_removed_hash,
+                canonical_target_hash,
+                barrier,
+            );
         Ok(InstalledReconciliation {
             action,
             update_persisted: canonical_update_barrier_persisted(
                 proof_window.latest,
+                snapshot.canonical_best,
                 canonical_first_removed_hash,
+                canonical_target_hash,
+                canonical_snapshot_current,
                 barrier,
                 action,
             ),
             canonical_update_persisted,
+            proof_latest: proof_window.latest,
+            canonical_best: snapshot.canonical_best,
+            proof_latest_current,
         })
     }
 
@@ -1953,12 +2418,43 @@ where
     async fn handle_notification<Engine>(
         &self,
         notification: CanonStateNotification<Primitives>,
+        pending_barrier: Option<CanonicalUpdateBarrier>,
         engine: &mut Engine,
     ) -> eyre::Result<NotificationHandlingOutcome>
     where
         Engine: ProofHistoryEngine<Primitives::Block> + ?Sized,
     {
         prepare_notification_readiness(&notification, &self.readiness);
+        if let CanonStateNotification::Commit { new } = &notification &&
+            let Some(barrier) = pending_barrier
+        {
+            self.readiness.set_not_ready();
+            if new.is_empty() {
+                return Err(eyre!("canonical commit notification contains no blocks"));
+            }
+            match pending_commit_routing(barrier) {
+                PendingCommitRouting::ReplayRevertedSuffix => {
+                    let target = route_pending_chain_commit(
+                        new,
+                        barrier,
+                        self.config.verification_interval,
+                        engine,
+                        &self.readiness,
+                    )?;
+                    return Ok(NotificationHandlingOutcome::CommitRouted { target })
+                }
+                PendingCommitRouting::DeferToPersistedHead => {}
+            }
+
+            debug!(
+                target: "reth::taiko::proof_history",
+                commit_tip = new.tip().number(),
+                barrier_target = barrier.target.number,
+                "deferring canonical extension behind a finite proof-history persistence barrier"
+            );
+            return Ok(NotificationHandlingOutcome::CommitDeferred)
+        }
+
         let (
             earliest_stored,
             latest_stored,
@@ -2012,7 +2508,9 @@ where
                     engine,
                     &self.readiness,
                 )?;
-                NotificationHandlingOutcome::Complete
+                NotificationHandlingOutcome::CommitRouted {
+                    target: BlockNumHash::new(new.tip().number(), new.tip().hash()),
+                }
             }
             // A reorg that replaces the old blocks with nothing is a plain revert.
             CanonStateNotification::Reorg { old, new } if new.is_empty() => {
@@ -2023,7 +2521,7 @@ where
                         first_old.number().saturating_sub(1),
                         first_old.parent_hash(),
                     ),
-                    first_removed: BlockNumHash::new(first_old.number(), first_old.hash()),
+                    first_removed: Some(BlockNumHash::new(first_old.number(), first_old.hash())),
                 })
             }
             CanonStateNotification::Reorg { old, new } => {
@@ -2042,7 +2540,10 @@ where
                 )?;
                 NotificationHandlingOutcome::ReconcilePersistedState(CanonicalUpdateBarrier {
                     target: BlockNumHash::new(new.tip().number(), new.tip().hash()),
-                    first_removed: BlockNumHash::new(old.first().number(), old.first().hash()),
+                    first_removed: Some(BlockNumHash::new(
+                        old.first().number(),
+                        old.first().hash(),
+                    )),
                 })
             }
         };
@@ -2054,18 +2555,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CanonicalUpdateBarrier, CommitRoutingSnapshot, EngineSlot, InstalledReconciliation,
-        PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS, PendingReconciliationProgress,
-        ProofHistoryCanonicalSnapshot, ProofHistoryLiveAction, ProofHistoryStartupAction,
-        ReconciliationOutcome, ReconciliationState, ReorgRoutingSnapshot,
-        canonical_update_barrier_persisted, committed_chain_is_contiguous,
-        ensure_canonical_update_above_earliest, install_engine_generation,
-        pending_reconciliation_progress, prepare_notification_readiness, proof_history_live_action,
+        CanonicalUpdateBarrier, CommitRoutingSnapshot, EngineInstallReadiness, EngineSlot,
+        InstalledReconciliation, PROOF_HISTORY_PENDING_STALL_POLLS, PendingCommitRouting,
+        PendingReconciliationProgress, PendingSyncProgress, ProofHistoryCanonicalSnapshot,
+        ProofHistoryLiveAction, ProofHistoryStartupAction, ReconciliationOutcome,
+        ReconciliationState, ReorgRoutingSnapshot, canonical_update_barrier_persisted,
+        committed_chain_is_contiguous, ensure_canonical_update_above_earliest,
+        install_engine_generation, pending_commit_routing, pending_reconciliation_progress,
+        pending_reorg_barrier, prepare_notification_readiness, proof_history_live_action,
         proof_history_startup_action, proof_history_startup_reconciliation,
         read_notification_routing_snapshot, reconcile_installed_engine,
-        reconcile_live_storage_atomic, recover_after_lagged_receiver, recover_engine_after_lag,
-        recover_pending_generation, route_chain_commit, route_chain_reorg, route_chain_revert,
-        shutdown_engine, spawn_pruner_once, sync_engine_to_persisted_head,
+        reconcile_live_storage_atomic, recover_engine_after_lag,
+        recover_engine_after_lag_with_readiness, recover_pending_generation, route_chain_commit,
+        route_chain_reorg, route_chain_revert, route_pending_chain_commit, shutdown_engine,
+        spawn_pruner_once, sync_engine_to_changed_persisted_head, sync_engine_to_persisted_head,
     };
     use crate::proof_history::engine::{ProofHistoryEngine, ReorgBlockUpdates};
     use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -2273,7 +2776,37 @@ mod tests {
     fn reconciliation_barrier() -> CanonicalUpdateBarrier {
         CanonicalUpdateBarrier {
             target: BlockNumHash::new(25, hash(25)),
-            first_removed: BlockNumHash::new(21, hash(21)),
+            first_removed: Some(BlockNumHash::new(21, hash(21))),
+        }
+    }
+
+    fn installed_reconciliation_fixture(
+        action: ProofHistoryStartupAction,
+        update_persisted: bool,
+        canonical_update_persisted: bool,
+        proof_latest: BlockNumHash,
+        canonical_best: u64,
+        proof_latest_current: bool,
+    ) -> InstalledReconciliation {
+        InstalledReconciliation {
+            action,
+            update_persisted,
+            canonical_update_persisted,
+            proof_latest,
+            canonical_best,
+            proof_latest_current,
+        }
+    }
+
+    fn waiting_outcome(
+        canonical_update_persisted: bool,
+        proof_latest: BlockNumHash,
+        canonical_best: u64,
+    ) -> ReconciliationOutcome {
+        if canonical_update_persisted {
+            ReconciliationOutcome::WaitingForProof { proof_latest, canonical_best }
+        } else {
+            ReconciliationOutcome::WaitingForCanonical
         }
     }
 
@@ -2491,145 +3024,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lag_recovery_orders_receiver_replacement_before_generation_rebuild() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let mut engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
-        let readiness = ready_flag();
-
-        recover_after_lagged_receiver(
-            {
-                let events = events.clone();
-                move || {
-                    events
-                        .lock()
-                        .expect("lifecycle event lock is available")
-                        .push(LifecycleEvent::ReceiverReplaced);
-                }
-            },
-            || {
-                recover_engine_after_lag(
-                    &mut engine,
-                    &readiness,
-                    {
-                        let events = events.clone();
-                        move || async move {
-                            events
-                                .lock()
-                                .expect("lifecycle event lock is available")
-                                .push(LifecycleEvent::Reconcile);
-                            Ok(())
-                        }
-                    },
-                    {
-                        let events = events.clone();
-                        move || {
-                            events
-                                .lock()
-                                .expect("lifecycle event lock is available")
-                                .push(LifecycleEvent::Spawn(2));
-                            Ok(lifecycle_engine(2, events.clone()))
-                        }
-                    },
-                    {
-                        let events = events.clone();
-                        move || {
-                            events
-                                .lock()
-                                .expect("lifecycle event lock is available")
-                                .push(LifecycleEvent::ReadPersistedHead);
-                            Ok(72)
-                        }
-                    },
-                )
-            },
-        )
-        .await
-        .expect("ordered lag recovery succeeds");
-
-        assert_eq!(
-            *events.lock().expect("lifecycle event lock is available"),
-            vec![
-                LifecycleEvent::ReceiverReplaced,
-                LifecycleEvent::Drop(1),
-                LifecycleEvent::Reconcile,
-                LifecycleEvent::Spawn(2),
-                LifecycleEvent::ReadPersistedHead,
-                LifecycleEvent::Sync(2, 72),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn lagged_receiver_with_empty_slot_still_runs_live_recovery_before_spawn() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let mut engine: EngineSlot<Block> = None;
-        let readiness = ProofHistoryReadiness::new();
-
-        recover_after_lagged_receiver(
-            {
-                let events = events.clone();
-                move || {
-                    events
-                        .lock()
-                        .expect("lifecycle event lock is available")
-                        .push(LifecycleEvent::ReceiverReplaced);
-                }
-            },
-            || {
-                recover_engine_after_lag(
-                    &mut engine,
-                    &readiness,
-                    {
-                        let events = events.clone();
-                        move || async move {
-                            events
-                                .lock()
-                                .expect("lifecycle event lock is available")
-                                .push(LifecycleEvent::Reconcile);
-                            Ok(())
-                        }
-                    },
-                    {
-                        let events = events.clone();
-                        move || {
-                            events
-                                .lock()
-                                .expect("lifecycle event lock is available")
-                                .push(LifecycleEvent::Spawn(1));
-                            Ok(lifecycle_engine(1, events.clone()))
-                        }
-                    },
-                    {
-                        let events = events.clone();
-                        move || {
-                            events
-                                .lock()
-                                .expect("lifecycle event lock is available")
-                                .push(LifecycleEvent::ReadPersistedHead);
-                            Ok(88)
-                        }
-                    },
-                )
-            },
-        )
-        .await
-        .expect("empty-slot lag recovery succeeds");
-
-        assert!(readiness.is_ready());
-        assert!(engine.is_some());
-        assert_eq!(
-            *events.lock().expect("lifecycle event lock is available"),
-            vec![
-                LifecycleEvent::ReceiverReplaced,
-                LifecycleEvent::Reconcile,
-                LifecycleEvent::Spawn(1),
-                LifecycleEvent::ReadPersistedHead,
-                LifecycleEvent::Sync(1, 88),
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn periodic_poll_syncs_to_persisted_executed_head() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
@@ -2645,6 +3039,43 @@ mod tests {
         );
         assert!(readiness.is_ready());
         assert!(engine.is_some());
+    }
+
+    #[tokio::test]
+    async fn stationary_periodic_polls_do_not_reset_upstream_idle_flush() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
+        let readiness = ready_flag();
+        let mut last_requested_target = None;
+
+        assert_eq!(
+            sync_engine_to_changed_persisted_head(
+                &mut engine,
+                &readiness,
+                &mut last_requested_target,
+                || Ok(23),
+            )
+            .await
+            .expect("first persisted-head poll succeeds"),
+            Some(23),
+        );
+        assert_eq!(
+            sync_engine_to_changed_persisted_head(
+                &mut engine,
+                &readiness,
+                &mut last_requested_target,
+                || Ok(23),
+            )
+            .await
+            .expect("stationary persisted-head poll succeeds"),
+            None,
+        );
+
+        assert_eq!(
+            *events.lock().expect("lifecycle event lock is available"),
+            vec![LifecycleEvent::Sync(1, 23)],
+        );
+        assert_eq!(last_requested_target, Some(23));
     }
 
     #[tokio::test]
@@ -2715,7 +3146,7 @@ mod tests {
             .await
             .expect_err("dead pending generation rejects catch-up");
         assert!(error.to_string().contains("injected lifecycle sync failure"));
-        recover_pending_generation(
+        let recovery_barrier = recover_pending_generation(
             &readiness,
             {
                 let events = events.clone();
@@ -2724,10 +3155,11 @@ mod tests {
                         .lock()
                         .expect("lifecycle event lock is available")
                         .push(LifecycleEvent::ReceiverReplaced);
+                    Ok(BlockNumHash::new(110, hash(110)))
                 }
             },
             || {
-                recover_engine_after_lag(
+                recover_engine_after_lag_with_readiness(
                     &mut engine,
                     &readiness,
                     {
@@ -2760,12 +3192,17 @@ mod tests {
                             Ok(110)
                         }
                     },
+                    EngineInstallReadiness::Gated,
                 )
             },
         )
         .await
         .expect("pending generation rebuilds from persisted canonical state");
 
+        assert_eq!(
+            recovery_barrier,
+            CanonicalUpdateBarrier::target_only(BlockNumHash::new(110, hash(110)))
+        );
         assert!(!readiness.is_ready());
         assert!(engine.is_some());
         assert_eq!(
@@ -3389,6 +3826,63 @@ mod tests {
     }
 
     #[test]
+    fn recommit_after_pending_revert_replays_suffix_and_rebases_barrier() {
+        let ancestor = BlockNumHash::new(10, hash(10));
+        let recommitted = linear_chain(11, ancestor.hash, &[11, 12], &[11, 12]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+        let revert_barrier = CanonicalUpdateBarrier {
+            target: ancestor,
+            first_removed: Some(BlockNumHash::new(11, recommitted.first().hash())),
+        };
+
+        let target =
+            route_pending_chain_commit(&recommitted, revert_barrier, 0, &engine, &readiness)
+                .expect("recommit extends the acknowledged revert target");
+
+        assert_eq!(
+            engine.calls(),
+            vec![
+                EngineCall::Index(recommitted.blocks()[&11].block_with_parent()),
+                EngineCall::Index(recommitted.blocks()[&12].block_with_parent()),
+            ],
+        );
+        assert_eq!(
+            CanonicalUpdateBarrier::target_only(target),
+            CanonicalUpdateBarrier {
+                target: BlockNumHash::new(12, recommitted.tip().hash()),
+                first_removed: None,
+            },
+        );
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn commits_already_covered_by_recovery_snapshot_are_deferred() {
+        let captured_live_target =
+            CanonicalUpdateBarrier::target_only(BlockNumHash::new(112, hash(112)));
+        let replacement_reorg = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(110, hash(210)),
+            first_removed: Some(BlockNumHash::new(105, hash(105))),
+        };
+        let pure_revert = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(104, hash(104)),
+            first_removed: Some(BlockNumHash::new(105, hash(105))),
+        };
+
+        assert_eq!(
+            pending_commit_routing(captured_live_target),
+            PendingCommitRouting::DeferToPersistedHead,
+        );
+        assert_eq!(
+            pending_commit_routing(replacement_reorg),
+            PendingCommitRouting::DeferToPersistedHead,
+        );
+        assert_eq!(pending_commit_routing(pure_revert), PendingCommitRouting::ReplayRevertedSuffix,);
+    }
+
+    #[test]
     fn precomputed_reorg_uses_single_engine_reorg() {
         let parent = hash(10);
         let old = linear_chain(11, parent, &[21, 22], &[]);
@@ -3536,13 +4030,17 @@ mod tests {
         let readiness = ready_flag();
         readiness.set_not_ready();
         let reconciliation_observed_not_ready = Cell::new(false);
+        let latest = BlockNumHash::new(25, hash(25));
 
         let outcome = reconcile_installed_engine(
-            InstalledReconciliation {
-                action: ProofHistoryStartupAction::Ready,
-                update_persisted: true,
-                canonical_update_persisted: true,
-            },
+            installed_reconciliation_fixture(
+                ProofHistoryStartupAction::Ready,
+                true,
+                true,
+                latest,
+                latest.number,
+                true,
+            ),
             &readiness,
             || {
                 reconciliation_observed_not_ready.set(!readiness.is_ready());
@@ -3563,13 +4061,17 @@ mod tests {
     async fn reconciliation_failure_leaves_readiness_false() {
         let readiness = ready_flag();
         readiness.set_not_ready();
+        let latest = BlockNumHash::new(25, hash(25));
 
         let _error = reconcile_installed_engine(
-            InstalledReconciliation {
-                action: ProofHistoryStartupAction::Ready,
-                update_persisted: true,
-                canonical_update_persisted: true,
-            },
+            installed_reconciliation_fixture(
+                ProofHistoryStartupAction::Ready,
+                true,
+                true,
+                latest,
+                latest.number,
+                true,
+            ),
             &readiness,
             || Err(eyre::eyre!("injected reconciliation failure")),
             || unreachable!("failed ready reconciliation must not replace the receiver"),
@@ -3582,14 +4084,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ahead_proof_latest_waits_without_error_drop_or_readiness() {
+    async fn ahead_proof_latest_rebuilds_from_current_persisted_canonical_state() {
         let readiness = ready_flag();
         readiness.set_not_ready();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
+        let receiver_replaced = Cell::new(false);
+        let recovered = Cell::new(false);
+        let proof_latest = BlockNumHash::new(25, hash(25));
+        let live_target = BlockNumHash::new(20, hash(20));
+        let recovery_barrier = CanonicalUpdateBarrier::target_only(live_target);
 
         let startup_action = proof_history_startup_action(
-            Some(proof_window((10, 10), (25, 25))),
+            Some(ProofWindowRange {
+                earliest: BlockNumHash::new(10, hash(10)),
+                latest: proof_latest,
+            }),
             20,
             Some(hash(10)),
             None,
@@ -3598,33 +4106,65 @@ mod tests {
         )
         .expect("persisted canonical state behind the proof head must classify as a wait");
         let outcome = reconcile_installed_engine(
-            InstalledReconciliation {
-                action: startup_action,
-                update_persisted: true,
-                canonical_update_persisted: true,
-            },
+            installed_reconciliation_fixture(startup_action, false, true, proof_latest, 20, false),
             &readiness,
             || unreachable!("waiting must not perform ready validation"),
-            || unreachable!("waiting must not replace the receiver"),
-            || async { unreachable!("waiting must not drop or rebuild the engine") },
+            || {
+                receiver_replaced.set(true);
+                Ok(live_target)
+            },
+            || async {
+                recovered.set(true);
+                Ok(())
+            },
         )
         .await
-        .expect("persistence lag is a retryable reconciliation wait");
+        .expect("an ahead proof generation is rebuilt from the current canonical snapshot");
 
         assert!(!readiness.is_ready());
-        assert!(engine.is_some());
-        assert!(events.lock().expect("lifecycle event lock is available").is_empty());
-        assert_eq!(
-            outcome,
-            ReconciliationOutcome::WaitingForPersistence { canonical_update_persisted: true }
-        );
+        assert!(receiver_replaced.get());
+        assert!(recovered.get());
+        assert_eq!(outcome, ReconciliationOutcome::Recovered { barrier: recovery_barrier });
         assert_eq!(
             ReconciliationState::after(outcome, reconciliation_barrier()),
-            ReconciliationState::Pending {
-                barrier: reconciliation_barrier(),
-                sync_grace_polls: None
-            }
+            ReconciliationState::Pending { barrier: recovery_barrier, sync_progress: None }
         );
+    }
+
+    #[tokio::test]
+    async fn live_proof_ahead_of_persisted_database_never_enters_stall_recovery() {
+        let readiness = ready_flag();
+        readiness.set_not_ready();
+        let proof_latest = BlockNumHash::new(25, hash(25));
+
+        let outcome = reconcile_installed_engine(
+            installed_reconciliation_fixture(
+                ProofHistoryStartupAction::WaitForCanonicalLatest {
+                    latest: proof_latest.number,
+                    canonical_best: 20,
+                },
+                false,
+                true,
+                proof_latest,
+                20,
+                true,
+            ),
+            &readiness,
+            || unreachable!("canonical persistence wait must not validate readiness"),
+            || unreachable!("canonical persistence wait must not replace the receiver"),
+            || async { unreachable!("canonical persistence wait must not rebuild the engine") },
+        )
+        .await
+        .expect("a live proof suffix waits for main-database persistence");
+
+        assert_eq!(outcome, ReconciliationOutcome::WaitingForCanonical);
+        let stalled =
+            PendingSyncProgress { proof_latest, sync_target: 20, remaining_stall_polls: 0 };
+        assert_eq!(
+            pending_reconciliation_progress(outcome, Some(stalled)),
+            PendingReconciliationProgress::WaitForCanonical,
+        );
+        assert!(!readiness.is_ready());
     }
 
     #[tokio::test]
@@ -3633,16 +4173,17 @@ mod tests {
         readiness.set_not_ready();
         let events = Arc::new(Mutex::new(Vec::new()));
         let engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
+        let proof_latest = BlockNumHash::new(20, hash(20));
 
         let waiting = reconcile_installed_engine(
-            InstalledReconciliation {
-                action: ProofHistoryStartupAction::WaitForCanonicalLatest {
-                    latest: 25,
-                    canonical_best: 20,
-                },
-                update_persisted: true,
-                canonical_update_persisted: true,
-            },
+            installed_reconciliation_fixture(
+                ProofHistoryStartupAction::Ready,
+                false,
+                true,
+                proof_latest,
+                25,
+                true,
+            ),
             &readiness,
             || unreachable!("waiting must not perform ready validation"),
             || unreachable!("waiting must not replace the receiver"),
@@ -3652,18 +4193,19 @@ mod tests {
         .expect("the first persisted snapshot remains behind");
         assert_eq!(
             ReconciliationState::after(waiting, reconciliation_barrier()),
-            ReconciliationState::Pending {
-                barrier: reconciliation_barrier(),
-                sync_grace_polls: None
-            }
+            ReconciliationState::Pending { barrier: reconciliation_barrier(), sync_progress: None }
         );
 
+        let latest = BlockNumHash::new(25, hash(25));
         let ready = reconcile_installed_engine(
-            InstalledReconciliation {
-                action: ProofHistoryStartupAction::Ready,
-                update_persisted: true,
-                canonical_update_persisted: true,
-            },
+            installed_reconciliation_fixture(
+                ProofHistoryStartupAction::Ready,
+                true,
+                true,
+                latest,
+                latest.number,
+                true,
+            ),
             &readiness,
             || Ok(()),
             || unreachable!("same-branch catch-up must retain the receiver"),
@@ -3683,27 +4225,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transient_common_ancestor_keeps_reorg_notifications_buffered() {
-        use tokio::sync::broadcast::error::TryRecvError;
-
-        let target = BlockNumHash::new(12, hash(0x32));
-        let first_removed = BlockNumHash::new(11, hash(0x21));
-        let barrier = CanonicalUpdateBarrier { target, first_removed };
+    async fn transient_common_ancestor_keeps_reorg_readiness_gated() {
+        let target = BlockNumHash::new(110, hash(0x6e));
+        let first_removed = BlockNumHash::new(105, hash(0x69));
+        let barrier = CanonicalUpdateBarrier { target, first_removed: Some(first_removed) };
         let common_ancestor = BlockNumHash::new(10, hash(0x10));
         let readiness = ready_flag();
         readiness.set_not_ready();
-        let (notifications, mut receiver) = tokio::sync::broadcast::channel(1);
 
-        let first = InstalledReconciliation {
-            action: ProofHistoryStartupAction::Ready,
-            update_persisted: canonical_update_barrier_persisted(
-                common_ancestor,
-                Some(first_removed.hash),
-                barrier,
-                ProofHistoryStartupAction::Ready,
-            ),
-            canonical_update_persisted: false,
-        };
+        let update_persisted = canonical_update_barrier_persisted(
+            common_ancestor,
+            common_ancestor.number,
+            Some(first_removed.hash),
+            None,
+            true,
+            barrier,
+            ProofHistoryStartupAction::Ready,
+        );
+        assert!(!update_persisted);
+        let first = installed_reconciliation_fixture(
+            ProofHistoryStartupAction::Ready,
+            update_persisted,
+            false,
+            common_ancestor,
+            common_ancestor.number,
+            true,
+        );
         let waiting = reconcile_installed_engine(
             first,
             &readiness,
@@ -3714,84 +4261,161 @@ mod tests {
         .await
         .expect("the transient common ancestor is a retryable persistence wait");
         let state = ReconciliationState::after(waiting, barrier);
-        assert_eq!(state, ReconciliationState::Pending { barrier, sync_grace_polls: None });
-        assert!(!state.should_receive_notifications());
+        assert_eq!(state, ReconciliationState::Pending { barrier, sync_progress: None });
+        assert!(matches!(state, ReconciliationState::Pending { .. }));
         assert!(!readiness.is_ready());
+    }
 
-        notifications.send(1_u64).expect("first follow-on notification buffers");
-        notifications.send(2_u64).expect("second follow-on notification buffers");
-
-        let proof_only = InstalledReconciliation {
-            action: ProofHistoryStartupAction::Unwind {
-                first_removed: unwind_marker((10, 0x10), 0x31),
-            },
-            update_persisted: canonical_update_barrier_persisted(
-                target,
-                Some(first_removed.hash),
-                barrier,
-                ProofHistoryStartupAction::Unwind {
-                    first_removed: unwind_marker((10, 0x10), 0x31),
-                },
-            ),
-            canonical_update_persisted: false,
+    #[test]
+    fn shorter_successor_passes_only_above_the_original_replacement_start() {
+        let barrier = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(110, hash(0x6e)),
+            first_removed: Some(BlockNumHash::new(105, hash(0x69))),
         };
-        let still_waiting = reconcile_installed_engine(
-            proof_only,
+        let successor = BlockNumHash::new(108, hash(0x7c));
+        assert!(canonical_update_barrier_persisted(
+            successor,
+            successor.number,
+            Some(hash(0x7a)),
+            None,
+            true,
+            barrier,
+            ProofHistoryStartupAction::Ready,
+        ));
+
+        let transient_ancestor = BlockNumHash::new(104, hash(0x68));
+        assert!(!canonical_update_barrier_persisted(
+            transient_ancestor,
+            transient_ancestor.number,
+            Some(hash(0x7a)),
+            None,
+            true,
+            barrier,
+            ProofHistoryStartupAction::Ready,
+        ));
+
+        let revert_barrier = CanonicalUpdateBarrier {
+            target: transient_ancestor,
+            first_removed: Some(BlockNumHash::new(105, hash(0x7b))),
+        };
+        assert!(canonical_update_barrier_persisted(
+            transient_ancestor,
+            transient_ancestor.number,
+            None,
+            Some(transient_ancestor.hash),
+            true,
+            revert_barrier,
+            ProofHistoryStartupAction::Ready,
+        ));
+    }
+
+    #[test]
+    fn superseding_reorg_routes_before_replacing_the_pending_barrier() {
+        let parent = hash(10);
+        let branch_a = linear_chain(11, parent, &[21, 22], &[11, 12]);
+        let branch_b = linear_chain(11, parent, &[31, 32], &[11, 12]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        route_chain_reorg(
+            &branch_a,
+            &branch_b,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(10, parent),
+                Some(parent),
+                Some(branch_b.tip().hash()),
+            ),
+            0,
+            &engine,
             &readiness,
-            || unreachable!("the old canonical branch cannot pass ready validation"),
-            || unreachable!("the old canonical branch must not replace the receiver"),
-            || async { unreachable!("the old canonical branch must not rebuild the engine") },
         )
-        .await
-        .expect("proof persistence ahead of the canonical database remains retryable");
+        .expect("first reorg is acknowledged");
+        route_chain_reorg(
+            &branch_b,
+            &branch_a,
+            reorg_snapshot(
+                BlockNumHash::new(10, parent),
+                BlockNumHash::new(10, parent),
+                Some(parent),
+                Some(branch_a.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect("superseding reversal is acknowledged");
+
         assert_eq!(
-            ReconciliationState::after(still_waiting, barrier),
-            ReconciliationState::Pending { barrier, sync_grace_polls: None }
+            engine.calls(),
+            vec![
+                EngineCall::Reorg(vec![
+                    branch_b.blocks()[&11].block_with_parent(),
+                    branch_b.blocks()[&12].block_with_parent(),
+                ]),
+                EngineCall::Reorg(vec![
+                    branch_a.blocks()[&11].block_with_parent(),
+                    branch_a.blocks()[&12].block_with_parent(),
+                ]),
+            ]
         );
-        assert!(!readiness.is_ready());
-
-        let second = InstalledReconciliation {
-            action: ProofHistoryStartupAction::Ready,
-            update_persisted: canonical_update_barrier_persisted(
-                target,
-                Some(hash(0x31)),
-                barrier,
-                ProofHistoryStartupAction::Ready,
-            ),
-            canonical_update_persisted: true,
+        let newest = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(12, branch_a.tip().hash()),
+            first_removed: Some(BlockNumHash::new(11, branch_b.first().hash())),
         };
-        let ready = reconcile_installed_engine(
-            second,
-            &readiness,
-            || Ok(()),
-            || unreachable!("the persisted replacement must retain the receiver"),
-            || async { unreachable!("the persisted replacement must retain the engine") },
-        )
-        .await
-        .expect("the exact replacement restores readiness");
-        let state = ReconciliationState::after(ready, barrier);
-        assert_eq!(state, ReconciliationState::Reconciled);
-        assert!(state.should_receive_notifications());
-        assert!(readiness.is_ready());
-        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Lagged(1))));
-        assert_eq!(receiver.try_recv().expect("latest buffered event remains"), 2);
+        assert_eq!(
+            ReconciliationState::Pending { barrier: newest, sync_progress: None },
+            ReconciliationState::after(
+                waiting_outcome(false, BlockNumHash::new(10, parent), 12),
+                newest
+            )
+        );
+    }
+
+    #[test]
+    fn queued_reorg_cannot_downgrade_a_current_recovery_target() {
+        let captured = CanonicalUpdateBarrier::target_only(BlockNumHash::new(105, hash(205)));
+        let queued_reorg = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(95, hash(195)),
+            first_removed: Some(BlockNumHash::new(90, hash(190))),
+        };
+
+        assert_eq!(pending_reorg_barrier(captured, queued_reorg, true), captured);
+        assert_eq!(
+            pending_reorg_barrier(captured, queued_reorg, false),
+            queued_reorg,
+            "a genuine later reorg invalidates the captured recovery target",
+        );
+
+        let later_tip = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(106, hash(206)),
+            first_removed: Some(BlockNumHash::new(100, hash(200))),
+        };
+        assert_eq!(
+            pending_reorg_barrier(captured, later_tip, true),
+            later_tip,
+            "a notification beyond the captured target must remain pending",
+        );
     }
 
     #[tokio::test]
-    async fn conflicting_persistence_catch_up_replaces_receiver_before_live_recovery() {
+    async fn recovery_rebases_barrier_to_deeper_live_revert_after_receiver_swap() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
         let readiness = ready_flag();
         readiness.set_not_ready();
+        let live_target = BlockNumHash::new(20, hash(44));
+        let recovery_barrier = CanonicalUpdateBarrier::target_only(live_target);
 
         let outcome = reconcile_installed_engine(
-            InstalledReconciliation {
-                action: ProofHistoryStartupAction::Unwind {
-                    first_removed: unwind_marker((10, 10), 11),
-                },
-                update_persisted: true,
-                canonical_update_persisted: true,
-            },
+            installed_reconciliation_fixture(
+                ProofHistoryStartupAction::Unwind { first_removed: unwind_marker((10, 10), 11) },
+                false,
+                true,
+                BlockNumHash::new(25, hash(35)),
+                25,
+                false,
+            ),
             &readiness,
             || unreachable!("divergence must not use startup ready validation"),
             {
@@ -3801,10 +4425,11 @@ mod tests {
                         .lock()
                         .expect("lifecycle event lock is available")
                         .push(LifecycleEvent::ReceiverReplaced);
+                    Ok(live_target)
                 }
             },
             || {
-                recover_engine_after_lag(
+                recover_engine_after_lag_with_readiness(
                     &mut engine,
                     &readiness,
                     {
@@ -3837,19 +4462,17 @@ mod tests {
                             Ok(25)
                         }
                     },
+                    EngineInstallReadiness::Gated,
                 )
             },
         )
         .await
         .expect("conflicting catch-up uses live recovery");
 
-        assert_eq!(outcome, ReconciliationOutcome::Recovered);
+        assert_eq!(outcome, ReconciliationOutcome::Recovered { barrier: recovery_barrier });
         assert_eq!(
             ReconciliationState::after(outcome, reconciliation_barrier()),
-            ReconciliationState::Pending {
-                barrier: reconciliation_barrier(),
-                sync_grace_polls: Some(PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS)
-            }
+            ReconciliationState::Pending { barrier: recovery_barrier, sync_progress: None }
         );
         assert!(!readiness.is_ready());
         assert!(engine.is_some());
@@ -3867,45 +4490,82 @@ mod tests {
     }
 
     #[test]
-    fn pending_reconciliation_buffers_notifications_and_exposes_lag_after_resume() {
-        use tokio::sync::broadcast::error::TryRecvError;
-
-        let (notifications, mut receiver) = tokio::sync::broadcast::channel(1);
-        let state = ReconciliationState::Pending {
-            barrier: reconciliation_barrier(),
-            sync_grace_polls: None,
-        };
-        assert!(!state.should_receive_notifications());
-
-        notifications.send(1_u64).expect("first notification buffers");
-        notifications.send(2_u64).expect("second notification buffers");
-        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Lagged(1))));
+    fn pending_reconciliation_remains_gated_while_notifications_are_consumed() {
+        let state =
+            ReconciliationState::Pending { barrier: reconciliation_barrier(), sync_progress: None };
+        assert!(matches!(state, ReconciliationState::Pending { .. }));
+        assert_eq!(state.install_readiness(), EngineInstallReadiness::Gated);
 
         let state = ReconciliationState::Reconciled;
-        assert!(state.should_receive_notifications());
-        assert_eq!(receiver.try_recv().expect("latest buffered notification remains"), 2);
+        assert_eq!(state, ReconciliationState::Reconciled);
+        assert_eq!(state.install_readiness(), EngineInstallReadiness::Ready);
     }
 
     #[test]
-    fn above_tip_reorg_and_revert_drive_bounded_pending_catch_up() {
-        let waiting_for_canonical =
-            ReconciliationOutcome::WaitingForPersistence { canonical_update_persisted: false };
+    fn pending_commit_rebases_without_resetting_stall_budget() {
+        let progress = PendingSyncProgress {
+            proof_latest: BlockNumHash::new(104, hash(104)),
+            sync_target: 110,
+            remaining_stall_polls: 2,
+        };
+        let committed_target = BlockNumHash::new(111, hash(111));
+        let pure_revert_barrier = CanonicalUpdateBarrier {
+            target: BlockNumHash::new(104, hash(104)),
+            first_removed: Some(BlockNumHash::new(105, hash(105))),
+        };
+        let state = ReconciliationState::Pending {
+            barrier: pure_revert_barrier,
+            sync_progress: Some(progress),
+        };
+
+        assert_eq!(
+            state.after_commit(committed_target),
+            ReconciliationState::Pending {
+                barrier: CanonicalUpdateBarrier::target_only(committed_target),
+                sync_progress: Some(progress),
+            },
+        );
+    }
+
+    #[test]
+    fn ordinary_pending_commit_keeps_the_finite_barrier_and_stall_budget() {
+        let barrier = reconciliation_barrier();
+        let progress = PendingSyncProgress {
+            proof_latest: BlockNumHash::new(20, hash(20)),
+            sync_target: 25,
+            remaining_stall_polls: 2,
+        };
+        let state = ReconciliationState::Pending { barrier, sync_progress: Some(progress) };
+
+        assert_eq!(
+            state.after_commit(BlockNumHash::new(26, hash(26))),
+            ReconciliationState::Pending { barrier, sync_progress: Some(progress) },
+        );
+    }
+
+    #[test]
+    fn pending_catch_up_resets_only_on_committed_proof_progress() {
+        let initial_proof = BlockNumHash::new(104, hash(0x68));
+        let waiting_for_canonical = waiting_outcome(false, initial_proof, 104);
         let reorg_barrier = CanonicalUpdateBarrier {
             target: BlockNumHash::new(110, hash(0x6e)),
-            first_removed: BlockNumHash::new(105, hash(0x69)),
+            first_removed: Some(BlockNumHash::new(105, hash(0x69))),
         };
         let revert_barrier = CanonicalUpdateBarrier {
             target: BlockNumHash::new(104, hash(0x68)),
-            first_removed: BlockNumHash::new(105, hash(0x69)),
+            first_removed: Some(BlockNumHash::new(105, hash(0x69))),
         };
         for barrier in [reorg_barrier, revert_barrier] {
             let state = ReconciliationState::after(waiting_for_canonical, barrier);
-            assert_eq!(state, ReconciliationState::Pending { barrier, sync_grace_polls: None });
-            assert!(!state.should_receive_notifications());
+            assert_eq!(state, ReconciliationState::Pending { barrier, sync_progress: None });
+            assert!(matches!(state, ReconciliationState::Pending { .. }));
         }
         assert!(canonical_update_barrier_persisted(
             BlockNumHash::new(reorg_barrier.target.number, hash(0x7e)),
+            reorg_barrier.target.number,
             Some(hash(0x7a)),
+            Some(hash(0x7e)),
+            true,
             reorg_barrier,
             ProofHistoryStartupAction::Ready,
         ));
@@ -3914,31 +4574,94 @@ mod tests {
             PendingReconciliationProgress::WaitForCanonical
         );
 
-        let canonical_caught_up =
-            ReconciliationOutcome::WaitingForPersistence { canonical_update_persisted: true };
+        let canonical_caught_up = waiting_outcome(true, initial_proof, 110);
         assert_eq!(
             pending_reconciliation_progress(canonical_caught_up, None),
-            PendingReconciliationProgress::RequestSync
+            PendingReconciliationProgress::RequestSync {
+                proof_latest: initial_proof,
+                remaining_stall_polls: PROOF_HISTORY_PENDING_STALL_POLLS,
+            }
         );
+        let baseline = PendingSyncProgress::reset(initial_proof, 110);
+        assert_eq!(
+            pending_reconciliation_progress(canonical_caught_up, Some(baseline)),
+            PendingReconciliationProgress::WaitForProof {
+                progress: PendingSyncProgress {
+                    remaining_stall_polls: PROOF_HISTORY_PENDING_STALL_POLLS - 1,
+                    ..baseline
+                },
+            }
+        );
+
+        let advanced_proof = BlockNumHash::new(105, hash(0x75));
         assert_eq!(
             pending_reconciliation_progress(
-                canonical_caught_up,
-                Some(PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS),
+                waiting_outcome(true, advanced_proof, 110),
+                Some(PendingSyncProgress { remaining_stall_polls: 1, ..baseline }),
             ),
             PendingReconciliationProgress::WaitForProof {
-                remaining_grace_polls: PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS - 1,
+                progress: PendingSyncProgress::reset(advanced_proof, 110),
             }
         );
         assert_eq!(
-            pending_reconciliation_progress(canonical_caught_up, Some(0)),
+            pending_reconciliation_progress(
+                waiting_outcome(true, advanced_proof, 111),
+                Some(PendingSyncProgress::reset(advanced_proof, 110)),
+            ),
+            PendingReconciliationProgress::RequestSync {
+                proof_latest: advanced_proof,
+                remaining_stall_polls: PROOF_HISTORY_PENDING_STALL_POLLS - 1,
+            }
+        );
+        assert_eq!(
+            pending_reconciliation_progress(
+                waiting_outcome(true, initial_proof, 110),
+                Some(PendingSyncProgress { remaining_stall_polls: 0, ..baseline }),
+            ),
             PendingReconciliationProgress::Recover
         );
         assert_eq!(
             pending_reconciliation_progress(
-                ReconciliationOutcome::Recovered,
-                Some(PROOF_HISTORY_PENDING_SYNC_GRACE_POLLS),
+                ReconciliationOutcome::Recovered { barrier: reorg_barrier },
+                Some(baseline),
             ),
-            PendingReconciliationProgress::RecoverySyncRequested
+            PendingReconciliationProgress::RecoverySyncRequested { barrier: reorg_barrier }
+        );
+    }
+
+    #[test]
+    fn advancing_canonical_targets_do_not_hide_a_stalled_proof_engine() {
+        let proof_latest = BlockNumHash::new(104, hash(104));
+        let mut progress = PendingSyncProgress::reset(proof_latest, 110);
+
+        for canonical_best in 111..=110 + u64::from(PROOF_HISTORY_PENDING_STALL_POLLS) {
+            let PendingReconciliationProgress::RequestSync {
+                proof_latest: observed_proof,
+                remaining_stall_polls,
+            } = pending_reconciliation_progress(
+                ReconciliationOutcome::WaitingForProof { proof_latest, canonical_best },
+                Some(progress),
+            )
+            else {
+                panic!("a newer canonical target is forwarded until the stall budget expires");
+            };
+            progress = PendingSyncProgress {
+                proof_latest: observed_proof,
+                sync_target: canonical_best,
+                remaining_stall_polls,
+            };
+        }
+
+        assert_eq!(progress.remaining_stall_polls, 0);
+        assert_eq!(
+            pending_reconciliation_progress(
+                ReconciliationOutcome::WaitingForProof {
+                    proof_latest,
+                    canonical_best: progress.sync_target + 1,
+                },
+                Some(progress),
+            ),
+            PendingReconciliationProgress::Recover,
         );
     }
 

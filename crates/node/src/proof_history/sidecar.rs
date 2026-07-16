@@ -320,6 +320,24 @@ where
     install_engine_generation(slot, readiness, spawn_engine, read_persisted_head).await
 }
 
+/// Replaces a lagged notification receiver before rebuilding its engine generation.
+///
+/// Keeping receiver replacement and recovery in one dispatch helper prevents an empty engine slot
+/// from accidentally selecting startup reconciliation, which waits rather than rolling an
+/// unauditable V2 suffix back to its retained anchor.
+async fn recover_after_lagged_receiver<ReplaceReceiver, Recover, RecoverFuture>(
+    replace_receiver: ReplaceReceiver,
+    recover: Recover,
+) -> eyre::Result<()>
+where
+    ReplaceReceiver: FnOnce(),
+    Recover: FnOnce() -> RecoverFuture,
+    RecoverFuture: Future<Output = eyre::Result<()>>,
+{
+    replace_receiver();
+    recover().await
+}
+
 /// Spawns, initially syncs, and then installs one fresh engine generation.
 ///
 /// The generation is kept local and joined on every post-spawn failure, so callers never expose a
@@ -1152,16 +1170,16 @@ where
                                 skipped,
                                 "proof-history sidecar lagged canonical notifications; replacing its engine generation"
                             );
-                            // Replace first so commits published during recovery buffer in the
-                            // fresh receiver rather than extending the known-incomplete stream.
-                            notifications = self.provider.subscribe_to_canonical_state();
-                            if engine.is_some() {
-                                self.recover_from_lag(engine).await?;
-                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
-                            } else if self.try_start(engine).await? {
-                                spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
-                                head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
-                            }
+                            recover_after_lagged_receiver(
+                                || {
+                                    // Replace first so commits published during recovery buffer in
+                                    // the fresh receiver rather than extending the incomplete stream.
+                                    notifications = self.provider.subscribe_to_canonical_state();
+                                },
+                                || self.recover_from_lag(engine),
+                            ).await?;
+                            spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
+                            head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
                             continue;
                         }
                     };
@@ -1551,8 +1569,9 @@ mod tests {
         install_engine_generation, prepare_notification_readiness, proof_history_live_action,
         proof_history_startup_action, proof_history_startup_reconciliation,
         read_notification_routing_snapshot, reconcile_live_storage_atomic,
-        recover_engine_after_lag, route_chain_commit, route_chain_reorg, route_chain_revert,
-        shutdown_engine, spawn_pruner_once, sync_engine_to_persisted_head,
+        recover_after_lagged_receiver, recover_engine_after_lag, route_chain_commit,
+        route_chain_reorg, route_chain_revert, shutdown_engine, spawn_pruner_once,
+        sync_engine_to_persisted_head,
     };
     use crate::proof_history::engine::{ProofHistoryEngine, ReorgBlockUpdates};
     use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -1972,42 +1991,55 @@ mod tests {
 
     #[tokio::test]
     async fn lag_recovery_orders_receiver_replacement_before_generation_rebuild() {
-        let events = Arc::new(Mutex::new(vec![LifecycleEvent::ReceiverReplaced]));
+        let events = Arc::new(Mutex::new(Vec::new()));
         let mut engine: EngineSlot<Block> = Some(lifecycle_engine(1, events.clone()));
         let readiness = ready_flag();
 
-        recover_engine_after_lag(
-            &mut engine,
-            &readiness,
-            {
-                let events = events.clone();
-                move || async move {
-                    events
-                        .lock()
-                        .expect("lifecycle event lock is available")
-                        .push(LifecycleEvent::Reconcile);
-                    Ok(())
-                }
-            },
+        recover_after_lagged_receiver(
             {
                 let events = events.clone();
                 move || {
                     events
                         .lock()
                         .expect("lifecycle event lock is available")
-                        .push(LifecycleEvent::Spawn(2));
-                    Ok(lifecycle_engine(2, events.clone()))
+                        .push(LifecycleEvent::ReceiverReplaced);
                 }
             },
-            {
-                let events = events.clone();
-                move || {
-                    events
-                        .lock()
-                        .expect("lifecycle event lock is available")
-                        .push(LifecycleEvent::ReadPersistedHead);
-                    Ok(72)
-                }
+            || {
+                recover_engine_after_lag(
+                    &mut engine,
+                    &readiness,
+                    {
+                        let events = events.clone();
+                        move || async move {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::Reconcile);
+                            Ok(())
+                        }
+                    },
+                    {
+                        let events = events.clone();
+                        move || {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::Spawn(2));
+                            Ok(lifecycle_engine(2, events.clone()))
+                        }
+                    },
+                    {
+                        let events = events.clone();
+                        move || {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::ReadPersistedHead);
+                            Ok(72)
+                        }
+                    },
+                )
             },
         )
         .await
@@ -2022,6 +2054,76 @@ mod tests {
                 LifecycleEvent::Spawn(2),
                 LifecycleEvent::ReadPersistedHead,
                 LifecycleEvent::Sync(2, 72),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn lagged_receiver_with_empty_slot_still_runs_live_recovery_before_spawn() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut engine: EngineSlot<Block> = None;
+        let readiness = ProofHistoryReadiness::new();
+
+        recover_after_lagged_receiver(
+            {
+                let events = events.clone();
+                move || {
+                    events
+                        .lock()
+                        .expect("lifecycle event lock is available")
+                        .push(LifecycleEvent::ReceiverReplaced);
+                }
+            },
+            || {
+                recover_engine_after_lag(
+                    &mut engine,
+                    &readiness,
+                    {
+                        let events = events.clone();
+                        move || async move {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::Reconcile);
+                            Ok(())
+                        }
+                    },
+                    {
+                        let events = events.clone();
+                        move || {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::Spawn(1));
+                            Ok(lifecycle_engine(1, events.clone()))
+                        }
+                    },
+                    {
+                        let events = events.clone();
+                        move || {
+                            events
+                                .lock()
+                                .expect("lifecycle event lock is available")
+                                .push(LifecycleEvent::ReadPersistedHead);
+                            Ok(88)
+                        }
+                    },
+                )
+            },
+        )
+        .await
+        .expect("empty-slot lag recovery succeeds");
+
+        assert!(readiness.is_ready());
+        assert!(engine.is_some());
+        assert_eq!(
+            *events.lock().expect("lifecycle event lock is available"),
+            vec![
+                LifecycleEvent::ReceiverReplaced,
+                LifecycleEvent::Reconcile,
+                LifecycleEvent::Spawn(1),
+                LifecycleEvent::ReadPersistedHead,
+                LifecycleEvent::Sync(1, 88),
             ]
         );
     }

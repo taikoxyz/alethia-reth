@@ -2,6 +2,7 @@
 
 use alloy_eips::{BlockId, BlockNumHash};
 use alloy_primitives::B256;
+use reth_errors::RethError;
 use reth_optimism_trie::{
     OpProofsStorage, OpProofsStore, ProofWindowRange, api::OpProofsProviderRO,
     provider::OpProofsStateProviderRef,
@@ -10,7 +11,7 @@ use reth_provider::{
     BlockHashReader, BlockNumReader, BlockReaderIdExt, ProviderError, ProviderResult,
     StateProvider, StateProviderBox, StateProviderFactory,
 };
-use reth_rpc_eth_api::helpers::FullEthApi;
+use reth_rpc_eth_api::helpers::{FullEthApi, SpawnBlocking};
 use reth_rpc_eth_types::EthApiError;
 use std::{
     fmt,
@@ -87,6 +88,33 @@ struct ProofHistoryDeepHistoryError {
 #[derive(Debug, thiserror::Error)]
 #[error("canonical state changed; retry")]
 struct CanonicalStateChangedError;
+
+/// Runs proof or witness work on Reth's blocking-I/O runtime under its shared proof permit pool.
+///
+/// The owned permit is transferred into the detached blocking closure. Cancelling the awaiting RPC
+/// future therefore cannot release capacity before its synchronous work actually exits. Permit
+/// acquisition failures use Reth's standard internal RPC error mapping.
+pub(crate) async fn run_proof_task<Eth, Task, Output>(
+    eth_api: &Eth,
+    task: Task,
+) -> Result<Output, Eth::Error>
+where
+    Eth: SpawnBlocking,
+    Task: FnOnce() -> Result<Output, Eth::Error> + Send + 'static,
+    Output: Send + 'static,
+{
+    let permit = eth_api
+        .acquire_owned_tracing()
+        .await
+        .map_err(RethError::other)
+        .map_err(EthApiError::Internal)?;
+    eth_api
+        .spawn_blocking_io(move |_| {
+            let _permit = permit;
+            task()
+        })
+        .await
+}
 
 /// State resolved for the exact block identity requested by an RPC method.
 pub(crate) enum ResolvedBlockState {
@@ -372,17 +400,6 @@ where
     })
 }
 
-/// Flattens a `spawn_blocking` join result, preserving panics and surfacing join failures.
-pub(crate) fn flatten_blocking_task<T>(
-    result: Result<Result<T, EthApiError>, tokio::task::JoinError>,
-) -> Result<T, EthApiError> {
-    match result {
-        Ok(inner) => inner,
-        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-        Err(error) => Err(EthApiError::EvmCustom(format!("blocking task failed to join: {error}"))),
-    }
-}
-
 /// Returns whether proof-history storage can serve `block_number` given its retained bounds.
 ///
 /// `bounds` is `Some((earliest, latest))` when storage is initialized, `None` when it is empty.
@@ -428,6 +445,11 @@ impl<Eth, Storage> ProofHistoryStateProviderFactory<Eth, Storage> {
         readiness: ProofHistoryReadiness,
     ) -> Self {
         Self { eth_api, storage, readiness }
+    }
+
+    /// Returns the Ethereum RPC API whose execution limits govern proof-history work.
+    pub(crate) const fn eth_api(&self) -> &Eth {
+        &self.eth_api
     }
 }
 
@@ -500,7 +522,7 @@ mod tests {
     use super::{
         ProofHistoryReadiness, ProofStateProvider, ResolvedBlockState, proof_history_covers,
         proof_history_fallback_allowed, proof_history_miss_is_pruned, resolve_block_state_with,
-        resolve_exact_canonical_state_with, select_canonical_state_with,
+        resolve_exact_canonical_state_with, run_proof_task, select_canonical_state_with,
         select_resolved_state_with,
     };
     use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag, eip1898::BlockWithParent};
@@ -512,10 +534,15 @@ mod tests {
     use reth_provider::{
         ProviderError, ProviderResult, StateProviderBox, test_utils::MockEthProvider,
     };
+    use reth_rpc::EthApiBuilder;
+    use reth_rpc_eth_api::helpers::SpawnBlocking;
+    use reth_transaction_pool::test_utils::testing_pool;
     use std::{
         cell::{Cell, RefCell},
-        sync::Arc,
+        sync::{Arc, mpsc},
+        time::Duration,
     };
+    use tokio::{sync::oneshot, time::timeout};
 
     fn test_state() -> StateProviderBox {
         Box::new(MockEthProvider::default())
@@ -527,6 +554,51 @@ mod tests {
 
     fn canonical_hashes(blocks: &[BlockNumHash]) -> HashMap<u64, B256> {
         blocks.iter().map(|block| (block.number, block.hash)).collect()
+    }
+
+    #[tokio::test]
+    async fn aborted_caller_keeps_reth_permit_until_blocking_work_finishes() {
+        use reth::{chainspec::ChainSpecProvider, network::noop::NoopNetwork};
+        use reth_evm_ethereum::EthEvmConfig;
+
+        let provider = MockEthProvider::default();
+        let eth_api = EthApiBuilder::new(
+            provider.clone(),
+            testing_pool(),
+            NoopNetwork::default(),
+            EthEvmConfig::new(provider.chain_spec()),
+        )
+        .proof_permits(1)
+        .build();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_api = eth_api.clone();
+        let first = tokio::spawn(async move {
+            run_proof_task(&first_api, move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Ok(())
+            })
+            .await
+        });
+        timeout(Duration::from_secs(5), started_rx)
+            .await
+            .expect("blocking proof task must start")
+            .expect("blocking proof task must signal its start");
+
+        first.abort();
+        let _ = first.await;
+        assert!(
+            timeout(Duration::from_millis(100), eth_api.acquire_owned_tracing()).await.is_err(),
+            "aborting the caller must not release the detached task's permit"
+        );
+
+        release_tx.send(()).expect("release the detached blocking task");
+        let _second_permit = timeout(Duration::from_secs(5), eth_api.acquire_owned_tracing())
+            .await
+            .expect("permit must become available after blocking work exits")
+            .expect("Reth proof permit pool remains open");
     }
 
     #[test]

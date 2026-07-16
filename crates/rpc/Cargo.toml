@@ -43,6 +43,7 @@ reth-db = { workspace = true }
 reth-db-api = { workspace = true }
 reth-engine-primitives = { workspace = true }
 reth-engine-tree = { workspace = true }
+reth-errors = { workspace = true }
 reth-ethereum = { workspace = true }
 reth-ethereum-engine-primitives = { workspace = true }
 reth-ethereum-primitives = { workspace = true }
@@ -71,4 +72,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 tempfile = { workspace = true }

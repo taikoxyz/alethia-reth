@@ -511,6 +511,17 @@ where
     Ok(true)
 }
 
+/// Committed proof identity and canonical hashes captured before routing one commit notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommitRoutingSnapshot {
+    /// Latest committed proof block that a current commit may extend.
+    committed_latest: BlockNumHash,
+    /// Canonical hash at the committed latest height from one pinned main-database snapshot.
+    canonical_latest_hash: Option<B256>,
+    /// Canonical hash at the notification tip height from the same pinned snapshot.
+    canonical_commit_tip_hash: Option<B256>,
+}
+
 /// Routes a commit notification, processing only the suffix not already present in committed
 /// proof-history storage.
 ///
@@ -518,7 +529,7 @@ where
 /// RPC callers never observe a sidecar that knows notification processing failed.
 fn route_chain_commit<Primitives, Engine>(
     new: &Chain<Primitives>,
-    committed_latest: BlockNumHash,
+    snapshot: CommitRoutingSnapshot,
     verification_interval: u64,
     engine: &Engine,
     readiness: &ProofHistoryReadiness,
@@ -532,18 +543,34 @@ where
         return Err(eyre!("canonical commit notification contains no blocks"));
     }
 
-    if new.tip().number() <= committed_latest.number {
+    if snapshot.canonical_latest_hash != Some(snapshot.committed_latest.hash) {
+        readiness.set_not_ready();
+        return Err(eyre!(
+            "committed proof-history latest block {} hash {:?} is not canonical in the pinned notification snapshot",
+            snapshot.committed_latest.number,
+            snapshot.committed_latest.hash
+        ));
+    }
+
+    if new.tip().number() <= snapshot.committed_latest.number {
         return Ok(())
     }
 
-    if !committed_chain_is_contiguous(new.first().number(), committed_latest.number) ||
-        !commit_notification_covers_suffix(new, committed_latest)
+    // A buffered notification may describe an old branch, or its tip may not be persisted yet.
+    // Once the committed proof head is proven canonical, ignoring that notification is safe: a
+    // later notification or periodic engine sync will observe the persisted canonical target.
+    if snapshot.canonical_commit_tip_hash != Some(new.tip().hash()) {
+        return Ok(())
+    }
+
+    if !committed_chain_is_contiguous(new.first().number(), snapshot.committed_latest.number) ||
+        !commit_notification_covers_suffix(new, snapshot.committed_latest)
             .inspect_err(|_| readiness.set_not_ready())?
     {
         return engine.sync_to(new.tip().number()).inspect_err(|_| readiness.set_not_ready())
     }
 
-    for block_number in committed_latest.number.saturating_add(1)..=new.tip().number() {
+    for block_number in snapshot.committed_latest.number.saturating_add(1)..=new.tip().number() {
         process_notification_block(block_number, new, verification_interval, engine)
             .inspect_err(|_| readiness.set_not_ready())?;
     }
@@ -657,6 +684,11 @@ where
 
     let first_old = BlockNumHash::new(old.first().number(), old.first().hash());
     ensure_canonical_update_above_earliest("reorg", snapshot.committed_earliest, first_old)?;
+    ensure_retained_boundary_parent(
+        "reorg",
+        snapshot.committed_earliest,
+        old.first().block_with_parent(),
+    )?;
 
     if new.is_empty() {
         return engine.unwind(old.first().block_with_parent())
@@ -718,6 +750,7 @@ where
         committed_earliest,
         BlockNumHash::new(old.first().number(), old.first().hash()),
     )?;
+    ensure_retained_boundary_parent("revert", committed_earliest, old.first().block_with_parent())?;
     engine.unwind(old.first().block_with_parent())
 }
 
@@ -738,6 +771,33 @@ where
     Ok(())
 }
 
+/// Clears readiness for a reorg or revert before notification handling may wait on a writer.
+fn prepare_notification_readiness<Primitives>(
+    notification: &CanonStateNotification<Primitives>,
+    readiness: &ProofHistoryReadiness,
+) where
+    Primitives: NodePrimitives,
+{
+    if matches!(notification, CanonStateNotification::Reorg { .. }) {
+        readiness.set_not_ready();
+    }
+}
+
+/// Reads a notification routing snapshot while enforcing readiness failure semantics.
+///
+/// Any snapshot error, including during commit validation, clears readiness before it is
+/// propagated. Reorg/revert callers additionally use [`prepare_notification_readiness`] before
+/// waiting for the notification writer lock.
+fn read_notification_routing_snapshot<Snapshot, ReadSnapshot>(
+    readiness: &ProofHistoryReadiness,
+    read_snapshot: ReadSnapshot,
+) -> eyre::Result<Snapshot>
+where
+    ReadSnapshot: FnOnce() -> eyre::Result<Snapshot>,
+{
+    read_snapshot().inspect_err(|_| readiness.set_not_ready())
+}
+
 /// Ensures a canonical reorg or revert does not replace the retained proof-history anchor.
 fn ensure_canonical_update_above_earliest(
     update_kind: &'static str,
@@ -754,6 +814,25 @@ fn ensure_canonical_update_above_earliest(
         ));
     }
 
+    Ok(())
+}
+
+/// Ensures an update immediately above the retained boundary descends from its exact hash.
+fn ensure_retained_boundary_parent(
+    update_kind: &'static str,
+    committed_earliest: BlockNumHash,
+    first_old: BlockWithParent,
+) -> eyre::Result<()> {
+    if committed_earliest.number.checked_add(1) == Some(first_old.block.number) &&
+        first_old.parent != committed_earliest.hash
+    {
+        return Err(eyre!(
+            "proof-history boundary {update_kind} block {} has parent {:?}, expected retained earliest hash {:?}",
+            first_old.block.number,
+            first_old.parent,
+            committed_earliest.hash
+        ));
+    }
     Ok(())
 }
 
@@ -1297,34 +1376,60 @@ where
     where
         Engine: ProofHistoryEngine<Primitives::Block>,
     {
+        prepare_notification_readiness(&notification, &self.readiness);
         let _write_guard = self.write_lock.lock().await;
-        let provider_ro = self.storage.provider_ro()?;
-        let (earliest_number, earliest_hash) = opt_block(provider_ro.get_earliest_block())?
-            .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
-        let (latest_number, latest_hash) = opt_block(provider_ro.get_latest_block())?
-            .ok_or_else(|| eyre!("no latest proof-history block stored"))?;
-        let earliest_stored = BlockNumHash::new(earliest_number, earliest_hash);
-        let latest_stored = BlockNumHash::new(latest_number, latest_hash);
-        drop(provider_ro);
+        let (
+            earliest_stored,
+            latest_stored,
+            canonical_latest_hash,
+            canonical_notification_tip_hash,
+        ) = read_notification_routing_snapshot(&self.readiness, || {
+            let provider_ro = self.storage.provider_ro()?;
+            let (earliest_number, earliest_hash) = opt_block(provider_ro.get_earliest_block())?
+                .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
+            let (latest_number, latest_hash) = opt_block(provider_ro.get_latest_block())?
+                .ok_or_else(|| eyre!("no latest proof-history block stored"))?;
+            let earliest_stored = BlockNumHash::new(earliest_number, earliest_hash);
+            let latest_stored = BlockNumHash::new(latest_number, latest_hash);
+            drop(provider_ro);
 
-        // Pin the duplicate decision to one persisted canonical snapshot. In particular, a proof
-        // head at the replacement tip is not considered covered merely because the heights
-        // match: its exact hash must still be canonical in this snapshot.
-        let canonical_snapshot = self.provider.database_provider_ro()?;
-        let canonical_latest_hash =
-            canonical_snapshot.sealed_header(latest_stored.number)?.map(|header| header.hash());
-        let canonical_replacement_tip_hash = match &notification {
-            CanonStateNotification::Reorg { new, .. } if !new.is_empty() => {
-                canonical_snapshot.sealed_header(new.tip().number())?.map(|header| header.hash())
-            }
-            _ => None,
-        };
-        drop(canonical_snapshot);
+            // Pin both proof-head and notification-tip decisions to one persisted canonical
+            // snapshot. Matching heights alone cannot distinguish a buffered old-fork event.
+            let canonical_snapshot = self.provider.database_provider_ro()?;
+            let canonical_latest_hash =
+                canonical_snapshot.sealed_header(latest_stored.number)?.map(|header| header.hash());
+            let notification_tip_number = match &notification {
+                CanonStateNotification::Commit { new } if !new.is_empty() => {
+                    Some(new.tip().number())
+                }
+                CanonStateNotification::Reorg { new, .. } if !new.is_empty() => {
+                    Some(new.tip().number())
+                }
+                _ => None,
+            };
+            let canonical_notification_tip_hash = notification_tip_number
+                .map(|number| canonical_snapshot.sealed_header(number))
+                .transpose()?
+                .flatten()
+                .map(|header| header.hash());
+            drop(canonical_snapshot);
+
+            Ok((
+                earliest_stored,
+                latest_stored,
+                canonical_latest_hash,
+                canonical_notification_tip_hash,
+            ))
+        })?;
 
         match &notification {
             CanonStateNotification::Commit { new } => route_chain_commit(
                 new,
-                latest_stored,
+                CommitRoutingSnapshot {
+                    committed_latest: latest_stored,
+                    canonical_latest_hash,
+                    canonical_commit_tip_hash: canonical_notification_tip_hash,
+                },
                 self.config.verification_interval,
                 engine,
                 &self.readiness,
@@ -1342,7 +1447,7 @@ where
                         committed_earliest: earliest_stored,
                         committed_latest: latest_stored,
                         canonical_latest_hash,
-                        canonical_replacement_tip_hash,
+                        canonical_replacement_tip_hash: canonical_notification_tip_hash,
                     },
                     self.config.verification_interval,
                     engine,
@@ -1365,10 +1470,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryCanonicalSnapshot, ProofHistoryStartupAction, ReorgRoutingSnapshot,
-        committed_chain_is_contiguous, complete_canonical_update,
-        ensure_canonical_update_above_earliest, proof_history_startup_action,
-        proof_history_startup_reconciliation, route_chain_commit, route_chain_reorg,
+        CommitRoutingSnapshot, ProofHistoryCanonicalSnapshot, ProofHistoryStartupAction,
+        ReorgRoutingSnapshot, committed_chain_is_contiguous, complete_canonical_update,
+        ensure_canonical_update_above_earliest, prepare_notification_readiness,
+        proof_history_startup_action, proof_history_startup_reconciliation,
+        read_notification_routing_snapshot, route_chain_commit, route_chain_reorg,
         route_chain_revert,
     };
     use crate::proof_history::engine::{ProofHistoryEngine, ReorgBlockUpdates};
@@ -1380,6 +1486,7 @@ mod tests {
     use reth_execution_types::Chain;
     use reth_optimism_trie::api::ProofWindowRange;
     use reth_primitives_traits::{Block as _, RecoveredBlock};
+    use reth_provider::CanonStateNotification;
     use reth_trie_common::{
         ComputedTrieData, HashedPostStateSorted, LazyTrieData, updates::TrieUpdatesSorted,
     };
@@ -1543,6 +1650,21 @@ mod tests {
         }
     }
 
+    fn commit_snapshot(
+        committed_latest: BlockNumHash,
+        canonical_latest_hash: Option<B256>,
+        canonical_commit_tip_hash: Option<B256>,
+    ) -> CommitRoutingSnapshot {
+        CommitRoutingSnapshot { committed_latest, canonical_latest_hash, canonical_commit_tip_hash }
+    }
+
+    fn canonical_commit_snapshot(
+        committed_latest: BlockNumHash,
+        chain: &Chain<EthPrimitives>,
+    ) -> CommitRoutingSnapshot {
+        commit_snapshot(committed_latest, Some(committed_latest.hash), Some(chain.tip().hash()))
+    }
+
     fn hash(byte: u8) -> B256 {
         B256::with_last_byte(byte)
     }
@@ -1570,11 +1692,79 @@ mod tests {
         let engine = RecordingEngine::default();
         let readiness = ready_flag();
 
-        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &readiness)
-            .expect("contiguous precomputed commit is indexed");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(10, parent), &chain),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect("contiguous precomputed commit is indexed");
 
         assert_eq!(engine.calls(), vec![EngineCall::Index(block.block_with_parent())]);
         assert!(readiness.is_ready());
+    }
+
+    #[test]
+    fn stale_buffered_commit_is_ignored_while_proof_head_is_canonical() {
+        let committed_latest = BlockNumHash::new(10, hash(10));
+        let stale = linear_chain(11, committed_latest.hash, &[11], &[11]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        route_chain_commit(
+            &stale,
+            commit_snapshot(committed_latest, Some(committed_latest.hash), Some(hash(99))),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect("stale commit is harmless while committed proof history remains canonical");
+
+        assert!(engine.calls().is_empty());
+        assert!(readiness.is_ready());
+    }
+
+    #[test]
+    fn covered_commit_with_noncanonical_proof_head_fails_closed() {
+        let chain = linear_chain(10, hash(9), &[10, 11], &[10, 11]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+        let committed_latest = BlockNumHash::new(12, hash(12));
+
+        let _error = route_chain_commit(
+            &chain,
+            commit_snapshot(committed_latest, Some(hash(77)), Some(chain.tip().hash())),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("covered commit cannot hide a noncanonical committed proof head");
+
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn current_canonical_commit_is_applied() {
+        let committed_latest = BlockNumHash::new(10, hash(10));
+        let current = linear_chain(11, committed_latest.hash, &[11], &[11]);
+        let engine = RecordingEngine::default();
+
+        route_chain_commit(
+            &current,
+            commit_snapshot(
+                committed_latest,
+                Some(committed_latest.hash),
+                Some(current.tip().hash()),
+            ),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("exact canonical commit is applied");
+
+        assert_eq!(engine.calls(), vec![EngineCall::Index(current.tip().block_with_parent())]);
     }
 
     #[test]
@@ -1584,8 +1774,14 @@ mod tests {
         let chain = test_chain(vec![block.clone()], &[12]);
         let engine = RecordingEngine::default();
 
-        route_chain_commit(&chain, BlockNumHash::new(11, parent), 3, &engine, &ready_flag())
-            .expect("verification height is executed");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(11, parent), &chain),
+            3,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("verification height is executed");
 
         assert_eq!(engine.calls(), vec![EngineCall::Execute(BlockNumHash::new(12, block.hash()))]);
     }
@@ -1597,8 +1793,14 @@ mod tests {
         let chain = test_chain(vec![block.clone()], &[]);
         let engine = RecordingEngine::default();
 
-        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &ready_flag())
-            .expect("missing trie data falls back to exact execution");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(10, parent), &chain),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("missing trie data falls back to exact execution");
 
         assert_eq!(engine.calls(), vec![EngineCall::Execute(BlockNumHash::new(11, block.hash()))]);
     }
@@ -1611,8 +1813,14 @@ mod tests {
         let chain = test_chain(vec![notification_block.clone()], &[]);
         let engine = RecordingEngine::default();
 
-        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &ready_flag())
-            .expect("notification block executes");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(10, parent), &chain),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("notification block executes");
 
         assert_ne!(notification_block.hash(), same_height_other_fork.hash());
         assert_eq!(
@@ -1628,8 +1836,14 @@ mod tests {
         let uncovered = chain.blocks().get(&12).expect("uncovered block exists");
         let engine = RecordingEngine::default();
 
-        route_chain_commit(&chain, BlockNumHash::new(11, stored.hash()), 0, &engine, &ready_flag())
-            .expect("overlap processes only its suffix");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(11, stored.hash()), &chain),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("overlap processes only its suffix");
 
         assert_eq!(engine.calls(), vec![EngineCall::Index(uncovered.block_with_parent())]);
     }
@@ -1642,7 +1856,7 @@ mod tests {
 
         route_chain_commit(
             &chain,
-            BlockNumHash::new(tip.number(), tip.hash()),
+            canonical_commit_snapshot(BlockNumHash::new(tip.number(), tip.hash()), &chain),
             0,
             &engine,
             &ready_flag(),
@@ -1657,8 +1871,14 @@ mod tests {
         let chain = linear_chain(12, hash(11), &[12, 13], &[12, 13]);
         let engine = RecordingEngine::default();
 
-        route_chain_commit(&chain, BlockNumHash::new(10, hash(10)), 0, &engine, &ready_flag())
-            .expect("gap is delegated to engine sync");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(10, hash(10)), &chain),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("gap is delegated to engine sync");
 
         assert_eq!(engine.calls(), vec![EngineCall::Sync(13)]);
     }
@@ -1669,9 +1889,14 @@ mod tests {
         let engine = RecordingEngine::failing(EngineMethod::Sync);
         let readiness = ready_flag();
 
-        let _error =
-            route_chain_commit(&chain, BlockNumHash::new(10, hash(10)), 0, &engine, &readiness)
-                .expect_err("sync failure propagates");
+        let _error = route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(10, hash(10)), &chain),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("sync failure propagates");
 
         assert!(!readiness.is_ready());
     }
@@ -1684,8 +1909,14 @@ mod tests {
         let chain = test_chain(vec![first, third], &[11, 13]);
         let engine = RecordingEngine::default();
 
-        route_chain_commit(&chain, BlockNumHash::new(10, parent), 0, &engine, &ready_flag())
-            .expect("internal notification gap delegates the full suffix to sync");
+        route_chain_commit(
+            &chain,
+            canonical_commit_snapshot(BlockNumHash::new(10, parent), &chain),
+            0,
+            &engine,
+            &ready_flag(),
+        )
+        .expect("internal notification gap delegates the full suffix to sync");
 
         assert_eq!(engine.calls(), vec![EngineCall::Sync(13)]);
     }
@@ -1863,6 +2094,25 @@ mod tests {
     }
 
     #[test]
+    fn reorg_snapshot_failure_clears_readiness_before_routing() {
+        let parent = hash(10);
+        let notification = CanonStateNotification::Reorg {
+            old: Arc::new(linear_chain(11, parent, &[21], &[])),
+            new: Arc::new(linear_chain(11, parent, &[31], &[11])),
+        };
+        let readiness = ready_flag();
+
+        prepare_notification_readiness(&notification, &readiness);
+        let _error = read_notification_routing_snapshot(&readiness, || {
+            assert!(!readiness.is_ready(), "reorg clears readiness before snapshot I/O");
+            Err::<(), _>(eyre::eyre!("injected pinned snapshot failure"))
+        })
+        .expect_err("snapshot error propagates");
+
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
     fn reorg_rejects_empty_old_chain_without_engine_calls() {
         let old = Chain::<EthPrimitives>::default();
         let new = linear_chain(11, hash(10), &[31], &[11]);
@@ -2001,6 +2251,48 @@ mod tests {
     }
 
     #[test]
+    fn boundary_reorg_must_descend_from_retained_earliest_hash() {
+        let earliest = BlockNumHash::new(10, hash(10));
+        let wrong_parent = hash(99);
+        let old = linear_chain(11, wrong_parent, &[21], &[]);
+        let new = linear_chain(11, wrong_parent, &[31], &[11]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let _error = route_chain_reorg(
+            &old,
+            &new,
+            reorg_snapshot(
+                earliest,
+                BlockNumHash::new(11, old.tip().hash()),
+                Some(new.tip().hash()),
+                Some(new.tip().hash()),
+            ),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("boundary reorg must descend from the retained anchor identity");
+
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn boundary_revert_must_descend_from_retained_earliest_hash() {
+        let earliest = BlockNumHash::new(10, hash(10));
+        let old = linear_chain(11, hash(99), &[21], &[]);
+        let engine = RecordingEngine::default();
+        let readiness = ready_flag();
+
+        let _error = route_chain_revert(&old, earliest, &engine, &readiness)
+            .expect_err("boundary revert must descend from the retained anchor identity");
+
+        assert!(engine.calls().is_empty());
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
     fn reorg_replacing_earliest_fails_closed() {
         let earliest = BlockNumHash::new(10, hash(10));
         let old = linear_chain(10, hash(9), &[21], &[]);
@@ -2075,9 +2367,14 @@ mod tests {
         let engine = RecordingEngine::failing(EngineMethod::Index);
         let readiness = ready_flag();
 
-        let _error =
-            route_chain_commit(&new, BlockNumHash::new(10, parent), 0, &engine, &readiness)
-                .expect_err("commit engine failure propagates");
+        let _error = route_chain_commit(
+            &new,
+            canonical_commit_snapshot(BlockNumHash::new(10, parent), &new),
+            0,
+            &engine,
+            &readiness,
+        )
+        .expect_err("commit engine failure propagates");
 
         assert!(!readiness.is_ready());
     }

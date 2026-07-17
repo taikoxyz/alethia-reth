@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-bin"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-cli",
  "alethia-reth-node",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-block"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-evm",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-chainspec"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-cli"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-consensus"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-evm",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-db"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-primitives",
  "alloy-primitives",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-evm"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-primitives",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-node"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-payload"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-primitives"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-rpc"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alethia-reth-block",
  "alethia-reth-chainspec",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "alethia-reth-rpc-types"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "alloy-primitives",
  "serde",

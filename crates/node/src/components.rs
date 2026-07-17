@@ -51,7 +51,11 @@ pub fn evm_config_from_jit_args(
             code_cache_bytes: jit.code_cache_bytes,
             idle_evict_duration: jit.idle_evict_duration,
             debug: jit.debug,
-            blocking: jit.blocking,
+            // revmc's runtime coerces `enabled = true` and `jit_hot_threshold = 0` whenever
+            // `blocking` is set, so forwarding `--jit.blocking` on its own would compile every
+            // contract on first touch without `--jit` and without the warning below. Gating it
+            // here keeps `--jit`/`reth_jit` the only way to turn compilation on.
+            blocking: jit.enabled && jit.blocking,
         };
         let backend = config.build_backend(dump_dir)?;
 
@@ -214,6 +218,30 @@ mod tests {
         let disabled = evm_config_from_jit_args(TAIKO_MAINNET.clone(), &JitArgs::default(), None)
             .expect("jit build constructs a backend");
         assert!(!disabled.evm_factory().backend().enabled());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn evm_config_from_jit_args_keeps_blocking_from_enabling_jit() {
+        use reth_node_core::args::JitArgs;
+
+        // revmc turns `blocking` into `enabled = true` with a zero hot threshold, so
+        // `--jit.blocking` alone would otherwise compile every contract without `--jit`.
+        let blocking_only = evm_config_from_jit_args(
+            TAIKO_MAINNET.clone(),
+            &JitArgs { blocking: true, ..Default::default() },
+            None,
+        )
+        .expect("jit build constructs a backend");
+        assert!(!blocking_only.evm_factory().backend().enabled());
+
+        let blocking_with_jit = evm_config_from_jit_args(
+            TAIKO_MAINNET.clone(),
+            &JitArgs { enabled: true, blocking: true, ..Default::default() },
+            None,
+        )
+        .expect("jit build constructs a backend");
+        assert!(blocking_with_jit.evm_factory().backend().enabled());
     }
 
     #[cfg(not(feature = "jit"))]

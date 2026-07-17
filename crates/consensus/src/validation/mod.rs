@@ -4,6 +4,7 @@ use std::{fmt::Debug, sync::Arc};
 use alloy_consensus::{
     BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
+use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::B256;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
@@ -171,6 +172,28 @@ where
                 "invalid Shasta extra-data length: have {}, want {SHASTA_EXTRA_DATA_LEN}",
                 header.extra_data().len()
             )));
+        }
+
+        // Taiko schedules no Amsterdam fork — Unzen, the latest fork, activates Osaka-level
+        // execution rules only — so nothing in this client builds or verifies EIP-7928 block
+        // access lists, and reth's post-execution validation skips the access-list comparison
+        // whenever the executor supplies no computed hash (always, here). Import is otherwise
+        // fail-open where payload building already fails closed (`ensure_amsterdam_inactive`),
+        // so reject the fork at the chokepoint every import path routes through: the engine
+        // `newPayload` flow and staged sync both call `validate_header`.
+        if self.chain_spec.is_amsterdam_active_at_timestamp(header.timestamp()) {
+            return Err(ConsensusError::msg(
+                "cannot validate a Taiko header with the Amsterdam fork active: EIP-7928 block access lists are unsupported",
+            ));
+        }
+
+        // Upstream `EthBeaconConsensus` parity: pre-Amsterdam headers must not carry the
+        // EIP-7928 header fields.
+        if header.block_access_list_hash().is_some() {
+            return Err(ConsensusError::BlockAccessListHashUnexpected);
+        }
+        if header.slot_number().is_some() {
+            return Err(ConsensusError::SlotNumberUnexpected);
         }
 
         validate_header_gas(header)?;

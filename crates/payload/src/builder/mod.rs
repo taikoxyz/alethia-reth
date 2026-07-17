@@ -149,9 +149,10 @@ fn empty_payload_result() -> Result<EthBuiltPayload, PayloadBuilderError> {
 ///
 /// Taiko schedules no Amsterdam fork, so [`taiko_payload`] never wires an EIP-7928 BAL builder
 /// into the `State` and [`TaikoBlockAssembler`] always seals `block_access_list_hash: None`.
-/// Nothing downstream enforces that pairing — reth's post-execution validation skips the
-/// access-list check whenever the hash is absent — so an activation arriving through genesis
-/// config (`amsterdamTime`) would silently produce non-compliant blocks. Fail closed instead.
+/// Reth's post-execution validation skips the access-list check whenever the hash is absent, so
+/// an activation arriving through genesis config (`amsterdamTime`) would silently produce
+/// non-compliant blocks. Fail closed instead, mirroring the import-side rejection in
+/// `TaikoBeaconConsensus::validate_header`.
 fn ensure_amsterdam_inactive(
     chain_spec: &TaikoChainSpec,
     timestamp: u64,

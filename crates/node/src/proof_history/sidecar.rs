@@ -834,6 +834,9 @@ enum NotificationHandlingOutcome {
     /// An ordinary extension arrived behind a finite barrier and will be covered by later
     /// persisted-head catch-up.
     CommitDeferred,
+    /// A commit conflicted with the engine's branch at its tip height; the generation must be
+    /// replaced and readiness rebased onto a fresh post-subscribe live target.
+    EngineBranchConflict,
     /// A reorg or revert was routed and must be checked against persisted canonical state.
     ReconcilePersistedState(
         /// Exact replacement target and displaced-branch identity for the persistence check.
@@ -1286,21 +1289,31 @@ where
     Ok(true)
 }
 
+/// Outcome of routing one commit notification through the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitRouting {
+    /// Every block was accepted, skipped, or delegated to the engine's internal sync target.
+    Routed,
+    /// The engine follows a branch this commit does not extend; its generation must be
+    /// recovered, because a number-only sync target cannot repair a same-height divergence.
+    BranchConflict,
+}
+
 /// Routes a commit notification's exact blocks through the proof-history engine.
 ///
 /// The engine owns deduplication and gap handling against its own buffered tip: blocks at or
 /// below that tip are skipped, a block past `tip + 1` raises the engine's internal sync target,
-/// and only a same-height branch conflict surfaces as [`EngineError::ParentHashMismatch`]. That
-/// conflict means a reorg or unwind covering this range is still queued (or lag recovery will
-/// replace the engine), so the commit falls back to canonical sync and leaves readiness clear
-/// instead of failing the sidecar. Other engine failures clear readiness and propagate so RPC
-/// callers never observe a sidecar that knows notification processing failed.
+/// and only a same-height branch conflict surfaces as [`EngineError::ParentHashMismatch`]. The
+/// conflicting reorg may still be queued behind this commit or may predate the notification
+/// subscription entirely, so the conflict is reported as [`CommitRouting::BranchConflict`] for
+/// the caller to recover the generation. Other engine failures clear readiness and propagate so
+/// RPC callers never observe a sidecar that knows notification processing failed.
 fn route_chain_commit<Primitives, Engine>(
     new: &Chain<Primitives>,
     verification_interval: u64,
     engine: &Engine,
     readiness: &ProofHistoryReadiness,
-) -> eyre::Result<()>
+) -> eyre::Result<CommitRouting>
 where
     Primitives: NodePrimitives,
     Engine: ProofHistoryEngine<Primitives::Block> + ?Sized,
@@ -1310,7 +1323,7 @@ where
             target: "reth::taiko::proof_history",
             "ignoring canonical commit notification without blocks"
         );
-        return Ok(());
+        return Ok(CommitRouting::Routed);
     }
     let first = new.first().number();
     let tip = new.tip().number();
@@ -1325,7 +1338,8 @@ where
             blocks = new.blocks().len(),
             "canonical commit notification is not contiguous; delegating to engine sync"
         );
-        return engine.sync_to(tip).inspect_err(|_| readiness.set_not_ready());
+        engine.sync_to(tip).inspect_err(|_| readiness.set_not_ready())?;
+        return Ok(CommitRouting::Routed);
     }
 
     for block_number in first..=tip {
@@ -1341,15 +1355,15 @@ where
                     target: "reth::taiko::proof_history",
                     block_number,
                     %error,
-                    "commit conflicts with the engine branch; deferring to canonical sync"
+                    "commit conflicts with the engine branch; requesting generation recovery"
                 );
-                return engine.sync_to(tip).inspect_err(|_| readiness.set_not_ready());
+                return Ok(CommitRouting::BranchConflict);
             }
             return Err(error);
         }
     }
 
-    Ok(())
+    Ok(CommitRouting::Routed)
 }
 
 /// Routes a commit that supersedes an acknowledged pure revert while persistence is gated.
@@ -1716,10 +1730,19 @@ where
         engine: &mut EngineSlot<Primitives::Block>,
     ) -> eyre::Result<()> {
         let mut notifications = self.provider.subscribe_to_canonical_state();
-        let mut reconciliation_state = ReconciliationState::default();
+        // Reth's consensus tasks start before this subscription, so a reorg published earlier
+        // can never be delivered here and persisted-state reconciliation alone could bless a
+        // displaced branch. Gate readiness behind the live target captured after subscribing;
+        // it opens only once committed proof storage and the persisted database cross this
+        // exact identity, mirroring lag recovery.
+        let startup_target: BlockNumHash = self.provider.chain_info()?.into();
+        let mut reconciliation_state = ReconciliationState::Pending {
+            barrier: CanonicalUpdateBarrier::target_only(startup_target),
+            sync_progress: None,
+        };
         let mut last_persisted_sync_target = None;
         let mut pruner_spawned = false;
-        if self.try_start(engine, EngineInstallReadiness::Ready).await? {
+        if self.try_start(engine, reconciliation_state.install_readiness()).await? {
             spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
         }
 
@@ -1801,6 +1824,35 @@ where
                         }
                         NotificationHandlingOutcome::CommitRouted { .. } => {}
                         NotificationHandlingOutcome::CommitDeferred => {}
+                        NotificationHandlingOutcome::EngineBranchConflict => {
+                            // The engine follows a branch canonical state has left, and the
+                            // reorg that explains it may predate this receiver (or even the
+                            // subscription itself), so no future notification is guaranteed to
+                            // repair it. Recover exactly like a lag: replace the receiver and
+                            // the generation, then gate readiness behind the post-subscribe
+                            // live target until committed storage crosses it.
+                            warn!(
+                                target: "reth::taiko::proof_history",
+                                "canonical commit conflicts with the proof-history engine branch; replacing its receiver and generation"
+                            );
+                            let recovery_barrier = recover_pending_generation(
+                                &self.readiness,
+                                || {
+                                    notifications =
+                                        self.provider.subscribe_to_canonical_state();
+                                    Ok(self.provider.chain_info()?.into())
+                                },
+                                || self.recover_pending_generation(engine),
+                            )
+                            .await?;
+                            last_persisted_sync_target = None;
+                            reconciliation_state = ReconciliationState::Pending {
+                                barrier: recovery_barrier,
+                                sync_progress: None,
+                            };
+                            spawn_pruner_once(&mut pruner_spawned, || self.spawn_pruner_task());
+                            head_poll.reset_after(PROOF_HISTORY_HEAD_POLL_INTERVAL);
+                        }
                         NotificationHandlingOutcome::ReconcilePersistedState(barrier)
                             if was_pending =>
                         {
@@ -2460,14 +2512,18 @@ where
         // a pinned persisted canonical snapshot.
         let outcome = match &notification {
             CanonStateNotification::Commit { new } => {
-                route_chain_commit(
+                match route_chain_commit(
                     new,
                     self.config.verification_interval,
                     engine,
                     &self.readiness,
-                )?;
-                NotificationHandlingOutcome::CommitRouted {
-                    target: BlockNumHash::new(new.tip().number(), new.tip().hash()),
+                )? {
+                    CommitRouting::Routed => NotificationHandlingOutcome::CommitRouted {
+                        target: BlockNumHash::new(new.tip().number(), new.tip().hash()),
+                    },
+                    CommitRouting::BranchConflict => {
+                        NotificationHandlingOutcome::EngineBranchConflict
+                    }
                 }
             }
             CanonStateNotification::Reorg { old, new } => {
@@ -2548,16 +2604,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CanonicalUpdateBarrier, EngineInstallReadiness, EngineSlot, InstalledReconciliation,
-        PROOF_HISTORY_PENDING_STALL_POLLS, PendingCommitRouting, PendingReconciliationProgress,
-        PendingSyncProgress, ProofHistoryCanonicalSnapshot, ProofHistoryLiveAction,
-        ProofHistoryStartupAction, ReconciliationOutcome, ReconciliationState,
-        ReorgRoutingSnapshot, canonical_update_barrier_persisted, committed_chain_is_contiguous,
-        ensure_canonical_update_above_earliest, install_engine_generation, pending_commit_routing,
-        pending_reconciliation_progress, pending_reorg_barrier, prepare_notification_readiness,
-        proof_history_live_action, proof_history_startup_action,
-        proof_history_startup_reconciliation, read_notification_routing_snapshot,
-        reconcile_installed_engine, reconcile_live_storage_atomic, recover_engine_after_lag,
+        CanonicalUpdateBarrier, CommitRouting, EngineInstallReadiness, EngineSlot,
+        InstalledReconciliation, PROOF_HISTORY_PENDING_STALL_POLLS, PendingCommitRouting,
+        PendingReconciliationProgress, PendingSyncProgress, ProofHistoryCanonicalSnapshot,
+        ProofHistoryLiveAction, ProofHistoryStartupAction, ReconciliationOutcome,
+        ReconciliationState, ReorgRoutingSnapshot, canonical_update_barrier_persisted,
+        committed_chain_is_contiguous, ensure_canonical_update_above_earliest,
+        install_engine_generation, pending_commit_routing, pending_reconciliation_progress,
+        pending_reorg_barrier, prepare_notification_readiness, proof_history_live_action,
+        proof_history_startup_action, proof_history_startup_reconciliation,
+        read_notification_routing_snapshot, reconcile_installed_engine,
+        reconcile_live_storage_atomic, recover_engine_after_lag,
         recover_engine_after_lag_with_readiness, recover_pending_generation, route_chain_commit,
         route_chain_reorg, route_chain_revert, route_pending_chain_commit, shutdown_engine,
         spawn_pruner_once, sync_engine_to_changed_persisted_head, sync_engine_to_persisted_head,
@@ -3672,36 +3729,33 @@ mod tests {
     }
 
     #[test]
-    fn commit_conflicting_with_engine_branch_defers_to_canonical_sync() {
-        // Regression: a queued commit for a branch the engine no longer follows surfaces as an
-        // upstream parent-hash conflict. That is a routine reorg-ordering race, so the sidecar
-        // must fall back to canonical sync and stay gated instead of crashing the node.
+    fn commit_conflicting_with_engine_branch_requests_generation_recovery() {
+        // Regression: a commit for a branch the engine does not follow surfaces as an upstream
+        // parent-hash conflict. A number-only sync target can never repair a same-height hash
+        // divergence (the conflicting reorg may even predate our subscription), so the routing
+        // outcome must demand generation recovery instead of erroring or requesting sync.
         let chain = linear_chain(11, hash(10), &[11, 12], &[11, 12]);
         let first = chain.blocks().get(&11).expect("first block exists");
         let engine = RecordingEngine::conflicting(EngineMethod::Index);
         let readiness = ready_flag();
 
-        route_chain_commit(&chain, 0, &engine, &readiness)
-            .expect("an engine branch conflict is deferred, not fatal");
+        let routing = route_chain_commit(&chain, 0, &engine, &readiness)
+            .expect("an engine branch conflict is recoverable, not fatal");
 
-        assert_eq!(
-            engine.calls(),
-            vec![EngineCall::Index(first.block_with_parent()), EngineCall::Sync(12)]
-        );
+        assert_eq!(routing, CommitRouting::BranchConflict);
+        assert_eq!(engine.calls(), vec![EngineCall::Index(first.block_with_parent())]);
         assert!(!readiness.is_ready());
     }
 
     #[test]
-    fn commit_conflict_sync_failure_clears_readiness_and_propagates() {
+    fn routed_commit_reports_routed_outcome() {
         let chain = linear_chain(11, hash(10), &[11], &[11]);
-        let engine =
-            RecordingEngine::conflicting(EngineMethod::Index).with_failing(EngineMethod::Sync);
-        let readiness = ready_flag();
+        let engine = RecordingEngine::default();
 
-        let _error = route_chain_commit(&chain, 0, &engine, &readiness)
-            .expect_err("a failing conflict fallback propagates");
+        let routing =
+            route_chain_commit(&chain, 0, &engine, &ready_flag()).expect("clean commit routes");
 
-        assert!(!readiness.is_ready());
+        assert_eq!(routing, CommitRouting::Routed);
     }
 
     #[test]

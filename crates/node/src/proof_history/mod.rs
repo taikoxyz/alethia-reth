@@ -57,19 +57,6 @@ pub type ProofHistoryInstallResult<T, CB, AO> = eyre::Result<(
     Option<ProofHistoryRpcHandles>,
 )>;
 
-/// Installs the proof-backed `eth_` override on both public and authenticated RPC surfaces.
-fn install_eth_proof_overrides<InstallPublic, InstallAuth>(
-    install_public: InstallPublic,
-    install_auth: InstallAuth,
-) -> eyre::Result<()>
-where
-    InstallPublic: FnOnce() -> eyre::Result<()>,
-    InstallAuth: FnOnce() -> eyre::Result<()>,
-{
-    install_public()?;
-    install_auth()
-}
-
 /// Installs the proof-history sidecar and proof database metrics task on a Taiko node builder.
 pub fn install_proof_history<T, CB, AO>(
     node_builder: WithLaunchContext<NodeBuilderWithComponents<T, CB, AO>>,
@@ -172,21 +159,15 @@ where
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {
     let (storage, readiness) = handles;
+    // The proof-backed `eth_` override must cover both RPC surfaces: reth's authenticated
+    // module serves its own `eth_getProof`, which is window-limited and unaware of proof
+    // history, so leaving it stock would answer differently from the public endpoint.
     let eth_ext =
         TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone(), readiness.clone());
     let auth_eth_ext =
         TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone(), readiness.clone());
-    install_eth_proof_overrides(
-        || {
-            ctx.modules
-                .add_or_replace_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
-            Ok(())
-        },
-        || {
-            ctx.auth_module.replace_auth_methods(auth_eth_ext.into_rpc())?;
-            Ok(())
-        },
-    )?;
+    ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
+    ctx.auth_module.replace_auth_methods(auth_eth_ext.into_rpc())?;
 
     let debug_ext = TaikoDebugWitnessExt::new(
         ctx.node().provider().clone(),
@@ -216,29 +197,4 @@ fn spawn_proofs_db_metrics(
             storage.report_metrics();
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::install_eth_proof_overrides;
-    use std::cell::RefCell;
-
-    #[test]
-    fn eth_proof_override_installs_public_and_auth_modules() {
-        let installed = RefCell::new(Vec::new());
-
-        install_eth_proof_overrides(
-            || {
-                installed.borrow_mut().push("public");
-                Ok(())
-            },
-            || {
-                installed.borrow_mut().push("auth");
-                Ok(())
-            },
-        )
-        .expect("both proof RPC surfaces install");
-
-        assert_eq!(*installed.borrow(), vec!["public", "auth"]);
-    }
 }

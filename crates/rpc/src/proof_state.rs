@@ -21,6 +21,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use tokio::sync::OwnedSemaphorePermit;
 use tracing::{debug, warn};
 
 /// Shared flag tracking whether proof-history storage is reconciled against canonical state.
@@ -89,13 +90,32 @@ struct ProofHistoryDeepHistoryError {
 #[error("canonical state changed; retry")]
 struct CanonicalStateChangedError;
 
-/// Runs proof or witness work on Reth's blocking-I/O runtime under its shared proof permit pool.
+/// Acquires one owned permit from Reth's shared proof execution pool.
+///
+/// Callers must take the permit before resolving a block or opening any state provider, so a
+/// request queued for capacity never pins a database read transaction while it waits. Permit
+/// acquisition failures use Reth's standard internal RPC error mapping.
+pub(crate) async fn acquire_proof_permit<Eth>(
+    eth_api: &Eth,
+) -> Result<OwnedSemaphorePermit, Eth::Error>
+where
+    Eth: SpawnBlocking,
+{
+    eth_api
+        .acquire_owned_tracing()
+        .await
+        .map_err(RethError::other)
+        .map_err(EthApiError::Internal)
+        .map_err(Into::into)
+}
+
+/// Runs proof or witness work on Reth's blocking-I/O runtime under an already-held proof permit.
 ///
 /// The owned permit is transferred into the detached blocking closure. Cancelling the awaiting RPC
-/// future therefore cannot release capacity before its synchronous work actually exits. Permit
-/// acquisition failures use Reth's standard internal RPC error mapping.
+/// future therefore cannot release capacity before its synchronous work actually exits.
 pub(crate) async fn run_proof_task<Eth, Task, Output>(
     eth_api: &Eth,
+    permit: OwnedSemaphorePermit,
     task: Task,
 ) -> Result<Output, Eth::Error>
 where
@@ -103,11 +123,6 @@ where
     Task: FnOnce() -> Result<Output, Eth::Error> + Send + 'static,
     Output: Send + 'static,
 {
-    let permit = eth_api
-        .acquire_owned_tracing()
-        .await
-        .map_err(RethError::other)
-        .map_err(EthApiError::Internal)?;
     eth_api
         .spawn_blocking_io(move |_| {
             let _permit = permit;
@@ -549,10 +564,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryReadiness, ProofStateProvider, ResolvedBlockState, complete_guarded_work,
-        proof_history_covers, proof_history_fallback_allowed, proof_history_miss_is_pruned,
-        resolve_block_state_with, resolve_exact_canonical_state_with, run_proof_task,
-        select_canonical_state_with, select_resolved_state_with,
+        ProofHistoryReadiness, ProofStateProvider, ResolvedBlockState, acquire_proof_permit,
+        complete_guarded_work, proof_history_covers, proof_history_fallback_allowed,
+        proof_history_miss_is_pruned, resolve_block_state_with, resolve_exact_canonical_state_with,
+        run_proof_task, select_canonical_state_with, select_resolved_state_with,
     };
     use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag, eip1898::BlockWithParent};
     use alloy_primitives::{B256, map::HashMap};
@@ -604,7 +619,8 @@ mod tests {
 
         let first_api = eth_api.clone();
         let first = tokio::spawn(async move {
-            run_proof_task(&first_api, move || {
+            let permit = acquire_proof_permit(&first_api).await?;
+            run_proof_task(&first_api, permit, move || {
                 let _ = started_tx.send(());
                 let _ = release_rx.recv();
                 Ok(())

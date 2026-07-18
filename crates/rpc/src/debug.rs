@@ -2,7 +2,8 @@
 
 use crate::proof_state::{
     ProofHistoryReadiness, ProofHistoryStateProviderFactory, ProofStateProvider,
-    ResolvedBlockState, canonical_state_changed, complete_guarded_work, run_proof_task,
+    ResolvedBlockState, acquire_proof_permit, canonical_state_changed, complete_guarded_work,
+    run_proof_task,
 };
 use alethia_reth_block::{
     executor::{
@@ -241,6 +242,9 @@ where
         target: WitnessTarget,
         mode: ExecutionWitnessMode,
     ) -> Result<ExecutionWitness, Eth::Error> {
+        // The permit comes first: parent resolution opens a historical state provider, and a
+        // request queued for capacity must never pin that read transaction while it waits.
+        let permit = acquire_proof_permit(&self.eth_api).await?;
         let resolved_parent = prepare_witness_parent_with(
             target,
             |block| self.state_provider_factory.validate_canonical_block(block),
@@ -253,7 +257,7 @@ where
         let header_provider = self.provider.clone();
         // Block re-execution and witness assembly are CPU/I/O heavy; keep them off the async
         // RPC workers and share Reth's configured proof execution limit.
-        run_proof_task(&self.eth_api, move || {
+        run_proof_task(&self.eth_api, permit, move || {
             let selected = factory.state_provider_at(resolved_parent).map_err(EthApiError::from)?;
             let (state_provider, guard) = match selected {
                 ProofStateProvider::Pending(_) => {
@@ -311,6 +315,9 @@ where
         mode: ExecutionWitnessMode,
         options: TxListWitnessOptions,
     ) -> Result<ExecutionWitness, Eth::Error> {
+        // The permit comes first: parent resolution opens a historical state provider, and a
+        // request queued for capacity must never pin that read transaction while it waits.
+        let permit = acquire_proof_permit(&self.eth_api).await?;
         let resolved_parent = prepare_witness_parent_with(
             target,
             |block| self.state_provider_factory.validate_canonical_block(block),
@@ -323,7 +330,7 @@ where
         let header_provider = self.provider.clone();
         // Tx-list validation/decode, transaction replay, and witness assembly are CPU/I/O
         // heavy; keep them off the async RPC workers and under Reth's shared proof limit.
-        run_proof_task(&self.eth_api, move || {
+        run_proof_task(&self.eth_api, permit, move || {
             let selected = factory.state_provider_at(resolved_parent).map_err(EthApiError::from)?;
             let (state_provider, guard) = match selected {
                 ProofStateProvider::Pending(_) => {

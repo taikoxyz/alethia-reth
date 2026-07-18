@@ -321,9 +321,12 @@ where
             handler.inspect_run(&mut self.inner)
         } else {
             handler.run(&mut self.inner)
-        }?;
+        };
+        // Finalize before propagating errors, mirroring revm's `ExecuteEvm::transact`: payload
+        // building and derived-block execution skip invalid transactions and keep executing on
+        // this EVM, and an errored run must not leave the journal for the next transaction.
         let state = self.ctx_mut().journal_mut().finalize();
-        Ok(ResultAndState::new(result, state))
+        Ok(ResultAndState::new(result?, state))
     }
 
     /// Executes a system call.
@@ -577,6 +580,36 @@ mod tests {
         assert!(
             treasury_account.is_cold_transaction_id(next_tx_id),
             "treasury must be cold again for the first real transaction"
+        );
+    }
+
+    #[test]
+    fn errored_transaction_finalizes_the_journal_for_the_next_transaction() {
+        // Payload building and derived-block execution skip invalid transactions and keep
+        // executing on the same EVM, so an errored `transact_raw` must leave the journal as
+        // finalized as a successful one — revm's `ExecuteEvm::transact` finalizes
+        // unconditionally for exactly this reason.
+        let broke_caller = Address::with_last_byte(0xBC);
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.chain_id = 167_000;
+        let mut evm = TaikoEvmFactory::default().create_evm(InMemoryDB::default(), env);
+
+        let tx = TxEnv::builder()
+            .caller(broke_caller)
+            .kind(TxKind::Call(Address::ZERO))
+            // Send value from an unfunded account: validation loads the caller through the
+            // journal and only then errors, so the failed transaction has journal state to
+            // leak. A pre-state error (e.g. a chain-id mismatch) would not exercise this.
+            .value(U256::from(1))
+            .gas_limit(21_000)
+            .chain_id(None)
+            .build()
+            .expect("valid tx env");
+        evm.transact_raw(tx).expect_err("transaction from an unfunded caller must error");
+
+        assert!(
+            evm.ctx().journal().state.is_empty(),
+            "an errored transaction must finalize the journal before the next transaction runs"
         );
     }
 }

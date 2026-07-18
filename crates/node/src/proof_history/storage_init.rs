@@ -136,8 +136,10 @@ where
     <Provider::DB as Database>::TX: Sync,
     Storage: OpProofsStore + Send,
 {
-    let anchor =
-        initialize_from_pinned_provider(provider.database_provider_ro()?, storage, storage_path)?;
+    // The initial state copy runs far longer than reth's default read-transaction timeout;
+    // without this the source transaction is aborted mid-copy after five minutes.
+    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+    let anchor = initialize_from_pinned_provider(db_provider, storage, storage_path)?;
     info!(
         target: "reth::taiko::proof_history",
         best_number = anchor.number,
@@ -173,8 +175,9 @@ where
 ///
 /// Returns `false` without mutating an uninitialized store while finalized state is unavailable or
 /// execution is below `finalized.saturating_sub(window)`. Once initialization is possible, the
-/// source snapshot is pinned through the upstream copy. A fresh snapshot then validates the stored
-/// anchor and latest block before upstream backfill resumes from its committed earliest block.
+/// source snapshot is pinned through the upstream copy. A fresh snapshot then waits while the
+/// stored anchor or latest block leads the persisted best and validates the anchor before
+/// upstream backfill resumes from its committed earliest block.
 pub(super) fn initialize_finalized_window_proof_history_storage<Provider, Storage>(
     provider: &Provider,
     storage: Storage,
@@ -196,7 +199,9 @@ where
     <Provider::DB as Database>::TX: Sync,
     Storage: OpProofsBackfillStore + Clone + Send,
 {
-    let db_provider = provider.database_provider_ro()?;
+    // Both the initial state copy and the window backfill outlive reth's default five-minute
+    // read-transaction timeout; disable it on every source transaction they consume.
+    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
     let executed_head = db_provider.best_block_number()?;
     let Some(finalized) = db_provider.last_finalized_block_number()? else {
         return Ok(false);
@@ -217,9 +222,16 @@ where
     let anchor = anchor.block.ok_or_else(|| eyre!("completed proof-history anchor is missing"))?;
     let latest = storage.provider_ro()?.get_latest_block()?;
 
-    let db_provider = provider.database_provider_ro()?;
+    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+    // After an unclean shutdown the persisted database routinely trails the committed proof
+    // head (and can trail the anchor) until the driver re-derives the gap. That is a wait
+    // state, not corruption; a reorged stored latest at a persisted height is likewise repaired
+    // by startup reconciliation's suffix unwind rather than a wipe here.
+    let persisted_best = db_provider.best_block_number()?;
+    if anchor.number > persisted_best || latest.number > persisted_best {
+        return Ok(false);
+    }
     validate_canonical_stored_block(&db_provider, anchor, "initialization anchor", storage_path)?;
-    validate_canonical_stored_block(&db_provider, latest, "latest", storage_path)?;
     let Some(finalized) = db_provider.last_finalized_block_number()? else {
         return Ok(false);
     };
@@ -511,6 +523,38 @@ mod tests {
             .expect("proof window exists");
         assert_eq!(window.earliest, blocks[2]);
         assert_eq!(window.latest, blocks[5]);
+    }
+
+    #[test]
+    fn finalized_window_waits_while_proof_head_leads_persisted_database() {
+        use alloy_eips::eip1898::BlockWithParent;
+        use reth_optimism_trie::{BlockStateDiff, OpProofsProviderRw};
+
+        let (factory, blocks) = initialization_provider_with_blocks(3);
+        persist_finalized(&factory, 3);
+        let (storage, path) = initialization_v2_storage();
+        let prepared =
+            initialize_finalized_window_proof_history_storage(&factory, storage.clone(), &path, 2)
+                .expect("initial window preparation succeeds");
+        assert!(prepared);
+
+        // Simulate an unclean shutdown: the proof store committed one block past the persisted
+        // best before the main database checkpointed it.
+        let head = *blocks.last().expect("persisted head exists");
+        let ahead = NumHash::new(head.number + 1, B256::repeat_byte(0x44));
+        let proof_rw = storage.provider_rw().expect("proof writer opens");
+        proof_rw
+            .store_trie_updates(BlockWithParent::new(head.hash, ahead), BlockStateDiff::default())
+            .expect("ahead proof block stores");
+        OpProofsProviderRw::commit(proof_rw).expect("ahead proof block commits");
+
+        // The driver re-derives the missing block after restart; preparation must wait for the
+        // persisted database instead of reporting corruption and demanding a wipe.
+        let prepared =
+            initialize_finalized_window_proof_history_storage(&factory, storage.clone(), &path, 2)
+                .expect("proof head above the persisted best is a transient wait state");
+
+        assert!(!prepared);
     }
 
     /// Writes selected V1 proof-window rows into a fresh proof-history MDBX database.

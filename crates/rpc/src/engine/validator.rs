@@ -26,7 +26,7 @@ use reth_node_builder::{
 };
 use reth_payload_primitives::{
     EngineApiMessageVersion, EngineObjectValidationError, InvalidPayloadAttributesError,
-    PayloadAttributes, PayloadOrAttributes,
+    PayloadAttributes, PayloadOrAttributes, VersionSpecificValidationError,
 };
 use reth_primitives_traits::{Block as BlockTrait, SealedBlock};
 use std::sync::Arc;
@@ -40,6 +40,9 @@ enum TaikoPayloadValidationError {
     /// Unzen payloads must carry the original header difficulty through the Taiko sidecar.
     #[error("missing header difficulty for Unzen payload")]
     MissingUnzenHeaderDifficulty,
+    /// Taiko payload construction does not consume the post-Amsterdam target-gas-limit attribute.
+    #[error("target gas limit is unsupported on Taiko")]
+    TargetGasLimitUnsupported,
 }
 
 /// Builder for [`TaikoEngineValidator`].
@@ -219,20 +222,39 @@ where
     fn validate_version_specific_fields(
         &self,
         _version: EngineApiMessageVersion,
-        _payload_or_attrs: PayloadOrAttributes<'_, Types::ExecutionData, Types::PayloadAttributes>,
+        payload_or_attrs: PayloadOrAttributes<'_, Types::ExecutionData, Types::PayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
-        // For Taiko, we don't have version-specific validation
+        let validation_kind = payload_or_attrs.message_validation_kind();
+
+        if payload_or_attrs.block_access_list().is_some() {
+            return Err(validation_kind
+                .to_error(VersionSpecificValidationError::BlockAccessListNotSupported));
+        }
+        if payload_or_attrs.slot_number().is_some() {
+            return Err(
+                validation_kind.to_error(VersionSpecificValidationError::SlotNumberNotSupported)
+            );
+        }
+        if payload_or_attrs.target_gas_limit().is_some() {
+            return Err(EngineObjectValidationError::InvalidParams(Box::new(
+                TaikoPayloadValidationError::TargetGasLimitUnsupported,
+            )));
+        }
+
         Ok(())
     }
 
     /// Ensures that the payload attributes are valid for the given [`EngineApiMessageVersion`].
     fn ensure_well_formed_attributes(
         &self,
-        _version: EngineApiMessageVersion,
-        _attributes: &Types::PayloadAttributes,
+        version: EngineApiMessageVersion,
+        attributes: &Types::PayloadAttributes,
     ) -> Result<(), EngineObjectValidationError> {
-        // Attributes are well-formed if they pass the basic validation
-        Ok(())
+        <Self as EngineApiValidator<Types>>::validate_version_specific_fields(
+            self,
+            version,
+            PayloadOrAttributes::from_attributes(attributes),
+        )
     }
 }
 
@@ -240,15 +262,18 @@ where
 mod tests {
     use super::*;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::engine::{
-        TaikoEngineTypes,
-        types::{TaikoExecutionData, TaikoExecutionDataSidecar},
+    use alethia_reth_primitives::{
+        engine::{
+            TaikoEngineTypes,
+            types::{TaikoExecutionData, TaikoExecutionDataSidecar},
+        },
+        payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
     };
     use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, U256};
-    use alloy_rpc_types_engine::ExecutionPayloadV1;
+    use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadAttributes as EthPayloadAttributes};
     use alloy_rpc_types_eth::Withdrawals;
     use reth_primitives_traits::BlockBody as _;
 
@@ -317,6 +342,140 @@ mod tests {
         assert_eq!(sealed.header().requests_hash, Some(EMPTY_REQUESTS_HASH));
     }
 
+    #[test]
+    fn rejects_slot_number_in_v2_payload_attributes_json() {
+        let attributes =
+            payload_attributes_with_extra_field("slotNumber", serde_json::json!("0x1"));
+
+        let error = validate_payload_attributes(&attributes)
+            .expect_err("Taiko V2 payload attributes must reject slotNumber");
+
+        assert_eq!(
+            error.to_string(),
+            "Payload attributes validation error: slot number not supported in this engine API version"
+        );
+    }
+
+    #[test]
+    fn rejects_target_gas_limit_in_v2_payload_attributes_json() {
+        let attributes =
+            payload_attributes_with_extra_field("targetGasLimit", serde_json::json!("0x1c9c380"));
+
+        let error = validate_payload_attributes(&attributes)
+            .expect_err("Taiko V2 payload attributes must reject targetGasLimit");
+
+        assert_eq!(error.to_string(), "Invalid params: target gas limit is unsupported on Taiko");
+    }
+
+    #[test]
+    fn rejects_block_access_list_in_v2_execution_payload_json() {
+        let payload = execution_data_with_extra_field("blockAccessList", serde_json::json!("0xc0"));
+
+        let error = validate_execution_payload(&payload)
+            .expect_err("Taiko V2 execution payloads must reject blockAccessList");
+
+        assert_eq!(
+            error.to_string(),
+            "Payload validation error: block access list not supported in this engine API version"
+        );
+    }
+
+    #[test]
+    fn rejects_slot_number_in_v2_execution_payload_json() {
+        let payload = execution_data_with_extra_field("slotNumber", serde_json::json!("0x1"));
+
+        let error = validate_execution_payload(&payload)
+            .expect_err("Taiko V2 execution payloads must reject slotNumber");
+
+        assert_eq!(
+            error.to_string(),
+            "Payload validation error: slot number not supported in this engine API version"
+        );
+    }
+
+    fn validate_payload_attributes(
+        attributes: &TaikoPayloadAttributes,
+    ) -> Result<(), EngineObjectValidationError> {
+        <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::
+            validate_version_specific_fields(
+                &TaikoEngineValidator::new(Arc::new(unzen_chain_spec())),
+                EngineApiMessageVersion::V2,
+                PayloadOrAttributes::from_attributes(attributes),
+            )
+    }
+
+    fn validate_execution_payload(
+        payload: &TaikoExecutionData,
+    ) -> Result<(), EngineObjectValidationError> {
+        <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::
+            validate_version_specific_fields(
+                &TaikoEngineValidator::new(Arc::new(unzen_chain_spec())),
+                EngineApiMessageVersion::V2,
+                PayloadOrAttributes::from_execution_payload(payload),
+            )
+    }
+
+    fn payload_attributes_with_extra_field(
+        field: &str,
+        value: serde_json::Value,
+    ) -> TaikoPayloadAttributes {
+        let mut json = serde_json::to_value(sample_payload_attributes())
+            .expect("sample payload attributes must serialize");
+        json.as_object_mut()
+            .expect("payload attributes must serialize as an object")
+            .insert(field.to_owned(), value);
+        serde_json::from_value(json).expect("payload attributes with fork field must deserialize")
+    }
+
+    fn execution_data_with_extra_field(
+        field: &str,
+        value: serde_json::Value,
+    ) -> TaikoExecutionData {
+        let mut json = serde_json::to_value(sample_unzen_execution_data(
+            U256::from(7_u64),
+            Some(U256::from(7_u64)),
+            Some(B256::ZERO),
+        ))
+        .expect("sample execution data must serialize");
+        json.as_object_mut()
+            .expect("execution data must serialize as an object")
+            .insert(field.to_owned(), value);
+        serde_json::from_value(json).expect("execution data with fork field must deserialize")
+    }
+
+    fn sample_payload_attributes() -> TaikoPayloadAttributes {
+        TaikoPayloadAttributes {
+            payload_attributes: EthPayloadAttributes {
+                timestamp: 1,
+                prev_randao: B256::with_last_byte(0x11),
+                suggested_fee_recipient: Address::with_last_byte(0x22),
+                withdrawals: Some(Vec::new()),
+                parent_beacon_block_root: Some(B256::ZERO),
+                slot_number: None,
+                target_gas_limit: None,
+            },
+            base_fee_per_gas: U256::from(1_u64),
+            block_metadata: TaikoBlockMetadata {
+                beneficiary: Address::with_last_byte(0x33),
+                gas_limit: 30_000_000,
+                timestamp: U256::from(1_u64),
+                mix_hash: B256::with_last_byte(0x44),
+                tx_list: None,
+                extra_data: Bytes::new(),
+            },
+            l1_origin: RpcL1Origin {
+                block_id: U256::ZERO,
+                l2_block_hash: B256::ZERO,
+                l1_block_height: None,
+                l1_block_hash: None,
+                build_payload_args_id: [0; 8],
+                is_forced_inclusion: false,
+                signature: [0; 65],
+            },
+            anchor_transaction: None,
+        }
+    }
+
     fn unzen_chain_spec() -> TaikoChainSpec {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
@@ -371,6 +530,8 @@ mod tests {
                 withdrawals_hash: Some(EMPTY_WITHDRAWALS),
                 header_difficulty,
                 taiko_block: Some(true),
+                block_access_list: None,
+                slot_number: None,
             },
         }
     }

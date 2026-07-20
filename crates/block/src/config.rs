@@ -675,6 +675,8 @@ mod tests {
                     withdrawals_hash: None,
                     header_difficulty,
                     taiko_block: Some(true),
+                    block_access_list: None,
+                    slot_number: None,
                 },
             }
         }

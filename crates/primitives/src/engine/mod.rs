@@ -31,8 +31,8 @@ impl PayloadTypes for TaikoEngineTypes {
 
     /// Converts a block into an execution payload.
     ///
-    /// The Amsterdam block access list is discarded: Taiko networks schedule no Amsterdam
-    /// fork and [`TaikoExecutionData`] carries no BAL field.
+    /// The Amsterdam block access list is discarded because Taiko networks schedule no Amsterdam
+    /// fork; the transport sentinels in [`TaikoExecutionData`] remain empty for locally built data.
     fn block_to_payload(
         block: SealedBlock<
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
@@ -52,6 +52,8 @@ impl PayloadTypes for TaikoEngineTypes {
                 withdrawals_hash,
                 header_difficulty: Some(header_difficulty),
                 taiko_block: Some(true),
+                block_access_list: None,
+                slot_number: None,
             },
         }
     }

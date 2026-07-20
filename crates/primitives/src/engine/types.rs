@@ -45,6 +45,15 @@ pub struct TaikoExecutionDataSidecar {
     pub header_difficulty: Option<U256>,
     /// Marker flag indicating whether this payload is a Taiko block.
     pub taiko_block: Option<bool>,
+    /// Inbound Amsterdam block access list retained only so engine validation can reject it.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing))]
+    pub block_access_list: Option<Bytes>,
+    /// Inbound Amsterdam slot number retained only so engine validation can reject it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing, with = "alloy_serde::quantity::opt")
+    )]
+    pub slot_number: Option<u64>,
 }
 
 impl ExecutionPayloadTr for TaikoExecutionData {
@@ -70,7 +79,7 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 
     /// Returns the access list associated with the block, if any.
     fn block_access_list(&self) -> Option<&Bytes> {
-        None
+        self.taiko_sidecar.block_access_list.as_ref()
     }
 
     /// Returns the parent beacon block root, if applicable.
@@ -100,7 +109,7 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 
     /// Returns the slot number for the payload. Taiko payloads do not carry a beacon slot.
     fn slot_number(&self) -> Option<u64> {
-        None
+        self.taiko_sidecar.slot_number
     }
 }
 

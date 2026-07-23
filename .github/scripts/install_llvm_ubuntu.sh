@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+#
+# CI/Docker provisioning ONLY. This installs apt.llvm.org packages system-wide and
+# force-overwrites the /usr/bin/{clang,llvm-config,lld,ld.lld,FileCheck} symlinks, so it must
+# not be run on a developer machine: install your distribution's llvm-22 package instead
+# (Homebrew `llvm@22` on macOS) and put its bin directory on PATH.
 set -eo pipefail
 
 version=${1:-22}

@@ -59,7 +59,9 @@ where
         let window = provider_ro.get_proof_window()?;
         let (earliest, latest) = (window.earliest.number, window.latest.number);
 
-        let parent_block_number = block.number() - 1;
+        // Genesis has no parent state to execute against.
+        let parent_block_number =
+            block.number().checked_sub(1).ok_or(OpProofsStorageError::UnknownParent)?;
         if parent_block_number < earliest {
             return Err(OpProofsStorageError::UnknownParent);
         }
@@ -72,10 +74,20 @@ where
             });
         }
 
+        // The storage only accepts appends on top of its latest block (`store_trie_updates`
+        // re-checks this at write time), so require the parent to be the stored tip before
+        // paying for execution and state-root collection: a reorg race would otherwise surface
+        // late as a confusing state-root mismatch, and even a matching root could not be stored.
+        if parent_block_number != latest || block.parent_hash() != window.latest.hash {
+            return Err(OpProofsStorageError::OutOfOrder {
+                block_number: block.number(),
+                parent_block_hash: block.parent_hash(),
+                latest_block_hash: window.latest.hash,
+            });
+        }
+
         let block_ref =
             BlockWithParent::new(block.parent_hash(), NumHash::new(block.number(), block.hash()));
-
-        // TODO: should we check block hash here?
 
         let state_provider = OpProofsStateProviderRef::new(
             self.provider.state_by_block_hash(block.parent_hash())?,
@@ -352,6 +364,60 @@ mod tests {
         let block = empty_block(3, B256::repeat_byte(0x11), B256::ZERO);
         let err = collector.execute_and_store_block_updates(&block).unwrap_err();
         assert!(matches!(err, OpProofsStorageError::MissingParentBlock { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn collector_rejects_a_genesis_block() {
+        let chain_spec = test_chain_spec();
+        let (provider, storage) = genesis_fixture(&chain_spec);
+        let collector =
+            LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
+
+        // Block zero has no parent: the parent-height subtraction must not wrap into a window
+        // probe.
+        let block = empty_block(0, B256::ZERO, chain_spec.genesis_header().state_root);
+        let err = collector.execute_and_store_block_updates(&block).unwrap_err();
+        assert!(matches!(err, OpProofsStorageError::UnknownParent), "got {err:?}");
+    }
+
+    #[test]
+    fn collector_rejects_a_block_whose_parent_is_not_the_stored_tip() {
+        let chain_spec = test_chain_spec();
+        let (provider, storage) = genesis_fixture(&chain_spec);
+        let collector =
+            LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
+
+        // Parent height matches the stored tip (genesis) but the hash belongs to another fork:
+        // the collector must refuse up front instead of executing toward a state-root mismatch.
+        let block = empty_block(1, B256::repeat_byte(0xEE), chain_spec.genesis_header().state_root);
+        let err = collector.execute_and_store_block_updates(&block).unwrap_err();
+        assert!(matches!(err, OpProofsStorageError::OutOfOrder { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn collector_rejects_a_block_executing_inside_the_stored_window() {
+        let chain_spec = test_chain_spec();
+        let (provider, storage) = genesis_fixture(&chain_spec);
+        let collector =
+            LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
+
+        // Window [0, 1]: a block whose parent is the interior genesis block is a reorg of the
+        // stored tip. The append-only storage would reject it at write time, so execution must
+        // be refused up front (reorgs go through `unwind_and_store_block_updates`).
+        let stored =
+            BlockWithParent::new(chain_spec.genesis_hash(), NumHash::new(1, B256::repeat_byte(1)));
+        collector
+            .store_block_updates(
+                stored,
+                TrieUpdatesSorted::default(),
+                HashedPostStateSorted::default(),
+            )
+            .expect("canonical block stores cleanly");
+
+        let block =
+            empty_block(1, chain_spec.genesis_hash(), chain_spec.genesis_header().state_root);
+        let err = collector.execute_and_store_block_updates(&block).unwrap_err();
+        assert!(matches!(err, OpProofsStorageError::OutOfOrder { .. }), "got {err:?}");
     }
 
     #[test]

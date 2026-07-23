@@ -444,6 +444,11 @@ where
     /// Commits a previously executed transaction: updates receipts, gas accounting, and writes the
     /// buffered state changes to the database.
     ///
+    /// `output` must be a result produced by `execute_transaction_without_commit` on this
+    /// executor: that is the only place the block zk gas budget is pre-checked while truncation
+    /// can still be reported (committing is infallible), and
+    /// `commit_current_transaction_zk_gas` panics on a result that skipped the check.
+    ///
     /// State hooks fire from the `State` database on commit (reth v2.4.0 moved hook delivery off
     /// the block executor), so no explicit hook call is needed here.
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {

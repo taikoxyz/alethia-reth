@@ -506,6 +506,126 @@ fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
 }
 
+/// Builds a blocking, in-process JIT backend so tests observe compilation synchronously.
+#[cfg(feature = "jit")]
+fn blocking_jit_backend() -> revmc::runtime::JitBackend {
+    use revmc::runtime::{JitBackend, JitMode, RuntimeConfig};
+
+    JitBackend::new(RuntimeConfig {
+        enabled: true,
+        blocking: true,
+        single_error: false,
+        jit_mode: JitMode::InProcess,
+        ..RuntimeConfig::default()
+    })
+    .expect("blocking JIT backend should start")
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_requires_local_support_and_falls_back_for_unzen() {
+    let backend = blocking_jit_backend();
+    let factory = TaikoEvmFactory::new(backend.clone());
+
+    let mut unsupported_evm = factory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    unsupported_evm
+        .transact(tx_env(100_000))
+        .expect("locally disabled JIT execution should use the interpreter");
+    assert_eq!(backend.stats().compilations_succeeded, 0);
+
+    let factory = factory.with_jit_support();
+
+    let mut pre_unzen_evm = factory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    pre_unzen_evm.transact(tx_env(100_000)).expect("pre-Unzen JIT execution should succeed");
+
+    let compiled = backend.stats();
+    assert_eq!(compiled.compilations_succeeded, 1);
+    assert_eq!(compiled.lookup_hits, 1);
+
+    let mut unzen_evm = factory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    unzen_evm.transact(tx_env(100_000)).expect("Unzen interpreter execution should succeed");
+
+    let after_unzen = backend.stats();
+    assert_eq!(after_unzen.compilations_succeeded, compiled.compilations_succeeded);
+    assert_eq!(after_unzen.lookup_hits, compiled.lookup_hits);
+    assert!(unzen_evm.meter().is_some());
+}
+
+/// Executes `bytecode` through a blocking JIT-enabled factory and an interpreter-only factory,
+/// returning both outcomes and the JIT backend's stats.
+#[cfg(feature = "jit")]
+fn jit_and_interpreter_outputs(
+    bytecode: Bytecode,
+) -> (
+    reth_revm::context::result::ResultAndState<reth_revm::context::result::HaltReason>,
+    reth_revm::context::result::ResultAndState<reth_revm::context::result::HaltReason>,
+    revmc::runtime::RuntimeStatsSnapshot,
+) {
+    let backend = blocking_jit_backend();
+
+    let mut jit_evm = TaikoEvmFactory::new(backend.clone())
+        .with_jit_support()
+        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
+    let jit_output = jit_evm.transact(tx_env(100_000)).expect("JIT execution should succeed");
+
+    let mut interpreter_evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::SHASTA));
+    let interpreter_output =
+        interpreter_evm.transact(tx_env(100_000)).expect("interpreter execution should succeed");
+
+    (jit_output, interpreter_output, backend.stats())
+}
+
+/// LOG0 over 32 bytes of live memory: logging is forwarded to the interpreter-side builtin,
+/// and its memory operands participate in revmc's gas analysis (revmc#400).
+#[cfg(feature = "jit")]
+fn log0_with_memory_bytecode() -> Bytecode {
+    // PUSH1 0x42 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 LOG0 STOP
+    Bytecode::new_raw([0x60, 0x42, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xa0, 0x00].into())
+}
+
+/// SELFDESTRUCT to a cold beneficiary: one of the diverging builtins whose stack handoff
+/// revmc#394 synchronizes between compiled code and the interpreter.
+#[cfg(feature = "jit")]
+fn selfdestruct_bytecode() -> Bytecode {
+    // PUSH1 0xbe SELFDESTRUCT
+    Bytecode::new_raw([0x60, 0xbe, 0xff].into())
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_execution_matches_interpreter_execution() {
+    for (name, bytecode) in [
+        ("arithmetic", simple_arithmetic_bytecode()),
+        ("staticcall", staticcall_identity_bytecode()),
+        ("log-memory", log0_with_memory_bytecode()),
+        ("selfdestruct", selfdestruct_bytecode()),
+    ] {
+        let (jit_output, interpreter_output, stats) = jit_and_interpreter_outputs(bytecode);
+
+        assert_eq!(jit_output, interpreter_output, "JIT and interpreter diverged for {name}");
+        assert!(stats.lookup_hits >= 1, "expected the JIT path to serve compiled code for {name}");
+    }
+}
+
+/// Ensures JIT execution preserves the interpreter's dynamic-gas failure ordering.
+#[cfg(feature = "jit")]
+#[test]
+fn jit_matches_interpreter_on_dynamic_gas_failure_order() {
+    let bytecode = Bytecode::new_raw([0x60, 0x01, 0x60, 0xea, 0x55, 0x01].into());
+
+    let (jit_output, interpreter_output, stats) = jit_and_interpreter_outputs(bytecode);
+
+    assert_eq!(
+        jit_output, interpreter_output,
+        "JIT and interpreter must agree on halt reason, gas, and journaled state",
+    );
+    assert!(stats.lookup_hits >= 1, "the comparison is vacuous unless compiled code actually ran");
+}
+
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {
     let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
     env.cfg_env.spec = spec;

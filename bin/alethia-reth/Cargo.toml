@@ -9,6 +9,10 @@ license.workspace = true
 name = "alethia-reth"
 path = "src/main.rs"
 
+[features]
+default = ["jit"]
+jit = ["alethia-reth-node/jit"]
+
 [dependencies]
 alethia-reth-cli = { path = "../../crates/cli" }
 alethia-reth-node = { path = "../../crates/node" }

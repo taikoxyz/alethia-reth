@@ -3,8 +3,6 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - ".github/**"
     branches-ignore:
       - release-please--branches--**
 
@@ -17,9 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Verify a single reth revision in Cargo.lock
+      - name: Verify single reth and revmc revisions in Cargo.lock
         run: .github/scripts/check_reth_pin.sh
       - uses: rui314/setup-mold@v1
+      - run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
@@ -56,6 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: rui314/setup-mold@v1
+      - run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
@@ -67,3 +67,34 @@ jobs:
         with:
           just-version: 1.5.0
       - run: just clippy
+
+  check-no-jit:
+    name: check (no default features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rui314/setup-mold@v1
+      # LLVM is deliberately not installed: this proves the interpreter-only build stays free
+      # of the LLVM toolchain dependency.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo check --locked -p alethia-reth-bin --no-default-features
+      # Compiles the `cfg(not(feature = "jit"))` test targets, which no `--all-features` job
+      # can reach (the node crate never enables `jit` by default).
+      - run: cargo check --locked -p alethia-reth-node --all-targets
+
+  llvm-arm64:
+    name: llvm install (linux/arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      # Guards the Docker build on ARM64 hosts: apt.llvm.org omits arm64 packages for some
+      # Debian releases (bookworm has no arm64 LLVM 22), which only surfaces when installing
+      # on an ARM64 machine. Runs the same installer inside the Docker base distribution.
+      - run: docker run --rm -v "$PWD/.github/scripts:/scripts:ro" debian:trixie /scripts/install_llvm_ubuntu.sh

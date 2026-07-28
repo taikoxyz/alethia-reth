@@ -2,6 +2,7 @@
 
 mod config;
 mod init;
+mod live;
 mod sidecar;
 mod storage_init;
 
@@ -32,7 +33,7 @@ use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
+use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorage};
 use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
@@ -44,6 +45,20 @@ use tracing::info;
 
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
 pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorage>>;
+
+/// Adapts a storage block-bound result to the optional pair used by reconciliation logic.
+///
+/// Empty storage is represented by [`OpProofsStorageError::NoBlocksFound`] in the v2 storage
+/// API; all other storage failures are preserved.
+pub(crate) fn opt_block(
+    result: Result<alloy_eips::NumHash, OpProofsStorageError>,
+) -> Result<Option<(u64, alloy_primitives::B256)>, OpProofsStorageError> {
+    match result {
+        Ok(numhash) => Ok(Some((numhash.number, numhash.hash))),
+        Err(OpProofsStorageError::NoBlocksFound) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
 
 /// Storage and reconciliation-readiness handles shared with the proof-history RPC overrides.
 pub type ProofHistoryRpcHandles = (ProofHistoryStorage, ProofHistoryReadiness);
@@ -173,4 +188,26 @@ fn spawn_proofs_db_metrics(
             storage.report_metrics();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_eips::NumHash;
+    use alloy_primitives::B256;
+
+    #[test]
+    fn opt_block_maps_v2_storage_bounds_to_optional_pairs() {
+        assert_eq!(
+            opt_block(Err(OpProofsStorageError::NoBlocksFound))
+                .expect("empty storage should map to None"),
+            None
+        );
+
+        let block = NumHash::new(7, B256::with_last_byte(9));
+        assert_eq!(
+            opt_block(Ok(block)).expect("stored bound should map to Some"),
+            Some((7, B256::with_last_byte(9)))
+        );
+    }
 }

@@ -38,6 +38,7 @@ jsonrpsee-core = { workspace = true }
 jsonrpsee-types = { workspace = true }
 op-alloy-flz = { workspace = true }
 reth = { workspace = true }
+reth-chain-state = { workspace = true }
 reth-db = { workspace = true }
 reth-db-api = { workspace = true }
 reth-engine-primitives = { workspace = true }

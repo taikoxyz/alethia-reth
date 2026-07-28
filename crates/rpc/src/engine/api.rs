@@ -24,7 +24,8 @@ use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
 use reth_payload_primitives::PayloadKind;
 use reth_provider::{
-    BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider, StateProviderFactory,
+    BalProvider, BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
+    StateProviderFactory,
 };
 use reth_rpc::EngineApi;
 use reth_rpc_engine_api::{EngineApiError, EngineCapabilities};
@@ -92,8 +93,12 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
 impl<Provider, PayloadT: PayloadTypes, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>
 where
-    Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+    Provider: HeaderProvider
+        + BlockReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BalProvider
+        + 'static,
     PayloadT: PayloadTypes,
     Pool: TransactionPool + 'static,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
@@ -116,8 +121,12 @@ where
 impl<Provider, EngineT, Pool, Validator, ChainSpec>
     TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
-    Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+    Provider: HeaderProvider
+        + BlockReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BalProvider
+        + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
@@ -195,8 +204,12 @@ where
 impl<Provider, EngineT, Pool, Validator, ChainSpec> TaikoEngineApiServer<EngineT>
     for TaikoEngineApi<Provider, EngineT, Pool, Validator, ChainSpec>
 where
-    Provider:
-        HeaderProvider + BlockReader + DatabaseProviderFactory + StateProviderFactory + 'static,
+    Provider: HeaderProvider
+        + BlockReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BalProvider
+        + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
@@ -318,7 +331,6 @@ mod tests {
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, U256};
-    use reth_primitives_traits::Block as _;
     use std::sync::Arc;
 
     #[test]
@@ -374,9 +386,10 @@ mod tests {
 
     fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {
         let block = sample_unzen_block(difficulty, timestamp);
-        let sealed_block = Arc::new(block.seal_slow());
+        let recovered_block =
+            Arc::new(reth_primitives_traits::RecoveredBlock::new_unhashed(block, Vec::new()));
 
-        EthBuiltPayload::new(sealed_block, fees, None, None)
+        EthBuiltPayload::new(recovered_block, fees, None, None)
     }
 
     fn sample_unzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {

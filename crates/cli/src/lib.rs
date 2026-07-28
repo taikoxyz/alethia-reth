@@ -16,7 +16,7 @@ use reth_db::DatabaseEnv;
 use reth_ethereum_forks::Hardforks;
 use reth_node_api::{NodePrimitives, NodeTypes};
 use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_tracing::FileWorkerGuard;
+use reth_tracing::TracingGuards;
 use tracing::info;
 
 use alethia_reth_block::config::TaikoEvmConfig;
@@ -267,7 +267,7 @@ impl<
     ///
     /// If file logging is enabled, this function returns a guard that must be kept alive to ensure
     /// that all logs are flushed to disk.
-    pub fn init_tracing(&self) -> eyre::Result<Option<FileWorkerGuard>> {
+    pub fn init_tracing(&self) -> eyre::Result<TracingGuards> {
         let guard = self.inner.logs.init_tracing()?;
         Ok(guard)
     }

@@ -120,6 +120,7 @@ where
             era,
             static_files,
             storage,
+            jit: _,
         } = *self.0;
 
         // set up node config
@@ -141,6 +142,8 @@ where
             era,
             static_files,
             storage,
+            // Reth v2.4 requires this field even when the node has no JIT support.
+            jit: Default::default(),
         };
 
         // Apply Taiko-specific devnet Unzen timestamp override if specified.

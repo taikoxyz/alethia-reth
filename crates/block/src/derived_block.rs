@@ -129,6 +129,7 @@ pub fn assemble_filtered_block(
         &bundle_state,
         &state_provider,
         state_root,
+        None,
     ))?;
 
     Ok(RecoveredBlock::new_unhashed(block, senders))

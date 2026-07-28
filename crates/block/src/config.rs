@@ -424,7 +424,13 @@ where
 #[cfg(feature = "net")]
 impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
-    fn build_pending_env(parent: &SealedHeader<Header>) -> Self {
+    ///
+    /// Block overrides are ignored: the only override the upstream implementation consults is
+    /// the beacon root, and Taiko's next-block attributes carry no parent beacon block root.
+    fn build_pending_env(
+        parent: &SealedHeader<Header>,
+        _block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
+    ) -> Self {
         Self {
             timestamp: parent.timestamp.saturating_add(12),
             suggested_fee_recipient: parent.beneficiary,
@@ -530,6 +536,8 @@ mod tests {
                     withdrawals_hash: None,
                     header_difficulty,
                     taiko_block: Some(true),
+                    block_access_list: None,
+                    slot_number: None,
                 },
             }
         }

@@ -6,11 +6,11 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{Header, TransactionEnvelope};
 use alloy_evm::{
     EvmFactory,
-    block::{BlockExecutorFactory, BlockExecutorFor, StateDB},
-    eth::receipt_builder::ReceiptBuilder,
+    block::{BlockExecutorFactory, StateDB},
+    eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_rpc_types_eth::Withdrawals;
@@ -116,6 +116,19 @@ where
     type Transaction = <RethReceiptBuilder as ReceiptBuilder>::Transaction;
     /// Receipt type produced by the executor.
     type Receipt = <RethReceiptBuilder as ReceiptBuilder>::Receipt;
+    /// Result produced by executors for each transaction.
+    type TxExecutionResult = EthTxResult<
+        <TaikoEvmFactory as EvmFactory>::HaltReason,
+        <<RethReceiptBuilder as ReceiptBuilder>::Transaction as TransactionEnvelope>::TxType,
+    >;
+    /// Executor type created by this factory.
+    type Executor<'a, DB: StateDB, I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>>> =
+        TaikoBlockExecutor<
+            'a,
+            <TaikoEvmFactory as EvmFactory>::Evm<DB, I>,
+            Spec,
+            &'a RethReceiptBuilder,
+        >;
 
     /// Reference to EVM factory used by the executor.
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -127,10 +140,10 @@ where
         &'a self,
         evm: <TaikoEvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
-    ) -> impl BlockExecutorFor<'a, Self, DB, I>
+    ) -> Self::Executor<'a, DB, I>
     where
-        DB: StateDB + 'a,
-        I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>> + 'a,
+        DB: StateDB,
+        I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>>,
     {
         TaikoBlockExecutor::new(evm, ctx, self.spec.clone(), &self.receipt_builder)
     }

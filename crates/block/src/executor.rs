@@ -10,10 +10,10 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, Bytes, Log, U256, Uint};
 use reth_evm::{
-    Evm, OnStateHook,
+    Evm,
     block::{
         BlockExecutionError, BlockExecutor, BlockValidationError, CommitChanges, ExecutableTx,
-        InternalBlockExecutionError, StateChangeSource, StateDB, SystemCaller,
+        InternalBlockExecutionError, StateDB, SystemCaller,
     },
     eth::receipt_builder::ReceiptBuilderCtx,
 };
@@ -179,21 +179,24 @@ where
     }
 
     /// Commits the current transaction's zk gas and publishes the updated block total.
-    fn commit_current_transaction_zk_gas(&mut self) -> Result<(), BlockExecutionError>
+    ///
+    /// # Panics
+    ///
+    /// If committing would exceed the block zk gas budget. [`BlockExecutor::commit_transaction`]
+    /// is infallible in alloy-evm 0.37, so `execute_transaction_without_commit` pre-checks the
+    /// budget while the failure can still be reported; reaching the exceeded branch here means
+    /// the executor was driven with a result that skipped that check.
+    fn commit_current_transaction_zk_gas(&mut self)
     where
         Evm: TaikoZkGasEvm,
     {
         match self.evm.commit_transaction_zk_gas() {
-            Ok(Some(zk_gas)) => {
-                self.ctx.set_finalized_block_zk_gas(zk_gas);
-                Ok(())
-            }
-            Ok(None) => Ok(()),
-            Err(ZkGasOutcome::LimitExceeded) => {
-                self.zk_gas_exhausted = true;
-                self.reset_current_transaction_zk_gas();
-                Err(Self::zk_gas_limit_error())
-            }
+            Ok(Some(zk_gas)) => self.ctx.set_finalized_block_zk_gas(zk_gas),
+            Ok(None) => {}
+            Err(ZkGasOutcome::LimitExceeded) => unreachable!(
+                "zk gas commit exceeded the block budget; \
+                 execute_transaction_without_commit must pre-check the budget"
+            ),
         }
     }
 
@@ -222,6 +225,7 @@ where
             Transaction: Transaction + Encodable2718 + Clone,
             Receipt: TxReceipt<Log = Log>,
         >,
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Executes a prover candidate block and returns the transactions that were actually committed.
     pub fn execute_block_with_committed_transactions<'tx>(
@@ -269,6 +273,7 @@ where
         > + TaikoZkGasEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Executes `tx` and returns `Ok(true)` if it committed, `Ok(false)` if it was filtered as a
     /// recoverable non-anchor failure, or `Err` for fatal / anchor errors.
@@ -297,6 +302,7 @@ where
         > + TaikoZkGasEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Input transaction type.
     type Transaction = R::Transaction;
@@ -365,7 +371,7 @@ where
             return Ok(None);
         }
 
-        self.commit_transaction(output).map(Some)
+        Ok(Some(self.commit_transaction(output)))
     }
 
     /// Executes a transaction and returns the resulting state diff without persisting it; the
@@ -419,6 +425,15 @@ where
             }
         };
 
+        // The trait's `commit_transaction` is infallible in alloy-evm 0.37, so the block zk gas
+        // budget must be checked here, where truncation can still be reported. The in-flight
+        // total is final at this point — nothing meters between execution and commit.
+        if self.evm.transaction_zk_gas_commit_would_exceed() {
+            self.zk_gas_exhausted = true;
+            self.reset_current_transaction_zk_gas();
+            return Err(Self::zk_gas_limit_error());
+        }
+
         Ok(EthTxResult {
             result,
             blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
@@ -428,16 +443,19 @@ where
 
     /// Commits a previously executed transaction: updates receipts, gas accounting, and writes the
     /// buffered state changes to the database.
-    fn commit_transaction(
-        &mut self,
-        output: Self::Result,
-    ) -> Result<GasOutput, BlockExecutionError> {
+    ///
+    /// `output` must be a result produced by `execute_transaction_without_commit` on this
+    /// executor: that is the only place the block zk gas budget is pre-checked while truncation
+    /// can still be reported (committing is infallible), and
+    /// `commit_current_transaction_zk_gas` panics on a result that skipped the check.
+    ///
+    /// State hooks fire from the `State` database on commit (reth v2.4.0 moved hook delivery off
+    /// the block executor), so no explicit hook call is needed here.
+    fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         let EthTxResult { result: ResultAndState { result, state }, tx_type, .. } = output;
 
-        self.system_caller.on_state(StateChangeSource::Transaction(self.receipts.len()), &state);
-
         let gas_used = result.tx_gas_used();
-        self.commit_current_transaction_zk_gas()?;
+        self.commit_current_transaction_zk_gas();
 
         // append gas used
         self.gas_used += gas_used;
@@ -454,7 +472,7 @@ where
         // Commit the state changes.
         self.evm.db_mut().commit(state);
 
-        Ok(GasOutput::new(gas_used))
+        GasOutput::new(gas_used)
     }
 
     /// Applies any necessary changes after executing the block's transactions, completes execution
@@ -471,11 +489,6 @@ where
                 blob_gas_used: 0,
             },
         ))
-    }
-
-    /// Sets a hook to be called after each state change during execution.
-    fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
-        self.system_caller.with_state_hook(hook);
     }
 
     /// Exposes mutable reference to EVM.

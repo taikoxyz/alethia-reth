@@ -4,7 +4,10 @@ use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, address};
 use reth_revm::{
     Inspector,
-    context::TxEnv,
+    context::{
+        TxEnv,
+        result::{ExecutionResult, HaltReason},
+    },
     db::InMemoryDB,
     inspector::NoOpInspector,
     interpreter::{
@@ -304,6 +307,71 @@ fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
         inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
 
     assert_eq!(production_zk_gas, inspector_zk_gas);
+}
+
+/// Executes `bytecode` on Unzen through the production (no-inspector) and the inspected
+/// metered path, asserting both halt with `expected_halt` and returning the per-tx zk gas
+/// charged by each.
+fn metered_paths_zk_gas_for_halting_tx(
+    bytecode: Bytecode,
+    gas_limit: u64,
+    expected_halt: fn(&HaltReason) -> bool,
+) -> (u64, u64) {
+    let mut production_evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
+    let result = production_evm.transact(tx_env(gas_limit)).expect("production path executes");
+    assert!(
+        matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
+        "production path halted unexpectedly: {:?}",
+        result.result,
+    );
+    let production_zk_gas =
+        production_evm.meter().expect("production path installs a meter").tx_zk_gas_used();
+
+    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+        db_with_contract(bytecode),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    let result = inspector_evm.transact(tx_env(gas_limit)).expect("inspector path executes");
+    assert!(
+        matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
+        "inspector path halted unexpectedly: {:?}",
+        result.result,
+    );
+    let inspector_zk_gas =
+        inspector_evm.meter().expect("inspector path installs a meter").tx_zk_gas_used();
+
+    (production_zk_gas, inspector_zk_gas)
+}
+
+#[test]
+fn metered_paths_charge_forfeited_gas_for_an_oog_halting_step() {
+    // The gas limit admits both `PUSH1` steps (3 gas each) but dies on `ADD`'s table-driven
+    // static charge with 1 gas left. An `OutOfGas` halt forfeits all remaining gas
+    // (`Interpreter::halt` spends it), and that forfeiture is part of the step's zk gas
+    // charge: pre-2.4.0 revm ran `halt_oog()` (spend-all) inside `step` itself, and
+    // taiko-geth's zk mirror follows that reference behavior. These committed values feed
+    // `header.difficulty` on Unzen, so any drift here is a consensus change.
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let push_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::PUSH1)]);
+    let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
+    let forfeited_gas = 1;
+    let expected = 2 * 3 * push_multiplier + forfeited_gas * add_multiplier;
+
+    let (production_zk_gas, inspector_zk_gas) =
+        metered_paths_zk_gas_for_halting_tx(simple_arithmetic_bytecode(), 21_000 + 7, |reason| {
+            matches!(reason, HaltReason::OutOfGas(_))
+        });
+
+    assert_eq!(
+        production_zk_gas, expected,
+        "OOG-halting step must charge the gas it forfeited via spend-all"
+    );
+    assert_eq!(
+        inspector_zk_gas, expected,
+        "inspector path must charge the OOG-halting step exactly like production"
+    );
 }
 
 #[test]

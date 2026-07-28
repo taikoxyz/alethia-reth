@@ -93,6 +93,11 @@ pub trait TaikoZkGasEvm {
     /// Commits the current transaction's zk gas into the block total and returns the new total.
     fn commit_transaction_zk_gas(&mut self) -> Result<Option<u64>, ZkGasOutcome>;
 
+    /// Returns `true` when committing the current transaction's zk gas would exceed the block
+    /// budget, i.e. when [`Self::commit_transaction_zk_gas`] would fail. Always `false` when no
+    /// meter is installed (pre-Unzen specs).
+    fn transaction_zk_gas_commit_would_exceed(&self) -> bool;
+
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
@@ -122,6 +127,11 @@ where
         };
         meter.commit_transaction()?;
         Ok(Some(meter.block_zk_gas_used()))
+    }
+
+    /// Returns whether committing the current transaction's zk gas would exceed the budget.
+    fn transaction_zk_gas_commit_would_exceed(&self) -> bool {
+        self.meter().is_some_and(|m| m.commit_would_exceed_block_limit())
     }
 
     /// Returns the finalized block zk gas that has already been committed.
@@ -223,12 +233,18 @@ where
         )
     }
 
-    /// Executes a transaction and returns the outcome.
+    /// Executes a transaction and returns the outcome after finalizing its journal.
+    ///
+    /// Finalization runs for both successful and errored executions so a caller can safely reuse
+    /// this EVM after rejecting a transaction.
     fn transact_raw(
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
+        let result =
+            if self.inspect { self.inner.inspect_one_tx(tx) } else { self.inner.transact_one(tx) };
+        let state = self.inner.finalize();
+        result.map(|result| ResultAndState::new(result, state))
     }
 
     /// Executes a system call.
@@ -407,7 +423,9 @@ pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
 mod tests {
     use alloy_evm::{Evm, EvmEnv, EvmFactory};
     use alloy_primitives::U256;
-    use reth_revm::{context::ContextTr, db::InMemoryDB, state::AccountInfo};
+    use reth_revm::{
+        context::ContextTr, db::InMemoryDB, inspector::NoOpInspector, state::AccountInfo,
+    };
 
     use super::*;
     use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
@@ -454,7 +472,7 @@ mod tests {
         );
 
         let next_tx_id = journal.transaction_id;
-        assert_eq!(next_tx_id, 1, "synthetic pre-execution load should advance tx id");
+        assert_eq!(next_tx_id.get(), 1, "synthetic pre-execution load should advance tx id");
 
         let golden_touch_account = witness_state
             .get(&golden_touch)
@@ -469,6 +487,62 @@ mod tests {
         assert!(
             treasury_account.is_cold_transaction_id(next_tx_id),
             "treasury must be cold again for the first real transaction"
+        );
+    }
+
+    #[test]
+    fn errored_transaction_finalizes_the_journal_for_the_next_transaction() {
+        // Payload building and derived-block execution skip invalid transactions and keep
+        // executing on the same EVM, so an errored `transact_raw` must leave the journal as
+        // finalized as a successful one — revm's `ExecuteEvm::transact` finalizes
+        // unconditionally for exactly this reason.
+        let broke_caller = Address::with_last_byte(0xBC);
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.chain_id = 167_000;
+        let mut evm = TaikoEvmFactory::default().create_evm(InMemoryDB::default(), env);
+
+        let tx = TxEnv::builder()
+            .caller(broke_caller)
+            .kind(TxKind::Call(Address::ZERO))
+            // Send value from an unfunded account: validation loads the caller through the
+            // journal and only then errors, so the failed transaction has journal state to
+            // leak. A pre-state error (e.g. a chain-id mismatch) would not exercise this.
+            .value(U256::from(1))
+            .gas_limit(21_000)
+            .chain_id(None)
+            .build()
+            .expect("valid tx env");
+        evm.transact_raw(tx).expect_err("transaction from an unfunded caller must error");
+
+        assert!(
+            evm.ctx().journal().state.is_empty(),
+            "an errored transaction must finalize the journal before the next transaction runs"
+        );
+    }
+
+    #[test]
+    fn errored_inspected_transaction_finalizes_the_journal_for_the_next_transaction() {
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.chain_id = 167_000;
+        let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
+            InMemoryDB::default(),
+            env,
+            NoOpInspector {},
+        );
+
+        let tx = TxEnv::builder()
+            .caller(Address::with_last_byte(0xBC))
+            .kind(TxKind::Call(Address::ZERO))
+            .value(U256::from(1))
+            .gas_limit(21_000)
+            .chain_id(None)
+            .build()
+            .expect("valid tx env");
+        evm.transact_raw(tx).expect_err("transaction from an unfunded caller must error");
+
+        assert!(
+            evm.ctx().journal().state.is_empty(),
+            "an errored inspected transaction must finalize the journal"
         );
     }
 }

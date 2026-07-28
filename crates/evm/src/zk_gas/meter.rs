@@ -54,6 +54,15 @@ impl<'a> ZkGasMeter<'a> {
         Ok(())
     }
 
+    /// Returns `true` when [`Self::commit_transaction`] would fail: committing the in-flight
+    /// transaction zk gas would exceed the block budget or overflow `u64` arithmetic.
+    pub const fn commit_would_exceed_block_limit(&self) -> bool {
+        match self.block_zk_gas_used.checked_add(self.tx_zk_gas_used) {
+            Some(next_block) => next_block > self.schedule.block_limit,
+            None => true,
+        }
+    }
+
     /// Returns the finalized zk gas from fully committed transactions.
     pub const fn block_zk_gas_used(&self) -> u64 {
         self.block_zk_gas_used

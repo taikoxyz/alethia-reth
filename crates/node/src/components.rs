@@ -38,8 +38,8 @@ where
 
     /// Creates the EVM config.
     ///
-    /// Alethia executes exclusively through the interpreter, so reth's `--jit` flags (present
-    /// upstream since v2.4.0) are rejected rather than silently ignored.
+    /// Alethia executes exclusively through the interpreter, so reth's `--jit` flag (present
+    /// upstream since v2.4.0) is rejected rather than silently ignored.
     fn build_evm(
         self,
         ctx: &BuilderContext<Node>,

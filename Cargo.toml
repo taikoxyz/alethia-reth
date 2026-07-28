@@ -25,29 +25,29 @@ license = "MIT"
 [workspace.dependencies]
 # alloy
 alloy-chains = { version = "0.2.33", default-features = false }
-alloy-consensus = { version = "2.1.1", default-features = false }
-alloy-eips = { version = "2.1.1", default-features = false }
-alloy-evm = { version = "0.37.0", default-features = false }
-alloy-genesis = { version = "2.1.1", default-features = false }
+alloy-consensus = { version = "=2.1.1", default-features = false }
+alloy-eips = { version = "=2.1.1", default-features = false }
+alloy-evm = { version = "=0.37.0", default-features = false }
+alloy-genesis = { version = "=2.1.1", default-features = false }
 alloy-hardforks = "0.4.7"
-alloy-json-rpc = { version = "2.1.1", default-features = false }
-alloy-network = { version = "2.1.1", default-features = false }
-alloy-primitives = { version = "1.6.0", default-features = false, features = [
+alloy-json-rpc = { version = "=2.1.1", default-features = false }
+alloy-network = { version = "=2.1.1", default-features = false }
+alloy-primitives = { version = "=1.6.1", default-features = false, features = [
     "map-foldhash",
 ] }
-alloy-rlp = { version = "0.3.16", default-features = false, features = [
+alloy-rlp = { version = "=0.3.16", default-features = false, features = [
     "core-net",
 ] }
-alloy-rpc-client = { version = "2.1.1", default-features = false }
-alloy-rpc-types-debug = { version = "2.1.1", default-features = false }
-alloy-rpc-types-engine = { version = "2.1.1", default-features = false }
-alloy-rpc-types-eth = { version = "2.1.1", default-features = false }
-alloy-rpc-types-trace = { version = "2.1.1", default-features = false }
-alloy-rpc-types-txpool = { version = "2.1.1", default-features = false }
-alloy-serde = { version = "2.1.1", default-features = false }
-alloy-signer = { version = "2.1.1", default-features = false }
-alloy-signer-local = { version = "2.1.1", default-features = false }
-alloy-sol-types = { version = "1.6.0", default-features = false }
+alloy-rpc-client = { version = "=2.1.1", default-features = false }
+alloy-rpc-types-debug = { version = "=2.1.1", default-features = false }
+alloy-rpc-types-engine = { version = "=2.1.1", default-features = false }
+alloy-rpc-types-eth = { version = "=2.1.1", default-features = false }
+alloy-rpc-types-trace = { version = "=2.1.1", default-features = false }
+alloy-rpc-types-txpool = { version = "=2.1.1", default-features = false }
+alloy-serde = { version = "=2.1.1", default-features = false }
+alloy-signer = { version = "=2.1.1", default-features = false }
+alloy-signer-local = { version = "=2.1.1", default-features = false }
+alloy-sol-types = { version = "=1.6.1", default-features = false }
 
 # general utilities
 arbitrary = "1.3"

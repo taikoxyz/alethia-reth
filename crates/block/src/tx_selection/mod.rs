@@ -146,7 +146,7 @@ where
         // 2. Filter by locals (if configured)
         if !config.locals.is_empty() && !config.locals.contains(&pool_tx.sender()) {
             // Mark as underpriced to skip this transaction and its dependents
-            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+            best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
             continue;
         }
 
@@ -154,7 +154,7 @@ where
         let tip = pool_tx.effective_tip_per_gas(config.base_fee);
         if tip.is_none_or(|t| t < config.min_tip as u128) {
             trace!(target: "tx_selection", ?pool_tx, "skipping transaction with insufficient tip");
-            best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Underpriced);
+            best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Underpriced);
             continue;
         }
 
@@ -163,9 +163,7 @@ where
         if !is_allowed_tx_type(tx.inner()) {
             best_txs.mark_invalid(
                 &pool_tx,
-                &InvalidPoolTransactionError::Consensus(
-                    InvalidTransactionError::TxTypeNotSupported,
-                ),
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
             );
             continue;
         }
@@ -175,7 +173,7 @@ where
         if pool_tx.gas_limit() > config.gas_limit_per_list {
             best_txs.mark_invalid(
                 &pool_tx,
-                &InvalidPoolTransactionError::ExceedsGasLimit(
+                InvalidPoolTransactionError::ExceedsGasLimit(
                     pool_tx.gas_limit(),
                     config.gas_limit_per_list,
                 ),
@@ -183,7 +181,7 @@ where
             continue;
         }
         if da_size > config.max_da_bytes_per_list {
-            best_txs.mark_invalid(&pool_tx, &da_limit_error(da_size, config.max_da_bytes_per_list));
+            best_txs.mark_invalid(&pool_tx, da_limit_error(da_size, config.max_da_bytes_per_list));
             continue;
         }
 
@@ -203,7 +201,7 @@ where
             if lists.len() >= config.max_lists {
                 let err =
                     limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
-                best_txs.mark_invalid(&pool_tx, &err);
+                best_txs.mark_invalid(&pool_tx, err);
                 continue;
             }
             // Start a new list
@@ -225,14 +223,14 @@ where
             if exceeds_gas || exceeds_da.is_some() {
                 let err =
                     limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
-                best_txs.mark_invalid(&pool_tx, &err);
+                best_txs.mark_invalid(&pool_tx, err);
                 continue;
             }
         }
 
         // 7. Execute transaction
         let gas_used = match builder.execute_transaction(tx.clone()) {
-            Ok(gas_used) => gas_used,
+            Ok(gas_output) => gas_output.tx_gas_used(),
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
                 trace!(target: "tx_selection", ?tx, "stopping selection after zk gas exhaustion");
                 break;
@@ -249,7 +247,7 @@ where
                     trace!(target: "tx_selection", %error, ?tx, "skipping invalid transaction and its descendants");
                     best_txs.mark_invalid(
                         &pool_tx,
-                        &InvalidPoolTransactionError::Consensus(
+                        InvalidPoolTransactionError::Consensus(
                             InvalidTransactionError::TxTypeNotSupported,
                         ),
                     );
@@ -303,7 +301,7 @@ mod tests {
         let chain_spec = Arc::new(unzen_chain_spec());
         let mut state =
             State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),
@@ -348,7 +346,7 @@ mod tests {
             ]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),

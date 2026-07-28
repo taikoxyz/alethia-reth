@@ -6,11 +6,13 @@
 //! 3. Either charge immediately, or defer charging until `call_end` / `create_end` confirms whether
 //!    a spawn opcode actually opened child work.
 
+use alloy_primitives::{Address, Log, U256};
 use reth_revm::{
     Inspector,
     context::{ContextTr, JournalTr},
+    handler::FrameResult,
     interpreter::{
-        CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter,
+        CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter,
         interpreter::EthInterpreter, interpreter_types::Jumps,
     },
 };
@@ -147,6 +149,30 @@ where
         }
     }
 
+    /// Forwards emitted logs to the wrapped inner inspector.
+    fn log(&mut self, context: &mut TaikoEvmContext<DB>, log: Log) {
+        self.inner.log(context, log);
+    }
+
+    /// Forwards emitted logs (with interpreter access) to the wrapped inner inspector.
+    fn log_full(
+        &mut self,
+        interp: &mut Interpreter<EthInterpreter>,
+        context: &mut TaikoEvmContext<DB>,
+        log: Log,
+    ) {
+        self.inner.log_full(interp, context, log);
+    }
+
+    /// Forwards the generic frame-start hook to the wrapped inner inspector.
+    fn frame_start(
+        &mut self,
+        context: &mut TaikoEvmContext<DB>,
+        frame_input: &mut FrameInput,
+    ) -> Option<FrameResult> {
+        self.inner.frame_start(context, frame_input)
+    }
+
     /// Marks CALL-family steps that actually opened a child frame.
     fn call(
         &mut self,
@@ -230,6 +256,21 @@ where
         {
             set_custom_error(context);
         }
+    }
+
+    /// Forwards the generic frame-end hook to the wrapped inner inspector.
+    fn frame_end(
+        &mut self,
+        context: &mut TaikoEvmContext<DB>,
+        frame_input: &FrameInput,
+        frame_result: &mut FrameResult,
+    ) {
+        self.inner.frame_end(context, frame_input, frame_result);
+    }
+
+    /// Forwards selfdestruct notifications to the wrapped inner inspector.
+    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+        self.inner.selfdestruct(contract, target, value);
     }
 }
 

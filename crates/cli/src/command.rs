@@ -120,6 +120,7 @@ where
             era,
             static_files,
             storage,
+            jit,
         } = *self.0;
 
         // set up node config
@@ -141,6 +142,7 @@ where
             era,
             static_files,
             storage,
+            jit,
         };
 
         // Apply Taiko-specific devnet Unzen timestamp override if specified.

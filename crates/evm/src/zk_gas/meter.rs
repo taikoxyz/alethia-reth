@@ -34,6 +34,29 @@ impl<'a> ZkGasMeter<'a> {
         }
     }
 
+    /// Test-only constructor that seeds finalized and in-flight usage directly.
+    ///
+    /// The charge path caps in-flight usage at the remaining block budget, so boundary states
+    /// around (and past) the block limit cannot be reached through public charging — this
+    /// bypass exists to pin [`Self::commit_would_exceed_block_limit`] against
+    /// [`Self::commit_transaction`].
+    #[cfg(test)]
+    pub(crate) const fn with_usage_for_tests(
+        schedule: &'a ZkGasSchedule,
+        block_zk_gas_used: u64,
+        tx_zk_gas_used: u64,
+    ) -> Self {
+        Self {
+            schedule,
+            block_zk_gas_used,
+            tx_zk_gas_used,
+            remaining_zk_gas: schedule
+                .block_limit
+                .saturating_sub(block_zk_gas_used)
+                .saturating_sub(tx_zk_gas_used),
+        }
+    }
+
     /// Resets the in-flight zk gas for the current transaction.
     pub fn reset_transaction(&mut self) {
         self.tx_zk_gas_used = 0;
@@ -52,6 +75,15 @@ impl<'a> ZkGasMeter<'a> {
         self.block_zk_gas_used = next_block;
         self.tx_zk_gas_used = 0;
         Ok(())
+    }
+
+    /// Returns `true` when [`Self::commit_transaction`] would fail: committing the in-flight
+    /// transaction zk gas would exceed the block budget or overflow `u64` arithmetic.
+    pub const fn commit_would_exceed_block_limit(&self) -> bool {
+        match self.block_zk_gas_used.checked_add(self.tx_zk_gas_used) {
+            Some(next_block) => next_block > self.schedule.block_limit,
+            None => true,
+        }
     }
 
     /// Returns the finalized zk gas from fully committed transactions.

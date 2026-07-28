@@ -1,4 +1,4 @@
-FROM rust:1.94.0-bookworm AS build
+FROM rust:1.95.0-bookworm AS build
 
 WORKDIR /app
 
@@ -9,7 +9,7 @@ RUN apt-get update && \
 
 COPY ./ .
 
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 

@@ -37,10 +37,18 @@ where
     type EVM = TaikoEvmConfig;
 
     /// Creates the EVM config.
+    ///
+    /// Alethia executes exclusively through the interpreter, so reth's `--jit` flags (present
+    /// upstream since v2.4.0) are rejected rather than silently ignored.
     fn build_evm(
         self,
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
+        if ctx.config().jit.enabled {
+            return future::ready(Err(eyre::eyre!(
+                "JIT compilation was requested with --jit, but alethia-reth does not support revmc JIT execution"
+            )));
+        }
         future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
     }
 }

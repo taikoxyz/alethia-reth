@@ -60,9 +60,13 @@ where
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
-        TaikoEvmHandler::<_, _, EthFrame>::new(self.extra_execution_ctx.clone())
-            .run(self)
-            .map(|result| ResultAndState::new(result, self.finalize()))
+        let result: Result<_, Self::Error> =
+            TaikoEvmHandler::<_, _, EthFrame>::new(self.extra_execution_ctx.clone()).run(self);
+        // Finalize before propagating errors, mirroring revm's `ExecuteEvm::transact`: payload
+        // building and derived-block execution skip invalid transactions and keep executing on
+        // this EVM, and an errored run must not leave the journal for the next transaction.
+        let state = self.finalize();
+        Ok(ResultAndState::new(result?, state))
     }
 }
 

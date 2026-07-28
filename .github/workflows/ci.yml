@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify the Reth dependency revision
+        run: .github/scripts/check_reth_pin.sh
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@master
         with:

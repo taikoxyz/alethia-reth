@@ -35,6 +35,22 @@ use reth_storage_api::noop::NoopProvider;
 
 use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
 
+/// Rejects command options that Alethia cannot honor.
+fn ensure_command_supported<C, Ext>(command: &Commands<C, Ext>) -> eyre::Result<()>
+where
+    C: ChainSpecParser,
+    Ext: clap::Args + fmt::Debug,
+{
+    if let Commands::ReExecute(command) = command &&
+        command.jit.enabled
+    {
+        eyre::bail!(
+            "JIT compilation was requested with --jit, but alethia-reth does not support revmc JIT execution"
+        );
+    }
+    Ok(())
+}
+
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
 /// Chain-spec parser implementations for Taiko network names and genesis input.
@@ -200,6 +216,8 @@ impl<
         C: ChainSpecParser<ChainSpec = TaikoChainSpec>,
         <<N as NodeTypes>::Primitives as NodePrimitives>::BlockHeader: From<Header>,
     {
+        ensure_command_supported(&self.inner.command)?;
+
         // Add network name if available to the logs dir
         if let Some(chain_spec) = self.inner.command.chain_spec() {
             self.inner.logs.log_file_directory =
@@ -285,7 +303,8 @@ mod tests {
 
     use super::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
-        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
+        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs, ensure_command_supported,
     };
     use crate::command::TaikoNodeExtArgs;
 
@@ -389,5 +408,19 @@ mod tests {
             .expect_err("legacy flag should be rejected");
 
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn test_re_execute_rejects_jit() {
+        let cli = TaikoCli::<TaikoChainSpecParser>::try_parse_args_from([
+            "alethia-reth",
+            "re-execute",
+            "--jit",
+        ])
+        .expect("re-execute JIT args should parse");
+        let err =
+            ensure_command_supported(&cli.inner.command).expect_err("JIT requests should fail");
+
+        assert!(err.to_string().contains("--jit"));
     }
 }

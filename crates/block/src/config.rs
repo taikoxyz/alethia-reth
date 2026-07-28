@@ -263,7 +263,10 @@ impl ConfigureEvm for TaikoEvmConfig {
         let is_unzen_active = self.chain_spec().is_unzen_active(ctx.timestamp);
         Ok(TaikoBlockExecutionCtx {
             parent_hash: parent.hash(),
-            parent_beacon_block_root: normalize_parent_beacon_block_root(is_unzen_active, None),
+            parent_beacon_block_root: normalize_parent_beacon_block_root(
+                is_unzen_active,
+                ctx.parent_beacon_block_root,
+            ),
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
@@ -382,6 +385,8 @@ pub struct TaikoNextBlockEnvAttributes {
     pub extra_data: Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
+    /// Parent beacon block root used by the EIP-4788 system call.
+    pub parent_beacon_block_root: Option<B256>,
 }
 
 /// Map the latest active hardfork at the given header to a [`TaikoSpecId`].
@@ -424,12 +429,9 @@ where
 #[cfg(feature = "net")]
 impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
-    ///
-    /// Block overrides are ignored: the only override the upstream implementation consults is
-    /// the beacon root, and Taiko's next-block attributes carry no parent beacon block root.
     fn build_pending_env(
         parent: &SealedHeader<Header>,
-        _block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
+        block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
     ) -> Self {
         Self {
             timestamp: parent.timestamp.saturating_add(12),
@@ -438,6 +440,7 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
             gas_limit: parent.gas_limit,
             extra_data: parent.extra_data.clone(),
             base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
+            parent_beacon_block_root: block_overrides.and_then(|overrides| overrides.beacon_root),
         }
     }
 }
@@ -448,6 +451,15 @@ mod tests {
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_hardforks::ForkCondition;
     use std::sync::Arc;
+
+    fn config_with_unzen_at(timestamp: u64) -> TaikoEvmConfig {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec
+            .inner
+            .hardforks
+            .insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
+        TaikoEvmConfig::new(Arc::new(chain_spec))
+    }
 
     #[test]
     fn unzen_takes_precedence_over_shasta() {
@@ -506,6 +518,29 @@ mod tests {
     }
 
     #[cfg(feature = "net")]
+    #[test]
+    fn pending_env_preserves_beacon_root_override_for_unzen_context() {
+        let root = B256::repeat_byte(0x33);
+        let parent = SealedHeader::seal_slow(Header {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1),
+            ..Header::default()
+        });
+        let overrides =
+            alloy_rpc_types_eth::BlockOverrides { beacon_root: Some(root), ..Default::default() };
+        let attributes = TaikoNextBlockEnvAttributes::build_pending_env(&parent, Some(&overrides));
+        let config = config_with_unzen_at(0);
+
+        let ctx = config
+            .context_for_next_block(&parent, attributes)
+            .expect("pending Unzen context should build");
+
+        assert_eq!(ctx.parent_beacon_block_root, Some(root));
+    }
+
+    #[cfg(feature = "net")]
     mod payload_ctx {
         use super::*;
         use alethia_reth_primitives::engine::types::{
@@ -540,15 +575,6 @@ mod tests {
                     slot_number: None,
                 },
             }
-        }
-
-        fn config_with_unzen_at(timestamp: u64) -> TaikoEvmConfig {
-            let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-            chain_spec
-                .inner
-                .hardforks
-                .insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
-            TaikoEvmConfig::new(Arc::new(chain_spec))
         }
 
         #[test]

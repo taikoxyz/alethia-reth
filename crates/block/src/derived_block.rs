@@ -51,6 +51,7 @@ fn attributes_from_derived_block(
         gas_limit: header.gas_limit,
         extra_data: header.extra_data.clone(),
         base_fee_per_gas,
+        parent_beacon_block_root: header.parent_beacon_block_root,
     })
 }
 

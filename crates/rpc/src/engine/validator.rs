@@ -43,6 +43,12 @@ enum TaikoPayloadValidationError {
     /// Taiko payload construction does not consume the post-Amsterdam target-gas-limit attribute.
     #[error("target gas limit is unsupported on Taiko")]
     TargetGasLimitUnsupported,
+    /// Taiko schedules no Amsterdam fork, so EIP-7928 block access lists are never accepted.
+    #[error("block access lists are unsupported on Taiko")]
+    BlockAccessListUnsupported,
+    /// Taiko payloads never carry the post-Amsterdam slot number.
+    #[error("slot numbers are unsupported on Taiko")]
+    SlotNumberUnsupported,
 }
 
 /// Builder for [`TaikoEngineValidator`].
@@ -127,11 +133,27 @@ where
     type Block = Block;
 
     /// Converts the given payload into a sealed block without recovering signatures.
+    ///
+    /// The inbound-only sidecar sentinels are rejected here, not just in
+    /// [`EngineApiValidator::validate_version_specific_fields`]: reth's `reth_newPayload`
+    /// extension submits payloads straight to the engine tree without the engine-API layer, and
+    /// the tree decodes a present block access list into its BAL execution path. This method is
+    /// the choke point every payload route funnels through, so failing closed here covers the
+    /// bypass.
     fn convert_payload_to_block(
         &self,
         payload: Types::ExecutionData,
     ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
         let TaikoExecutionData { execution_payload, taiko_sidecar } = payload;
+
+        if taiko_sidecar.block_access_list.is_some() {
+            return Err(NewPayloadError::other(
+                TaikoPayloadValidationError::BlockAccessListUnsupported,
+            ));
+        }
+        if taiko_sidecar.slot_number.is_some() {
+            return Err(NewPayloadError::other(TaikoPayloadValidationError::SlotNumberUnsupported));
+        }
 
         let expected_hash = execution_payload.block_hash;
         let is_unzen_active = self.chain_spec.is_unzen_active(execution_payload.timestamp);
@@ -415,6 +437,7 @@ mod tests {
             "block_to_payload must preserve a caller-supplied block access list"
         );
 
+        // The engine-API layer rejects it on the `engine_newPayloadVx` route.
         let error = validate_execution_payload(&payload)
             .expect_err("a caller-supplied block access list must fail closed");
         assert_eq!(
@@ -422,9 +445,39 @@ mod tests {
             "Payload validation error: block access list not supported in this engine API version"
         );
 
+        // The engine-tree conversion — the route `reth_newPayload` reaches without the
+        // engine-API layer — must fail closed as well.
+        let error = convert_payload(payload)
+            .expect_err("the engine-tree conversion route must also reject the BAL");
+        assert_eq!(error.to_string(), "block access lists are unsupported on Taiko");
+
         let bal_free = TaikoEngineTypes::block_to_payload(SealedBlock::new_unhashed(block), None);
         validate_execution_payload(&bal_free)
             .expect("conversions without a block access list must remain valid");
+    }
+
+    #[test]
+    fn rejects_inbound_sentinels_on_the_engine_tree_route() {
+        // reth's `reth_newPayload` ExecutionData arm accepts a caller-supplied sidecar and
+        // bypasses `validate_version_specific_fields` entirely, so the sentinels must be
+        // rejected by the conversion itself.
+        let with_bal =
+            execution_data_with_extra_field("blockAccessList", serde_json::json!("0xc0"));
+        let error = convert_payload(with_bal)
+            .expect_err("a payload-borne block access list must fail closed at conversion");
+        assert_eq!(error.to_string(), "block access lists are unsupported on Taiko");
+
+        let with_slot = execution_data_with_extra_field("slotNumber", serde_json::json!("0x1"));
+        let error = convert_payload(with_slot)
+            .expect_err("a payload-borne slot number must fail closed at conversion");
+        assert_eq!(error.to_string(), "slot numbers are unsupported on Taiko");
+    }
+
+    fn convert_payload(payload: TaikoExecutionData) -> Result<SealedBlock<Block>, NewPayloadError> {
+        <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
+            &TaikoEngineValidator::new(Arc::new(unzen_chain_spec())),
+            payload,
+        )
     }
 
     fn validate_payload_attributes(

@@ -56,10 +56,12 @@ pub(super) struct MergeState<K, V> {
 }
 
 impl<K, V> MergeState<K, V> {
+    /// Creates an unpositioned merge state with no prefetched rows.
     pub(super) const fn new() -> Self {
         Self { cs_next: None, hist_next_key: None, last_key: None, seeked: false }
     }
 
+    /// Clears prefetched rows and returns the merge walk to its unpositioned state.
     pub(super) fn reset(&mut self) {
         self.cs_next = None;
         self.hist_next_key = None;

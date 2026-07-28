@@ -143,18 +143,18 @@ impl ConfigureEvm for TaikoEvmConfig {
     ///
     /// Contains values that can't be derived from the parent block.
     type NextBlockEnvCtx = TaikoNextBlockEnvAttributes;
-    /// Configured [`BlockExecutorFactory`], contains [`EvmFactory`] internally.
+    /// Configured Taiko block executor factory, including its EVM factory.
     type BlockExecutorFactory =
         TaikoBlockExecutorFactory<RethReceiptBuilder, Arc<TaikoChainSpec>, TaikoEvmFactory>;
     /// The assembler to build a Taiko block.
     type BlockAssembler = TaikoBlockAssembler;
 
-    /// Returns reference to the configured [`BlockExecutorFactory`].
+    /// Returns a reference to the configured [`Self::BlockExecutorFactory`].
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
         &self.executor_factory
     }
 
-    /// Returns reference to the configured [`BlockAssembler`].
+    /// Returns a reference to the configured [`Self::BlockAssembler`].
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
     }
@@ -230,7 +230,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         Ok((cfg, block_env).into())
     }
 
-    /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for a given block.
+    /// Returns the configured [`TaikoBlockExecutionCtx`] for a given block.
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
@@ -253,7 +253,7 @@ impl ConfigureEvm for TaikoEvmConfig {
         })
     }
 
-    /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for `parent + 1`
+    /// Returns the configured [`TaikoBlockExecutionCtx`] for `parent + 1`
     /// block.
     fn context_for_next_block(
         &self,

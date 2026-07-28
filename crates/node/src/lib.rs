@@ -77,7 +77,7 @@ where
     /// Exposes the customizable node add-on types.
     type AddOns = TaikoAddOns<NodeAdapter<N>>;
 
-    /// Returns a [`NodeComponentsBuilder`] for the node.
+    /// Returns the configured [`Self::ComponentsBuilder`] for the node.
     fn components_builder(&self) -> Self::ComponentsBuilder {
         ComponentsBuilder::default()
             .node_types()
@@ -95,7 +95,7 @@ where
 }
 
 impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TaikoNode {
-    /// RPC block type. Used by [`DebugConsensusClient`] to fetch blocks and submit them to the
+    /// RPC block type used by `DebugConsensusClient` to fetch blocks and submit them to the
     /// engine.
     type RpcBlock = alloy_rpc_types_eth::Block;
 

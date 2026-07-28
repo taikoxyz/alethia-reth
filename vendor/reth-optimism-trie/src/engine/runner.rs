@@ -25,6 +25,7 @@ const SYNC_BACKOFF_INITIAL: Duration = Duration::from_millis(100);
 /// failure modes (e.g. provider regression that outlives our state) to ~0.1/sec.
 const SYNC_BACKOFF_MAX: Duration = Duration::from_secs(10);
 
+/// Doubles the sync retry delay while clamping it to the configured retry bounds.
 fn next_sync_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).clamp(SYNC_BACKOFF_INITIAL, SYNC_BACKOFF_MAX)
 }
@@ -37,9 +38,13 @@ where
     Evm: ConfigureEvm,
     Provider: StateReader + DatabaseProviderFactory + StateProviderFactory + BlockReader,
 {
+    /// Mutable collector state owned exclusively by the engine thread.
     state: State<Evm, Provider, Store>,
+    /// Channel carrying actions submitted through [`super::EngineHandle`].
     incoming: Receiver<EngineAction<BlockTy<Evm::Primitives>>>,
+    /// Buffered block count that triggers an asynchronous persistence save.
     persistence_threshold: u64,
+    /// Buffered block count that pauses action processing while a save is in flight.
     backpressure_threshold: u64,
     /// Current retry delay for the sync arm; grows on failure, resets on success.
     sync_backoff: Duration,
@@ -57,6 +62,7 @@ where
         + 'static,
     Store: OpProofsStore + Clone + 'static,
 {
+    /// Creates an engine with default persistence and backpressure thresholds.
     pub(super) fn new(
         evm_config: Evm,
         provider: Provider,
@@ -73,11 +79,13 @@ where
         }
     }
 
+    /// Sets the buffered block count that triggers persistence.
     pub(super) const fn with_persistence_threshold(mut self, threshold: u64) -> Self {
         self.persistence_threshold = threshold;
         self
     }
 
+    /// Sets the buffered block count that activates backpressure during persistence.
     pub(super) const fn with_backpressure_threshold(mut self, threshold: u64) -> Self {
         self.backpressure_threshold = threshold;
         self

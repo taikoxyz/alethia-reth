@@ -15,10 +15,13 @@ use tracing::{debug, error, info, warn};
 pub struct PersistenceService<H, S> {
     /// Pruner that also owns the storage backend and block hash reader.
     pruner: OpProofStoragePruner<S, H>,
+    /// Proof store to which buffered updates and unwinds are committed.
     storage: S,
+    /// Channel carrying persistence actions from engine handles.
     incoming: Receiver<PersistenceAction>,
 
     #[cfg(feature = "metrics")]
+    /// Recorder for transaction-open, write, prune, and commit durations.
     metrics: PersistenceMetrics,
 }
 
@@ -62,6 +65,7 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
         }
     }
 
+    /// Handles a save request and sends its result, treating an empty batch as a no-op.
     fn on_save_updates(
         &self,
         arc_updates: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
@@ -82,6 +86,9 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
         }
     }
 
+    /// Writes, prunes, and atomically commits one non-empty batch.
+    ///
+    /// Returns the last persisted block number or the underlying storage/pruning error.
     fn try_save_updates(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
@@ -128,12 +135,14 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
         Ok(last)
     }
 
+    /// Handles an unwind request and sends the operation result to its requester.
     fn on_unwind(&self, to: BlockWithParent, reply_tx: Sender<Result<(), PersistenceError>>) {
         if let Err(e) = reply_tx.send(self.try_unwind(to)) {
             warn!(target: "trie::engine::persistence", ?e, "Failed to send unwind result, receiver dropped");
         }
     }
 
+    /// Unwinds proof history to the supplied boundary and commits the transaction.
     fn try_unwind(&self, to: BlockWithParent) -> Result<(), PersistenceError> {
         debug!(target: "trie::engine::persistence", to_block = ?to.block.number, "Unwinding storage");
         let provider = self.storage.provider_rw()?;

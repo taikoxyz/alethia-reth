@@ -10,8 +10,11 @@ use tracing::info;
 /// Periodic pruner task: constructs the pruner and runs it every interval.
 #[derive(Debug)]
 pub struct OpProofStoragePrunerTask<S, H> {
+    /// Pruner invoked on each scheduler tick.
     pruner: OpProofStoragePruner<S, H>,
+    /// Minimum number of recent blocks retained, included in startup logging.
     min_block_interval: u64,
+    /// Wall-clock delay between prune passes.
     task_run_interval: Duration,
 }
 

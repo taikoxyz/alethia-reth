@@ -8,9 +8,11 @@
 mod models;
 pub use models::*;
 
+/// Legacy versioned-history MDBX store and provider implementation.
 mod store;
 pub use store::{MdbxProofsProvider, MdbxProofsStorage};
 
+/// History-aware cursors for the legacy versioned tables.
 mod cursor;
 pub use cursor::{
     BlockNumberVersionedCursor, MdbxAccountCursor, MdbxStorageCursor, MdbxTrieCursor,

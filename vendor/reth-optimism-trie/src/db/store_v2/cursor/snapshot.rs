@@ -30,7 +30,9 @@ use crate::db::models::{
 /// Plain account-trie cursor over [`V2AccountsTrieSnapshot`].
 #[derive(Debug)]
 pub struct V2AccountTrieSnapshotCursor<C> {
+    /// MDBX cursor over the materialized account-trie snapshot.
     cursor: C,
+    /// Last path returned, retained to implement [`TrieCursor::current`].
     last_key: Option<StoredNibbles>,
     /// Whether `seek*` has positioned the underlying cursor at least once
     /// since construction / `reset`. Guards `next` against undefined mdbx
@@ -97,8 +99,11 @@ where
 /// Plain storage-trie cursor over [`V2StoragesTrieSnapshot`] (a `DupSort` table).
 #[derive(Debug)]
 pub struct V2StorageTrieSnapshotCursor<C> {
+    /// Dup-sorted MDBX cursor over materialized storage-trie snapshots.
     cursor: C,
+    /// Account whose storage-trie rows are visible through this cursor.
     hashed_address: B256,
+    /// Last path returned, retained to implement [`TrieCursor::current`].
     last_key: Option<StoredNibbles>,
     /// Whether `seek*` has positioned the underlying cursor at least once
     /// for the current `hashed_address`. Guards `next` against undefined
@@ -181,6 +186,7 @@ where
 /// Plain hashed-account leaf cursor over [`V2HashedAccountsSnapshot`].
 #[derive(Debug)]
 pub struct V2HashedAccountSnapshotCursor<C> {
+    /// MDBX cursor over materialized hashed-account values.
     cursor: C,
     /// Whether `seek*` has positioned the underlying cursor at least once.
     /// Guards `next` against undefined mdbx behavior on an unpositioned cursor.
@@ -224,8 +230,11 @@ where
 /// invariant).
 #[derive(Debug)]
 pub struct V2HashedStorageSnapshotCursor<C> {
+    /// Dup-sorted MDBX cursor over materialized hashed-storage values.
     cursor: C,
+    /// Account whose storage slots are visible through this cursor.
     hashed_address: B256,
+    /// Whether the underlying cursor has been positioned for the selected account.
     seeked: bool,
 }
 

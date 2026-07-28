@@ -19,6 +19,7 @@ struct TrieBuffer {
     /// Mapping of block numbers to block hashes.
     numbers: RwLock<BTreeMap<u64, B256>>,
     #[cfg(feature = "metrics")]
+    /// Gauge tracking the number of blocks currently buffered.
     metrics: BufferMetrics,
 }
 
@@ -94,6 +95,7 @@ impl TrieBuffer {
 /// Manager for the in-memory state of the live trie.
 #[derive(Debug, Clone)]
 pub(crate) struct TrieBufferState {
+    /// Shared buffer used by cloned engine-state handles.
     inner: Arc<TrieBuffer>,
 }
 

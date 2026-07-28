@@ -5,18 +5,24 @@
 //! database interactions and defines the necessary tables and models for storing trie branches,
 //! accounts, and storage leaves.
 
+/// Block-number and block-hash records stored in proof-window tables.
 mod block;
 pub use block::*;
+/// Versioned values used by the legacy history schema.
 mod version;
 pub use version::*;
+/// Composite storage keys and encoded storage values.
 mod storage;
 pub use storage::*;
+/// Per-block key collections used to locate legacy history changes.
 mod change_set;
 pub use change_set::*;
 pub mod kv;
 pub use kv::*;
+/// Key types shared by proof-window and v2 history tables.
 mod key;
 pub use key::*;
+/// Value types shared by proof-window and v2 changeset tables.
 mod value;
 pub use value::*;
 mod snapshot;

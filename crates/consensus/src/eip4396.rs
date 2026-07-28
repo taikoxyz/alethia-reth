@@ -23,7 +23,7 @@ pub const MAINNET_MIN_BASE_FEE: u64 = 10_000_000; // 0.01 Gwei
 pub const MAX_BASE_FEE: u64 = 1_000_000_000; // 1 Gwei
 
 /// Calculate the base fee for the next block based on the EIP-4396 specification.
-/// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4396.md
+/// <https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4396.md>
 ///
 /// This implementation follows the EIP-4396 formula which adjusts the base fee
 /// based on parent block gas usage and block time.

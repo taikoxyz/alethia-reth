@@ -185,8 +185,8 @@ impl<
         })
     }
 
-    /// Execute the configured cli command with the provided [`CliRunner`] and
-    /// [`CliComponentsBuilder`].
+    /// Execute the configured CLI command with the provided [`CliRunner`], node type, and
+    /// launcher.
     pub fn with_runner_and_components<N>(
         mut self,
         runner: CliRunner,

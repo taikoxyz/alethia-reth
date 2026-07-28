@@ -6,6 +6,7 @@ use std::{fmt, thread::JoinHandle};
 pub(super) struct ServiceGuard(Option<JoinHandle<()>>);
 
 impl ServiceGuard {
+    /// Wraps a running service thread so it is joined when the final owner drops it.
     pub(super) const fn new(handle: JoinHandle<()>) -> Self {
         Self(Some(handle))
     }

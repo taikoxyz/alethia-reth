@@ -147,7 +147,7 @@ impl EthChainSpec for TaikoChainSpec {
 
     /// In Taiko network, we always mark this value as `true` so that we
     /// we can reorg the chain at will.
-    /// ref: https://github.com/paradigmxyz/reth/blob/main/crates/engine/tree/src/tree/mod.rs#L898
+    /// ref: <https://github.com/paradigmxyz/reth/blob/main/crates/engine/tree/src/tree/mod.rs#L898>
     fn is_optimism(&self) -> bool {
         true
     }

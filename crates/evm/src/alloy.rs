@@ -376,7 +376,7 @@ where
 
     /// Determines whether additional transactions should be inspected or not.
     ///
-    /// See also [`EvmFactory::create_evm_with_inspector`].
+    /// See also [`alloy_evm::EvmFactory::create_evm_with_inspector`].
     fn set_inspector_enabled(&mut self, enabled: bool) {
         // `create_evm` installs zk-gas on the production TaikoEvm wrapper and keeps the inner
         // inspector unmetered. Enabling the NoOp inspector would route around that production

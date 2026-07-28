@@ -48,8 +48,11 @@ pub enum RethTrieStorageLayout {
 /// Initialization job for external storage.
 #[derive(Debug, Constructor)]
 pub struct InitializationJob<Tx: DbTx, S: OpProofsStore + Send> {
+    /// Proof-history store that receives the imported trie state.
     storage: S,
+    /// Read transaction over the source Reth database.
     tx: Tx,
+    /// Codec layout used by the source trie's on-disk tables.
     trie_layout: RethTrieStorageLayout,
 }
 
@@ -410,6 +413,10 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + Send> InitializationJob<Tx, S> {
         Ok(())
     }
 
+    /// Verifies that an in-progress import still targets the current canonical tip.
+    ///
+    /// Returns an inconsistent-state error when the stored anchor is absent or differs from the
+    /// supplied block number and hash.
     fn validate_anchor_block(
         &self,
         anchor: &InitialStateAnchor,

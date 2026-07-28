@@ -57,6 +57,9 @@ where
     S: OpProofsStore,
     H: BlockHashReader,
 {
+    /// Resolves the safe prune range and commits it in bounded transactions.
+    ///
+    /// Returns an empty output when the retained window already satisfies the configured minimum.
     fn run_inner(&self) -> OpProofStoragePrunerResult {
         let provider_ro = self.store.provider_ro()?;
         let Some((earliest_block, target_earliest_block, mut prune_output)) =

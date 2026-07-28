@@ -59,6 +59,7 @@ enum EngineAction<Block: reth_primitives_traits::Block> {
 }
 
 impl<Block: reth_primitives_traits::Block> EngineAction<Block> {
+    /// Dispatches the action to its task implementation against the mutable engine state.
     fn execute<Evm, Provider, Store>(self, state: &mut state::EngineState<Evm, Provider, Store>)
     where
         Evm: reth_evm::ConfigureEvm<

@@ -8,7 +8,7 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 /// Chains supported by alethia-reth. First value should be used as the default.
 pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "taiko-hoodi", "devnet", "masaya"];
 
-/// Clap value parser for [`ChainSpec`]s.
+/// Clap value parser for [`TaikoChainSpec`] values.
 ///
 /// The value parser matches either a known chain, the path
 /// to a json file, or a json formatted string in-memory. The json needs to be a Genesis struct.

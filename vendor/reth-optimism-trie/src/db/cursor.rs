@@ -24,8 +24,11 @@ use reth_trie_common::{BranchNodeCompact, Nibbles, StoredNibbles};
 /// skipping tombstones.
 #[derive(Debug, Clone)]
 pub struct BlockNumberVersionedCursor<T: Table + DupSort, Cursor> {
+    /// Associates the cursor with its typed MDBX table without storing a table value.
     _table: PhantomData<T>,
+    /// Underlying dup-sorted MDBX cursor.
     cursor: Cursor,
+    /// Inclusive upper block bound used to select a key's visible version.
     max_block_number: u64,
 }
 
@@ -149,7 +152,9 @@ where
 /// MDBX implementation of [`TrieCursor`].
 #[derive(Debug)]
 pub struct MdbxTrieCursor<T: Table + DupSort, Cursor> {
+    /// History-aware cursor that resolves branch versions at the requested block.
     inner: BlockNumberVersionedCursor<T, Cursor>,
+    /// Account whose storage trie is selected, or `None` for the account trie.
     hashed_address: Option<B256>,
 }
 
@@ -276,7 +281,9 @@ where
 /// MDBX implementation of [`HashedCursor`] for storage state.
 #[derive(Debug)]
 pub struct MdbxStorageCursor<Cursor> {
+    /// History-aware cursor over versioned hashed-storage rows.
     inner: BlockNumberVersionedCursor<HashedStorageHistory, Cursor>,
+    /// Account address to which returned storage slots must belong.
     hashed_address: B256,
 }
 
@@ -368,6 +375,7 @@ where
 /// MDBX implementation of [`HashedCursor`] for account state.
 #[derive(Debug)]
 pub struct MdbxAccountCursor<Cursor> {
+    /// History-aware cursor over versioned hashed-account rows.
     inner: BlockNumberVersionedCursor<HashedAccountHistory, Cursor>,
 }
 

@@ -77,8 +77,8 @@ pub struct TaikoBlockExecutorFactory<
 }
 
 impl<R, Spec, EvmFactory> TaikoBlockExecutorFactory<R, Spec, EvmFactory> {
-    /// Creates a new [`EthBlockExecutorFactory`] with the given spec, [`EvmFactory`], and
-    /// [`ReceiptBuilder`].
+    /// Creates a new [`TaikoBlockExecutorFactory`] with the given receipt builder, specification,
+    /// and EVM factory.
     pub const fn new(receipt_builder: R, spec: Spec, evm_factory: EvmFactory) -> Self {
         Self { receipt_builder, spec, evm_factory }
     }
@@ -109,7 +109,7 @@ where
     type EvmFactory = TaikoEvmFactory;
     /// Context required for block execution.
     ///
-    /// This is similar to [`crate::EvmEnv`], but only contains context unrelated to EVM and
+    /// This is similar to [`alloy_evm::EvmEnv`], but only contains context unrelated to EVM and
     /// required for execution of an entire block.
     type ExecutionCtx<'a> = TaikoBlockExecutionCtx<'a>;
     /// Transaction type used by the executor.

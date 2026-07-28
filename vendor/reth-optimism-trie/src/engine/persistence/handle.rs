@@ -30,7 +30,9 @@ pub enum PersistenceAction {
 /// A handle to communicate with the Live Trie persistence service.
 #[derive(Debug, Clone)]
 pub struct PersistenceHandle {
+    /// Bounded channel used to submit persistence actions.
     sender: Sender<PersistenceAction>,
+    /// Shared lifetime guard that joins the service thread after the last handle is dropped.
     _service_guard: Arc<ServiceGuard>,
 }
 

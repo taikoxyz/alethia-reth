@@ -4,6 +4,7 @@ use reth_metrics::{
     metrics::{Gauge, Histogram},
 };
 
+/// Metrics describing work completed by the latest non-empty pruning pass.
 #[derive(Metrics)]
 #[metrics(scope = "optimism_trie.pruner")]
 pub(crate) struct Metrics {
@@ -22,6 +23,7 @@ pub(crate) struct Metrics {
 }
 
 impl Metrics {
+    /// Records duration, block count, and write totals for a non-empty prune result.
     pub(crate) fn record_prune_result(&self, result: PrunerOutput) {
         let blocks_pruned = result.end_block - result.start_block;
         if blocks_pruned > 0 {

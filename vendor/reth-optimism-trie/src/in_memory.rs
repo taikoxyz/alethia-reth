@@ -32,9 +32,14 @@ pub struct InMemoryProofsStorage {
 /// In-memory provider for [`InMemoryProofsStorage`]
 #[derive(Debug, Clone)]
 pub struct InMemoryProofsProvider {
+    /// Shared proof-history state accessed by all provider handles.
     inner: Arc<RwLock<InMemoryStorageInner>>,
 }
 
+/// Versioned trie and hashed-state records backing the in-memory proof store.
+///
+/// Keys include block numbers so cursors can reconstruct the latest value at an arbitrary proof
+/// window height.
 #[derive(Debug, Default)]
 struct InMemoryStorageInner {
     /// Account trie branches: (`block_number`, path) -> `branch_node`
@@ -68,6 +73,7 @@ struct InMemoryStorageInner {
 }
 
 impl InMemoryStorageInner {
+    /// Applies a block diff to the versioned maps and returns the number of records written.
     fn store_trie_updates(
         &mut self,
         block_number: u64,
@@ -172,6 +178,10 @@ pub struct InMemoryTrieCursor {
 }
 
 impl InMemoryTrieCursor {
+    /// Creates a lazy account or storage-trie cursor bounded at `max_block_number`.
+    ///
+    /// `hashed_address = None` selects the account trie; `Some(address)` selects that account's
+    /// storage trie.
     const fn new(
         inner: Arc<RwLock<InMemoryStorageInner>>,
         hashed_address: Option<B256>,
@@ -188,6 +198,9 @@ impl InMemoryTrieCursor {
         }
     }
 
+    /// Materializes the latest non-deleted branch for each path at the cursor's block bound.
+    ///
+    /// Returns an error if the shared store cannot be read without blocking.
     fn ensure_entries_populated(&mut self) -> Result<(), DatabaseError> {
         if self.is_populated {
             return Ok(());
@@ -331,6 +344,7 @@ pub struct InMemoryStorageCursor {
 }
 
 impl InMemoryStorageCursor {
+    /// Creates a lazy hashed-storage cursor for one account at the supplied block bound.
     const fn new(
         storage: Arc<RwLock<InMemoryStorageInner>>,
         hashed_address: B256,
@@ -347,6 +361,9 @@ impl InMemoryStorageCursor {
         }
     }
 
+    /// Materializes the latest non-zero value for each slot at the cursor's block bound.
+    ///
+    /// Returns an error if the shared store cannot be read without blocking.
     fn ensure_entries_populated(&mut self) -> Result<(), DatabaseError> {
         if self.is_populated {
             return Ok(());
@@ -440,6 +457,7 @@ pub struct InMemoryAccountCursor {
 }
 
 impl InMemoryAccountCursor {
+    /// Materializes the latest non-deleted account values at or before `max_block_number`.
     fn new(storage: &InMemoryStorageInner, max_block_number: u64) -> Self {
         // Collect latest accounts for each address
         let mut addr_to_latest: std::collections::BTreeMap<B256, (u64, Option<Account>)> =
@@ -513,6 +531,7 @@ impl OpProofsStore for InMemoryProofsStorage {
 }
 
 impl InMemoryProofsProvider {
+    /// Returns the greatest account-trie key imported into the initial-state block.
     fn get_latest_account_trie_key(&self) -> OpProofsStorageResult<Option<StoredNibbles>> {
         let inner = self.inner.read();
         Ok(inner
@@ -525,6 +544,7 @@ impl InMemoryProofsProvider {
             .map(|((_, nibbles), _)| StoredNibbles::from(*nibbles)))
     }
 
+    /// Returns the greatest storage-trie key imported into the initial-state block.
     fn get_latest_storage_trie_key(&self) -> OpProofsStorageResult<Option<StorageTrieKey>> {
         let inner = self.inner.read();
         Ok(inner
@@ -539,6 +559,7 @@ impl InMemoryProofsProvider {
             }))
     }
 
+    /// Returns the greatest hashed-account key imported into the initial-state block.
     fn get_latest_hashed_account_key(&self) -> OpProofsStorageResult<Option<B256>> {
         let inner = self.inner.read();
         Ok(inner
@@ -551,6 +572,7 @@ impl InMemoryProofsProvider {
             .map(|((_, address), _)| *address))
     }
 
+    /// Returns the greatest hashed-storage key imported into the initial-state block.
     fn get_latest_hashed_storage_key(&self) -> OpProofsStorageResult<Option<HashedStorageKey>> {
         let inner = self.inner.read();
         Ok(inner

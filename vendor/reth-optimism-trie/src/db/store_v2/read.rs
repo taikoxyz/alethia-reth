@@ -22,6 +22,9 @@ use reth_db::{
 use reth_trie::{HashedPostState, StoredNibbles, StoredNibblesSubKey, updates::TrieUpdates};
 
 impl<TX: DbTx> MdbxProofsProviderV2<TX> {
+    /// Reads one v2 proof-window boundary and returns its block number and hash.
+    ///
+    /// Returns [`OpProofsStorageError::NoBlocksFound`] when the boundary is absent.
     pub(super) fn get_block_number_hash_inner(
         &self,
         key: ProofWindowKey,
@@ -45,6 +48,9 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         }
     }
 
+    /// Reads both retained proof-window boundaries.
+    ///
+    /// Returns [`OpProofsStorageError::NoBlocksFound`] if either boundary is absent.
     pub(super) fn get_proof_window_inner(&self) -> OpProofsStorageResult<ProofWindowRange> {
         let mut cursor = self.tx.cursor_read::<V2ProofWindow>()?;
         let earliest = match cursor.seek_exact(ProofWindowKey::EarliestBlock)? {
@@ -58,6 +64,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         Ok(ProofWindowRange { earliest, latest })
     }
 
+    /// Reads the block anchor used to seed v2 proof history, if initialization has begun.
     pub(super) fn get_initial_state_anchor_inner(
         &self,
     ) -> OpProofsStorageResult<Option<BlockNumHash>> {

@@ -79,6 +79,10 @@ where
     Ok((trie_changesets, individual_state_revert))
 }
 
+/// Reconstructs the trie-node before-values produced by applying one block's leaf reverts.
+///
+/// The cursor factories must expose state at the block being reverted. Any cursor or root
+/// computation failure is propagated as a [`BackfillError`].
 fn compute_trie_changesets_against_proofs<T, H>(
     trie_cursor_factory: T,
     hashed_cursor_factory: H,

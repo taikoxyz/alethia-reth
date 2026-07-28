@@ -9,12 +9,16 @@ use reth_provider::{
 };
 use tracing::{debug, info};
 
+/// Request to remove proof history beginning at a specified block.
 pub(crate) struct UnwindTask {
+    /// First block to remove, including its parent hash for continuity checks.
     pub(crate) to: BlockWithParent,
+    /// One-shot response channel for success or unwind failure.
     pub(crate) reply: Sender<Result<(), EngineError>>,
 }
 
 impl UnwindTask {
+    /// Applies the unwind request to engine state and sends the result to the caller.
     pub(crate) fn execute<Evm, Provider, Store>(self, state: &mut EngineState<Evm, Provider, Store>)
     where
         Evm: ConfigureEvm,
@@ -31,6 +35,7 @@ impl UnwindTask {
     }
 }
 
+/// Unwinds buffered and persisted history unless the target lies beyond the current tip.
 fn run<Evm, Provider, Store>(
     state: &mut EngineState<Evm, Provider, Store>,
     to: BlockWithParent,

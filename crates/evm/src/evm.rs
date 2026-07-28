@@ -17,7 +17,7 @@ use crate::zk_gas::{
 };
 
 /// Custom EVM for Taiko, we extend the RevmEvm with
-/// [`TaikoEvmExtraContext`] to provide additional context
+/// [`TaikoEvmExtraExecutionCtx`] to provide additional context
 /// for Anchor transaction pre-execution checks and base fee sharing.
 pub struct TaikoEvm<CTX, INSP, P> {
     /// Inner revm engine with Taiko instruction wiring.
@@ -244,7 +244,7 @@ pub struct TaikoEvmExtraExecutionCtx {
 }
 
 impl TaikoEvmExtraExecutionCtx {
-    /// Creates a new instance of [`TaikoEvmExecutionExtraCtx`].
+    /// Creates a new instance of [`TaikoEvmExtraExecutionCtx`].
     pub fn new(
         base_fee_share_pctg: u64,
         anchor_caller_address: Address,

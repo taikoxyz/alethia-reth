@@ -25,7 +25,9 @@ use tracing::error;
 /// engine thread and blocks on a one-shot reply channel.
 #[derive(Debug, Clone)]
 pub struct EngineHandle<Block: reth_primitives_traits::Block> {
+    /// Bounded channel used to submit actions to the engine thread.
     sender: Sender<EngineAction<Block>>,
+    /// Shared lifetime guard that joins the engine thread after the last handle is dropped.
     _service_guard: Arc<ServiceGuard>,
 }
 
@@ -100,6 +102,9 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> EngineHandle<Block> 
         Self { sender: tx, _service_guard: Arc::new(ServiceGuard::new(join_handle)) }
     }
 
+    /// Sends an action with a fresh reply channel and blocks for its result.
+    ///
+    /// Returns [`EngineError::EngineDied`] if either side of the engine channel disconnects.
     fn send_and_recv(
         &self,
         make_action: impl FnOnce(Sender<Result<(), EngineError>>) -> EngineAction<Block>,

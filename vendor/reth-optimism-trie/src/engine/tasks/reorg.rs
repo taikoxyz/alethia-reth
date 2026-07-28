@@ -11,13 +11,17 @@ use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use std::{sync::Arc, time::Instant};
 use tracing::{debug, info};
 
+/// Request to replace the canonical suffix with precomputed updates from a new branch.
 pub(crate) struct ReorgTask {
+    /// Replacement blocks ordered from the first divergent block to the new tip.
     pub(crate) block_updates:
         Vec<(BlockWithParent, Arc<TrieUpdatesSorted>, Arc<HashedPostStateSorted>)>,
+    /// One-shot response channel for success or unwind/indexing failure.
     pub(crate) reply: Sender<Result<(), EngineError>>,
 }
 
 impl ReorgTask {
+    /// Applies the reorg request to engine state and sends the result to the caller.
     pub(crate) fn execute<Evm, Provider, Store>(self, state: &mut EngineState<Evm, Provider, Store>)
     where
         Evm: ConfigureEvm,
@@ -34,6 +38,9 @@ impl ReorgTask {
     }
 }
 
+/// Unwinds to the replacement branch's parent and buffers the new canonical suffix.
+///
+/// Empty replacements and reorgs beginning beyond the current proof tip are no-ops.
 fn run<Evm, Provider, Store>(
     state: &mut EngineState<Evm, Provider, Store>,
     block_updates: Vec<(BlockWithParent, Arc<TrieUpdatesSorted>, Arc<HashedPostStateSorted>)>,

@@ -38,25 +38,35 @@ use std::{fmt::Debug, ops::RangeBounds, path::Path, sync::Arc};
 /// Preprocessed prune plan for a target block number
 #[derive(Debug, Clone)]
 struct PrunePlan {
+    /// Proof-window lower bound before the prune operation.
     earliest_block: u64,
+    /// Latest account-trie version per key that must survive the pruned range.
     acc_survivors: Vec<(StoredNibbles, u64)>,
+    /// Latest storage-trie version per key that must survive the pruned range.
     storage_survivors: Vec<(StorageTrieKey, u64)>,
+    /// Latest hashed-account version per key that must survive the pruned range.
     hashed_acc_survivors: Vec<(B256, u64)>,
+    /// Latest hashed-storage version per key that must survive the pruned range.
     hashed_storage_survivors: Vec<(HashedStorageKey, u64)>,
 }
 
 /// Preprocessed delete work for a prune range
 #[derive(Debug, Default, Clone)]
 struct HistoryDeleteBatch {
+    /// Account-trie key/version pairs to delete.
     account_trie: Vec<(<AccountTrieHistory as Table>::Key, u64)>,
+    /// Storage-trie key/version pairs to delete.
     storage_trie: Vec<(<StorageTrieHistory as Table>::Key, u64)>,
+    /// Hashed-account key/version pairs to delete.
     hashed_account: Vec<(<HashedAccountHistory as Table>::Key, u64)>,
+    /// Hashed-storage key/version pairs to delete.
     hashed_storage: Vec<(<HashedStorageHistory as Table>::Key, u64)>,
 }
 
 /// MDBX implementation of [`OpProofsStore`].
 #[derive(Debug)]
 pub struct MdbxProofsStorage {
+    /// Open MDBX environment containing the proof-history tables.
     env: DatabaseEnv,
 }
 
@@ -72,6 +82,7 @@ impl MdbxProofsStorage {
 /// MDBX provider for proof storage
 #[derive(Debug)]
 pub struct MdbxProofsProvider<TX> {
+    /// Transaction used for every read or write performed by this provider.
     pub(crate) tx: TX,
 }
 
@@ -83,6 +94,9 @@ impl<TX> MdbxProofsProvider<TX> {
 }
 
 impl<TX: DbTx> MdbxProofsProvider<TX> {
+    /// Reads one proof-window boundary and returns its block number and hash.
+    ///
+    /// Returns [`OpProofsStorageError::NoBlocksFound`] when the boundary is absent.
     fn get_block_number_hash_inner(&self, key: ProofWindowKey) -> OpProofsStorageResult<NumHash> {
         let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
         cursor
@@ -156,6 +170,7 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
 }
 
 impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
+    /// Replaces the earliest retained proof-window boundary.
     fn set_earliest_block_number_inner(
         &self,
         block_number: u64,
@@ -166,6 +181,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         Ok(())
     }
 
+    /// Replaces the latest retained proof-window boundary.
     fn set_latest_block_number_inner(
         &self,
         block_number: u64,
@@ -509,6 +525,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         })
     }
 
+    /// Appends one child block's state changes and advances the latest proof-window boundary.
+    ///
+    /// Returns an out-of-order error unless `block_ref.parent` equals the currently stored tip.
     fn store_trie_updates_append_only_inner(
         &self,
         block_ref: BlockWithParent,
@@ -542,11 +561,13 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         })
     }
 
+    /// Reads the block anchor used to seed proof history, if initialization has begun.
     fn get_initial_state_anchor_inner(&self) -> OpProofsStorageResult<Option<BlockNumHash>> {
         let mut cur = self.tx.cursor_read::<ProofWindow>()?;
         Ok(cur.seek_exact(ProofWindowKey::InitialStateAnchor)?.map(|(_k, v)| v.into()))
     }
 
+    /// Returns the greatest key currently present in table `T`.
     fn get_latest_key_inner<T>(&self) -> OpProofsStorageResult<Option<T::Key>>
     where
         T: Table,

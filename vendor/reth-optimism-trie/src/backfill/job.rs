@@ -40,13 +40,18 @@ where
 /// dominates a slow backfill.
 #[derive(Debug, Default, Clone, Copy)]
 struct PhaseTimings {
+    /// Wall-clock time spent reconstructing per-block changes, excluding writes.
     compute: Duration,
+    /// Wall-clock time spent prepending changes to proof history.
     prepend: Duration,
+    /// Wall-clock time spent validating the reconstructed state root.
     validate: Duration,
+    /// Wall-clock time spent committing the containing database batch.
     commit: Duration,
 }
 
 impl PhaseTimings {
+    /// Accumulates another block or batch's phase durations into these totals.
     fn add(&mut self, other: Self) {
         self.compute += other.compute;
         self.prepend += other.prepend;
@@ -78,7 +83,9 @@ pub const DEFAULT_BACKFILL_BATCH_SIZE: usize = 25;
 /// Backfill job for proofs storage.
 #[derive(Debug)]
 pub struct BackfillJob<P, S: OpProofsBackfillStore + Send> {
+    /// Canonical-chain provider used to resolve headers and historical changesets.
     provider: P,
+    /// Proof-history store extended by the backfill.
     storage: S,
     /// Number of blocks written per MDBX transaction. Amortizes commit cost across blocks at the
     /// price of restart granularity. See [`DEFAULT_BACKFILL_BATCH_SIZE`].
@@ -225,6 +232,7 @@ where
         Ok(PhaseTimings { compute, prepend, validate, commit: Duration::ZERO })
     }
 
+    /// Emits throughput, ETA, and average phase durations for a non-empty backfill prefix.
     fn log_progress(&self, start: Instant, done: u64, total: u64, phase_totals: &PhaseTimings) {
         let elapsed_secs = start.elapsed().as_secs_f64();
         let blocks_per_sec =

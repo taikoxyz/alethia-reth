@@ -11,7 +11,9 @@ use reth_trie::{hashed_cursor::HashedCursorFactory, trie_cursor::TrieCursorFacto
 /// Factory for creating trie cursors for [`OpProofsProviderRO`].
 #[derive(Debug, Clone)]
 pub struct OpProofsTrieCursorFactory<P> {
+    /// Proof-history provider from which cursors are opened.
     provider: P,
+    /// Inclusive block height at which cursor values are reconstructed.
     block_number: u64,
 }
 
@@ -66,6 +68,7 @@ where
 /// the block being queried matches it.
 #[derive(Debug, Clone)]
 pub struct SnapshotTrieCursorFactory<P> {
+    /// Reader for the already anchored snapshot tables.
     reader: P,
 }
 
@@ -106,7 +109,9 @@ where
 /// Factory for creating hashed account cursors for [`OpProofsProviderRO`].
 #[derive(Debug, Clone)]
 pub struct OpProofsHashedAccountCursorFactory<P> {
+    /// Proof-history provider from which hashed cursors are opened.
     provider: P,
+    /// Inclusive block height at which hashed values are reconstructed.
     block_number: u64,
 }
 
@@ -158,6 +163,7 @@ where
 /// when the snapshot is `Ready` at the anchor the caller is reading.
 #[derive(Debug, Clone)]
 pub struct SnapshotHashedCursorFactory<P> {
+    /// Reader for hashed account and storage values in the anchored snapshot.
     reader: P,
 }
 

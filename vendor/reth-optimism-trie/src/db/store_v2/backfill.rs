@@ -152,6 +152,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         })
     }
 
+    /// Stores account-trie before-values for one block and records their history indices.
     fn write_account_trie_cs(
         &self,
         block_number: BlockNumber,
@@ -175,6 +176,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(count)
     }
 
+    /// Stores per-account storage-trie before-values and records their history indices.
     fn write_storage_trie_cs(
         &self,
         block_number: BlockNumber,
@@ -204,6 +206,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(count)
     }
 
+    /// Stores hashed-account before-values for one block and records their history indices.
     fn write_hashed_accounts_cs(
         &self,
         block_number: BlockNumber,
@@ -220,6 +223,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(count)
     }
 
+    /// Stores hashed-storage before-values for one block and records their history indices.
     fn write_hashed_storages_cs(
         &self,
         block_number: BlockNumber,
@@ -256,6 +260,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(())
     }
 
+    /// Prepends collected block numbers to account-trie history bitmap shards.
     fn prepend_account_trie_history(
         &self,
         entries: BTreeMap<StoredNibbles, Vec<BlockNumber>>,
@@ -276,6 +281,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(())
     }
 
+    /// Prepends collected block numbers to storage-trie history bitmap shards.
     fn prepend_storage_trie_history(
         &self,
         entries: BTreeMap<(B256, StoredNibbles), Vec<BlockNumber>>,
@@ -296,6 +302,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(())
     }
 
+    /// Prepends collected block numbers to hashed-account history bitmap shards.
     fn prepend_hashed_account_history(
         &self,
         entries: BTreeMap<B256, Vec<BlockNumber>>,
@@ -316,6 +323,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
         Ok(())
     }
 
+    /// Prepends collected block numbers to hashed-storage history bitmap shards.
     fn prepend_hashed_storage_history(
         &self,
         entries: BTreeMap<(B256, B256), Vec<BlockNumber>>,

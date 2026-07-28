@@ -43,26 +43,39 @@ use super::NUM_OF_INDICES_IN_SHARD;
 /// flush are sequential (cache-friendly).
 #[derive(Default)]
 pub(super) struct HistoryCollector {
+    /// Account-trie paths mapped to blocks that changed each path.
     pub(super) account_trie: BTreeMap<StoredNibbles, Vec<BlockNumber>>,
+    /// Account/path pairs mapped to blocks that changed each storage-trie node.
     pub(super) storage_trie: BTreeMap<(B256, StoredNibbles), Vec<BlockNumber>>,
+    /// Hashed addresses mapped to blocks that changed each account.
     pub(super) hashed_accounts: BTreeMap<B256, Vec<BlockNumber>>,
+    /// Account/slot pairs mapped to blocks that changed each storage value.
     pub(super) hashed_storages: BTreeMap<(B256, B256), Vec<BlockNumber>>,
 }
 
 /// Pre-opened write cursors for the 8 tables touched by
 /// [`MdbxProofsProviderV2::store_block_updates`].
 struct WriteCursors<TX: DbTxMut + DbTx> {
+    /// Cursor over current account-trie branch nodes.
     account_trie_state: <TX as DbTxMut>::CursorMut<V2AccountsTrie>,
+    /// Cursor over per-block account-trie before-values.
     account_trie_cs: <TX as DbTxMut>::DupCursorMut<V2AccountTrieChangeSets>,
+    /// Cursor over current storage-trie branch nodes.
     storage_trie_state: <TX as DbTxMut>::DupCursorMut<V2StoragesTrie>,
+    /// Cursor over per-block storage-trie before-values.
     storage_trie_cs: <TX as DbTxMut>::DupCursorMut<V2StorageTrieChangeSets>,
+    /// Cursor over current hashed-account values.
     hashed_accounts_state: <TX as DbTxMut>::CursorMut<V2HashedAccounts>,
+    /// Cursor over per-block hashed-account before-values.
     hashed_accounts_cs: <TX as DbTxMut>::DupCursorMut<V2HashedAccountChangeSets>,
+    /// Cursor over current hashed-storage values.
     hashed_storages_state: <TX as DbTxMut>::DupCursorMut<V2HashedStorages>,
+    /// Cursor over per-block hashed-storage before-values.
     hashed_storages_cs: <TX as DbTxMut>::DupCursorMut<V2HashedStorageChangeSets>,
 }
 
 impl<TX: DbTxMut + DbTx> WriteCursors<TX> {
+    /// Opens the eight state and changeset cursors used by a batched block write.
     fn new(tx: &TX) -> OpProofsStorageResult<Self> {
         Ok(Self {
             account_trie_state: tx.cursor_write::<V2AccountsTrie>()?,
@@ -339,6 +352,7 @@ fn write_hashed_storage_slot(
 }
 
 impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
+    /// Replaces the earliest retained v2 proof-window boundary.
     pub(super) fn set_earliest_block_number_inner(
         &self,
         block_number: u64,
@@ -349,6 +363,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         Ok(())
     }
 
+    /// Replaces the latest retained v2 proof-window boundary.
     pub(super) fn set_latest_block_number_inner(
         &self,
         block_number: u64,
@@ -465,6 +480,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         Ok(restorations)
     }
 
+    /// Restores account-trie state to before `range` and returns all affected paths.
+    ///
+    /// The corresponding changeset entries are deleted as part of the operation.
     pub(super) fn unwind_and_collect_account_trie(
         &self,
         range: &std::ops::RangeInclusive<u64>,

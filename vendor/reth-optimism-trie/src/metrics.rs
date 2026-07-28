@@ -197,6 +197,7 @@ impl OperationMetrics {
         self.duration_seconds.record(duration);
     }
 
+    /// Records `count_usize` observations sharing an evenly apportioned total duration.
     fn record_duration_per_item(&self, duration: Duration, count_usize: usize) {
         if count_usize > 0 &&
             let Some(count) = u32::try_from(count_usize).ok()
@@ -209,7 +210,9 @@ impl OperationMetrics {
 /// Wrapper for [`TrieCursor`] that records metrics.
 #[derive(Debug, Constructor, Clone)]
 pub struct OpProofsTrieCursorWithMetrics<C> {
+    /// Wrapped trie cursor that performs the underlying operation.
     cursor: C,
+    /// Shared recorder updated for each cursor operation.
     metrics: Arc<StorageMetrics>,
 }
 
@@ -258,7 +261,9 @@ impl<C: TrieStorageCursor> TrieStorageCursor for OpProofsTrieCursorWithMetrics<C
 /// Wrapper for [`HashedCursor`] type that records metrics.
 #[derive(Debug, Constructor, Clone)]
 pub struct OpProofsHashedCursorWithMetrics<C> {
+    /// Wrapped hashed-state cursor that performs the underlying operation.
     cursor: C,
+    /// Shared recorder updated for each cursor operation.
     metrics: Arc<StorageMetrics>,
 }
 
@@ -296,7 +301,9 @@ impl<C: HashedStorageCursor> HashedStorageCursor for OpProofsHashedCursorWithMet
 /// Wrapper around [`OpProofsStore`] type that records metrics for all operations.
 #[derive(Debug, Clone)]
 pub struct OpProofsStoreWithMetrics<S> {
+    /// Wrapped proof store that performs the underlying operation.
     storage: S,
+    /// Shared recorder propagated to providers and cursors.
     metrics: Arc<StorageMetrics>,
 }
 
@@ -355,7 +362,9 @@ where
 /// Wrapper for [`OpProofsProviderRO`] that records metrics.
 #[derive(Debug, Constructor, Clone)]
 pub struct OpProofsProviderROWithMetrics<P> {
+    /// Wrapped read-only provider that performs the underlying operation.
     provider: P,
+    /// Shared recorder updated by provider reads and derived cursors.
     metrics: Arc<StorageMetrics>,
 }
 
@@ -446,7 +455,9 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
 /// Wrapper for [`OpProofsProviderRw`] that records metrics.
 #[derive(Debug, Constructor, Clone)]
 pub struct OpProofsProviderRwWithMetrics<P> {
+    /// Wrapped read-write provider that performs the underlying operation.
     provider: P,
+    /// Shared recorder updated by reads, writes, and derived cursors.
     metrics: Arc<StorageMetrics>,
 }
 
@@ -590,7 +601,9 @@ impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics
 /// Wrapper for [`OpProofsInitProvider`] that records metrics.
 #[derive(Debug, Constructor)]
 pub struct OpProofsInitProviderWithMetrics<P> {
+    /// Wrapped initialization provider that performs the underlying operation.
     provider: P,
+    /// Shared recorder updated by initialization writes.
     metrics: Arc<StorageMetrics>,
 }
 

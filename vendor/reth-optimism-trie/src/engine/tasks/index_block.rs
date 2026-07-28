@@ -11,14 +11,20 @@ use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use std::time::Instant;
 use tracing::{debug, info};
 
+/// Request to buffer externally computed state and trie updates for one block.
 pub(crate) struct IndexBlockTask {
+    /// Block and parent hashes identifying the update.
     pub(crate) block: BlockWithParent,
+    /// Sorted branch-node updates produced for the block.
     pub(crate) sorted_trie_updates: TrieUpdatesSorted,
+    /// Sorted hashed-state changes produced for the block.
     pub(crate) sorted_post_state: HashedPostStateSorted,
+    /// One-shot response channel for success or ancestry/indexing failure.
     pub(crate) reply: Sender<Result<(), EngineError>>,
 }
 
 impl IndexBlockTask {
+    /// Applies the indexing request to engine state and sends the result to the caller.
     pub(crate) fn execute<Evm, Provider, Store>(self, state: &mut EngineState<Evm, Provider, Store>)
     where
         Evm: ConfigureEvm,
@@ -36,6 +42,9 @@ impl IndexBlockTask {
     }
 }
 
+/// Validates continuity and buffers one precomputed block diff.
+///
+/// Already-covered blocks are skipped and gaps advance the sync target.
 fn run<Evm, Provider, Store>(
     state: &mut EngineState<Evm, Provider, Store>,
     block: BlockWithParent,

@@ -53,6 +53,7 @@ pub(super) const NUM_OF_INDICES_IN_SHARD: usize = 2_000;
 /// and a sharded history bitmap table.
 #[derive(Debug)]
 pub struct MdbxProofsStorageV2 {
+    /// Open MDBX environment containing all v2 proof-history tables.
     env: DatabaseEnv,
 }
 
@@ -110,6 +111,7 @@ impl OpProofsBackfillStore for MdbxProofsStorageV2 {
 /// V2 MDBX provider for proof storage, wrapping a database transaction.
 #[derive(Debug)]
 pub struct MdbxProofsProviderV2<TX> {
+    /// Transaction used for every read or write performed by this provider.
     pub(super) tx: TX,
 }
 

@@ -15,12 +15,16 @@ use reth_trie_common::EMPTY_ROOT_HASH;
 use std::time::Instant;
 use tracing::{debug, info};
 
+/// Request to execute one recovered block and return the resulting engine status.
 pub(crate) struct ExecuteBlockTask<Block: reth_primitives_traits::Block> {
+    /// Recovered canonical block to execute.
     pub(crate) block: RecoveredBlock<Block>,
+    /// One-shot response channel for success or the execution/indexing error.
     pub(crate) reply: Sender<Result<(), EngineError>>,
 }
 
 impl<Block: reth_primitives_traits::Block> ExecuteBlockTask<Block> {
+    /// Executes the request against engine state and sends the result to the caller.
     pub(crate) fn execute<Evm, Provider, Store>(self, state: &mut EngineState<Evm, Provider, Store>)
     where
         Evm: ConfigureEvm<Primitives: NodePrimitives<Block = Block>>,
@@ -38,6 +42,11 @@ impl<Block: reth_primitives_traits::Block> ExecuteBlockTask<Block> {
     }
 }
 
+/// Executes and validates one contiguous block before buffering its proof-history diff.
+///
+/// Already-covered blocks and blocks whose parent state is temporarily unavailable are skipped.
+/// Gaps update the sync target; invalid ancestry, pruned bodies, execution failures, and state-root
+/// mismatches are returned as [`EngineError`].
 pub(crate) fn run<Block, Evm, Provider, Store>(
     block: &RecoveredBlock<Block>,
     state: &mut EngineState<Evm, Provider, Store>,

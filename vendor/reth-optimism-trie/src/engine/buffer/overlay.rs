@@ -25,9 +25,11 @@ pub(crate) struct MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO,
 {
+    /// Persistent state provider used below the in-memory overlay.
     inner: OpProofsStateProviderRef<'a, P>,
     /// Ordered list of buffered blocks (Oldest to Newest).
     memory: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
+    /// Lazily aggregated trie nodes and hashed state for all buffered blocks.
     trie_input: OnceLock<TrieInput>,
 }
 

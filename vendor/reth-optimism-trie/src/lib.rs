@@ -75,6 +75,7 @@ pub use cursor_factory::{
 pub mod error;
 pub use error::{OpProofsStorageError, OpProofsStorageResult};
 
+/// Proof-history pruning services and scheduling task.
 mod prune;
 pub use prune::{
     OpProofStoragePruner, OpProofStoragePrunerResult, OpProofStoragePrunerTask, PrunerError,

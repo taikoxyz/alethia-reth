@@ -7,11 +7,14 @@ use reth_provider::{
 };
 use tracing::debug;
 
+/// Request to raise the engine's desired synchronization height.
 pub(crate) struct SyncToTask {
+    /// Block number the engine should eventually cover.
     pub(crate) target: u64,
 }
 
 impl SyncToTask {
+    /// Updates the synchronization target without performing work synchronously.
     pub(crate) fn execute<Evm, Provider, Store>(self, state: &mut EngineState<Evm, Provider, Store>)
     where
         Evm: ConfigureEvm,

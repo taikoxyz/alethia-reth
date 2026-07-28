@@ -32,6 +32,7 @@ pub(crate) struct PersistenceState {
 }
 
 impl PersistenceState {
+    /// Creates idle persistence state around a service handle.
     const fn new(handle: PersistenceHandle) -> Self {
         Self { handle, in_flight: None }
     }
@@ -157,14 +158,20 @@ where
     /// The highest block number the engine should sync to between processing actions.
     pub(crate) sync_target: u64,
 
+    /// EVM configuration used to execute blocks during catch-up.
     pub(crate) evm_config: Evm,
+    /// Canonical-chain and state provider backing execution and synchronization.
     pub(crate) provider: Provider,
+    /// Persistent proof-history store beneath the memory buffer.
     pub(crate) storage: Store,
 
+    /// In-memory canonical suffix not yet durably persisted.
     pub(crate) memory: TrieBufferState,
+    /// Background persistence handle and in-flight operation state.
     pub(crate) persistence: PersistenceState,
 
     #[cfg(feature = "metrics")]
+    /// Recorder for engine execution, indexing, reorg, and unwind durations.
     pub(crate) metrics: EngineMetrics,
 }
 
@@ -180,6 +187,7 @@ where
         + 'static,
     Store: OpProofsStore + Clone + 'static,
 {
+    /// Creates engine state and starts its background persistence service.
     pub(crate) fn new(
         evm_config: Evm,
         provider: Provider,

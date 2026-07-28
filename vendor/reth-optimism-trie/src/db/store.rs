@@ -644,7 +644,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(MdbxTrieCursor::new(cursor, max_block_number, Some(hashed_address)))
     }
 
-    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
+    /// Opens an account-trie cursor bounded by `max_block_number`; database cursor construction
     /// failures are returned.
     fn account_trie_cursor<'tx>(
         &self,
@@ -665,7 +665,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(MdbxStorageCursor::new(cursor, max_block_number, hashed_address))
     }
 
-    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
+    /// Opens an account-leaf cursor bounded by `max_block_number`; database cursor construction
     /// failures are returned.
     fn account_hashed_cursor<'tx>(
         &self,

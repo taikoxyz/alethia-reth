@@ -183,8 +183,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::get_proof_window(self)
     }
 
-    /// Opens a storage-trie cursor for `hashed_address` at or before `max_block_number`; backend
-    /// failures are returned.
+    /// Forwards construction of a storage-trie cursor bounded by `max_block_number` and returns
+    /// the underlying provider's result unchanged.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -196,8 +196,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::storage_trie_cursor(self, hashed_address, max_block_number)
     }
 
-    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
-    /// failures are returned.
+    /// Forwards construction of an account-trie cursor bounded by `max_block_number` and returns
+    /// the underlying provider's result unchanged.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -208,8 +208,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::account_trie_cursor(self, max_block_number)
     }
 
-    /// Opens a storage-leaf cursor for `hashed_address` at or before `max_block_number`; backend
-    /// failures are returned.
+    /// Forwards construction of a hashed-storage cursor bounded by `max_block_number` and returns
+    /// the underlying provider's result unchanged.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -221,8 +221,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::storage_hashed_cursor(self, hashed_address, max_block_number)
     }
 
-    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
-    /// failures are returned.
+    /// Forwards construction of a hashed-account cursor bounded by `max_block_number` and returns
+    /// the underlying provider's result unchanged.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -233,8 +233,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::account_hashed_cursor(self, max_block_number)
     }
 
-    /// Loads the complete trie and hashed-post-state diff for `block_number`, returning an error
-    /// when unavailable.
+    /// Forwards the block-diff lookup and preserves the underlying provider's missing-block and
+    /// error behavior.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         T::fetch_trie_updates(self, block_number)
     }
@@ -566,8 +566,11 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_anchor(self)
     }
 
-    /// Opens an account-trie cursor over the committed snapshot; missing snapshot state or backend
-    /// failures are returned.
+    /// Forwards opening the snapshot account-trie table cursor and preserves the underlying
+    /// provider's result.
+    ///
+    /// Callers must validate readiness with
+    /// [`OpProofsSnapshotProviderRO::snapshot_anchor`] before using the cursor.
     fn snapshot_account_trie_cursor<'tx>(
         &self,
     ) -> OpProofsStorageResult<Self::SnapshotAccountTrieCursor<'tx>>
@@ -577,8 +580,11 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_account_trie_cursor(self)
     }
 
-    /// Opens a storage-trie cursor for `hashed_address` over the committed snapshot; backend
-    /// failures are returned.
+    /// Forwards opening the snapshot storage-trie table cursor for `hashed_address` and preserves
+    /// the underlying provider's result.
+    ///
+    /// Callers must validate readiness with
+    /// [`OpProofsSnapshotProviderRO::snapshot_anchor`] before using the cursor.
     fn snapshot_storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -589,8 +595,11 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_storage_trie_cursor(self, hashed_address)
     }
 
-    /// Opens a hashed-account cursor over the committed snapshot; missing state or backend failures
-    /// are returned.
+    /// Forwards opening the snapshot hashed-account table cursor and preserves the underlying
+    /// provider's result.
+    ///
+    /// Callers must validate readiness with
+    /// [`OpProofsSnapshotProviderRO::snapshot_anchor`] before using the cursor.
     fn snapshot_hashed_account_cursor<'tx>(
         &self,
     ) -> OpProofsStorageResult<Self::SnapshotHashedAccountCursor<'tx>>
@@ -600,8 +609,11 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_hashed_account_cursor(self)
     }
 
-    /// Opens a hashed-storage cursor for `hashed_address` over the committed snapshot; backend
-    /// failures are returned.
+    /// Forwards opening the snapshot hashed-storage table cursor for `hashed_address` and preserves
+    /// the underlying provider's result.
+    ///
+    /// Callers must validate readiness with
+    /// [`OpProofsSnapshotProviderRO::snapshot_anchor`] before using the cursor.
     fn snapshot_hashed_storage_cursor<'tx>(
         &self,
         hashed_address: B256,

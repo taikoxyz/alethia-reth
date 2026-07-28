@@ -104,8 +104,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
-    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
-    /// failures are returned.
+    /// Opens an account-trie cursor bounded by `max_block_number`; proof-window lookup and database
+    /// cursor construction failures are returned.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -140,8 +140,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
-    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
-    /// failures are returned.
+    /// Opens an account-leaf cursor bounded by `max_block_number`; proof-window lookup and database
+    /// cursor construction failures are returned.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -157,8 +157,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
-    /// Loads the complete trie and hashed-post-state diff for `block_number`, returning an error
-    /// when unavailable.
+    /// Reconstructs the trie and hashed-post-state diff for `block_number`; a block with no
+    /// change-set rows yields an empty diff, while database failures are returned.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         Ok(BlockStateDiff {
             sorted_trie_updates: self.fetch_block_trie_updates(block_number)?.into_sorted(),

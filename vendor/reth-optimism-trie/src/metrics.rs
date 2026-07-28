@@ -369,8 +369,8 @@ where
         Ok(OpProofsProviderROWithMetrics::new(self.storage.provider_ro()?, self.metrics.clone()))
     }
 
-    /// Opens a writable provider and attaches the shared recorder; changes remain staged until the
-    /// wrapped provider commits.
+    /// Opens a writable provider and attaches the shared recorder while preserving the wrapped
+    /// provider's write-visibility and commit semantics.
     fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>> {
         Ok(OpProofsProviderRwWithMetrics::new(self.storage.provider_rw()?, self.metrics.clone()))
     }
@@ -611,8 +611,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
 
 impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics<P> {
     #[inline]
-    /// Stages one block's updates and records its height in the latest-block gauge only after the
-    /// wrapped write succeeds.
+    /// Delegates one block's updates and records its height in the latest-block gauge only after
+    /// the wrapped write succeeds.
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -624,8 +624,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
-    /// Stages an ordered block batch, returns aggregate write counts, and updates the latest-block
-    /// gauge only after the wrapped operation succeeds.
+    /// Delegates a block batch, returns aggregate write counts, and updates the latest-block gauge
+    /// only after the wrapped operation succeeds.
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
@@ -697,8 +697,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
-    /// Stages account-trie branches and records elapsed time per supplied entry, including failed
-    /// wrapped operations.
+    /// Delegates account-trie branch storage and records elapsed time per supplied entry, including
+    /// failed wrapped operations.
     fn store_account_branches(
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
@@ -721,8 +721,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
-    /// Stages storage-trie branches and records elapsed time per supplied entry, including failed
-    /// wrapped operations.
+    /// Delegates storage-trie branch storage and records elapsed time per supplied entry, including
+    /// failed wrapped operations.
     fn store_storage_branches(
         &self,
         hashed_address: B256,
@@ -746,8 +746,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
-    /// Stages hashed accounts and records elapsed time per supplied entry, including failed wrapped
-    /// operations.
+    /// Delegates hashed-account storage and records elapsed time per supplied entry, including
+    /// failed wrapped operations.
     fn store_hashed_accounts(
         &self,
         accounts: Vec<(B256, Option<Account>)>,
@@ -770,8 +770,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
-    /// Stages hashed storage leaves and records elapsed time per supplied entry, including failed
-    /// wrapped operations.
+    /// Delegates hashed-storage leaf storage and records elapsed time per supplied entry, including
+    /// failed wrapped operations.
     fn store_hashed_storages(
         &self,
         hashed_address: B256,

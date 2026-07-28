@@ -16,8 +16,11 @@ use serde::{Deserialize, Serialize};
 pub struct BlockNumberHash(BlockNumHash);
 
 impl Compress for BlockNumberHash {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         // Encode block number (8 bytes, big-endian) + hash (32 bytes) = 40 bytes total
         buf.put_u64(self.0.number);
@@ -26,6 +29,8 @@ impl Compress for BlockNumberHash {
 }
 
 impl Decompress for BlockNumberHash {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.len() != 40 {
             return Err(DecompressError::new(DatabaseError::Decode));

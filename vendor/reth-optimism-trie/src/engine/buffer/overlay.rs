@@ -78,6 +78,8 @@ impl<'a, P> AccountReader for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Resolves the account from the in-memory overlay first, including deletions, then falls back
+    /// to historical state and propagates provider errors.
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
         let hashed_address = keccak256(address);
         // Check buffer via trie_input cache
@@ -92,6 +94,8 @@ impl<'a, P> StateProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Resolves the slot from the in-memory overlay first, including zeroed values, then falls back
+    /// to historical state and propagates provider errors.
     fn storage(&self, address: Address, storage_key: B256) -> ProviderResult<Option<StorageValue>> {
         let hashed_slot = keccak256(storage_key);
         let hashed_address = keccak256(address);
@@ -126,6 +130,8 @@ impl<'a, P> BytecodeReader for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Loads bytecode from the underlying provider because the in-memory overlay carries no
+    /// bytecode, preserving provider failures.
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
         // HashedPostStateSorted does not store bytecode, so we cannot look it up in the overlay.
         // We fallback strictly to the inner provider.
@@ -137,10 +143,14 @@ impl<'a, P> StateRootProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Computes the root after overlaying hashed post-state on selected historical state; trie or
+    /// backend failures are returned.
     fn state_root(&self, state: HashedPostState) -> ProviderResult<B256> {
         self.state_root_from_nodes(TrieInput::from_state(state))
     }
 
+    /// Computes a state root from supplied trie input over historical state; trie or backend
+    /// failures are returned.
     fn state_root_from_nodes(&self, mut input: TrieInput) -> ProviderResult<B256> {
         // Combine updates from the buffer (overlay) with the current input
         input.prepend_self(self.trie_input().clone());
@@ -149,6 +159,8 @@ where
         self.inner.state_root_from_nodes(input)
     }
 
+    /// Computes the overlaid state root and the trie updates required to persist it; failures are
+    /// returned.
     fn state_root_with_updates(
         &self,
         state: HashedPostState,
@@ -156,6 +168,8 @@ where
         self.state_root_from_nodes_with_updates(TrieInput::from_state(state))
     }
 
+    /// Computes a root and trie updates from supplied nodes over historical state; failures are
+    /// returned.
     fn state_root_from_nodes_with_updates(
         &self,
         mut input: TrieInput,
@@ -169,6 +183,8 @@ impl<'a, P> StorageRootProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Computes an account's storage root after applying the hashed overlay; trie or backend
+    /// failures are returned.
     fn storage_root(
         &self,
         address: Address,
@@ -178,6 +194,8 @@ where
         self.inner.storage_root(address, merged)
     }
 
+    /// Builds a proof for one slot after overlaying account storage; trie or backend failures are
+    /// returned.
     fn storage_proof(
         &self,
         address: Address,
@@ -188,6 +206,8 @@ where
         self.inner.storage_proof(address, slot, merged)
     }
 
+    /// Builds proofs for the requested slots after overlaying account storage; trie or backend
+    /// failures are returned.
     fn storage_multiproof(
         &self,
         address: Address,
@@ -203,6 +223,8 @@ impl<'a, P> StateProofProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Builds an account proof and requested storage proofs over the selected state; proof failures
+    /// are returned.
     fn proof(
         &self,
         mut input: TrieInput,
@@ -213,6 +235,8 @@ where
         self.inner.proof(input, address, slots)
     }
 
+    /// Builds an account-and-storage multiproof for the requested targets over the selected state;
+    /// proof failures are returned.
     fn multiproof(
         &self,
         mut input: TrieInput,
@@ -222,6 +246,8 @@ where
         self.inner.multiproof(input, targets)
     }
 
+    /// Returns the trie nodes needed to execute the target transition over selected historical
+    /// state; proof failures are returned.
     fn witness(
         &self,
         mut input: TrieInput,
@@ -237,6 +263,8 @@ impl<'a, P> BlockHashReader for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO,
 {
+    /// Returns the newest buffered canonical hash for `number`, falling back to the underlying
+    /// provider and propagating its failures.
     fn block_hash(&self, number: BlockNumber) -> ProviderResult<Option<B256>> {
         // Iterate backwards (Newest to Oldest) to find most recent definition
         for state in self.memory.iter().rev() {
@@ -247,6 +275,8 @@ where
         self.inner.block_hash(number)
     }
 
+    /// Overlays contiguous buffered hashes on the underlying half-open range; provider failures are
+    /// returned and a gap between persisted and buffered state panics.
     fn canonical_hashes_range(
         &self,
         start: BlockNumber,
@@ -283,6 +313,8 @@ impl<'a, P> HashedPostStateProvider for MemoryOverlayOpProofsStateProviderRef<'a
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Derives a Keccak-keyed post-state from the bundle without altering the bundle or persisted
+    /// state.
     fn hashed_post_state(&self, bundle_state: &BundleState) -> HashedPostState {
         self.inner.hashed_post_state(bundle_state)
     }

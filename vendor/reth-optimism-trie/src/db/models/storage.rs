@@ -28,8 +28,10 @@ impl StorageTrieKey {
 }
 
 impl Encode for StorageTrieKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = Vec<u8>;
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = Vec::with_capacity(32 + self.path.0.len());
         // First encode the address (32 bytes)
@@ -41,6 +43,8 @@ impl Encode for StorageTrieKey {
 }
 
 impl Decode for StorageTrieKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         if value.len() < 32 {
             return Err(DatabaseError::Decode);
@@ -76,8 +80,10 @@ impl HashedStorageKey {
 }
 
 impl Encode for HashedStorageKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; 64];
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = [0u8; 64];
         // First 32 bytes: address
@@ -89,6 +95,8 @@ impl Encode for HashedStorageKey {
 }
 
 impl Decode for HashedStorageKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         if value.len() != 64 {
             return Err(DatabaseError::Decode);
@@ -106,8 +114,11 @@ impl Decode for HashedStorageKey {
 pub struct StorageValue(pub U256);
 
 impl Compress for StorageValue {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         let be: [u8; 32] = self.0.to_be_bytes::<32>();
         buf.put_slice(&be);
@@ -115,6 +126,8 @@ impl Compress for StorageValue {
 }
 
 impl Decompress for StorageValue {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.len() != 32 {
             return Err(DecompressError::new(DatabaseError::Decode));
@@ -140,14 +153,18 @@ pub enum ProofWindowKey {
 }
 
 impl Encode for ProofWindowKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; 1];
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         [self as u8]
     }
 }
 
 impl Decode for ProofWindowKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         match value.first() {
             Some(&0) => Ok(Self::EarliestBlock),

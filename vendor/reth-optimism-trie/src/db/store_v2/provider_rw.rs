@@ -13,6 +13,8 @@ use std::fmt::Debug;
 impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
     for MdbxProofsProviderV2<TX>
 {
+    /// Stages one block's trie and leaf updates and returns write counts; ordering or backend
+    /// failures are returned.
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -36,6 +38,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(counts)
     }
 
+    /// Stages an ordered block batch and returns aggregate write counts; storage failures are
+    /// returned before the transaction is committed.
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
@@ -81,6 +85,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(total_counts)
     }
 
+    /// Applies the new earliest state and advances the inclusive proof-window boundary, returning
+    /// write counts or storage errors.
     fn prune_earliest_state(
         &self,
         new_earliest_block_ref: BlockWithParent,
@@ -104,6 +110,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(counts)
     }
 
+    /// Removes historical updates through the requested block boundary, returning backend failures
+    /// without committing.
     fn unwind_history(&self, to: BlockWithParent) -> OpProofsStorageResult<()> {
         let proof_window = self.get_proof_window_inner()?;
 
@@ -128,6 +136,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(())
     }
 
+    /// Removes history above the common block and stages the replacement branch, preserving the
+    /// common block itself.
     fn replace_updates(
         &self,
         latest_common_block: BlockNumHash,
@@ -185,6 +195,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(())
     }
 
+    /// Atomically commits all staged proof-state changes and consumes the writable provider;
+    /// database failures are returned.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.tx.commit()?;
         Ok(())

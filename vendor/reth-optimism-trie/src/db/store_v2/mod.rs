@@ -67,36 +67,51 @@ impl MdbxProofsStorageV2 {
 }
 
 impl OpProofsStore for MdbxProofsStorageV2 {
+    /// The transaction-scoped provider type used for read-only proof-state access.
     type ProviderRO<'a> = Arc<MdbxProofsProviderV2<<DatabaseEnv as Database>::TX>>;
+    /// The transaction-scoped provider type used to stage and commit proof-state changes.
     type ProviderRw<'a> = MdbxProofsProviderV2<<DatabaseEnv as Database>::TXMut>;
+    /// The provider type used to build and atomically commit initial proof state.
     type Initializer<'a> = MdbxProofsProviderV2<<DatabaseEnv as Database>::TXMut>;
 
+    /// Opens a transactionally consistent read-only proof-state view, returning backend setup
+    /// failures.
     fn provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRO<'a>> {
         Ok(Arc::new(MdbxProofsProviderV2::new(self.env.tx()?)))
     }
 
+    /// Opens a writable proof-state transaction whose changes remain staged until commit.
     fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>> {
         Ok(MdbxProofsProviderV2::new(self.env.tx_mut()?))
     }
 
+    /// Opens a provider for building initial proof state; backend initialization failures are
+    /// returned.
     fn initialization_provider<'a>(&'a self) -> OpProofsStorageResult<Self::Initializer<'a>> {
         Ok(MdbxProofsProviderV2::new(self.env.tx_mut()?))
     }
 }
 
 impl OpProofsBackfillStore for MdbxProofsStorageV2 {
+    /// The writable provider used to prepend historical blocks during backfill.
     type BackfillProvider<'a> = MdbxProofsProviderV2<<DatabaseEnv as Database>::TXMut>;
+    /// The read-only provider used to inspect the current backfill snapshot.
     type SnapshotProviderRO<'a> = Arc<MdbxProofsProviderV2<<DatabaseEnv as Database>::TX>>;
+    /// The provider used to build and commit a backfill snapshot.
     type SnapshotInitializer<'a> = MdbxProofsProviderV2<<DatabaseEnv as Database>::TXMut>;
 
+    /// Opens a writable backfill transaction; initialization or database failures are returned.
     fn backfill_provider<'a>(&'a self) -> OpProofsStorageResult<Self::BackfillProvider<'a>> {
         Ok(MdbxProofsProviderV2::new(self.env.tx_mut()?))
     }
 
+    /// Opens a read-only snapshot view, returning an error when the backend cannot create it.
     fn snapshot_provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::SnapshotProviderRO<'a>> {
         Ok(Arc::new(MdbxProofsProviderV2::new(self.env.tx()?)))
     }
 
+    /// Opens a provider that can build the backfill snapshot, returning storage initialization
+    /// failures.
     fn snapshot_initialization_provider<'a>(
         &'a self,
     ) -> OpProofsStorageResult<Self::SnapshotInitializer<'a>> {

@@ -88,6 +88,7 @@ where
     type Instructions = EthInstructions<EthInterpreter, CTX>;
     /// The type containing the available precompiled contracts
     type Precompiles = P;
+    /// The Ethereum interpreter frame representation used for nested calls and creates.
     type Frame = EthFrame<EthInterpreter>;
 
     /// Returns shared references to context, instructions, precompiles, and frame stack.

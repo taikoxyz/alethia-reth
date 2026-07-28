@@ -145,6 +145,8 @@ where
         )
     }
 
+    /// Builds a proof for the requested storage slot after overlaying hashed storage; proof or
+    /// backend failures are returned.
     fn overlay_storage_proof(
         provider: P,
         block_number: u64,
@@ -167,6 +169,8 @@ where
             .storage_proof(slot)
     }
 
+    /// Builds proofs for the requested storage slots after overlaying hashed storage; proof or
+    /// backend failures are returned.
     fn overlay_storage_multiproof(
         provider: P,
         block_number: u64,
@@ -235,6 +239,8 @@ impl<P> DatabaseStateRoot<P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Computes the state root after overlaying hashed post-state on the selected historical block;
+    /// storage failures are returned.
     fn overlay_root(
         provider: P,
         block_number: u64,
@@ -253,6 +259,8 @@ where
         .root()
     }
 
+    /// Computes the overlaid state root and corresponding trie updates; storage failures are
+    /// returned.
     fn overlay_root_with_updates(
         provider: P,
         block_number: u64,
@@ -271,6 +279,8 @@ where
         .root_with_updates()
     }
 
+    /// Computes the state root from supplied trie nodes over the selected historical block; storage
+    /// failures are returned.
     fn overlay_root_from_nodes(
         provider: P,
         block_number: u64,
@@ -292,6 +302,8 @@ where
         .root()
     }
 
+    /// Computes the root and trie updates from supplied nodes over historical state; storage
+    /// failures are returned.
     fn overlay_root_from_nodes_with_updates(
         provider: P,
         block_number: u64,
@@ -330,6 +342,8 @@ impl<P> DatabaseStorageRoot<P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Computes an account's storage root after applying the hashed-storage overlay; backend
+    /// failures are returned.
     fn overlay_root(
         provider: P,
         block_number: u64,
@@ -372,6 +386,7 @@ impl<P> DatabaseTrieWitness<P>
 where
     P: OpProofsProviderRO + Clone,
 {
+    /// Creates a witness calculator bound to the selected historical block and proofs provider.
     fn from_provider(provider: P, block_number: u64) -> Self {
         Self::new(
             OpProofsTrieCursorFactory::new(provider.clone(), block_number),
@@ -379,6 +394,8 @@ where
         )
     }
 
+    /// Collects the trie witness required by the target post-state over historical state; backend
+    /// failures are returned.
     fn overlay_witness(
         provider: P,
         block_number: u64,

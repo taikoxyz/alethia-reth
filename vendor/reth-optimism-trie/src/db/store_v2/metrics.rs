@@ -10,12 +10,16 @@ use reth_db::Database;
 use tracing::error;
 
 impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorageV2 {
+    /// Emits the current table gauges through the process metrics recorder without changing proof
+    /// state.
     fn report_metrics(&self) {
         for (name, value, labels) in self.gauge_metrics() {
             gauge!(name, labels).set(value);
         }
     }
 
+    /// Collects table-size, page-count, and entry-count gauges; table-stat failures are logged and
+    /// omitted from the returned values.
     fn gauge_metrics(&self) -> Vec<(&'static str, f64, Vec<Label>)> {
         let mut metrics = Vec::new();
 

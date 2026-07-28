@@ -100,6 +100,7 @@ pub(crate) struct TrieBufferState {
 }
 
 impl Default for TrieBufferState {
+    /// Creates an empty live-trie buffer shared through a new reference-counted handle.
     fn default() -> Self {
         Self::new()
     }

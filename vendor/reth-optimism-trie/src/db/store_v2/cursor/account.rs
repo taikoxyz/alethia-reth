@@ -114,8 +114,11 @@ where
     HC: DbCursorRO<V2HashedAccountsHistory> + Send,
     CC: DbCursorRO<V2HashedAccountChangeSets> + DbDupCursorRO<V2HashedAccountChangeSets> + Send,
 {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = Account;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.state.seeked = true;
 
@@ -133,6 +136,8 @@ where
         self.find_next_live()
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         if !self.state.seeked {
             return self.seek(B256::ZERO);
@@ -145,6 +150,7 @@ where
         self.find_next_live()
     }
 
+    /// Clears the cursor position so the next seek or iteration starts from an unpositioned state.
     fn reset(&mut self) {
         self.state.reset();
     }

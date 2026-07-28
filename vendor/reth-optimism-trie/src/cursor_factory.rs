@@ -28,15 +28,19 @@ impl<P> TrieCursorFactory for OpProofsTrieCursorFactory<P>
 where
     P: OpProofsProviderRO,
 {
+    /// The cursor type created for account-trie branch traversal.
     type AccountTrieCursor<'a>
         = OpProofsTrieCursor<P::AccountTrieCursor<'a>>
     where
         Self: 'a;
+    /// The cursor type created for storage-trie branch traversal.
     type StorageTrieCursor<'a>
         = OpProofsTrieCursor<P::StorageTrieCursor<'a>>
     where
         Self: 'a;
 
+    /// Creates a cursor over account-trie branches in the factory's configured state view;
+    /// construction failures are returned.
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor<'_>, DatabaseError> {
         Ok(OpProofsTrieCursor::new(
             self.provider
@@ -45,6 +49,8 @@ where
         ))
     }
 
+    /// Creates a cursor over storage-trie branches for `hashed_address`; construction failures are
+    /// returned.
     fn storage_trie_cursor(
         &self,
         hashed_address: B256,
@@ -83,19 +89,25 @@ impl<P> TrieCursorFactory for SnapshotTrieCursorFactory<P>
 where
     P: OpProofsSnapshotProviderRO,
 {
+    /// The cursor type created for account-trie branch traversal.
     type AccountTrieCursor<'a>
         = P::SnapshotAccountTrieCursor<'a>
     where
         Self: 'a;
+    /// The cursor type created for storage-trie branch traversal.
     type StorageTrieCursor<'a>
         = P::SnapshotStorageTrieCursor<'a>
     where
         Self: 'a;
 
+    /// Creates a cursor over account-trie branches in the factory's configured state view;
+    /// construction failures are returned.
     fn account_trie_cursor(&self) -> Result<Self::AccountTrieCursor<'_>, DatabaseError> {
         self.reader.snapshot_account_trie_cursor().map_err(Into::<DatabaseError>::into)
     }
 
+    /// Creates a cursor over storage-trie branches for `hashed_address`; construction failures are
+    /// returned.
     fn storage_trie_cursor(
         &self,
         hashed_address: B256,
@@ -126,15 +138,19 @@ impl<P> HashedCursorFactory for OpProofsHashedAccountCursorFactory<P>
 where
     P: OpProofsProviderRO,
 {
+    /// The cursor type used to traverse hashed account leaves.
     type AccountCursor<'a>
         = OpProofsHashedAccountCursor<P::AccountHashedCursor<'a>>
     where
         Self: 'a;
+    /// The cursor type used to traverse one account's hashed storage leaves.
     type StorageCursor<'a>
         = OpProofsHashedStorageCursor<P::StorageCursor<'a>>
     where
         Self: 'a;
 
+    /// Creates an account-leaf cursor over the factory's configured state view; construction
+    /// failures are returned.
     fn hashed_account_cursor(&self) -> Result<Self::AccountCursor<'_>, DatabaseError> {
         Ok(OpProofsHashedAccountCursor::new(
             self.provider
@@ -143,6 +159,8 @@ where
         ))
     }
 
+    /// Creates a storage-leaf cursor for `hashed_address` over the configured state view;
+    /// construction failures are returned.
     fn hashed_storage_cursor(
         &self,
         hashed_address: B256,
@@ -178,19 +196,25 @@ impl<P> HashedCursorFactory for SnapshotHashedCursorFactory<P>
 where
     P: OpProofsSnapshotProviderRO,
 {
+    /// The cursor type used to traverse hashed account leaves.
     type AccountCursor<'a>
         = P::SnapshotHashedAccountCursor<'a>
     where
         Self: 'a;
+    /// The cursor type used to traverse one account's hashed storage leaves.
     type StorageCursor<'a>
         = P::SnapshotHashedStorageCursor<'a>
     where
         Self: 'a;
 
+    /// Creates an account-leaf cursor over the factory's configured state view; construction
+    /// failures are returned.
     fn hashed_account_cursor(&self) -> Result<Self::AccountCursor<'_>, DatabaseError> {
         self.reader.snapshot_hashed_account_cursor().map_err(Into::<DatabaseError>::into)
     }
 
+    /// Creates a storage-leaf cursor for `hashed_address` over the configured state view;
+    /// construction failures are returned.
     fn hashed_storage_cursor(
         &self,
         hashed_address: B256,

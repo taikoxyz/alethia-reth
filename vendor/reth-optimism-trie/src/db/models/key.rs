@@ -57,8 +57,10 @@ impl HashedAccountShardedKey {
 }
 
 impl Encode for HashedAccountShardedKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; 40]; // 32 (B256) + 8 (BlockNumber)
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = [0u8; 40];
         buf[..32].copy_from_slice(self.0.key.as_slice());
@@ -68,6 +70,8 @@ impl Encode for HashedAccountShardedKey {
 }
 
 impl Decode for HashedAccountShardedKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         if value.len() != 40 {
             return Err(DatabaseError::Decode);
@@ -97,7 +101,9 @@ pub struct HashedStorageShardedKey {
 }
 
 impl Encode for HashedStorageShardedKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = Vec<u8>;
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = Vec::with_capacity(32 + 32 + 8);
         buf.extend_from_slice(self.hashed_address.as_slice());
@@ -109,6 +115,8 @@ impl Encode for HashedStorageShardedKey {
 }
 
 impl Decode for HashedStorageShardedKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         // 32 (Addr) + 32 (Key) + 8 (Block) = 72 bytes
         if value.len() < 72 {
@@ -150,8 +158,10 @@ impl AccountTrieShardedKey {
 }
 
 impl Encode for AccountTrieShardedKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; ACCOUNT_TRIE_SHARDED_KEY_LEN];
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = [0u8; ACCOUNT_TRIE_SHARDED_KEY_LEN];
         buf[..NIBBLE_SUBKEY_LEN].copy_from_slice(&encode_nibble_subkey(&self.key));
@@ -161,6 +171,8 @@ impl Encode for AccountTrieShardedKey {
 }
 
 impl Decode for AccountTrieShardedKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         let bytes: &[u8; ACCOUNT_TRIE_SHARDED_KEY_LEN] =
             value.try_into().map_err(|_| DatabaseError::Decode)?;
@@ -204,8 +216,10 @@ impl StorageTrieShardedKey {
 }
 
 impl Encode for StorageTrieShardedKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; STORAGE_TRIE_SHARDED_KEY_LEN];
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = [0u8; STORAGE_TRIE_SHARDED_KEY_LEN];
         buf[..32].copy_from_slice(self.hashed_address.as_slice());
@@ -216,6 +230,8 @@ impl Encode for StorageTrieShardedKey {
 }
 
 impl Decode for StorageTrieShardedKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         let bytes: &[u8; STORAGE_TRIE_SHARDED_KEY_LEN] =
             value.try_into().map_err(|_| DatabaseError::Decode)?;
@@ -245,7 +261,9 @@ impl Decode for StorageTrieShardedKey {
 pub struct BlockNumberHashedAddress(pub (BlockNumber, B256));
 
 impl Encode for BlockNumberHashedAddress {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; 40]; // 8 + 32
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         let mut buf = [0u8; 40];
         buf[..8].copy_from_slice(&self.0.0.to_be_bytes());
@@ -255,6 +273,8 @@ impl Encode for BlockNumberHashedAddress {
 }
 
 impl Decode for BlockNumberHashedAddress {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         if value.len() < 40 {
             return Err(DatabaseError::Decode);

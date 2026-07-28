@@ -170,6 +170,7 @@ impl StorageMetrics {
 }
 
 impl Default for StorageMetrics {
+    /// Creates the complete storage-metrics registry with zero recorded observations.
     fn default() -> Self {
         Self::new()
     }
@@ -218,6 +219,8 @@ pub struct OpProofsTrieCursorWithMetrics<C> {
 
 impl<C: TrieCursor> TrieCursor for OpProofsTrieCursorWithMetrics<C> {
     #[inline]
+    /// Times an exact-path seek and returns the wrapped cursor result unchanged, including absence
+    /// and backend errors.
     fn seek_exact(
         &mut self,
         path: Nibbles,
@@ -228,6 +231,7 @@ impl<C: TrieCursor> TrieCursor for OpProofsTrieCursorWithMetrics<C> {
     }
 
     #[inline]
+    /// Times a lower-bound path seek and returns the wrapped cursor result unchanged.
     fn seek(
         &mut self,
         path: Nibbles,
@@ -236,16 +240,20 @@ impl<C: TrieCursor> TrieCursor for OpProofsTrieCursorWithMetrics<C> {
     }
 
     #[inline]
+    /// Times one ordered trie-cursor advance and preserves end-of-stream and backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         self.metrics.record_operation(StorageOperation::TrieCursorNext, || self.cursor.next())
     }
 
     #[inline]
+    /// Times retrieval of the current trie path without advancing the wrapped cursor.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         self.metrics.record_operation(StorageOperation::TrieCursorCurrent, || self.cursor.current())
     }
 
     #[inline]
+    /// Requests a wrapped trie-cursor reset without recording timing; reset semantics are
+    /// preserved.
     fn reset(&mut self) {
         self.cursor.reset()
     }
@@ -253,6 +261,7 @@ impl<C: TrieCursor> TrieCursor for OpProofsTrieCursorWithMetrics<C> {
 
 impl<C: TrieStorageCursor> TrieStorageCursor for OpProofsTrieCursorWithMetrics<C> {
     #[inline]
+    /// Selects the wrapped cursor's storage account without recording a timing observation.
     fn set_hashed_address(&mut self, _hashed_address: B256) {
         self.cursor.set_hashed_address(_hashed_address)
     }
@@ -268,19 +277,24 @@ pub struct OpProofsHashedCursorWithMetrics<C> {
 }
 
 impl<C: HashedCursor> HashedCursor for OpProofsHashedCursorWithMetrics<C> {
+    /// The wrapped cursor's leaf value type; instrumentation does not transform returned values.
     type Value = C::Value;
 
     #[inline]
+    /// Times a lower-bound hashed-key seek and returns the wrapped cursor result unchanged.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.metrics.record_operation(StorageOperation::HashedCursorSeek, || self.cursor.seek(key))
     }
 
     #[inline]
+    /// Times one ordered hashed-cursor advance and preserves end-of-stream and backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.metrics.record_operation(StorageOperation::HashedCursorNext, || self.cursor.next())
     }
 
     #[inline]
+    /// Requests a wrapped hashed-cursor reset without recording timing; reset semantics are
+    /// preserved.
     fn reset(&mut self) {
         self.cursor.reset()
     }
@@ -288,11 +302,14 @@ impl<C: HashedCursor> HashedCursor for OpProofsHashedCursorWithMetrics<C> {
 
 impl<C: HashedStorageCursor> HashedStorageCursor for OpProofsHashedCursorWithMetrics<C> {
     #[inline]
+    /// Delegates the empty-storage check without recording timing and preserves the wrapped
+    /// cursor's positioning and errors.
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         self.cursor.is_storage_empty()
     }
 
     #[inline]
+    /// Selects the wrapped hashed-storage account without recording a timing observation.
     fn set_hashed_address(&mut self, _hashed_address: B256) {
         self.cursor.set_hashed_address(_hashed_address)
     }
@@ -328,29 +345,38 @@ impl<S> OpProofsStore for OpProofsStoreWithMetrics<S>
 where
     S: OpProofsStore,
 {
+    /// The read-only provider type instrumented with this store's shared metrics recorder.
     type ProviderRO<'a>
         = OpProofsProviderROWithMetrics<S::ProviderRO<'a>>
     where
         Self: 'a;
 
+    /// The writable provider type instrumented with this store's shared metrics recorder.
     type ProviderRw<'a>
         = OpProofsProviderRwWithMetrics<S::ProviderRw<'a>>
     where
         Self: 'a;
 
+    /// The initialization provider type instrumented with this store's shared metrics recorder.
     type Initializer<'a>
         = OpProofsInitProviderWithMetrics<S::Initializer<'a>>
     where
         Self: 'a;
 
+    /// Opens a read-only provider and attaches the shared recorder; backend setup failures are
+    /// returned before a wrapper is created.
     fn provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRO<'a>> {
         Ok(OpProofsProviderROWithMetrics::new(self.storage.provider_ro()?, self.metrics.clone()))
     }
 
+    /// Opens a writable provider and attaches the shared recorder; changes remain staged until the
+    /// wrapped provider commits.
     fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>> {
         Ok(OpProofsProviderRwWithMetrics::new(self.storage.provider_rw()?, self.metrics.clone()))
     }
 
+    /// Opens an initialization provider and attaches the shared recorder; backend setup failures
+    /// are returned before a wrapper is created.
     fn initialization_provider<'a>(&'a self) -> OpProofsStorageResult<Self::Initializer<'a>> {
         Ok(OpProofsInitProviderWithMetrics::new(
             self.storage.initialization_provider()?,
@@ -369,24 +395,30 @@ pub struct OpProofsProviderROWithMetrics<P> {
 }
 
 impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics<P> {
+    /// The wrapped storage-trie cursor type that records traversal durations.
     type StorageTrieCursor<'tx>
         = OpProofsTrieCursorWithMetrics<P::StorageTrieCursor<'tx>>
     where
         Self: 'tx;
+    /// The wrapped account-trie cursor type that records traversal durations.
     type AccountTrieCursor<'tx>
         = OpProofsTrieCursorWithMetrics<P::AccountTrieCursor<'tx>>
     where
         Self: 'tx;
+    /// The wrapped hashed-storage cursor type that records traversal durations.
     type StorageCursor<'tx>
         = OpProofsHashedCursorWithMetrics<P::StorageCursor<'tx>>
     where
         Self: 'tx;
+    /// The wrapped hashed-account cursor type that records traversal durations.
     type AccountHashedCursor<'tx>
         = OpProofsHashedCursorWithMetrics<P::AccountHashedCursor<'tx>>
     where
         Self: 'tx;
 
     #[inline]
+    /// Returns the inclusive earliest block and records its height in the earliest-block gauge only
+    /// after a successful lookup.
     fn get_earliest_block(&self) -> OpProofsStorageResult<NumHash> {
         let result = self.provider.get_earliest_block()?;
         self.metrics.proof_window.earliest.set(result.number as f64);
@@ -394,6 +426,8 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Returns the inclusive latest block and records its height in the latest-block gauge only
+    /// after a successful lookup.
     fn get_latest_block(&self) -> OpProofsStorageResult<NumHash> {
         let result = self.provider.get_latest_block()?;
         self.metrics.proof_window.latest.set(result.number as f64);
@@ -401,6 +435,8 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Returns both proof-window endpoints and records their block heights in the corresponding
+    /// gauges only after a successful lookup.
     fn get_proof_window(&self) -> OpProofsStorageResult<ProofWindowRange> {
         let result = self.provider.get_proof_window()?;
         self.metrics.proof_window.earliest.set(result.earliest.number as f64);
@@ -409,6 +445,8 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded storage-trie cursor and attaches timing instrumentation; construction errors
+    /// are preserved.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -419,6 +457,8 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded account-trie cursor and attaches timing instrumentation; construction errors
+    /// are preserved.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -428,6 +468,8 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded hashed-storage cursor and attaches timing instrumentation; construction
+    /// errors are preserved.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -438,6 +480,8 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded hashed-account cursor and attaches timing instrumentation; construction
+    /// errors are preserved.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -447,6 +491,7 @@ impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics
     }
 
     #[inline]
+    /// Loads the block diff from the wrapped provider without recording an additional observation.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         self.provider.fetch_trie_updates(block_number)
     }
@@ -462,24 +507,30 @@ pub struct OpProofsProviderRwWithMetrics<P> {
 }
 
 impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics<P> {
+    /// The wrapped storage-trie cursor type that records traversal durations.
     type StorageTrieCursor<'tx>
         = OpProofsTrieCursorWithMetrics<P::StorageTrieCursor<'tx>>
     where
         Self: 'tx;
+    /// The wrapped account-trie cursor type that records traversal durations.
     type AccountTrieCursor<'tx>
         = OpProofsTrieCursorWithMetrics<P::AccountTrieCursor<'tx>>
     where
         Self: 'tx;
+    /// The wrapped hashed-storage cursor type that records traversal durations.
     type StorageCursor<'tx>
         = OpProofsHashedCursorWithMetrics<P::StorageCursor<'tx>>
     where
         Self: 'tx;
+    /// The wrapped hashed-account cursor type that records traversal durations.
     type AccountHashedCursor<'tx>
         = OpProofsHashedCursorWithMetrics<P::AccountHashedCursor<'tx>>
     where
         Self: 'tx;
 
     #[inline]
+    /// Returns the inclusive earliest block and records its height in the earliest-block gauge only
+    /// after a successful lookup.
     fn get_earliest_block(&self) -> OpProofsStorageResult<NumHash> {
         let result = self.provider.get_earliest_block()?;
         self.metrics.proof_window.earliest.set(result.number as f64);
@@ -487,6 +538,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Returns the inclusive latest block and records its height in the latest-block gauge only
+    /// after a successful lookup.
     fn get_latest_block(&self) -> OpProofsStorageResult<NumHash> {
         let result = self.provider.get_latest_block()?;
         self.metrics.proof_window.latest.set(result.number as f64);
@@ -494,6 +547,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Returns both proof-window endpoints and records their block heights in the corresponding
+    /// gauges only after a successful lookup.
     fn get_proof_window(&self) -> OpProofsStorageResult<ProofWindowRange> {
         let result = self.provider.get_proof_window()?;
         self.metrics.proof_window.earliest.set(result.earliest.number as f64);
@@ -502,6 +557,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded storage-trie cursor and attaches timing instrumentation; construction errors
+    /// are preserved.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -512,6 +569,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded account-trie cursor and attaches timing instrumentation; construction errors
+    /// are preserved.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -521,6 +580,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded hashed-storage cursor and attaches timing instrumentation; construction
+    /// errors are preserved.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -531,6 +592,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Opens a bounded hashed-account cursor and attaches timing instrumentation; construction
+    /// errors are preserved.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -540,6 +603,7 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Loads the block diff from the wrapped provider without recording an additional observation.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         self.provider.fetch_trie_updates(block_number)
     }
@@ -547,6 +611,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics
 
 impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics<P> {
     #[inline]
+    /// Stages one block's updates and records its height in the latest-block gauge only after the
+    /// wrapped write succeeds.
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -558,6 +624,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Stages an ordered block batch, returns aggregate write counts, and updates the latest-block
+    /// gauge only after the wrapped operation succeeds.
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
@@ -570,6 +638,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Records the requested earliest height before delegating the prune; the gauge remains updated
+    /// even if the wrapped provider returns an error.
     fn prune_earliest_state(
         &self,
         new_earliest_block_ref: BlockWithParent,
@@ -579,11 +649,14 @@ impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Delegates the historical unwind without recording an additional metrics observation.
     fn unwind_history(&self, to: BlockWithParent) -> OpProofsStorageResult<()> {
         self.provider.unwind_history(to)
     }
 
     #[inline]
+    /// Delegates replacement above the common block without recording an additional metrics
+    /// observation.
     fn replace_updates(
         &self,
         latest_common_block: BlockNumHash,
@@ -593,6 +666,8 @@ impl<P: OpProofsProviderRw> OpProofsProviderRw for OpProofsProviderRwWithMetrics
     }
 
     #[inline]
+    /// Commits the wrapped writable provider without recording an additional metrics observation;
+    /// commit failures are preserved.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.provider.commit()
     }
@@ -609,16 +684,21 @@ pub struct OpProofsInitProviderWithMetrics<P> {
 
 impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithMetrics<P> {
     #[inline]
+    /// Returns initialization status and resume keys without recording an additional observation.
     fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor> {
         self.provider.initial_state_anchor()
     }
 
     #[inline]
+    /// Creates the initial-state anchor through the wrapped provider, preserving its duplicate and
+    /// backend error behavior.
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
         self.provider.set_initial_state_anchor(anchor)
     }
 
     #[inline]
+    /// Stages account-trie branches and records elapsed time per supplied entry, including failed
+    /// wrapped operations.
     fn store_account_branches(
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
@@ -641,6 +721,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
+    /// Stages storage-trie branches and records elapsed time per supplied entry, including failed
+    /// wrapped operations.
     fn store_storage_branches(
         &self,
         hashed_address: B256,
@@ -664,6 +746,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
+    /// Stages hashed accounts and records elapsed time per supplied entry, including failed wrapped
+    /// operations.
     fn store_hashed_accounts(
         &self,
         accounts: Vec<(B256, Option<Account>)>,
@@ -686,6 +770,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
+    /// Stages hashed storage leaves and records elapsed time per supplied entry, including failed
+    /// wrapped operations.
     fn store_hashed_storages(
         &self,
         hashed_address: B256,
@@ -709,6 +795,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
+    /// Marks initialization complete through the wrapped provider and updates the earliest-block
+    /// gauge only after success.
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
         let block = self.provider.commit_initial_state()?;
         self.metrics.proof_window.earliest.set(block.number as f64);
@@ -716,6 +804,8 @@ impl<P: OpProofsInitProvider> OpProofsInitProvider for OpProofsInitProviderWithM
     }
 
     #[inline]
+    /// Commits the wrapped initialization provider without recording another observation; commit
+    /// failures are preserved.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.provider.commit()
     }
@@ -725,6 +815,8 @@ impl<S> From<S> for OpProofsStoreWithMetrics<S>
 where
     S: OpProofsStore + Clone + 'static,
 {
+    /// Wraps the supplied proofs store with metrics instrumentation while preserving storage
+    /// results and error behavior.
     fn from(storage: S) -> Self {
         Self::new(storage)
     }

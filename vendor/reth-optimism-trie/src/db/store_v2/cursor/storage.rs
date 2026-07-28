@@ -130,8 +130,11 @@ where
     HC: DbCursorRO<V2HashedStoragesHistory> + Send,
     CC: DbCursorRO<V2HashedStorageChangeSets> + DbDupCursorRO<V2HashedStorageChangeSets> + Send,
 {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = U256;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, subkey: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.state.seeked = true;
 
@@ -163,6 +166,8 @@ where
         self.find_next_live()
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         if !self.state.seeked {
             return self.seek(B256::ZERO);
@@ -181,6 +186,7 @@ where
         self.find_next_live()
     }
 
+    /// Clears the cursor position so the next seek or iteration starts from an unpositioned state.
     fn reset(&mut self) {
         self.state.reset();
     }
@@ -192,10 +198,14 @@ where
     HC: DbCursorRO<V2HashedStoragesHistory> + Send,
     CC: DbCursorRO<V2HashedStorageChangeSets> + DbDupCursorRO<V2HashedStorageChangeSets> + Send,
 {
+    /// Seeks from the zero slot to test emptiness; a non-empty cursor remains at its first visible
+    /// leaf and backend failures are returned.
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         Ok(self.seek(B256::ZERO)?.is_none())
     }
 
+    /// Selects the hashed account whose storage leaves subsequent cursor operations will traverse
+    /// and resets account-specific state.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address;
         self.state.reset();

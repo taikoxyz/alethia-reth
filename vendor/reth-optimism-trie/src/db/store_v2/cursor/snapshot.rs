@@ -51,6 +51,8 @@ impl<C> TrieCursor for V2AccountTrieSnapshotCursor<C>
 where
     C: DbCursorRO<V2AccountsTrieSnapshot> + Send,
 {
+    /// Positions at the branch exactly matching `key`, returning `None` when absent and propagating
+    /// backend errors.
     fn seek_exact(
         &mut self,
         key: Nibbles,
@@ -63,6 +65,8 @@ where
         Ok(entry.map(|(k, v)| (k.0, v)))
     }
 
+    /// Positions at the first trie branch whose path is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(
         &mut self,
         key: Nibbles,
@@ -75,6 +79,8 @@ where
         Ok(entry.map(|(k, v)| (k.0, v)))
     }
 
+    /// Advances to the next trie branch in nibble-path order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         if !self.seeked {
             return self.seek(Nibbles::default());
@@ -86,10 +92,13 @@ where
         Ok(entry.map(|(k, v)| (k.0, v)))
     }
 
+    /// Returns the currently positioned trie path without advancing, or `None` before positioning
+    /// or after exhaustion.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         Ok(self.last_key.as_ref().map(|k| k.0))
     }
 
+    /// Clears the current trie position so subsequent traversal starts from an unpositioned state.
     fn reset(&mut self) {
         self.last_key = None;
         self.seeked = false;
@@ -122,6 +131,8 @@ impl<C> TrieCursor for V2StorageTrieSnapshotCursor<C>
 where
     C: DbCursorRO<V2StoragesTrieSnapshot> + DbDupCursorRO<V2StoragesTrieSnapshot> + Send,
 {
+    /// Positions at the branch exactly matching `key`, returning `None` when absent and propagating
+    /// backend errors.
     fn seek_exact(
         &mut self,
         key: Nibbles,
@@ -138,6 +149,8 @@ where
         Ok(entry.map(|e| (key, e.node)))
     }
 
+    /// Positions at the first trie branch whose path is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(
         &mut self,
         key: Nibbles,
@@ -151,6 +164,8 @@ where
         Ok(entry.map(|e| (e.nibbles.0, e.node)))
     }
 
+    /// Advances to the next trie branch in nibble-path order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         if !self.seeked {
             return self.seek(Nibbles::default());
@@ -162,10 +177,13 @@ where
         Ok(entry.map(|e| (e.nibbles.0, e.node)))
     }
 
+    /// Returns the currently positioned trie path without advancing, or `None` before positioning
+    /// or after exhaustion.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         Ok(self.last_key.as_ref().map(|k| k.0))
     }
 
+    /// Clears the current trie position so subsequent traversal starts from an unpositioned state.
     fn reset(&mut self) {
         self.last_key = None;
         self.seeked = false;
@@ -176,6 +194,8 @@ impl<C> TrieStorageCursor for V2StorageTrieSnapshotCursor<C>
 where
     C: DbCursorRO<V2StoragesTrieSnapshot> + DbDupCursorRO<V2StoragesTrieSnapshot> + Send,
 {
+    /// Selects the hashed account whose storage trie subsequent cursor operations traverse and
+    /// resets account-specific position.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address;
         self.last_key = None;
@@ -204,13 +224,18 @@ impl<C> HashedCursor for V2HashedAccountSnapshotCursor<C>
 where
     C: DbCursorRO<V2HashedAccountsSnapshot> + Send,
 {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = Account;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.seeked = true;
         self.cursor.seek(key)
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         if !self.seeked {
             return self.seek(B256::ZERO);
@@ -218,6 +243,7 @@ where
         self.cursor.next()
     }
 
+    /// Clears the cursor position so the next seek or iteration starts from an unpositioned state.
     fn reset(&mut self) {
         self.seeked = false;
     }
@@ -249,8 +275,11 @@ impl<C> HashedCursor for V2HashedStorageSnapshotCursor<C>
 where
     C: DbCursorRO<V2HashedStoragesSnapshot> + DbDupCursorRO<V2HashedStoragesSnapshot> + Send,
 {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = U256;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, subkey: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.seeked = true;
         let mut entry = self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?;
@@ -263,6 +292,8 @@ where
         Ok(None)
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         if !self.seeked {
             return self.seek(B256::ZERO);
@@ -275,6 +306,7 @@ where
         Ok(None)
     }
 
+    /// Clears the cursor position so the next seek or iteration starts from an unpositioned state.
     fn reset(&mut self) {
         self.seeked = false;
     }
@@ -284,10 +316,14 @@ impl<C> HashedStorageCursor for V2HashedStorageSnapshotCursor<C>
 where
     C: DbCursorRO<V2HashedStoragesSnapshot> + DbDupCursorRO<V2HashedStoragesSnapshot> + Send,
 {
+    /// Seeks from the zero slot to test emptiness; a non-empty cursor remains at its first visible
+    /// leaf and backend failures are returned.
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         Ok(self.seek(B256::ZERO)?.is_none())
     }
 
+    /// Selects the hashed account whose storage leaves subsequent cursor operations will traverse
+    /// and resets account-specific state.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address;
         self.seeked = false;

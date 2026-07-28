@@ -140,39 +140,51 @@ pub trait OpProofsProviderRO: Send + Sync + Debug {
 
 /// Blanket [`OpProofsProviderRO`] for shared references.
 impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
+    /// The cursor type used to read one account's storage-trie branches at a historical block.
     type StorageTrieCursor<'tx>
         = T::StorageTrieCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
+    /// The cursor type used to read account-trie branches at a historical block.
     type AccountTrieCursor<'tx>
         = T::AccountTrieCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
+    /// The cursor type used to read one account's hashed storage leaves at a historical block.
     type StorageCursor<'tx>
         = T::StorageCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
+    /// The cursor type used to read hashed account leaves at a historical block.
     type AccountHashedCursor<'tx>
         = T::AccountHashedCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
 
+    /// Returns the inclusive earliest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_earliest_block(&self) -> OpProofsStorageResult<NumHash> {
         T::get_earliest_block(self)
     }
 
+    /// Returns the inclusive latest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_latest_block(&self) -> OpProofsStorageResult<NumHash> {
         T::get_latest_block(self)
     }
 
+    /// Returns both inclusive proof-window endpoints from one consistent view, or `NoBlocksFound`
+    /// when empty.
     fn get_proof_window(&self) -> OpProofsStorageResult<ProofWindowRange> {
         T::get_proof_window(self)
     }
 
+    /// Opens a storage-trie cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -184,6 +196,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::storage_trie_cursor(self, hashed_address, max_block_number)
     }
 
+    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -194,6 +208,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::account_trie_cursor(self, max_block_number)
     }
 
+    /// Opens a storage-leaf cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -205,6 +221,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::storage_hashed_cursor(self, hashed_address, max_block_number)
     }
 
+    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -215,6 +233,8 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
         T::account_hashed_cursor(self, max_block_number)
     }
 
+    /// Loads the complete trie and hashed-post-state diff for `block_number`, returning an error
+    /// when unavailable.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         T::fetch_trie_updates(self, block_number)
     }
@@ -514,31 +534,40 @@ pub trait OpProofsSnapshotProviderRO: OpProofsProviderRO {
 /// owning cursor factories (e.g., [`crate::SnapshotTrieCursorFactory::new`])
 /// without wrapping in [`std::sync::Arc`].
 impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a T {
+    /// The cursor type used to traverse account-trie branches in the committed snapshot.
     type SnapshotAccountTrieCursor<'tx>
         = T::SnapshotAccountTrieCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
+    /// The cursor type used to traverse one account's storage-trie branches in the committed
+    /// snapshot.
     type SnapshotStorageTrieCursor<'tx>
         = T::SnapshotStorageTrieCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
+    /// The cursor type used to traverse hashed account leaves in the committed snapshot.
     type SnapshotHashedAccountCursor<'tx>
         = T::SnapshotHashedAccountCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
+    /// The cursor type used to traverse one account's hashed storage leaves in the committed
+    /// snapshot.
     type SnapshotHashedStorageCursor<'tx>
         = T::SnapshotHashedStorageCursor<'tx>
     where
         Self: 'tx,
         T: 'tx;
 
+    /// Returns the committed snapshot anchor, or `SnapshotNotReady` until a snapshot is complete.
     fn snapshot_anchor(&self) -> OpProofsStorageResult<BlockNumHash> {
         T::snapshot_anchor(self)
     }
 
+    /// Opens an account-trie cursor over the committed snapshot; missing snapshot state or backend
+    /// failures are returned.
     fn snapshot_account_trie_cursor<'tx>(
         &self,
     ) -> OpProofsStorageResult<Self::SnapshotAccountTrieCursor<'tx>>
@@ -548,6 +577,8 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_account_trie_cursor(self)
     }
 
+    /// Opens a storage-trie cursor for `hashed_address` over the committed snapshot; backend
+    /// failures are returned.
     fn snapshot_storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -558,6 +589,8 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_storage_trie_cursor(self, hashed_address)
     }
 
+    /// Opens a hashed-account cursor over the committed snapshot; missing state or backend failures
+    /// are returned.
     fn snapshot_hashed_account_cursor<'tx>(
         &self,
     ) -> OpProofsStorageResult<Self::SnapshotHashedAccountCursor<'tx>>
@@ -567,6 +600,8 @@ impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a 
         T::snapshot_hashed_account_cursor(self)
     }
 
+    /// Opens a hashed-storage cursor for `hashed_address` over the committed snapshot; backend
+    /// failures are returned.
     fn snapshot_hashed_storage_cursor<'tx>(
         &self,
         hashed_address: B256,

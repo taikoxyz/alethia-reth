@@ -22,6 +22,7 @@ use std::fmt::Debug;
 impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
     for MdbxProofsProviderV2<TX>
 {
+    /// Returns initialization status and resume keys; an unstarted store has no block anchor.
     fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor> {
         let Some(block) = self.get_initial_state_anchor_inner()? else {
             return Ok(InitialStateAnchor::default());
@@ -64,12 +65,16 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         })
     }
 
+    /// Creates the initial-state anchor; an existing anchor or backend failure is returned as an
+    /// error, and persistence occurs when the provider commits.
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
         let mut cur = self.tx.cursor_write::<V2ProofWindow>()?;
         cur.insert(ProofWindowKey::InitialStateAnchor, &anchor.into())?;
         Ok(())
     }
 
+    /// Stages the supplied account-trie branches in input order; an empty batch is a no-op and
+    /// backend failures are returned.
     fn store_account_branches(
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
@@ -87,6 +92,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Stages the supplied storage-trie branches for `hashed_address` in input order; an empty
+    /// batch is a no-op and backend failures are returned.
     fn store_storage_branches(
         &self,
         hashed_address: B256,
@@ -108,6 +115,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Stages the supplied hashed accounts in input order; an empty batch is a no-op and backend
+    /// failures are returned.
     fn store_hashed_accounts(
         &self,
         accounts: Vec<(B256, Option<Account>)>,
@@ -125,6 +134,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Stages the supplied hashed storage leaves for `hashed_address` in input order; an empty
+    /// batch is a no-op and backend failures are returned.
     fn store_hashed_storages(
         &self,
         hashed_address: B256,
@@ -141,6 +152,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Marks initialization complete by setting both proof-window endpoints to the stored anchor;
+    /// a missing anchor or backend failure is returned before the transaction commits.
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
         let anchor =
             self.get_initial_state_anchor_inner()?.ok_or(OpProofsStorageError::NoBlocksFound)?;
@@ -149,6 +162,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(anchor)
     }
 
+    /// Commits the initialization transaction atomically; database failures are returned and no
+    /// later writes may use this provider.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.tx.commit()?;
         Ok(())

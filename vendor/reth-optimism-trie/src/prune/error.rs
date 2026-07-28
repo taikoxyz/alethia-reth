@@ -25,6 +25,7 @@ pub struct PrunerOutput {
 }
 
 impl Display for PrunerOutput {
+    /// Formats the pruned block span, aggregate entry count, and elapsed seconds.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let blocks = self.end_block.saturating_sub(self.start_block);
         let total_entries = self.write_counts.hashed_accounts_written_total +

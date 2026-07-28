@@ -23,6 +23,7 @@ use reth_db::transaction::DbTx;
 use std::fmt::Debug;
 
 impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofsProviderV2<TX> {
+    /// The cursor type used to read one account's storage-trie branches at a historical block.
     type StorageTrieCursor<'tx>
         = V2StorageTrieCursor<
         TX::DupCursor<V2StoragesTrie>,
@@ -33,6 +34,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Self: 'tx,
         TX: 'tx;
 
+    /// The cursor type used to read account-trie branches at a historical block.
     type AccountTrieCursor<'tx>
         = V2AccountTrieCursor<
         TX::Cursor<V2AccountsTrie>,
@@ -43,6 +45,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Self: 'tx,
         TX: 'tx;
 
+    /// The cursor type used to read one account's hashed storage leaves at a historical block.
     type StorageCursor<'tx>
         = V2StorageCursor<
         TX::DupCursor<V2HashedStorages>,
@@ -53,6 +56,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Self: 'tx,
         TX: 'tx;
 
+    /// The cursor type used to read hashed account leaves at a historical block.
     type AccountHashedCursor<'tx>
         = V2AccountCursor<
         TX::Cursor<V2HashedAccounts>,
@@ -63,18 +67,26 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Self: 'tx,
         TX: 'tx;
 
+    /// Returns the inclusive earliest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_earliest_block(&self) -> OpProofsStorageResult<NumHash> {
         self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)
     }
 
+    /// Returns the inclusive latest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_latest_block(&self) -> OpProofsStorageResult<NumHash> {
         self.get_block_number_hash_inner(ProofWindowKey::LatestBlock)
     }
 
+    /// Returns both inclusive proof-window endpoints from one consistent view, or `NoBlocksFound`
+    /// when empty.
     fn get_proof_window(&self) -> OpProofsStorageResult<ProofWindowRange> {
         self.get_proof_window_inner()
     }
 
+    /// Opens a storage-trie cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -92,6 +104,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
+    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -107,6 +121,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
+    /// Opens a storage-leaf cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -124,6 +140,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
+    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -139,6 +157,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         ))
     }
 
+    /// Loads the complete trie and hashed-post-state diff for `block_number`, returning an error
+    /// when unavailable.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         Ok(BlockStateDiff {
             sorted_trie_updates: self.fetch_block_trie_updates(block_number)?.into_sorted(),

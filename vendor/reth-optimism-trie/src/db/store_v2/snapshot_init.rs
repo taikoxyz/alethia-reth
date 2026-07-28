@@ -30,6 +30,8 @@ use std::fmt::Debug;
 impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitProvider
     for MdbxProofsProviderV2<TX>
 {
+    /// Returns snapshot status, its optional anchor, and all resume keys; backend read failures are
+    /// returned.
     fn snapshot_init_anchor(&self) -> OpProofsStorageResult<SnapshotInitAnchor> {
         let (block, status) = match self.read_snapshot_meta() {
             Ok(SnapshotMeta { anchor, status: SnapshotStatus::Building }) => {
@@ -72,6 +74,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         })
     }
 
+    /// Creates a `Building` snapshot anchor, returning an error if metadata already exists or the
+    /// backend write fails.
     fn set_snapshot_init_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
         let mut cur = self.tx.cursor_write::<V2SnapshotMeta>()?;
         cur.insert(
@@ -81,6 +85,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(())
     }
 
+    /// Appends an account-trie chunk whose keys must be ordered after existing snapshot keys; an
+    /// empty chunk is a no-op and ordering or backend failures are returned.
     fn store_account_trie_snapshot_branches(
         &self,
         entries: Vec<(StoredNibbles, BranchNodeCompact)>,
@@ -95,6 +101,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(())
     }
 
+    /// Appends an ordered storage-trie chunk for `hashed_address`; absent nodes are skipped and
+    /// ordering or backend failures are returned.
     fn store_storage_trie_snapshot_branches(
         &self,
         hashed_address: B256,
@@ -115,6 +123,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(())
     }
 
+    /// Appends an ordered hashed-account chunk after existing snapshot keys; an empty chunk is a
+    /// no-op and ordering or backend failures are returned.
     fn store_hashed_accounts_snapshot(
         &self,
         entries: Vec<(B256, Account)>,
@@ -129,6 +139,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(())
     }
 
+    /// Appends ordered, nonzero storage leaves for `hashed_address`; zero values are omitted and
+    /// ordering or backend failures are returned.
     fn store_hashed_storages_snapshot(
         &self,
         hashed_address: B256,
@@ -146,6 +158,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(())
     }
 
+    /// Transitions snapshot metadata from `Building` to `Ready`; invalid status or backend errors
+    /// are returned before the transaction commits.
     fn commit_snapshot(&self) -> OpProofsStorageResult<()> {
         let SnapshotMeta { anchor, status } = self.read_snapshot_meta()?;
         if status != SnapshotStatus::Building {
@@ -154,6 +168,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         self.write_snapshot_meta(SnapshotMeta::new(anchor, SnapshotStatus::Ready))
     }
 
+    /// Commits staged snapshot-initialization changes atomically; database failures are returned.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.tx.commit()?;
         Ok(())

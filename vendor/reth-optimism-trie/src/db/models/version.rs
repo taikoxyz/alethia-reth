@@ -18,20 +18,25 @@ use serde::{Deserialize, Serialize};
 pub struct MaybeDeleted<T>(pub Option<T>);
 
 impl<T> From<Option<T>> for MaybeDeleted<T> {
+    /// Maps a present value to a live version and absence to a deletion marker.
     fn from(opt: Option<T>) -> Self {
         Self(opt)
     }
 }
 
 impl<T> From<MaybeDeleted<T>> for Option<T> {
+    /// Recovers the optional live value, mapping a deletion marker to `None`.
     fn from(maybe: MaybeDeleted<T>) -> Self {
         maybe.0
     }
 }
 
 impl<T: Compress> Compress for MaybeDeleted<T> {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         match &self.0 {
             None => {
@@ -46,6 +51,8 @@ impl<T: Compress> Compress for MaybeDeleted<T> {
 }
 
 impl<T: Decompress> Decompress for MaybeDeleted<T> {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.is_empty() {
             // Empty = deleted
@@ -86,8 +93,11 @@ impl<T> VersionedValue<T> {
 }
 
 impl<T: Compress> Compress for VersionedValue<T> {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         // Encode block number first (8 bytes, big-endian)
         buf.put_u64(self.block_number);
@@ -97,6 +107,8 @@ impl<T: Compress> Compress for VersionedValue<T> {
 }
 
 impl<T: Decompress> Decompress for VersionedValue<T> {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.len() < 8 {
             return Err(DecompressError::new(DatabaseError::Decode));
@@ -111,8 +123,11 @@ impl<T: Decompress> Decompress for VersionedValue<T> {
 }
 
 impl<T> ValueWithSubKey for VersionedValue<T> {
+    /// The subkey type used to order duplicate values within one database key.
     type SubKey = u64;
 
+    /// Returns the duplicate-table subkey used to order this value without changing the stored
+    /// value.
     fn get_subkey(&self) -> Self::SubKey {
         self.block_number
     }

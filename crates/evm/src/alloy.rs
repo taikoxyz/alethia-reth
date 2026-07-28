@@ -149,9 +149,11 @@ where
 }
 
 impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
+    /// The wrapped Taiko execution context exposed through shared dereferencing.
     type Target = TaikoEvmContext<DB>;
 
     #[inline]
+    /// Borrows the execution context without changing interpreter or precompile state.
     fn deref(&self) -> &Self::Target {
         self.ctx()
     }
@@ -159,6 +161,7 @@ impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
 
 impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
     #[inline]
+    /// Mutably borrows the execution context used by subsequent EVM operations.
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.ctx_mut()
     }

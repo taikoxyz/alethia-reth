@@ -19,10 +19,13 @@ pub trait IntoKV<Tab: Table + DupSort> {
 }
 
 impl IntoKV<AccountTrieHistory> for (Nibbles, Option<BranchNodeCompact>) {
+    /// Extracts the table key while preserving the ordering used by historical duplicate entries.
     fn into_key(self) -> StoredNibbles {
         StoredNibbles::from(self.0)
     }
 
+    /// Splits the history entry into its table key and value without changing their encoded
+    /// ordering.
     fn into_kv(self, block_number: u64) -> (StoredNibbles, VersionedValue<BranchNodeCompact>) {
         let (path, node) = self;
         (StoredNibbles::from(path), VersionedValue { block_number, value: MaybeDeleted(node) })
@@ -30,10 +33,13 @@ impl IntoKV<AccountTrieHistory> for (Nibbles, Option<BranchNodeCompact>) {
 }
 
 impl IntoKV<StorageTrieHistory> for (B256, Nibbles, Option<BranchNodeCompact>) {
+    /// Extracts the table key while preserving the ordering used by historical duplicate entries.
     fn into_key(self) -> StorageTrieKey {
         let (hashed_address, path, _) = self;
         StorageTrieKey::new(hashed_address, StoredNibbles::from(path))
     }
+    /// Splits the history entry into its table key and value without changing their encoded
+    /// ordering.
     fn into_kv(self, block_number: u64) -> (StorageTrieKey, VersionedValue<BranchNodeCompact>) {
         let (hashed_address, path, node) = self;
         (
@@ -44,9 +50,12 @@ impl IntoKV<StorageTrieHistory> for (B256, Nibbles, Option<BranchNodeCompact>) {
 }
 
 impl IntoKV<HashedAccountHistory> for (B256, Option<Account>) {
+    /// Extracts the table key while preserving the ordering used by historical duplicate entries.
     fn into_key(self) -> B256 {
         self.0
     }
+    /// Splits the history entry into its table key and value without changing their encoded
+    /// ordering.
     fn into_kv(self, block_number: u64) -> (B256, VersionedValue<Account>) {
         let (hashed_address, account) = self;
         (hashed_address, VersionedValue { block_number, value: MaybeDeleted(account) })
@@ -54,10 +63,13 @@ impl IntoKV<HashedAccountHistory> for (B256, Option<Account>) {
 }
 
 impl IntoKV<HashedStorageHistory> for (B256, B256, Option<StorageValue>) {
+    /// Extracts the table key while preserving the ordering used by historical duplicate entries.
     fn into_key(self) -> HashedStorageKey {
         let (hashed_address, hashed_storage_key, _) = self;
         HashedStorageKey::new(hashed_address, hashed_storage_key)
     }
+    /// Splits the history entry into its table key and value without changing their encoded
+    /// ordering.
     fn into_kv(self, block_number: u64) -> (HashedStorageKey, VersionedValue<StorageValue>) {
         let (hashed_address, hashed_storage_key, value) = self;
         (

@@ -174,6 +174,8 @@ impl<Cursor> TrieCursor for MdbxTrieCursor<AccountTrieHistory, Cursor>
 where
     Cursor: DbCursorRO<AccountTrieHistory> + DbDupCursorRO<AccountTrieHistory> + Send,
 {
+    /// Positions at the branch exactly matching `key`, returning `None` when absent and propagating
+    /// backend errors.
     fn seek_exact(
         &mut self,
         path: Nibbles,
@@ -184,6 +186,8 @@ where
             .map(|opt| opt.map(|(StoredNibbles(n), node)| (n, node)))?)
     }
 
+    /// Positions at the first trie branch whose path is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(
         &mut self,
         path: Nibbles,
@@ -194,14 +198,20 @@ where
             .map(|opt| opt.map(|(StoredNibbles(n), node)| (n, node)))?)
     }
 
+    /// Advances to the next trie branch in nibble-path order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         Ok(self.inner.next().map(|opt| opt.map(|(StoredNibbles(n), node)| (n, node)))?)
     }
 
+    /// Returns the currently positioned trie path without advancing, or `None` before positioning
+    /// or after exhaustion.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         self.inner.cursor.current().map(|opt| opt.map(|(StoredNibbles(n), _)| n))
     }
 
+    /// Performs no additional reset because this legacy database cursor has no separate cached
+    /// position.
     fn reset(&mut self) {
         // Database cursors are stateless, no reset needed
     }
@@ -211,6 +221,8 @@ impl<Cursor> TrieCursor for MdbxTrieCursor<StorageTrieHistory, Cursor>
 where
     Cursor: DbCursorRO<StorageTrieHistory> + DbDupCursorRO<StorageTrieHistory> + Send,
 {
+    /// Positions at the branch exactly matching `key`, returning `None` when absent and propagating
+    /// backend errors.
     fn seek_exact(
         &mut self,
         path: Nibbles,
@@ -224,6 +236,8 @@ where
         Ok(None)
     }
 
+    /// Positions at the first trie branch whose path is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(
         &mut self,
         path: Nibbles,
@@ -237,6 +251,8 @@ where
         Ok(None)
     }
 
+    /// Advances to the next trie branch in nibble-path order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         if let Some(address) = self.hashed_address {
             // If the cursor is not positioned, we need to seek to the first key for our bound
@@ -255,6 +271,8 @@ where
         Ok(None)
     }
 
+    /// Returns the currently positioned trie path without advancing, or `None` before positioning
+    /// or after exhaustion.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         if let Some(address) = self.hashed_address {
             return self.inner.cursor.current().map(|opt| {
@@ -264,6 +282,8 @@ where
         Ok(None)
     }
 
+    /// Performs no additional reset because this legacy database cursor has no separate cached
+    /// position.
     fn reset(&mut self) {
         // Database cursors are stateless, no reset needed
     }
@@ -273,6 +293,8 @@ impl<Cursor> TrieStorageCursor for MdbxTrieCursor<StorageTrieHistory, Cursor>
 where
     Cursor: DbCursorRO<StorageTrieHistory> + DbDupCursorRO<StorageTrieHistory> + Send,
 {
+    /// Selects the hashed account used by subsequent legacy storage-trie operations; no separate
+    /// cached position is retained.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = Some(hashed_address);
     }
@@ -301,8 +323,11 @@ impl<Cursor> HashedCursor for MdbxStorageCursor<Cursor>
 where
     Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send,
 {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = U256;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         let storage_key = HashedStorageKey::new(self.hashed_address, key);
 
@@ -324,6 +349,8 @@ where
         Ok(result)
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         // If the cursor is not positioned, we need to seek to the first key for our bound address
         // to ensure we start iterating from the correct position in the table.
@@ -354,6 +381,8 @@ where
         }
     }
 
+    /// Performs no additional reset because this legacy database cursor has no separate cached
+    /// position.
     fn reset(&mut self) {
         // Database cursors are stateless, no reset needed
     }
@@ -363,10 +392,14 @@ impl<Cursor> HashedStorageCursor for MdbxStorageCursor<Cursor>
 where
     Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send,
 {
+    /// Seeks from the zero slot to test emptiness; a non-empty cursor remains at its first visible
+    /// leaf and backend failures are returned.
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         Ok(self.seek(B256::ZERO)?.is_none())
     }
 
+    /// Selects the hashed account used by subsequent legacy storage-leaf operations; no separate
+    /// cached position is retained.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address
     }
@@ -393,16 +426,23 @@ impl<Cursor> HashedCursor for MdbxAccountCursor<Cursor>
 where
     Cursor: DbCursorRO<HashedAccountHistory> + DbDupCursorRO<HashedAccountHistory> + Send,
 {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = Account;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         Ok(self.inner.seek(key)?)
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         Ok(self.inner.next()?)
     }
 
+    /// Performs no additional reset because this legacy database cursor has no separate cached
+    /// position.
     fn reset(&mut self) {
         // Database cursors are stateless, no reset needed
     }

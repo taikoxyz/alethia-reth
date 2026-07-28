@@ -578,38 +578,48 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
 }
 
 impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofsProvider<TX> {
+    /// The cursor type used to read one account's storage-trie branches at a historical block.
     type StorageTrieCursor<'tx>
         = MdbxTrieCursor<StorageTrieHistory, TX::DupCursor<StorageTrieHistory>>
     where
         Self: 'tx,
         TX: 'tx;
 
+    /// The cursor type used to read account-trie branches at a historical block.
     type AccountTrieCursor<'tx>
         = MdbxTrieCursor<AccountTrieHistory, TX::DupCursor<AccountTrieHistory>>
     where
         Self: 'tx,
         TX: 'tx;
 
+    /// The cursor type used to read one account's hashed storage leaves at a historical block.
     type StorageCursor<'tx>
         = MdbxStorageCursor<TX::DupCursor<HashedStorageHistory>>
     where
         Self: 'tx,
         TX: 'tx;
 
+    /// The cursor type used to read hashed account leaves at a historical block.
     type AccountHashedCursor<'tx>
         = MdbxAccountCursor<TX::DupCursor<HashedAccountHistory>>
     where
         Self: 'tx,
         TX: 'tx;
 
+    /// Returns the inclusive earliest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_earliest_block(&self) -> OpProofsStorageResult<NumHash> {
         self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)
     }
 
+    /// Returns the inclusive latest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_latest_block(&self) -> OpProofsStorageResult<NumHash> {
         self.get_block_number_hash_inner(ProofWindowKey::LatestBlock)
     }
 
+    /// Returns both inclusive proof-window endpoints from one consistent view, or `NoBlocksFound`
+    /// when empty.
     fn get_proof_window(&self) -> OpProofsStorageResult<ProofWindowRange> {
         let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
         let earliest = cursor
@@ -623,6 +633,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(ProofWindowRange { earliest, latest })
     }
 
+    /// Opens a storage-trie cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -632,6 +644,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(MdbxTrieCursor::new(cursor, max_block_number, Some(hashed_address)))
     }
 
+    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -640,6 +654,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(MdbxTrieCursor::new(cursor, max_block_number, None))
     }
 
+    /// Opens a storage-leaf cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -649,6 +665,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(MdbxStorageCursor::new(cursor, max_block_number, hashed_address))
     }
 
+    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -657,6 +675,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         Ok(MdbxAccountCursor::new(cursor, max_block_number))
     }
 
+    /// Loads the complete trie and hashed-post-state diff for `block_number`, returning an error
+    /// when unavailable.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         let mut change_set_cursor = self.tx.cursor_read::<BlockChangeSet>()?;
         let (_, change_set) = change_set_cursor
@@ -757,6 +777,8 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
 impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
     for MdbxProofsProvider<TX>
 {
+    /// Stages one block's trie and leaf updates and returns write counts; ordering or backend
+    /// failures are returned.
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -765,6 +787,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         self.store_trie_updates_append_only_inner(block_ref, block_state_diff)
     }
 
+    /// Stages an ordered block batch and returns aggregate write counts; storage failures are
+    /// returned before the transaction is committed.
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
@@ -784,6 +808,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(total_counts)
     }
 
+    /// Applies the new earliest state and advances the inclusive proof-window boundary, returning
+    /// write counts or storage errors.
     fn prune_earliest_state(
         &self,
         new_earliest_block_ref: BlockWithParent,
@@ -826,6 +852,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(counts)
     }
 
+    /// Removes historical updates through the requested block boundary, returning backend failures
+    /// without committing.
     fn unwind_history(&self, to: BlockWithParent) -> OpProofsStorageResult<()> {
         let history_to_delete = self.collect_history_ranged(to.block.number..)?;
 
@@ -851,6 +879,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(())
     }
 
+    /// Removes history above the common block and stages the replacement branch, preserving the
+    /// common block itself.
     fn replace_updates(
         &self,
         latest_common_block: BlockNumHash,
@@ -881,6 +911,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         Ok(())
     }
 
+    /// Atomically commits all staged proof-state changes and consumes the writable provider;
+    /// database failures are returned.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.tx.commit()?;
         Ok(())
@@ -890,6 +922,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
 impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
     for MdbxProofsProvider<TX>
 {
+    /// Returns initialization status and resume keys; an unstarted store has no block anchor.
     fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor> {
         let Some(block) = self.get_initial_state_anchor_inner()? else {
             return Ok(InitialStateAnchor::default());
@@ -911,12 +944,16 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         })
     }
 
+    /// Creates the initial-state anchor; an existing anchor or backend failure is returned as an
+    /// error, and persistence occurs when the provider commits.
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
         let mut cur = self.tx.cursor_write::<ProofWindow>()?;
         cur.insert(ProofWindowKey::InitialStateAnchor, &anchor.into())?;
         Ok(())
     }
 
+    /// Stages the supplied account-trie branches in input order; an empty batch is a no-op and
+    /// backend failures are returned.
     fn store_account_branches(
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
@@ -928,6 +965,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Stages the supplied storage-trie branches for `hashed_address` in input order; an empty
+    /// batch is a no-op and backend failures are returned.
     fn store_storage_branches(
         &self,
         hashed_address: B256,
@@ -944,6 +983,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Stages the supplied hashed accounts in input order; an empty batch is a no-op and backend
+    /// failures are returned.
     fn store_hashed_accounts(
         &self,
         accounts: Vec<(B256, Option<Account>)>,
@@ -955,6 +996,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Stages the supplied hashed storage leaves for `hashed_address` in input order; an empty
+    /// batch is a no-op and backend failures are returned.
     fn store_hashed_storages(
         &self,
         hashed_address: B256,
@@ -971,6 +1014,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(())
     }
 
+    /// Marks initialization complete by setting both proof-window endpoints to the stored anchor;
+    /// a missing anchor or backend failure is returned before the transaction commits.
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
         let anchor = self.get_initial_state_anchor_inner()?.ok_or(NoBlocksFound)?;
         self.set_earliest_block_number_inner(anchor.number, anchor.hash)?;
@@ -978,6 +1023,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         Ok(anchor)
     }
 
+    /// Commits the initialization transaction atomically; database failures are returned and no
+    /// later writes may use this provider.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.tx.commit()?;
         Ok(())
@@ -985,18 +1032,26 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
 }
 
 impl OpProofsStore for MdbxProofsStorage {
+    /// The transaction-scoped provider type used for read-only proof-state access.
     type ProviderRO<'a> = Arc<MdbxProofsProvider<<DatabaseEnv as Database>::TX>>;
+    /// The transaction-scoped provider type used to stage and commit proof-state changes.
     type ProviderRw<'a> = MdbxProofsProvider<<DatabaseEnv as Database>::TXMut>;
+    /// The provider type used to build and atomically commit initial proof state.
     type Initializer<'a> = MdbxProofsProvider<<DatabaseEnv as Database>::TXMut>;
 
+    /// Opens a transactionally consistent read-only proof-state view, returning backend setup
+    /// failures.
     fn provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRO<'a>> {
         Ok(Arc::new(MdbxProofsProvider::new(self.env.tx()?)))
     }
 
+    /// Opens a writable proof-state transaction whose changes remain staged until commit.
     fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>> {
         Ok(MdbxProofsProvider::new(self.env.tx_mut()?))
     }
 
+    /// Opens a provider for building initial proof state; backend initialization failures are
+    /// returned.
     fn initialization_provider<'a>(&'a self) -> OpProofsStorageResult<Self::Initializer<'a>> {
         Ok(MdbxProofsProvider::new(self.env.tx_mut()?))
     }
@@ -1007,12 +1062,16 @@ impl OpProofsStore for MdbxProofsStorage {
 /// [`DatabaseEnv`]. As the implementation hard-coded the table name, we need to reimplement it.
 #[cfg(feature = "metrics")]
 impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorage {
+    /// Emits the current table gauges through the process metrics recorder without changing proof
+    /// state.
     fn report_metrics(&self) {
         for (name, value, labels) in self.gauge_metrics() {
             gauge!(name, labels).set(value);
         }
     }
 
+    /// Collects table-size, page-count, and entry-count gauges; table-stat failures are logged and
+    /// omitted from the returned values.
     fn gauge_metrics(&self) -> Vec<(&'static str, f64, Vec<Label>)> {
         use eyre::WrapErr;
         use tracing::error;

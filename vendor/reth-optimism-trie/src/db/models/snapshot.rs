@@ -23,14 +23,18 @@ pub enum SnapshotMetaKey {
 }
 
 impl Encode for SnapshotMetaKey {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = [u8; 1];
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         [self as u8]
     }
 }
 
 impl Decode for SnapshotMetaKey {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         match value.first() {
             Some(&0) => Ok(Self::Singleton),
@@ -80,8 +84,11 @@ impl SnapshotMeta {
 }
 
 impl Compress for SnapshotMeta {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         buf.put_u8(self.status as u8);
         buf.put_u64(self.anchor.number);
@@ -90,6 +97,8 @@ impl Compress for SnapshotMeta {
 }
 
 impl Decompress for SnapshotMeta {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.len() != Self::ENCODED_LEN {
             return Err(DecompressError::new(DatabaseError::Decode));

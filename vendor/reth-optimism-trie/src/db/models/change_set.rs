@@ -21,8 +21,10 @@ pub struct ChangeSet {
 }
 
 impl table::Encode for ChangeSet {
+    /// The borrowed or owned byte representation returned to the database table.
     type Encoded = Vec<u8>;
 
+    /// Consumes this value and returns its canonical database representation.
     fn encode(self) -> Self::Encoded {
         bincode::serde::encode_to_vec(&self, bincode::config::standard())
             .expect("ChangeSet serialization should not fail")
@@ -30,6 +32,8 @@ impl table::Encode for ChangeSet {
 }
 
 impl table::Decode for ChangeSet {
+    /// Decodes the canonical database representation, returning an error when the input is
+    /// malformed or incomplete.
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         bincode::serde::decode_from_slice(value, bincode::config::standard())
             .map(|(v, _)| v)
@@ -38,8 +42,11 @@ impl table::Decode for ChangeSet {
 }
 
 impl table::Compress for ChangeSet {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         let encoded = self.clone().encode();
         buf.put_slice(&encoded);
@@ -47,6 +54,8 @@ impl table::Compress for ChangeSet {
 }
 
 impl table::Decompress for ChangeSet {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
         Self::decode(value).map_err(reth_codecs::DecompressError::new)
     }

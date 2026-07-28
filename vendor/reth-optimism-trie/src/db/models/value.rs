@@ -38,16 +38,22 @@ impl HashedAccountBeforeTx {
 }
 
 impl ValueWithSubKey for HashedAccountBeforeTx {
+    /// The subkey type used to order duplicate values within one database key.
     type SubKey = B256;
 
+    /// Returns the duplicate-table subkey used to order this value without changing the stored
+    /// value.
     fn get_subkey(&self) -> Self::SubKey {
         self.hashed_address
     }
 }
 
 impl Compress for HashedAccountBeforeTx {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         // SubKey: raw 32 bytes (uncompressed so MDBX can seek by it)
         buf.put_slice(self.hashed_address.as_slice());
@@ -59,6 +65,8 @@ impl Compress for HashedAccountBeforeTx {
 }
 
 impl Decompress for HashedAccountBeforeTx {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.len() < 32 {
             return Err(DecompressError::new(DatabaseError::Decode));
@@ -85,16 +93,22 @@ pub struct TrieChangeSetsEntry {
 }
 
 impl ValueWithSubKey for TrieChangeSetsEntry {
+    /// The subkey type used to order duplicate values within one database key.
     type SubKey = StoredNibblesSubKey;
 
+    /// Returns the duplicate-table subkey used to order this value without changing the stored
+    /// value.
     fn get_subkey(&self) -> Self::SubKey {
         self.nibbles.clone()
     }
 }
 
 impl Compress for TrieChangeSetsEntry {
+    /// The byte container used for this value's canonical database representation.
     type Compressed = Vec<u8>;
 
+    /// Appends this value's canonical database encoding to `buf` without clearing bytes already
+    /// present.
     fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
         let _ = self.nibbles.to_compact(buf);
         if let Some(ref node) = self.node {
@@ -104,6 +118,8 @@ impl Compress for TrieChangeSetsEntry {
 }
 
 impl Decompress for TrieChangeSetsEntry {
+    /// Reconstructs the stored value from canonical database bytes, rejecting malformed or
+    /// incomplete input.
     fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.is_empty() {
             return Ok(Self {

@@ -467,6 +467,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> MdbxProofsProviderV2<TX
 impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsBackfillProvider
     for MdbxProofsProviderV2<TX>
 {
+    /// Prepends one historical block and its state diff, preserving descending backfill order and
+    /// returning storage failures.
     fn prepend_block(
         &self,
         block_ref: BlockWithParent,
@@ -495,6 +497,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsBackfillProvide
         Ok(counts)
     }
 
+    /// Removes the current snapshot and its progress metadata; database failures leave the
+    /// operation uncommitted.
     fn clear_snapshot(&self) -> OpProofsStorageResult<()> {
         self.tx.clear::<V2AccountsTrieSnapshot>()?;
         self.tx.clear::<V2StoragesTrieSnapshot>()?;
@@ -504,6 +508,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsBackfillProvide
         Ok(())
     }
 
+    /// Stages snapshot state and progress for the supplied block; database failures are returned
+    /// before commit.
     fn update_snapshot(
         &self,
         new_anchor: BlockNumHash,
@@ -533,6 +539,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsBackfillProvide
         Ok(counts)
     }
 
+    /// Atomically commits all staged backfill changes; transaction failures are returned to the
+    /// caller.
     fn commit(self) -> OpProofsStorageResult<()> {
         self.tx.commit()?;
         Ok(())

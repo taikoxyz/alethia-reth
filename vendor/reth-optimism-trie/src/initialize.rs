@@ -142,6 +142,7 @@ pub(crate) trait CompletionEstimatable {
 }
 
 impl CompletionEstimatable for B256 {
+    /// Estimates lexicographic scan progress as a fraction in the inclusive range `0.0..=1.0`.
     fn estimate_progress(&self) -> f64 {
         // use the first 3 bytes as a progress estimate
         let progress = self.0[..3].to_vec();
@@ -154,6 +155,7 @@ impl CompletionEstimatable for B256 {
 }
 
 impl CompletionEstimatable for PackedStoredNibbles {
+    /// Estimates lexicographic scan progress as a fraction in the inclusive range `0.0..=1.0`.
     fn estimate_progress(&self) -> f64 {
         // use the first 6 nibbles as a progress estimate
         let progress_nibbles =
@@ -167,6 +169,7 @@ impl CompletionEstimatable for PackedStoredNibbles {
 }
 
 impl CompletionEstimatable for StoredNibbles {
+    /// Estimates lexicographic scan progress as a fraction in the inclusive range `0.0..=1.0`.
     fn estimate_progress(&self) -> f64 {
         // use the first 6 nibbles as a progress estimate
         let progress_nibbles =
@@ -474,7 +477,9 @@ trait InitTable {
 }
 
 impl<C> InitTable for HashedAccountsInit<C> {
+    /// The ordered key accepted while loading this initialization table.
     type Key = B256;
+    /// The value stored for each initialization key.
     type Value = Account;
 
     /// Save mapping of hashed addresses to accounts to storage.
@@ -492,7 +497,9 @@ impl<C> InitTable for HashedAccountsInit<C> {
 }
 
 impl<C> InitTable for HashedStoragesInit<C> {
+    /// The ordered key accepted while loading this initialization table.
     type Key = B256;
+    /// The value stored for each initialization key.
     type Value = StorageEntry;
 
     /// Save mapping of hashed addresses to storage entries to storage.
@@ -549,9 +556,13 @@ impl<C> InitTable for HashedStoragesInit<C> {
 }
 
 impl<C> InitTable for AccountsTrieInitLegacy<C> {
+    /// The ordered key accepted while loading this initialization table.
     type Key = StoredNibbles;
+    /// The value stored for each initialization key.
     type Value = BranchNodeCompact;
 
+    /// Persists an ordered initialization batch in a new provider transaction; storage or commit
+    /// failures are returned.
     fn store_entries(
         store: &impl OpProofsStore,
         entries: impl IntoIterator<Item = (Self::Key, Self::Value)>,
@@ -566,7 +577,9 @@ impl<C> InitTable for AccountsTrieInitLegacy<C> {
 }
 
 impl<C> InitTable for AccountsTrieInit<C> {
+    /// The ordered key accepted while loading this initialization table.
     type Key = PackedStoredNibbles;
+    /// The value stored for each initialization key.
     type Value = BranchNodeCompact;
 
     /// Save mapping of account trie paths to branch nodes to storage.
@@ -585,7 +598,9 @@ impl<C> InitTable for AccountsTrieInit<C> {
 }
 
 impl<C> InitTable for StoragesTrieInit<C> {
+    /// The ordered key accepted while loading this initialization table.
     type Key = B256;
+    /// The value stored for each initialization key.
     type Value = PackedStorageTrieEntry;
 
     /// Save mapping of hashed addresses to packed storage trie entries to storage.
@@ -639,7 +654,9 @@ impl<C> InitTable for StoragesTrieInit<C> {
 }
 
 impl<C> InitTable for StoragesTrieInitLegacy<C> {
+    /// The ordered key accepted while loading this initialization table.
     type Key = B256;
+    /// The value stored for each initialization key.
     type Value = StorageTrieEntry;
 
     /// Save mapping of hashed addresses to storage trie entries to storage (v1 / legacy format).

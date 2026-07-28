@@ -64,6 +64,7 @@ pub enum SnapshotError {
 }
 
 impl From<DatabaseError> for SnapshotError {
+    /// Wraps the database failure through the proofs-storage error used by snapshot operations.
     fn from(err: DatabaseError) -> Self {
         Self::Storage(OpProofsStorageError::from(err))
     }

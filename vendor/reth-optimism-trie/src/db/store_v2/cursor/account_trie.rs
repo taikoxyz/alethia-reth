@@ -153,6 +153,8 @@ where
     HC: DbCursorRO<V2AccountsTrieHistory> + Send,
     CC: DbCursorRO<V2AccountTrieChangeSets> + DbDupCursorRO<V2AccountTrieChangeSets> + Send,
 {
+    /// Positions at the branch exactly matching `key`, returning `None` when absent and propagating
+    /// backend errors.
     fn seek_exact(
         &mut self,
         key: Nibbles,
@@ -186,6 +188,8 @@ where
         Ok(node.map(|n| (key, n)))
     }
 
+    /// Positions at the first trie branch whose path is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(
         &mut self,
         key: Nibbles,
@@ -210,6 +214,8 @@ where
         self.find_next_live()
     }
 
+    /// Advances to the next trie branch in nibble-path order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         if !self.state.seeked {
             return self.seek(Nibbles::default());
@@ -226,10 +232,13 @@ where
         self.find_next_live()
     }
 
+    /// Returns the currently positioned trie path without advancing, or `None` before positioning
+    /// or after exhaustion.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         Ok(self.state.last_key.as_ref().map(|k| k.0))
     }
 
+    /// Clears the current trie position so subsequent traversal starts from an unpositioned state.
     fn reset(&mut self) {
         self.state.reset();
     }

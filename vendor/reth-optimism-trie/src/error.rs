@@ -170,18 +170,22 @@ pub enum OpProofsStorageError {
 }
 
 impl From<BlockExecutionError> for OpProofsStorageError {
+    /// Wraps the execution failure in the storage error's shared execution-error variant.
     fn from(error: BlockExecutionError) -> Self {
         Self::ExecutionError(Arc::new(error))
     }
 }
 
 impl From<ProviderError> for OpProofsStorageError {
+    /// Wraps the provider failure in the storage error's shared provider-error variant.
     fn from(error: ProviderError) -> Self {
         Self::ProviderError(Arc::new(error))
     }
 }
 
 impl From<OpProofsStorageError> for DatabaseError {
+    /// Reuses an embedded database error or preserves any other storage error as a custom database
+    /// cause.
     fn from(error: OpProofsStorageError) -> Self {
         match error {
             OpProofsStorageError::DatabaseError(err) => err,
@@ -191,6 +195,8 @@ impl From<OpProofsStorageError> for DatabaseError {
 }
 
 impl From<DatabaseError> for OpProofsStorageError {
+    /// Restores an embedded storage error when present, otherwise retains the database failure in
+    /// the database-error variant.
     fn from(error: DatabaseError) -> Self {
         if let DatabaseError::Custom(ref err) = error &&
             let Some(err) = err.downcast_ref::<Self>()

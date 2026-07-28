@@ -147,6 +147,7 @@ impl InMemoryStorageInner {
 }
 
 impl Default for InMemoryProofsStorage {
+    /// Creates an empty, shareable in-memory proof store with no block or initialization anchors.
     fn default() -> Self {
         Self::new()
     }
@@ -262,6 +263,8 @@ impl InMemoryTrieCursor {
 }
 
 impl TrieCursor for InMemoryTrieCursor {
+    /// Positions at the branch exactly matching `key`, returning `None` when absent and propagating
+    /// backend errors.
     fn seek_exact(
         &mut self,
         path: Nibbles,
@@ -276,6 +279,8 @@ impl TrieCursor for InMemoryTrieCursor {
         }
     }
 
+    /// Positions at the first trie branch whose path is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(
         &mut self,
         path: Nibbles,
@@ -290,6 +295,8 @@ impl TrieCursor for InMemoryTrieCursor {
         }
     }
 
+    /// Advances to the next trie branch in nibble-path order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         self.ensure_entries_populated()?;
 
@@ -301,6 +308,8 @@ impl TrieCursor for InMemoryTrieCursor {
         }
     }
 
+    /// Returns the currently positioned trie path without advancing, or `None` before positioning
+    /// or after exhaustion.
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
         self.ensure_entries_populated()?;
 
@@ -311,12 +320,15 @@ impl TrieCursor for InMemoryTrieCursor {
         }
     }
 
+    /// Clears the current trie position so subsequent traversal starts from an unpositioned state.
     fn reset(&mut self) {
         self.position = -1;
     }
 }
 
 impl TrieStorageCursor for InMemoryTrieCursor {
+    /// Selects the hashed account whose storage trie subsequent cursor operations traverse and
+    /// resets account-specific position.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = Some(hashed_address);
         self.is_populated = false;
@@ -405,8 +417,11 @@ impl InMemoryStorageCursor {
 }
 
 impl HashedCursor for InMemoryStorageCursor {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = U256;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.ensure_entries_populated()?;
 
@@ -418,6 +433,8 @@ impl HashedCursor for InMemoryStorageCursor {
         }
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.ensure_entries_populated()?;
 
@@ -429,16 +446,21 @@ impl HashedCursor for InMemoryStorageCursor {
         }
     }
 
+    /// Clears the materialized storage cursor's position without discarding its cached entries.
     fn reset(&mut self) {
         self.position = -1;
     }
 }
 
 impl HashedStorageCursor for InMemoryStorageCursor {
+    /// Seeks from the zero slot to test emptiness; a non-empty cursor remains at its first visible
+    /// leaf and backend failures are returned.
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         Ok(self.seek(B256::ZERO)?.is_none())
     }
 
+    /// Selects the hashed account whose storage leaves subsequent cursor operations will traverse
+    /// and resets account-specific state.
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address;
         self.is_populated = false;
@@ -487,8 +509,11 @@ impl InMemoryAccountCursor {
 }
 
 impl HashedCursor for InMemoryAccountCursor {
+    /// The leaf value paired with each hashed key returned by this cursor.
     type Value = Account;
 
+    /// Positions at the first hashed leaf whose key is at least `key`, returning `None` at the end
+    /// and propagating backend errors.
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         if let Some(pos) = self.entries.iter().position(|(k, _)| *k >= key) {
             self.position = pos as isize;
@@ -498,6 +523,8 @@ impl HashedCursor for InMemoryAccountCursor {
         }
     }
 
+    /// Advances to the next hashed leaf in ascending key order, returning `None` at the end and
+    /// propagating backend errors.
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
         self.position += 1;
         if self.position >= 0 && (self.position as usize) < self.entries.len() {
@@ -507,24 +534,32 @@ impl HashedCursor for InMemoryAccountCursor {
         }
     }
 
+    /// Leaves the eagerly materialized account cursor unchanged; this implementation treats reset
+    /// as a no-op.
     fn reset(&mut self) {
         // no reset needed
     }
 }
 
 impl OpProofsStore for InMemoryProofsStorage {
+    /// The cloned shared-store handle used for read-only proof-state access.
     type ProviderRO<'a> = InMemoryProofsProvider;
+    /// The cloned shared-store handle whose writes take effect immediately under the write lock.
     type ProviderRw<'a> = InMemoryProofsProvider;
+    /// The cloned shared-store handle used to build initial proof state in place.
     type Initializer<'a> = InMemoryProofsProvider;
 
+    /// Clones the shared in-memory handle used for read-only access.
     fn provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRO<'a>> {
         Ok(InMemoryProofsProvider { inner: self.inner.clone() })
     }
 
+    /// Clones the shared in-memory handle; writes through it are immediate rather than staged.
     fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>> {
         Ok(InMemoryProofsProvider { inner: self.inner.clone() })
     }
 
+    /// Clones the shared in-memory handle used to build initial proof state in place.
     fn initialization_provider<'a>(&'a self) -> OpProofsStorageResult<Self::Initializer<'a>> {
         Ok(InMemoryProofsProvider { inner: self.inner.clone() })
     }
@@ -587,11 +622,17 @@ impl InMemoryProofsProvider {
 }
 
 impl OpProofsProviderRO for InMemoryProofsProvider {
+    /// The cursor type used to read one account's storage-trie branches at a historical block.
     type StorageTrieCursor<'tx> = InMemoryTrieCursor;
+    /// The cursor type used to read account-trie branches at a historical block.
     type AccountTrieCursor<'tx> = InMemoryTrieCursor;
+    /// The cursor type used to read one account's hashed storage leaves at a historical block.
     type StorageCursor<'tx> = InMemoryStorageCursor;
+    /// The cursor type used to read hashed account leaves at a historical block.
     type AccountHashedCursor<'tx> = InMemoryAccountCursor;
 
+    /// Returns the inclusive earliest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_earliest_block(&self) -> OpProofsStorageResult<NumHash> {
         let inner = self.inner.read();
         inner
@@ -600,6 +641,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
             .ok_or(OpProofsStorageError::NoBlocksFound)
     }
 
+    /// Returns the inclusive latest block in the proof window, or `NoBlocksFound` when the window
+    /// is empty.
     fn get_latest_block(&self) -> OpProofsStorageResult<NumHash> {
         let inner = self.inner.read();
         inner
@@ -608,6 +651,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
             .ok_or(OpProofsStorageError::NoBlocksFound)
     }
 
+    /// Returns both inclusive proof-window endpoints from one consistent view, or `NoBlocksFound`
+    /// when empty.
     fn get_proof_window(&self) -> OpProofsStorageResult<ProofWindowRange> {
         let inner = self.inner.read();
         let earliest = inner
@@ -621,6 +666,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
         Ok(ProofWindowRange { earliest, latest })
     }
 
+    /// Opens a storage-trie cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_trie_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -629,6 +676,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
         Ok(InMemoryTrieCursor::new(self.inner.clone(), Some(hashed_address), max_block_number))
     }
 
+    /// Opens an account-trie cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_trie_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -636,6 +685,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
         Ok(InMemoryTrieCursor::new(self.inner.clone(), None, max_block_number))
     }
 
+    /// Opens a storage-leaf cursor for `hashed_address` at or before `max_block_number`; backend
+    /// failures are returned.
     fn storage_hashed_cursor<'tx>(
         &self,
         hashed_address: B256,
@@ -644,6 +695,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
         Ok(InMemoryStorageCursor::new(self.inner.clone(), hashed_address, max_block_number))
     }
 
+    /// Opens an account-leaf cursor at or before `max_block_number`; unavailable state or backend
+    /// failures are returned.
     fn account_hashed_cursor<'tx>(
         &self,
         max_block_number: u64,
@@ -652,6 +705,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
         Ok(InMemoryAccountCursor::new(&inner, max_block_number))
     }
 
+    /// Loads the complete trie and hashed-post-state diff for `block_number`, returning an error
+    /// when unavailable.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         let inner = self.inner.read();
         let trie_updates = inner.trie_updates.get(&block_number).cloned().unwrap_or_default();
@@ -661,6 +716,8 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
 }
 
 impl OpProofsProviderRw for InMemoryProofsProvider {
+    /// Stages one block's trie and leaf updates and returns write counts; ordering or backend
+    /// failures are returned.
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -672,6 +729,8 @@ impl OpProofsProviderRw for InMemoryProofsProvider {
         Ok(counts)
     }
 
+    /// Applies an ordered block batch while holding the store write lock and returns aggregate
+    /// write counts.
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
@@ -689,6 +748,8 @@ impl OpProofsProviderRw for InMemoryProofsProvider {
         Ok(total_write_count)
     }
 
+    /// Applies the new earliest state and advances the inclusive proof-window boundary, returning
+    /// write counts or storage errors.
     fn prune_earliest_state(
         &self,
         new_earliest_block_ref: BlockWithParent,
@@ -776,6 +837,8 @@ impl OpProofsProviderRw for InMemoryProofsProvider {
         Ok(write_counts)
     }
 
+    /// Removes historical updates through the requested block boundary, returning backend failures
+    /// without committing.
     fn unwind_history(&self, unwind_upto_block: BlockWithParent) -> OpProofsStorageResult<()> {
         let mut inner = self.inner.write();
         let unwind_upto_block_number = unwind_upto_block.block.number - 1;
@@ -794,6 +857,8 @@ impl OpProofsProviderRw for InMemoryProofsProvider {
         Ok(())
     }
 
+    /// Removes history above the common block and stages the replacement branch, preserving the
+    /// common block itself.
     fn replace_updates(
         &self,
         latest_common_block: BlockNumHash,
@@ -820,12 +885,14 @@ impl OpProofsProviderRw for InMemoryProofsProvider {
         Ok(())
     }
 
+    /// Consumes the provider without additional work because in-memory writes are already visible.
     fn commit(self) -> OpProofsStorageResult<()> {
         Ok(())
     }
 }
 
 impl OpProofsInitProvider for InMemoryProofsProvider {
+    /// Returns initialization status and resume keys; an unstarted store has no block anchor.
     fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor> {
         let inner = self.inner.read();
 
@@ -849,12 +916,14 @@ impl OpProofsInitProvider for InMemoryProofsProvider {
         })
     }
 
+    /// Creates the initial-state anchor, returning an error if one already exists.
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
         let mut inner = self.inner.write();
         inner.anchor_block = Some((anchor.number, anchor.hash));
         Ok(())
     }
 
+    /// Applies the supplied account-trie branches in input order; an empty batch is a no-op.
     fn store_account_branches(
         &self,
         updates: Vec<(Nibbles, Option<BranchNodeCompact>)>,
@@ -868,6 +937,8 @@ impl OpProofsInitProvider for InMemoryProofsProvider {
         Ok(())
     }
 
+    /// Applies the supplied storage-trie branches for `hashed_address` in input order; an empty
+    /// batch is a no-op.
     fn store_storage_branches(
         &self,
         hashed_address: B256,
@@ -882,6 +953,7 @@ impl OpProofsInitProvider for InMemoryProofsProvider {
         Ok(())
     }
 
+    /// Applies the supplied hashed accounts in input order; an empty batch is a no-op.
     fn store_hashed_accounts(
         &self,
         accounts: Vec<(B256, Option<Account>)>,
@@ -895,6 +967,8 @@ impl OpProofsInitProvider for InMemoryProofsProvider {
         Ok(())
     }
 
+    /// Applies the supplied hashed storage leaves for `hashed_address` in input order; an empty
+    /// batch is a no-op.
     fn store_hashed_storages(
         &self,
         hashed_address: B256,
@@ -909,6 +983,8 @@ impl OpProofsInitProvider for InMemoryProofsProvider {
         Ok(())
     }
 
+    /// Marks initialization complete by setting both proof-window endpoints to the stored anchor;
+    /// a missing anchor is returned as an error.
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
         let mut inner = self.inner.write();
         let anchor = inner.anchor_block.ok_or(OpProofsStorageError::NoBlocksFound)?;
@@ -917,6 +993,8 @@ impl OpProofsInitProvider for InMemoryProofsProvider {
         Ok(BlockNumHash::new(anchor.0, anchor.1))
     }
 
+    /// Consumes the provider without additional work because initialization writes are already
+    /// visible.
     fn commit(self) -> OpProofsStorageResult<()> {
         Ok(())
     }

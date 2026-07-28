@@ -390,10 +390,7 @@ where
             if existing == target {
                 return Ok(());
             }
-            return Err(BackfillError::SnapshotAnchorMismatch {
-                expected: target,
-                found: existing,
-            });
+            return Err(BackfillError::SnapshotAnchorMismatch { expected: target, found: existing });
         }
 
         info!(

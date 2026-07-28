@@ -31,17 +31,18 @@ impl PayloadTypes for TaikoEngineTypes {
 
     /// Converts a block into an execution payload.
     ///
-    /// The Amsterdam block access list is discarded because Taiko networks schedule no Amsterdam
-    /// fork; the transport sentinels in [`TaikoExecutionData`] remain empty for locally built data.
+    /// The Amsterdam block access list and slot number are retained in the transport sidecar so
+    /// engine validation can explicitly reject unsupported fields.
     fn block_to_payload(
         block: SealedBlock<
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
         >,
-        _bal: Option<Bytes>,
+        bal: Option<Bytes>,
     ) -> Self::ExecutionData {
         let tx_hash = block.transactions_root;
         let withdrawals_hash = block.withdrawals_root;
         let header_difficulty = block.header().difficulty;
+        let slot_number = block.header().slot_number;
 
         let payload = ExecutionPayloadV1::from_block_unchecked(block.hash(), &block.into_block());
 
@@ -52,19 +53,20 @@ impl PayloadTypes for TaikoEngineTypes {
                 withdrawals_hash,
                 header_difficulty: Some(header_difficulty),
                 taiko_block: Some(true),
-                block_access_list: None,
-                slot_number: None,
+                block_access_list: bal,
+                slot_number,
             },
         }
     }
 }
 
 impl From<EthBuiltPayload> for TaikoExecutionData {
-    /// Converts a built payload into Taiko execution data, discarding any Amsterdam block
-    /// access list (Taiko networks schedule no Amsterdam fork).
+    /// Converts a built payload into Taiko execution data while preserving unsupported Amsterdam
+    /// fields for explicit engine validation.
     fn from(value: EthBuiltPayload) -> Self {
+        let block_access_list = value.block_access_list().cloned();
         let block = Arc::unwrap_or_clone(value.into_block_arc()).into_sealed_block();
-        TaikoEngineTypes::block_to_payload(block, None)
+        TaikoEngineTypes::block_to_payload(block, block_access_list)
     }
 }
 
@@ -81,4 +83,43 @@ impl EngineTypes for TaikoEngineTypes {
     type ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5;
     /// Execution Payload V6 envelope type.
     type ExecutionPayloadEnvelopeV6 = ExecutionPayloadEnvelopeV6;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::U256;
+    use reth_primitives_traits::{Block as _, RecoveredBlock};
+
+    #[test]
+    fn block_to_payload_preserves_bal_and_slot_number() {
+        let block_access_list = Bytes::from_static(&[0xc0]);
+        let mut block = reth_ethereum_primitives::Block::default();
+        block.header.slot_number = Some(42);
+
+        let execution_data =
+            TaikoEngineTypes::block_to_payload(block.seal_slow(), Some(block_access_list.clone()));
+
+        assert_eq!(execution_data.taiko_sidecar.block_access_list, Some(block_access_list));
+        assert_eq!(execution_data.taiko_sidecar.slot_number, Some(42));
+    }
+
+    #[test]
+    fn built_payload_conversion_preserves_bal_and_slot_number() {
+        let block_access_list = Bytes::from_static(&[0xc1]);
+        let mut block = reth_ethereum_primitives::Block::default();
+        block.header.slot_number = Some(77);
+        let recovered = RecoveredBlock::new_sealed(block.seal_slow(), Vec::new());
+        let built_payload = EthBuiltPayload::new(
+            Arc::new(recovered),
+            U256::ZERO,
+            None,
+            Some(block_access_list.clone()),
+        );
+
+        let execution_data = TaikoExecutionData::from(built_payload);
+
+        assert_eq!(execution_data.taiko_sidecar.block_access_list, Some(block_access_list));
+        assert_eq!(execution_data.taiko_sidecar.slot_number, Some(77));
+    }
 }

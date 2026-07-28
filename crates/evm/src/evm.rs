@@ -201,6 +201,7 @@ where
             context,
             &mut frame.interpreter,
             instructions.instruction_table(),
+            instructions.gas_table(),
             meter,
         );
 

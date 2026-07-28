@@ -4,7 +4,10 @@ use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, address};
 use reth_revm::{
     Inspector,
-    context::TxEnv,
+    context::{
+        TxEnv,
+        result::{ExecutionResult, HaltReason},
+    },
     db::InMemoryDB,
     inspector::NoOpInspector,
     interpreter::{
@@ -22,7 +25,7 @@ use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
-    schedule::{FAILSAFE_MULTIPLIER, schedule_for},
+    schedule::{FAILSAFE_MULTIPLIER, ZkGasSchedule, schedule_for},
     unzen::{TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE},
 };
 
@@ -177,6 +180,28 @@ fn meter_rejects_block_budget_plus_one() {
 }
 
 #[test]
+fn meter_commit_would_exceed_agrees_with_commit_transaction_at_boundaries() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+
+    // In-flight usage that lands exactly on the block limit commits.
+    let mut at_limit = ZkGasMeter::with_usage_for_tests(schedule, schedule.block_limit - 1, 1);
+    assert!(!at_limit.commit_would_exceed_block_limit());
+    assert!(at_limit.commit_transaction().is_ok());
+    assert_eq!(at_limit.block_zk_gas_used(), schedule.block_limit);
+
+    // One zk gas past the limit is rejected, and the predicate agrees before the commit runs.
+    let mut past_limit = ZkGasMeter::with_usage_for_tests(schedule, schedule.block_limit - 1, 2);
+    assert!(past_limit.commit_would_exceed_block_limit());
+    assert!(matches!(past_limit.commit_transaction(), Err(ZkGasOutcome::LimitExceeded)));
+
+    // A `u64` overflow in the running block total also counts as exceeding the limit.
+    let overflow_schedule = ZkGasSchedule { block_limit: u64::MAX, ..UNZEN_ZK_GAS_SCHEDULE };
+    let mut overflowing = ZkGasMeter::with_usage_for_tests(&overflow_schedule, u64::MAX, 1);
+    assert!(overflowing.commit_would_exceed_block_limit());
+    assert!(matches!(overflowing.commit_transaction(), Err(ZkGasOutcome::LimitExceeded)));
+}
+
+#[test]
 fn meter_returns_limit_exceeded_for_precompile_over_block_budget() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);
@@ -230,7 +255,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 #[test]
 fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
-    let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         StepGasProbeInspector::default(),
@@ -268,13 +293,13 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
-    let mut production_evm = TaikoEvmFactory
+    let mut production_evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -288,13 +313,13 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
-    let mut production_evm = TaikoEvmFactory
+    let mut production_evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
         db_with_contract(simple_arithmetic_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -306,9 +331,96 @@ fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
     assert_eq!(production_zk_gas, inspector_zk_gas);
 }
 
+/// Executes `bytecode` on Unzen through the production (no-inspector) and the inspected
+/// metered path, asserting both halt with `expected_halt` and returning the per-tx zk gas
+/// charged by each.
+fn metered_paths_zk_gas_for_halting_tx(
+    bytecode: Bytecode,
+    gas_limit: u64,
+    expected_halt: fn(&HaltReason) -> bool,
+) -> (u64, u64) {
+    let mut production_evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
+    let result = production_evm.transact(tx_env(gas_limit)).expect("production path executes");
+    assert!(
+        matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
+        "production path halted unexpectedly: {:?}",
+        result.result,
+    );
+    let production_zk_gas =
+        production_evm.meter().expect("production path installs a meter").tx_zk_gas_used();
+
+    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+        db_with_contract(bytecode),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    let result = inspector_evm.transact(tx_env(gas_limit)).expect("inspector path executes");
+    assert!(
+        matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
+        "inspector path halted unexpectedly: {:?}",
+        result.result,
+    );
+    let inspector_zk_gas =
+        inspector_evm.meter().expect("inspector path installs a meter").tx_zk_gas_used();
+
+    (production_zk_gas, inspector_zk_gas)
+}
+
+#[test]
+fn metered_paths_charge_forfeited_gas_for_an_oog_halting_step() {
+    // The gas limit admits both `PUSH1` steps (3 gas each) but dies on `ADD`'s table-driven
+    // static charge with 1 gas left. An `OutOfGas` halt forfeits all remaining gas
+    // (`Interpreter::halt` spends it), and that forfeiture is part of the step's zk gas
+    // charge: pre-2.4.0 revm ran `halt_oog()` (spend-all) inside `step` itself, and
+    // taiko-geth's zk mirror follows that reference behavior. These committed values feed
+    // `header.difficulty` on Unzen, so any drift here is a consensus change.
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let push_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::PUSH1)]);
+    let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
+    let forfeited_gas = 1;
+    let expected = 2 * 3 * push_multiplier + forfeited_gas * add_multiplier;
+
+    let (production_zk_gas, inspector_zk_gas) =
+        metered_paths_zk_gas_for_halting_tx(simple_arithmetic_bytecode(), 21_000 + 7, |reason| {
+            matches!(reason, HaltReason::OutOfGas(_))
+        });
+
+    assert_eq!(
+        production_zk_gas, expected,
+        "OOG-halting step must charge the gas it forfeited via spend-all"
+    );
+    assert_eq!(
+        inspector_zk_gas, expected,
+        "inspector path must charge the OOG-halting step exactly like production"
+    );
+}
+
+#[test]
+fn metered_paths_charge_static_gas_zk_gas_for_a_stack_underflow_step() {
+    // `ADD` on an empty stack: the GasTable static charge (3 gas) lands before revm validates
+    // the stack, so the halting step contributes `3 x multiplier`. Known cross-client
+    // divergence: taiko-geth validates the stack before charging gas and meters 0 for this
+    // step; the fix is tracked on the geth side, so this pins reth's committed value.
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
+    let expected = 3 * add_multiplier;
+
+    let (production_zk_gas, inspector_zk_gas) =
+        metered_paths_zk_gas_for_halting_tx(stack_underflow_bytecode(), 100_000, |reason| {
+            matches!(reason, HaltReason::StackUnderflow)
+        });
+
+    assert_eq!(production_zk_gas, expected, "stack-underflow step must charge its static gas cost");
+    assert_eq!(
+        inspector_zk_gas, expected,
+        "inspector path must charge the underflow-halting step exactly like production"
+    );
+}
+
 #[test]
 fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
-    let mut evm = TaikoEvmFactory.create_evm(
+    let mut evm = TaikoEvmFactory::default().create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -325,7 +437,7 @@ fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
 
 #[test]
 fn unzen_default_create_evm_path_is_metered() {
-    let mut evm = TaikoEvmFactory.create_evm(
+    let mut evm = TaikoEvmFactory::default().create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -336,7 +448,7 @@ fn unzen_default_create_evm_path_is_metered() {
 
 #[test]
 fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
-    let mut evm = TaikoEvmFactory.create_evm(
+    let mut evm = TaikoEvmFactory::default().create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -354,7 +466,8 @@ fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
 #[test]
 fn factory_installs_unzen_schedule() {
     let env = evm_env(TaikoSpecId::UNZEN);
-    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
+    let evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
     let meter = evm.meter().expect("Unzen schedule should install a meter");
 
     assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));
@@ -365,7 +478,7 @@ fn factory_installs_unzen_schedule() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let mut evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
@@ -377,7 +490,7 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let mut evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
@@ -386,7 +499,7 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
 
 #[test]
 fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
-    let mut evm = TaikoEvmFactory
+    let mut evm = TaikoEvmFactory::default()
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
@@ -476,6 +589,11 @@ fn simple_arithmetic_bytecode() -> Bytecode {
         opcode::ADD,
         opcode::STOP,
     ]))
+}
+
+/// `ADD` with nothing on the stack: halts with a stack underflow after its static gas charge.
+fn stack_underflow_bytecode() -> Bytecode {
+    Bytecode::new_raw(Bytes::from(vec![opcode::ADD]))
 }
 
 #[test]

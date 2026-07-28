@@ -2,12 +2,14 @@
 
 use super::{
     config::ProofHistoryConfig,
+    live::LiveTrieCollector,
+    opt_block,
     storage_init::{
         DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
         finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, proof_history_historical_init_metadata_path,
-        proof_history_storage_needs_initialization, proof_history_sync_target,
-        read_historical_init_metadata,
+        initialize_proof_history_storage, migrate_legacy_proof_history_storage,
+        proof_history_historical_init_metadata_path, proof_history_storage_needs_initialization,
+        proof_history_sync_target, read_historical_init_metadata,
     },
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -29,7 +31,6 @@ use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
     OpProofStoragePruner, OpProofsStorage, OpProofsStorageError, OpProofsStore,
     api::{OpProofsProviderRO, OpProofsProviderRw},
-    live::LiveTrieCollector,
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
@@ -282,6 +283,10 @@ where
 {
     /// Runs proof-history indexing until the node shuts down.
     pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
+        // Databases initialized under the previous storage dependency may lack a `LatestBlock`
+        // row; repair them before any reconciliation reads the storage bounds.
+        migrate_legacy_proof_history_storage(&self.storage)?;
+
         let collector =
             LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
         let mut notifications = self.provider.subscribe_to_canonical_state();
@@ -405,8 +410,8 @@ where
     /// Computes the reconciliation action for the current proof-history storage bounds.
     fn startup_action(&self) -> eyre::Result<ProofHistoryStartupAction> {
         let provider_ro = self.storage.provider_ro()?;
-        let earliest = provider_ro.get_earliest_block_number()?;
-        let latest = provider_ro.get_latest_block_number()?;
+        let earliest = opt_block(provider_ro.get_earliest_block())?;
+        let latest = opt_block(provider_ro.get_latest_block())?;
         let canonical_best = self.provider.best_block_number()?;
         let canonical_earliest_hash =
             earliest.map(|(number, _)| self.provider.block_hash(number)).transpose()?.flatten();
@@ -427,10 +432,7 @@ where
 
     /// Unwinds proof-history storage so its latest retained block is the canonical earliest block.
     async fn unwind_to_earliest(&self, earliest: BlockNumHash) -> eyre::Result<()> {
-        let latest = self
-            .storage
-            .provider_ro()?
-            .get_latest_block_number()?
+        let latest = opt_block(self.storage.provider_ro()?.get_latest_block())?
             .ok_or_else(|| eyre!("no latest proof-history block to unwind"))?
             .0;
         if latest <= earliest.number {
@@ -600,12 +602,10 @@ where
     /// Verifies the proof-history database is initialized and safe to prune automatically.
     fn ensure_initialized(&self) -> eyre::Result<()> {
         let provider_ro = self.storage.provider_ro()?;
-        let earliest_block_number = provider_ro
-            .get_earliest_block_number()?
+        let earliest_block_number = opt_block(provider_ro.get_earliest_block())?
             .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
             .0;
-        let latest_block_number = provider_ro
-            .get_latest_block_number()?
+        let latest_block_number = opt_block(provider_ro.get_latest_block())?
             .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
             .0;
 
@@ -626,12 +626,14 @@ where
 
     /// Spawns the periodic proof-history pruning task.
     fn spawn_pruner_task(&self) {
-        let pruner = Arc::new(OpProofStoragePruner::new(
-            self.storage.clone(),
-            self.provider.clone(),
-            self.config.window,
-            PROOF_HISTORY_PRUNE_BATCH_SIZE,
-        ));
+        let pruner = Arc::new(
+            OpProofStoragePruner::new(
+                self.storage.clone(),
+                self.provider.clone(),
+                self.config.window,
+            )
+            .with_batch_size(PROOF_HISTORY_PRUNE_BATCH_SIZE),
+        );
         let prune_interval = self.config.prune_interval;
         let retention_window = self.config.window;
         let write_lock = self.write_lock.clone();
@@ -733,9 +735,9 @@ where
 
         loop {
             let write_guard = write_lock.lock().await;
-            let latest = match storage.provider_ro().and_then(|p| p.get_latest_block_number()) {
-                Ok(Some((number, _))) => number,
-                Ok(None) => {
+            let latest = match storage.provider_ro().and_then(|p| p.get_latest_block()) {
+                Ok(numhash) => numhash.number,
+                Err(OpProofsStorageError::NoBlocksFound) => {
                     error!(target: "reth::taiko::proof_history", "proof-history sync loop found no stored blocks; stopping sync loop");
                     return;
                 }
@@ -912,11 +914,9 @@ where
     ) -> eyre::Result<()> {
         let _write_guard = self.write_lock.lock().await;
         let provider_ro = self.storage.provider_ro()?;
-        let earliest_stored = provider_ro
-            .get_earliest_block_number()?
+        let earliest_stored = opt_block(provider_ro.get_earliest_block())?
             .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
-        let latest_stored = provider_ro
-            .get_latest_block_number()?
+        let latest_stored = opt_block(provider_ro.get_latest_block())?
             .ok_or_else(|| eyre!("no latest proof-history block stored"))?
             .0;
         let earliest_stored = BlockNumHash::new(earliest_stored.0, earliest_stored.1);
@@ -979,7 +979,7 @@ where
             let Some(block) = chain.blocks().get(&block_number) &&
             let Some(trie_data) = chain.trie_data_at(block_number)
         {
-            let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
             collector.store_block_updates(
                 block.block_with_parent(),
                 (**trie_updates).clone(),
@@ -1023,6 +1023,13 @@ where
             ));
         }
 
+        // A reorg replacing the whole retained window bases at the earliest stored block, which
+        // `replace_updates` rejects even though `unwind_history` accepts unwinding one block
+        // higher. Route that boundary through the unwind path so the reorg still applies.
+        if old.first().number() == earliest_stored.number + 1 {
+            return self.reorg_by_unwind_and_reprocess(old, new, collector);
+        }
+
         let mut block_updates: Vec<(
             BlockWithParent,
             Arc<TrieUpdatesSorted>,
@@ -1031,17 +1038,10 @@ where
 
         for (block_number, block) in new.blocks() {
             let Some(trie_data) = new.trie_data_at(*block_number) else {
-                // Missing trie data on at least one new block: fall back to
-                // unwinding the old branch first, then re-process all new
-                // blocks individually so executions read post-unwind parent
-                // state instead of stale old-branch state.
-                collector.unwind_history(old.first().block_with_parent())?;
-                for block_number in new.blocks().keys() {
-                    self.process_block(*block_number, new, collector)?;
-                }
-                return Ok(());
+                // Missing trie data on at least one new block.
+                return self.reorg_by_unwind_and_reprocess(old, new, collector);
             };
-            let SortedTrieData { hashed_state, trie_updates } = trie_data.get();
+            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
             block_updates.push((
                 block.block_with_parent(),
                 trie_updates.clone(),
@@ -1053,6 +1053,23 @@ where
             collector.unwind_and_store_block_updates(block_updates)?;
         }
 
+        Ok(())
+    }
+
+    /// Applies a reorg by unwinding the old branch first and reprocessing the new blocks
+    /// individually, so each block reads post-unwind parent state instead of stale
+    /// old-branch state. Blocks with notification trie data are stored directly; the rest are
+    /// re-executed.
+    fn reorg_by_unwind_and_reprocess(
+        &self,
+        old: &Chain<Primitives>,
+        new: &Chain<Primitives>,
+        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+    ) -> eyre::Result<()> {
+        collector.unwind_history(old.first().block_with_parent())?;
+        for block_number in new.blocks().keys() {
+            self.process_block(*block_number, new, collector)?;
+        }
         Ok(())
     }
 

@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use super::{anchor::validate_input_selector, *};
 use alethia_reth_chainspec::{
-    TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoChainSpec,
+    TAIKO_DEVNET, TAIKO_HOODI, TAIKO_MAINNET, TAIKO_MASAYA, hardfork::TaikoHardfork,
+    spec::TaikoChainSpec,
 };
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy,
     constants::EMPTY_ROOT_HASH, proofs,
 };
-use alloy_hardforks::ForkCondition;
+use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition};
 use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_ethereum_primitives::{Block, EthPrimitives, Receipt, TransactionSigned};
@@ -234,6 +235,82 @@ fn pre_shasta_header_has_no_extra_data_len_rule() {
 }
 
 #[test]
+fn amsterdam_active_header_is_rejected_at_import() {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(100));
+    let consensus = test_consensus(chain_spec);
+    let base = Header {
+        timestamp: 99,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        extra_data: shasta_extra_data(),
+        ..Default::default()
+    };
+
+    consensus
+        .validate_header(&SealedHeader::new_unhashed(base.clone()))
+        .expect("headers before the Amsterdam activation should validate");
+
+    let err = consensus
+        .validate_header(&SealedHeader::new_unhashed(Header { timestamp: 100, ..base }))
+        .expect_err("Amsterdam-active headers must be rejected at import");
+    assert!(err.to_string().contains("Amsterdam"), "unexpected error: {err}");
+}
+
+#[test]
+fn pre_amsterdam_header_rejects_block_access_list_hash() {
+    let consensus = test_consensus(devnet_chain_spec());
+    let header = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        extra_data: shasta_extra_data(),
+        block_access_list_hash: Some(B256::ZERO),
+        ..Default::default()
+    };
+
+    let err = consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect_err("pre-Amsterdam headers must not carry a block access list hash");
+    assert!(matches!(err, ConsensusError::BlockAccessListHashUnexpected));
+}
+
+#[test]
+fn pre_amsterdam_header_rejects_slot_number() {
+    let consensus = test_consensus(devnet_chain_spec());
+    let header = Header {
+        timestamp: 1,
+        base_fee_per_gas: Some(1),
+        gas_limit: 30_000_000,
+        extra_data: shasta_extra_data(),
+        slot_number: Some(1),
+        ..Default::default()
+    };
+
+    let err = consensus
+        .validate_header(&SealedHeader::new_unhashed(header))
+        .expect_err("pre-Amsterdam headers must not carry a slot number");
+    assert!(matches!(err, ConsensusError::SlotNumberUnexpected));
+}
+
+#[test]
+fn shipped_taiko_specs_never_activate_amsterdam() {
+    // Unzen, Taiko's latest fork, activates Osaka-level execution rules only. No shipped spec
+    // may ever schedule Amsterdam, or `validate_header` would reject every block at import.
+    for (name, spec) in [
+        ("mainnet", &**TAIKO_MAINNET),
+        ("taiko-hoodi", &**TAIKO_HOODI),
+        ("devnet", &**TAIKO_DEVNET),
+        ("masaya", &**TAIKO_MASAYA),
+    ] {
+        assert!(
+            !spec.is_amsterdam_active_at_timestamp(u64::MAX),
+            "{name} must never activate Amsterdam"
+        );
+    }
+}
+
+#[test]
 fn unzen_post_execution_rejects_body_past_truncation_point() {
     let consensus = test_consensus(unzen_chain_spec());
     let result = BlockExecutionResult::<Receipt>::default();
@@ -254,7 +331,7 @@ fn unzen_post_execution_rejects_body_past_truncation_point() {
 
     let err =
         <TaikoBeaconConsensus as FullConsensus<EthPrimitives>>::validate_block_post_execution(
-            &consensus, &recovered, &result, None,
+            &consensus, &recovered, &result, None, None,
         )
         .expect_err("Unzen blocks must reject bodies that extend past the truncation point");
     assert!(matches!(err, ConsensusError::Other(_)));

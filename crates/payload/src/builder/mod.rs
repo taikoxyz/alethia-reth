@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
+use alloy_hardforks::EthereumHardforks;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
+use reth_errors::RethError;
 use reth_ethereum::EthPrimitives;
 use reth_evm::{
     ConfigureEvm,
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutor},
+    execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_execution_cache::{CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider};
@@ -143,6 +145,27 @@ fn empty_payload_result() -> Result<EthBuiltPayload, PayloadBuilderError> {
     Err(PayloadBuilderError::MissingPayload)
 }
 
+/// Rejects payload builds on a chain spec that activates the Amsterdam fork.
+///
+/// Taiko schedules no Amsterdam fork, so [`taiko_payload`] never wires an EIP-7928 BAL builder
+/// into the `State` and [`TaikoBlockAssembler`] always seals `block_access_list_hash: None`.
+/// Reth's post-execution validation skips the access-list check whenever the hash is absent, so
+/// an activation arriving through genesis config (`amsterdamTime`) would silently produce
+/// non-compliant blocks. Fail closed instead, mirroring the import-side rejection in
+/// `TaikoBeaconConsensus::validate_header`.
+fn ensure_amsterdam_inactive(
+    chain_spec: &TaikoChainSpec,
+    timestamp: u64,
+) -> Result<(), PayloadBuilderError> {
+    if chain_spec.is_amsterdam_active_at_timestamp(timestamp) {
+        return Err(PayloadBuilderError::Internal(RethError::msg(
+            "cannot build a Taiko payload with the Amsterdam fork active: EIP-7928 block access lists are unsupported",
+        )));
+    }
+
+    Ok(())
+}
+
 /// Build a Taiko payload for the given parent/header and job attributes.
 #[inline]
 fn taiko_payload<EvmConfig, Client, Pool>(
@@ -173,20 +196,22 @@ where
     let BuildArguments {
         mut cached_reads,
         execution_cache,
-        trie_handle,
+        mut state_root_handle,
         config,
         cancel,
         best_payload: _,
     } = args;
     let attributes = normalize_payload_config(&config)?;
-    let PayloadConfig { parent_header, attributes: _, payload_id } = config;
+    let PayloadConfig { parent_header, attributes: _, payload_id, .. } = config;
+
+    ensure_amsterdam_inactive(&client.chain_spec(), attributes.timestamp())?;
 
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
         state_provider = Box::new(CachedStateProvider::new(
             state_provider,
             execution_cache.cache().clone(),
-            CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+            Some(CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder)),
         ));
     }
     let state = StateProviderDatabase::new(state_provider.as_ref());
@@ -210,8 +235,11 @@ where
         )
         .map_err(PayloadBuilderError::other)?;
 
-    if let Some(ref handle) = trie_handle {
-        builder.executor_mut().set_state_hook(Some(Box::new(handle.state_hook())));
+    // If we have a state-root task, wire a state hook that streams per-tx state diffs. Hooks
+    // are delivered through the `State` database in reth v2.4.0.
+    if let Some(task) = state_root_handle.as_mut() {
+        reth_evm::Evm::db_mut(builder.evm_mut())
+            .set_state_hook(Some(Box::new(task.take_state_hook())));
     }
 
     builder.apply_pre_execution_changes().map_err(PayloadBuilderError::other)?;
@@ -251,11 +279,9 @@ where
         }
     };
 
-    let BlockBuilderOutcome { execution_result: _, block, .. } = if let Some(mut handle) =
-        trie_handle
-    {
+    let outcome = if let Some(mut handle) = state_root_handle {
         // Drop the state hook so the trie task sees the final state updates and can finalize.
-        builder.executor_mut().set_state_hook(None);
+        reth_evm::Evm::db_mut(builder.evm_mut()).set_state_hook(None);
 
         // The sparse trie computes alongside transaction execution, so this usually just waits
         // for the last root/trie update. If that pipeline fails, fall back to synchronous state
@@ -277,17 +303,27 @@ where
         builder.finish(state_provider.as_ref(), None)?
     };
 
-    let sealed_block = Arc::new(block.into_sealed_block());
-    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+    // The Amsterdam guard above rejects these builds up front, and this builder never wires a
+    // BAL builder into the `State`, so the list is always absent here. The named discard is a
+    // backstop against either of those changing.
+    let BlockBuilderOutcome { execution_result: _, block, block_access_list, .. } = outcome;
+    debug_assert!(
+        block_access_list.is_none(),
+        "unexpected EIP-7928 block access list for a Taiko block"
+    );
 
-    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(sealed_block, total_fees, None, None)))
+    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?block.sealed_header(), "sealed built block");
+
+    Ok(BuildOutcome::Freeze(EthBuiltPayload::new(Arc::new(block), total_fees, None, None)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_chainspec::TAIKO_MAINNET;
     use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
     use alloy_consensus::Header;
+    use alloy_genesis::{ChainConfig, Genesis};
     use alloy_primitives::{Address, B256, Bytes, U256};
     use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
     use reth_basic_payload_builder::PayloadConfig;
@@ -313,6 +349,7 @@ mod tests {
                 withdrawals: Some(Vec::new()),
                 parent_beacon_block_root: Some(B256::repeat_byte(0x33)),
                 slot_number: None,
+                target_gas_limit: None,
             },
             base_fee_per_gas,
             block_metadata: TaikoBlockMetadata {
@@ -357,6 +394,27 @@ mod tests {
     #[test]
     fn malformed_attrs_still_await_in_progress_on_missing_payload() {
         assert!(matches!(missing_payload_behaviour(), MissingPayloadBehaviour::AwaitInProgress));
+    }
+
+    #[test]
+    fn amsterdam_activation_rejects_payload_builds() {
+        let spec = TaikoChainSpec::from(Genesis {
+            config: ChainConfig { amsterdam_time: Some(100), ..Default::default() },
+            ..Default::default()
+        });
+
+        assert!(ensure_amsterdam_inactive(&spec, 99).is_ok());
+
+        let err = ensure_amsterdam_inactive(&spec, 100)
+            .expect_err("Taiko cannot seal an EIP-7928 block access list");
+        assert!(err.to_string().contains("Amsterdam"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn taiko_mainnet_never_activates_amsterdam() {
+        // The guard above only fails closed if the shipped specs genuinely leave Amsterdam
+        // unscheduled; otherwise it would reject every mainnet build.
+        assert!(ensure_amsterdam_inactive(&TAIKO_MAINNET, u64::MAX).is_ok());
     }
 
     #[test]

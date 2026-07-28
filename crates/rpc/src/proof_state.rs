@@ -183,11 +183,11 @@ where
     ) -> ProviderResult<Box<dyn StateProvider + '_>> {
         let provider_ro = self.storage.provider_ro().map_err(ProviderError::from)?;
 
-        let latest = provider_ro.get_latest_block_number().map_err(ProviderError::from)?;
-        let earliest = provider_ro.get_earliest_block_number().map_err(ProviderError::from)?;
-        let bounds = latest
-            .zip(earliest)
-            .map(|((latest_number, _), (earliest_number, _))| (earliest_number, latest_number));
+        let bounds = match provider_ro.get_proof_window() {
+            Ok(window) => Some((window.earliest.number, window.latest.number)),
+            Err(reth_optimism_trie::OpProofsStorageError::NoBlocksFound) => None,
+            Err(err) => return Err(ProviderError::from(err)),
+        };
 
         let reconciled = self.readiness.is_ready();
         if !proof_history_can_serve(reconciled, block_number, bounds) {

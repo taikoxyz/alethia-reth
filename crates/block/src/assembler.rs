@@ -159,6 +159,7 @@ mod test {
                 &bundle_state,
                 &state_provider,
                 B256::ZERO,
+                None,
             ))
             .expect("Unzen block should assemble");
 
@@ -206,6 +207,7 @@ mod test {
                 &bundle_state,
                 &state_provider,
                 B256::ZERO,
+                None,
             ))
             .expect("Unzen block should assemble");
 

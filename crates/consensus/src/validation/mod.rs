@@ -4,6 +4,7 @@ use std::{fmt::Debug, sync::Arc};
 use alloy_consensus::{
     BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
+use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::B256;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
@@ -73,8 +74,15 @@ where
         block: &RecoveredBlock<N::Block>,
         result: &BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
+        block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError> {
-        validate_block_post_execution(block, &self.chain_spec, result, receipt_root_bloom)?;
+        validate_block_post_execution(
+            block,
+            &self.chain_spec,
+            result,
+            receipt_root_bloom,
+            block_access_list_hash,
+        )?;
         validate_zk_gas_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,
@@ -160,10 +168,32 @@ where
         if self.chain_spec.is_shasta_active(header.timestamp()) &&
             header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
         {
-            return Err(ConsensusError::Other(format!(
+            return Err(ConsensusError::msg(format!(
                 "invalid Shasta extra-data length: have {}, want {SHASTA_EXTRA_DATA_LEN}",
                 header.extra_data().len()
             )));
+        }
+
+        // Taiko schedules no Amsterdam fork — Unzen, the latest fork, activates Osaka-level
+        // execution rules only — so nothing in this client builds or verifies EIP-7928 block
+        // access lists, and reth's post-execution validation skips the access-list comparison
+        // whenever the executor supplies no computed hash (always, here). Import is otherwise
+        // fail-open where payload building already fails closed (`ensure_amsterdam_inactive`),
+        // so reject the fork at the chokepoint every import path routes through: the engine
+        // `newPayload` flow and staged sync both call `validate_header`.
+        if self.chain_spec.is_amsterdam_active_at_timestamp(header.timestamp()) {
+            return Err(ConsensusError::msg(
+                "cannot validate a Taiko header with the Amsterdam fork active: EIP-7928 block access lists are unsupported",
+            ));
+        }
+
+        // Upstream `EthBeaconConsensus` parity: pre-Amsterdam headers must not carry the
+        // EIP-7928 header fields.
+        if header.block_access_list_hash().is_some() {
+            return Err(ConsensusError::BlockAccessListHashUnexpected);
+        }
+        if header.slot_number().is_some() {
+            return Err(ConsensusError::SlotNumberUnexpected);
         }
 
         validate_header_gas(header)?;
@@ -259,7 +289,7 @@ where
         return Ok(());
     }
 
-    Err(ConsensusError::Other(format!(
+    Err(ConsensusError::msg(format!(
         "Unzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
     )))
 }
@@ -307,7 +337,7 @@ fn validate_no_blob_transactions<Tx: SignedTransaction>(
     transactions: &[Tx],
 ) -> Result<(), ConsensusError> {
     if transactions.iter().any(|tx| !is_allowed_tx_type(tx)) {
-        return Err(ConsensusError::Other("Blob transactions are not allowed".into()));
+        return Err(ConsensusError::msg("Blob transactions are not allowed"));
     }
     Ok(())
 }

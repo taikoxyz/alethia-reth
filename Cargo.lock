@@ -265,6 +265,7 @@ dependencies = [
  "alethia-reth-primitives",
  "alloy-consensus",
  "alloy-eips",
+ "alloy-genesis",
  "alloy-hardforks",
  "alloy-primitives",
  "alloy-rlp",

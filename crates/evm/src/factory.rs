@@ -3,7 +3,7 @@ use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
     Context, Inspector, MainBuilder, MainContext,
     context::{
-        BlockEnv, TxEnv,
+        BlockEnv, DBErrorMarker, TxEnv,
         result::{EVMError, HaltReason},
     },
     inspector::NoOpInspector,
@@ -29,7 +29,7 @@ impl EvmFactory for TaikoEvmFactory {
     /// Transaction environment.
     type Tx = TxEnv;
     /// EVM error.
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    type Error<DBError: DBErrorMarker> = EVMError<DBError>;
     /// Halt reason.
     type HaltReason = HaltReason;
     /// The EVM context for inspectors.

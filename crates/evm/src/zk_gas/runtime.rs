@@ -3,7 +3,7 @@
 use reth_revm::{
     context::{ContextError, ContextTr},
     interpreter::{
-        Interpreter, InterpreterAction,
+        GasTable, Interpreter, InterpreterAction,
         instructions::InstructionTable,
         interpreter::EthInterpreter,
         interpreter_types::{Jumps, LoopControl},
@@ -16,21 +16,27 @@ use super::{
 };
 
 /// Runs the interpreter loop while charging zk gas directly in the production path.
+///
+/// Mirrors revm's `Interpreter::run_plain` control flow: every step signals loop exit through
+/// its `Err(InstructionResult)`, and the halt is materialized afterwards only when the step
+/// left no pending action. Zk gas is charged for every executed step — including the halting
+/// one — matching the interpreter gas it consumed.
 #[inline]
 pub(crate) fn run_metered_plain<CTX: ContextTr>(
     context: &mut CTX,
     interpreter: &mut Interpreter<EthInterpreter>,
     instruction_table: &InstructionTable<EthInterpreter, CTX>,
+    gas_table: &GasTable,
     meter: &mut ZkGasMeter<'static>,
 ) -> InterpreterAction {
-    while interpreter.bytecode.is_not_end() {
+    let halt = loop {
         let opcode = interpreter.bytecode.opcode();
         let gas_before = interpreter.gas.remaining();
 
-        interpreter.step(instruction_table, context);
+        let step_result = interpreter.step(instruction_table, gas_table, context);
 
         let charge = if is_spawn_opcode(opcode) &&
-            matches!(&interpreter.bytecode.action, Some(InterpreterAction::NewFrame(_)))
+            matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)))
         {
             meter.charge_spawn_opcode(opcode)
         } else {
@@ -40,8 +46,18 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
         if let Err(ZkGasOutcome::LimitExceeded) = charge {
             set_custom_error(context);
             interpreter.halt_fatal();
-            break;
+            break None;
         }
+
+        if let Err(result) = step_result {
+            break Some(result);
+        }
+    };
+
+    if let Some(result) = halt &&
+        interpreter.bytecode.action().is_none()
+    {
+        interpreter.halt(result);
     }
 
     interpreter.take_next_action()

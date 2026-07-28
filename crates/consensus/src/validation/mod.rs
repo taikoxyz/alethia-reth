@@ -4,6 +4,7 @@ use std::{fmt::Debug, sync::Arc};
 use alloy_consensus::{
     BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
+use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::B256;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
@@ -35,6 +36,24 @@ pub use anchor::{
 
 #[cfg(test)]
 mod tests;
+
+/// Free-form message carried by Taiko-specific [`ConsensusError::Other`] violations.
+#[derive(Debug)]
+struct TaikoConsensusMessage(String);
+
+impl core::fmt::Display for TaikoConsensusMessage {
+    /// Writes the violation message verbatim.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl core::error::Error for TaikoConsensusMessage {}
+
+/// Builds a [`ConsensusError::Other`] from a Taiko validation message.
+pub(crate) fn other_consensus_error(message: impl Into<String>) -> ConsensusError {
+    ConsensusError::Other(Arc::new(TaikoConsensusMessage(message.into())))
+}
 
 /// Minimal block reader interface used by Taiko consensus.
 pub trait TaikoBlockReader: Send + Sync + Debug {
@@ -73,8 +92,15 @@ where
         block: &RecoveredBlock<N::Block>,
         result: &BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
+        block_access_list_hash: Option<B256>,
     ) -> Result<(), ConsensusError> {
-        validate_block_post_execution(block, &self.chain_spec, result, receipt_root_bloom)?;
+        validate_block_post_execution(
+            block,
+            &self.chain_spec,
+            result,
+            receipt_root_bloom,
+            block_access_list_hash,
+        )?;
         validate_zk_gas_post_execution(block, self.chain_spec.as_ref(), &result.receipts)?;
         validate_anchor_transaction_in_block::<<N as NodePrimitives>::Block>(
             block,
@@ -160,10 +186,25 @@ where
         if self.chain_spec.is_shasta_active(header.timestamp()) &&
             header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
         {
-            return Err(ConsensusError::Other(format!(
+            return Err(other_consensus_error(format!(
                 "invalid Shasta extra-data length: have {}, want {SHASTA_EXTRA_DATA_LEN}",
                 header.extra_data().len()
             )));
+        }
+
+        // Taiko does not implement EIP-7928 block access list construction or verification.
+        // Reject Amsterdam at the shared import boundary instead of accepting unverifiable blocks.
+        if self.chain_spec.is_amsterdam_active_at_timestamp(header.timestamp()) {
+            return Err(other_consensus_error(
+                "cannot validate a Taiko header with the Amsterdam fork active: \
+                 EIP-7928 block access lists are unsupported",
+            ));
+        }
+        if header.block_access_list_hash().is_some() {
+            return Err(ConsensusError::BlockAccessListHashUnexpected);
+        }
+        if header.slot_number().is_some() {
+            return Err(ConsensusError::SlotNumberUnexpected);
         }
 
         validate_header_gas(header)?;
@@ -259,7 +300,7 @@ where
         return Ok(());
     }
 
-    Err(ConsensusError::Other(format!(
+    Err(other_consensus_error(format!(
         "Unzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
     )))
 }
@@ -307,7 +348,7 @@ fn validate_no_blob_transactions<Tx: SignedTransaction>(
     transactions: &[Tx],
 ) -> Result<(), ConsensusError> {
     if transactions.iter().any(|tx| !is_allowed_tx_type(tx)) {
-        return Err(ConsensusError::Other("Blob transactions are not allowed".into()));
+        return Err(other_consensus_error("Blob transactions are not allowed"));
     }
     Ok(())
 }

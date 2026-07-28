@@ -393,6 +393,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejects_block_access_list_supplied_through_block_to_payload() {
+        // reth's `reth_newPayload` BlockRlp arm (mounted unconditionally on the auth server)
+        // and the debug consensus clients convert caller input through
+        // `PayloadTypes::block_to_payload`, so the sidecar sentinel must carry the caller's
+        // block access list into validation instead of silently dropping it.
+        let bal = Bytes::from_static(&[0xc0]);
+        let block = Block::new(
+            Header::default(),
+            BlockBody { transactions: Vec::new(), ommers: Vec::new(), withdrawals: None },
+        );
+
+        let payload = TaikoEngineTypes::block_to_payload(
+            SealedBlock::new_unhashed(block.clone()),
+            Some(bal.clone()),
+        );
+        assert_eq!(
+            payload.taiko_sidecar.block_access_list,
+            Some(bal),
+            "block_to_payload must preserve a caller-supplied block access list"
+        );
+
+        let error = validate_execution_payload(&payload)
+            .expect_err("a caller-supplied block access list must fail closed");
+        assert_eq!(
+            error.to_string(),
+            "Payload validation error: block access list not supported in this engine API version"
+        );
+
+        let bal_free = TaikoEngineTypes::block_to_payload(SealedBlock::new_unhashed(block), None);
+        validate_execution_payload(&bal_free)
+            .expect("conversions without a block access list must remain valid");
+    }
+
     fn validate_payload_attributes(
         attributes: &TaikoPayloadAttributes,
     ) -> Result<(), EngineObjectValidationError> {

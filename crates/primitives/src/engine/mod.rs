@@ -31,13 +31,16 @@ impl PayloadTypes for TaikoEngineTypes {
 
     /// Converts a block into an execution payload.
     ///
-    /// The Amsterdam block access list is discarded because Taiko networks schedule no Amsterdam
-    /// fork; the transport sentinels in [`TaikoExecutionData`] remain empty for locally built data.
+    /// Taiko networks schedule no Amsterdam fork, so a caller-supplied EIP-7928 block access
+    /// list cannot be honored. It is carried on the sidecar's inbound-only sentinel instead of
+    /// being dropped, so engine validation fails closed with `BlockAccessListNotSupported`
+    /// rather than silently executing the block without it — reth's `reth_newPayload` BlockRlp
+    /// arm and the debug consensus clients route caller-supplied data through this method.
     fn block_to_payload(
         block: SealedBlock<
             <<Self::BuiltPayload as BuiltPayload>::Primitives as NodePrimitives>::Block,
         >,
-        _bal: Option<Bytes>,
+        bal: Option<Bytes>,
     ) -> Self::ExecutionData {
         let tx_hash = block.transactions_root;
         let withdrawals_hash = block.withdrawals_root;
@@ -52,7 +55,7 @@ impl PayloadTypes for TaikoEngineTypes {
                 withdrawals_hash,
                 header_difficulty: Some(header_difficulty),
                 taiko_block: Some(true),
-                block_access_list: None,
+                block_access_list: bal,
                 slot_number: None,
             },
         }
@@ -60,8 +63,9 @@ impl PayloadTypes for TaikoEngineTypes {
 }
 
 impl From<EthBuiltPayload> for TaikoExecutionData {
-    /// Converts a built payload into Taiko execution data, discarding any Amsterdam block
-    /// access list (Taiko networks schedule no Amsterdam fork).
+    /// Converts a built payload into Taiko execution data. Locally built payloads never carry
+    /// an Amsterdam block access list (the payload builder fails closed before Amsterdam
+    /// activation), so the sidecar's inbound-only sentinels stay empty.
     fn from(value: EthBuiltPayload) -> Self {
         let block = Arc::unwrap_or_clone(value.into_block_arc()).into_sealed_block();
         TaikoEngineTypes::block_to_payload(block, None)

@@ -235,6 +235,7 @@ where
                 gas_limit: attributes.gas_limit,
                 extra_data: attributes.extra_data.clone(),
                 base_fee_per_gas: attributes.base_fee_per_gas,
+                parent_beacon_block_root: attributes.parent_beacon_block_root,
             },
         )
         .map_err(PayloadBuilderError::other)?;

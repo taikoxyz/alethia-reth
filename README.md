@@ -23,15 +23,20 @@ cargo build --release
 
 The main binary will be located at `target/release/alethia-reth`.
 
-The default build includes revmc JIT support and requires Rust 1.95 plus LLVM 22. On Ubuntu or
-Debian, install LLVM with the same helper used by CI and Docker:
+The default build includes revmc JIT support and requires Rust 1.95 plus LLVM 22. Install
+versioned LLVM 22 packages and put their `bin` directory on `PATH` while building. On Ubuntu or
+Debian, use your distribution's `llvm-22` packages or the upstream apt.llvm.org installer
+(neither touches the unversioned `/usr/bin` tools):
 
 ```bash
-.github/scripts/install_llvm.sh ubuntu
+wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 22 all
+export PATH="/usr/lib/llvm-22/bin:$PATH"
 ```
 
-On macOS, `brew install llvm@22` and put its `bin` directory on `PATH` while building. To build
-without the LLVM toolchain dependency, disable default features:
+On macOS, `brew install llvm@22` and put its `bin` directory on `PATH` the same way. Do not run
+`.github/scripts/install_llvm.sh` on a developer machine: it is CI/Docker provisioning that
+force-overwrites the `/usr/bin` LLVM symlinks. To build without the LLVM toolchain dependency,
+disable default features:
 
 ```bash
 cargo build --release -p alethia-reth-bin --no-default-features

@@ -352,7 +352,9 @@ mod tests {
                 prev_randao: B256::repeat_byte(0x11),
                 suggested_fee_recipient: Address::repeat_byte(0x22),
                 withdrawals: Some(Vec::new()),
-                parent_beacon_block_root: Some(B256::repeat_byte(0x33)),
+                // The zero root is the only value that survives the engine round-trip; a
+                // non-zero fixture would be rejected by `try_new`.
+                parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
                 target_gas_limit: None,
             },

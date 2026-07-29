@@ -220,6 +220,10 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
+    // Opt payload building into JIT dispatch (mirrors reth's engine tree and upstream payload
+    // builder). Unzen blocks still execute through the interpreter via the fork allowlist, and
+    // this local support flag is one of several gates before compiled code can run.
+    let evm_config = evm_config.clone().with_jit_support();
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,
@@ -231,6 +235,7 @@ where
                 gas_limit: attributes.gas_limit,
                 extra_data: attributes.extra_data.clone(),
                 base_fee_per_gas: attributes.base_fee_per_gas,
+                parent_beacon_block_root: attributes.parent_beacon_block_root,
             },
         )
         .map_err(PayloadBuilderError::other)?;
@@ -347,7 +352,9 @@ mod tests {
                 prev_randao: B256::repeat_byte(0x11),
                 suggested_fee_recipient: Address::repeat_byte(0x22),
                 withdrawals: Some(Vec::new()),
-                parent_beacon_block_root: Some(B256::repeat_byte(0x33)),
+                // The zero root is the only value that survives the engine round-trip; a
+                // non-zero fixture would be rejected by `try_new`.
+                parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
                 target_gas_limit: None,
             },

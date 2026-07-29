@@ -73,9 +73,9 @@ flate2 = "1.1.5"
 parity-scale-codec = "3.2.1"
 
 # reth
-# Default features minus `jit`: as of v2.4.x the reth umbrella crate enables its revmc JIT
-# by default, which drags the LLVM toolchain into every build. Alethia does not ship the JIT,
-# so the default set is spelled out without it. `reth-revm/portable` (a default) is applied
+# Default features minus `jit`: reth's own JIT wiring (reth-node-ethereum) would drag the
+# LLVM toolchain into every build; Alethia wires revmc into its own EVM factory instead and
+# gates it behind the workspace `jit` features. `reth-revm/portable` (a default) is applied
 # via this workspace's reth-revm dependency below.
 reth = { git = "https://github.com/paradigmxyz/reth", package = "reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d", default-features = false, features = [
     "jemalloc",
@@ -156,6 +156,14 @@ reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", re
 
 # revm
 revm-database-interface = { version = "41.0.0", default-features = false }
+
+# revmc JIT: pinned to the revision reth f2eecc6 locks. Includes revmc#391 (non-blocking
+# runtime controls), #395 (dynamic-gas failure ordering), #394 (stack sync for diverging
+# builtins), and #400 (LOG memory operands in gas analysis) — the latter two fix compiled
+# code diverging from the interpreter. Keep matched to the reth pin's locked revmc.
+revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "520462a463523a3bcd0a47226ddbc3200d62232e", default-features = false, features = [
+    "llvm-prefer-static",
+] }
 
 # serialization
 serde = { version = "1.0", default-features = false }

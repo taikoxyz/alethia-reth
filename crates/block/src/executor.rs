@@ -769,6 +769,7 @@ mod test {
                         gas_limit: 30_000_000,
                         extra_data: Bytes::new(),
                         base_fee_per_gas: 1,
+                        parent_beacon_block_root: None,
                     },
                 )
                 .expect("next block env should build");

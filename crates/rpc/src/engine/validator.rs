@@ -43,6 +43,12 @@ enum TaikoPayloadValidationError {
     /// Taiko payload construction does not consume the post-Amsterdam target-gas-limit attribute.
     #[error("target gas limit is unsupported on Taiko")]
     TargetGasLimitUnsupported,
+    /// A non-zero root cannot survive the engine round-trip (`block_to_payload` emits a V1
+    /// payload plus a sidecar with no beacon-root field, and `convert_payload_to_block` rebuilds
+    /// Unzen headers with the zero root), so building from one would produce a block every
+    /// `newPayload` re-import rejects with a block-hash mismatch.
+    #[error("non-zero parent beacon block roots are unsupported on Taiko")]
+    NonZeroParentBeaconBlockRootUnsupported,
     /// Taiko schedules no Amsterdam fork, so EIP-7928 block access lists are never accepted.
     #[error("block access lists are unsupported on Taiko")]
     BlockAccessListUnsupported,
@@ -262,6 +268,14 @@ where
                 TaikoPayloadValidationError::TargetGasLimitUnsupported,
             )));
         }
+        // Zero (the network invariant) and absent roots are equivalent downstream; only a
+        // non-zero root would be silently committed into an unimportable block, so it fails
+        // closed here before a payload job can start.
+        if payload_or_attrs.parent_beacon_block_root().is_some_and(|root| !root.is_zero()) {
+            return Err(EngineObjectValidationError::InvalidParams(Box::new(
+                TaikoPayloadValidationError::NonZeroParentBeaconBlockRootUnsupported,
+            )));
+        }
 
         Ok(())
     }
@@ -362,6 +376,21 @@ mod tests {
         assert_eq!(sealed.header().blob_gas_used, Some(0));
         assert_eq!(sealed.header().excess_blob_gas, Some(0));
         assert_eq!(sealed.header().requests_hash, Some(EMPTY_REQUESTS_HASH));
+    }
+
+    #[test]
+    fn rejects_non_zero_parent_beacon_block_root_in_payload_attributes() {
+        let mut attributes = sample_payload_attributes();
+        attributes.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+
+        let error = validate_payload_attributes(&attributes)
+            .expect_err("a non-zero beacon root cannot round-trip and must fail closed");
+        assert!(error.to_string().contains("non-zero parent beacon block roots"));
+
+        // The zero root is the network invariant and must stay valid — the shared fixture
+        // already carries `Some(B256::ZERO)`.
+        validate_payload_attributes(&sample_payload_attributes())
+            .expect("the zero beacon root must remain accepted");
     }
 
     #[test]

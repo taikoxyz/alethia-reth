@@ -346,6 +346,7 @@ where
                     gas_limit: combined_gas_limit,
                     extra_data: parent.extra_data().clone(),
                     base_fee_per_gas: base_fee,
+                    parent_beacon_block_root: None,
                 },
             )
             .map_err(|_| {

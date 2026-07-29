@@ -83,14 +83,12 @@ pub struct TaikoEvmConfig {
     pub executor_factory: TaikoBlockExecutorFactory,
     /// Block assembler used to construct finalized block objects.
     pub block_assembler: TaikoBlockAssembler,
-    /// EVM factory used to instantiate Taiko EVM instances.
-    pub evm_factory: TaikoEvmFactory,
 }
 
 impl TaikoEvmConfig {
     /// Creates a new Taiko EVM configuration with the given chain spec and extra context.
     pub fn new(chain_spec: Arc<TaikoChainSpec>) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory::default())
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
@@ -105,13 +103,17 @@ impl TaikoEvmConfig {
                 chain_spec,
                 evm_factory,
             ),
-            evm_factory,
         }
     }
 
     /// Returns the chain spec associated with this configuration.
     pub const fn chain_spec(&self) -> &Arc<TaikoChainSpec> {
         self.executor_factory.spec()
+    }
+
+    /// Returns the EVM factory backing this configuration.
+    pub const fn evm_factory(&self) -> &TaikoEvmFactory {
+        self.executor_factory.evm_factory()
     }
 }
 
@@ -157,6 +159,26 @@ impl ConfigureEvm for TaikoEvmConfig {
     /// Returns reference to the configured [`BlockAssembler`].
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
+    }
+
+    /// Returns a config whose EVM factory selects (or deselects) the shared JIT backend for
+    /// subsequently created EVMs.
+    ///
+    /// This is the local-support gate of the JIT model: reth's engine tree and the Taiko
+    /// payload builder opt in explicitly, while RPC execution keeps the base config and stays
+    /// interpreter-only. Unzen (zk-gas) execution remains interpreter-only regardless via the
+    /// fork allowlist in [`TaikoEvmFactory`].
+    #[cfg(feature = "jit")]
+    fn with_jit_support_enabled(self, enabled: bool) -> Self {
+        let evm_factory = self.evm_factory().clone().with_jit_support_enabled(enabled);
+        Self::new_with_evm_factory(self.chain_spec().clone(), evm_factory)
+    }
+
+    /// Returns runtime controls for the shared revmc backend, enabling the upstream `reth_jit`
+    /// RPC action against this configuration.
+    #[cfg(feature = "jit")]
+    fn jit_backend(&self) -> Option<&dyn reth_evm::JitBackend> {
+        Some(self.evm_factory())
     }
 
     /// Creates a new [`EvmEnv`] for the given header.
@@ -263,7 +285,10 @@ impl ConfigureEvm for TaikoEvmConfig {
         let is_unzen_active = self.chain_spec().is_unzen_active(ctx.timestamp);
         Ok(TaikoBlockExecutionCtx {
             parent_hash: parent.hash(),
-            parent_beacon_block_root: normalize_parent_beacon_block_root(is_unzen_active, None),
+            parent_beacon_block_root: normalize_parent_beacon_block_root(
+                is_unzen_active,
+                ctx.parent_beacon_block_root,
+            ),
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
@@ -382,6 +407,8 @@ pub struct TaikoNextBlockEnvAttributes {
     pub extra_data: Bytes,
     /// The base fee per gas for the next block.
     pub base_fee_per_gas: u64,
+    /// Parent beacon block root used by the EIP-4788 system call.
+    pub parent_beacon_block_root: Option<B256>,
 }
 
 /// Map the latest active hardfork at the given header to a [`TaikoSpecId`].
@@ -424,12 +451,9 @@ where
 #[cfg(feature = "net")]
 impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
     /// Builds a [`ConfigureEvm::NextBlockEnvCtx`] for pending block.
-    ///
-    /// Block overrides are ignored: the only override the upstream implementation consults is
-    /// the beacon root, and Taiko's next-block attributes carry no parent beacon block root.
     fn build_pending_env(
         parent: &SealedHeader<Header>,
-        _block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
+        block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
     ) -> Self {
         Self {
             timestamp: parent.timestamp.saturating_add(12),
@@ -438,6 +462,7 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
             gas_limit: parent.gas_limit,
             extra_data: parent.extra_data.clone(),
             base_fee_per_gas: parent.base_fee_per_gas.unwrap_or_default(),
+            parent_beacon_block_root: block_overrides.and_then(|overrides| overrides.beacon_root),
         }
     }
 }
@@ -448,6 +473,132 @@ mod tests {
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_hardforks::ForkCondition;
     use std::sync::Arc;
+
+    fn config_with_unzen_at(timestamp: u64) -> TaikoEvmConfig {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec
+            .inner
+            .hardforks
+            .insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
+        TaikoEvmConfig::new(Arc::new(chain_spec))
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_support_is_opt_in_per_config() {
+        let config = TaikoEvmConfig::new(TAIKO_DEVNET.clone());
+
+        // The base config — handed to RPC execution — never selects the shared backend.
+        assert!(!config.evm_factory().jit_support_enabled());
+
+        // The engine tree and the payload builder opt in through the `ConfigureEvm` hook.
+        let engine_config = config.clone().with_jit_support();
+        assert!(engine_config.evm_factory().jit_support_enabled());
+        assert!(Arc::ptr_eq(config.chain_spec(), engine_config.chain_spec()));
+
+        // Opting out again restores the interpreter-only selection.
+        let rpc_config = engine_config.with_jit_support_enabled(false);
+        assert!(!rpc_config.evm_factory().jit_support_enabled());
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn base_config_is_interpreter_only_while_jit_enabled_config_uses_backend() {
+        use alethia_reth_evm::{
+            factory::TaikoEvmFactory,
+            jit::{JitBackend, JitMode, RuntimeConfig},
+        };
+        use alloy_evm::Evm as _;
+        use reth_revm::{
+            context::TxEnv,
+            db::InMemoryDB,
+            primitives::TxKind,
+            state::{AccountInfo, Bytecode},
+        };
+        use revm_database_interface::{
+            BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BENCH_TARGET_BALANCE,
+        };
+
+        fn contract_db() -> InMemoryDB {
+            // PUSH1 1 PUSH1 2 ADD STOP — minimal arithmetic contract.
+            let bytecode = Bytecode::new_raw([0x60, 0x01, 0x60, 0x02, 0x01, 0x00].into());
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(
+                BENCH_TARGET,
+                AccountInfo {
+                    nonce: 1,
+                    balance: BENCH_TARGET_BALANCE,
+                    code_hash: bytecode.hash_slow(),
+                    code: Some(bytecode),
+                    ..Default::default()
+                },
+            );
+            db.insert_account_info(
+                BENCH_CALLER,
+                AccountInfo { nonce: 0, balance: BENCH_CALLER_BALANCE, ..Default::default() },
+            );
+            db
+        }
+
+        fn call_tx() -> TxEnv {
+            TxEnv::builder()
+                .caller(BENCH_CALLER)
+                .kind(TxKind::Call(BENCH_TARGET))
+                // Skip the chain-id check instead of mirroring the devnet chain id.
+                .chain_id(None)
+                .gas_limit(100_000)
+                .build()
+                .unwrap()
+        }
+
+        // Pre-Unzen chain state so the factory's fork allowlist permits JIT dispatch.
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(u64::MAX));
+
+        let backend = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            jit_mode: JitMode::InProcess,
+            ..RuntimeConfig::default()
+        })
+        .expect("blocking JIT backend should start");
+        let config = TaikoEvmConfig::new_with_evm_factory(
+            Arc::new(chain_spec),
+            TaikoEvmFactory::new(backend.clone()),
+        );
+        let header = Header {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(0),
+            ..Header::default()
+        };
+
+        // RPC call/estimate/simulate and pending-block execution receive the base config, which
+        // must never consult the shared backend.
+        let env = config.evm_env(&header).expect("pre-Unzen RPC env should build");
+        let mut rpc_evm = config.evm_with_env(contract_db(), env);
+        rpc_evm.transact(call_tx()).expect("RPC-style execution should succeed");
+        let rpc_stats = backend.stats();
+        assert_eq!(
+            (rpc_stats.lookup_hits, rpc_stats.lookup_misses, rpc_stats.compilations_succeeded),
+            (0, 0, 0),
+            "base-config EVM construction must stay interpreter-only",
+        );
+
+        // Engine-tree canonical execution and payload building opt in via `with_jit_support`,
+        // so their executions dispatch to the shared backend.
+        let engine_config = config.with_jit_support();
+        let env = engine_config.evm_env(&header).expect("pre-Unzen Engine env should build");
+        let mut engine_evm = engine_config.evm_with_env(contract_db(), env);
+        engine_evm.transact(call_tx()).expect("Engine-style execution should succeed");
+        let engine_stats = backend.stats();
+        assert!(
+            engine_stats.compilations_succeeded >= 1 && engine_stats.lookup_hits >= 1,
+            "Engine execution should dispatch to the shared JIT backend: {engine_stats:?}",
+        );
+    }
 
     #[test]
     fn unzen_takes_precedence_over_shasta() {
@@ -506,6 +657,29 @@ mod tests {
     }
 
     #[cfg(feature = "net")]
+    #[test]
+    fn pending_env_preserves_beacon_root_override_for_unzen_context() {
+        let root = B256::repeat_byte(0x33);
+        let parent = SealedHeader::seal_slow(Header {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1),
+            ..Header::default()
+        });
+        let overrides =
+            alloy_rpc_types_eth::BlockOverrides { beacon_root: Some(root), ..Default::default() };
+        let attributes = TaikoNextBlockEnvAttributes::build_pending_env(&parent, Some(&overrides));
+        let config = config_with_unzen_at(0);
+
+        let ctx = config
+            .context_for_next_block(&parent, attributes)
+            .expect("pending Unzen context should build");
+
+        assert_eq!(ctx.parent_beacon_block_root, Some(root));
+    }
+
+    #[cfg(feature = "net")]
     mod payload_ctx {
         use super::*;
         use alethia_reth_primitives::engine::types::{
@@ -540,15 +714,6 @@ mod tests {
                     slot_number: None,
                 },
             }
-        }
-
-        fn config_with_unzen_at(timestamp: u64) -> TaikoEvmConfig {
-            let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-            chain_spec
-                .inner
-                .hardforks
-                .insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
-            TaikoEvmConfig::new(Arc::new(chain_spec))
         }
 
         #[test]

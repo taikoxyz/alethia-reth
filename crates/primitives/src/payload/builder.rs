@@ -96,6 +96,22 @@ impl TaikoPayloadBuilderAttributes {
         parent: B256,
         attributes: TaikoPayloadAttributes,
     ) -> Result<Self, alloy_rlp::Error> {
+        // A non-zero caller root cannot survive the engine round-trip: `block_to_payload` emits
+        // a V1 payload plus a sidecar with no beacon-root field, and `convert_payload_to_block`
+        // rebuilds Unzen headers with the zero root, so a block built from one would be rejected
+        // with a block-hash mismatch on every `newPayload` re-import. Engine validation already
+        // rejects it (`validate_version_specific_fields`); this re-check covers every other route
+        // into a payload job, since the committed header is what makes the invariant load-bearing.
+        if attributes
+            .payload_attributes
+            .parent_beacon_block_root
+            .is_some_and(|root| !root.is_zero())
+        {
+            return Err(alloy_rlp::Error::Custom(
+                "non-zero parent_beacon_block_root is unsupported on Taiko",
+            ));
+        }
+
         let id = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_V2);
 
         // Determine transaction source based on whether tx_list is provided.
@@ -354,6 +370,23 @@ mod test {
 
         assert!(attrs.transactions.is_none(), "New mode should use mempool selection");
         assert_eq!(attrs.tx_list_hash, B256::ZERO, "tx_list_hash should be zero without tx_list");
+    }
+
+    #[test]
+    fn try_new_rejects_non_zero_parent_beacon_block_root() {
+        let mut payload_attrs = create_payload_attrs(1000, None, 100_000_000);
+        payload_attrs.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+
+        let err = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
+            .expect_err("a non-zero beacon root cannot round-trip and must fail closed");
+        assert!(err.to_string().contains("parent_beacon_block_root"));
+
+        // The zero root is the network invariant and keeps round-tripping.
+        let mut payload_attrs = create_payload_attrs(1000, None, 100_000_000);
+        payload_attrs.payload_attributes.parent_beacon_block_root = Some(B256::ZERO);
+        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
+            .expect("a zero beacon root must remain accepted");
+        assert_eq!(attrs.parent_beacon_block_root(), Some(B256::ZERO));
     }
 
     #[test]

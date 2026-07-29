@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Verify single reth and revmc revisions in Cargo.lock
+      - name: Verify reth and revmc pins in Cargo.lock
         run: .github/scripts/check_reth_pin.sh
       - uses: rui314/setup-mold@v1
       - run: .github/scripts/install_llvm.sh ubuntu

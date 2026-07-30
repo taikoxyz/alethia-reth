@@ -9,6 +9,11 @@ set -eo pipefail
 version=${1:-22}
 bins=(clang llvm-config lld ld.lld FileCheck)
 
+# apt does not retry failed downloads by default, so a single blip reaching deb.debian.org or
+# apt.llvm.org aborts the image build. This also covers the apt calls inside the upstream
+# installer invoked below, which this script cannot pass options to.
+printf 'Acquire::Retries "3";\n' > /etc/apt/apt.conf.d/80-alethia-retries
+
 # The official installer needs this package on Debian bookworm but not on newer distributions.
 apt-get update -qq
 apt-get install -y --no-install-recommends \
@@ -16,7 +21,22 @@ apt-get install -y --no-install-recommends \
 apt-get install -y --no-install-recommends software-properties-common 2>/dev/null || true
 
 llvm_installer=$(mktemp)
-wget -qO "$llvm_installer" https://apt.llvm.org/llvm.sh
+# Bound and retry this fetch ourselves. wget's default --timeout is 900s, so one stalled
+# connection to apt.llvm.org used to wedge the build for a silent 15 minutes and then abort with
+# a bare "exit code: 4". --timeout caps DNS, connect and read alike; the outer loop retries
+# regardless of which of them wget reports, and -nv restores the error text that -q swallowed.
+attempts=4
+for attempt in $(seq "$attempts"); do
+    if wget -nv --timeout=20 --tries=1 -O "$llvm_installer" https://apt.llvm.org/llvm.sh; then
+        break
+    fi
+    if [[ "$attempt" -eq "$attempts" ]]; then
+        echo "Error: could not download https://apt.llvm.org/llvm.sh ($attempts attempts)" >&2
+        exit 1
+    fi
+    echo "Retrying https://apt.llvm.org/llvm.sh in $((attempt * 5))s" >&2
+    sleep $((attempt * 5))
+done
 # Pin the upstream installer so CI and Docker builds fail loudly when it changes; review the new
 # script before updating this hash.
 echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  $llvm_installer" | sha256sum -c -

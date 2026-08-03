@@ -1,8 +1,8 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
-mod init;
-mod live;
+mod engine;
+mod prune;
 mod sidecar;
 mod storage_init;
 
@@ -10,6 +10,7 @@ pub use config::{
     DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
     DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
+use engine::{ProofHistoryEngine, spawn_proof_history_engine};
 use sidecar::ProofHistorySidecar;
 
 use crate::TaikoNode;
@@ -22,7 +23,7 @@ use eyre::WrapErr;
 use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateSubscriptions, DBProvider,
-        DatabaseProviderFactory, HeaderProvider,
+        DatabaseProviderFactory, HeaderProvider, StageCheckpointReader,
     },
     tasks::TaskExecutor,
 };
@@ -33,7 +34,7 @@ use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorage};
+use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorageV2};
 use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
@@ -44,19 +45,7 @@ use tokio::time::sleep;
 use tracing::info;
 
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
-pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorage>>;
-
-/// Adapts the storage bound accessors' `NoBlocksFound` error back to the `Option` shape the
-/// reconciliation logic in this module was written against.
-pub(crate) fn opt_block(
-    result: Result<alloy_eips::NumHash, OpProofsStorageError>,
-) -> Result<Option<(u64, alloy_primitives::B256)>, OpProofsStorageError> {
-    match result {
-        Ok(numhash) => Ok(Some((numhash.number, numhash.hash))),
-        Err(OpProofsStorageError::NoBlocksFound) => Ok(None),
-        Err(err) => Err(err),
-    }
-}
+pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorageV2>>;
 
 /// Storage and reconciliation-readiness handles shared with the proof-history RPC overrides.
 pub type ProofHistoryRpcHandles = (ProofHistoryStorage, ProofHistoryReadiness);
@@ -88,17 +77,20 @@ where
         + ChangeSetReader
         + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
         + StorageSettingsCache,
     <T::DB as Database>::TX: Sync,
 {
+    config.validate()?;
     if !config.enabled {
         return Ok((node_builder, None));
     }
 
     let storage_path = config.required_storage_path()?.clone();
+    storage_init::refuse_legacy_v1_storage(&storage_path)?;
     let mdbx =
-        Arc::new(MdbxProofsStorage::new(&storage_path).wrap_err_with(|| {
+        Arc::new(MdbxProofsStorageV2::new(&storage_path).wrap_err_with(|| {
             format!("failed to create proof-history MDBX at {storage_path:?}")
         })?);
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
@@ -117,14 +109,27 @@ where
                 mdbx,
                 node.config.metrics.push_gateway_interval,
             );
-            let sidecar = ProofHistorySidecar::<NodeAdapter<T, CB::Components>, _>::new(
-                node.provider,
-                node.evm_config,
+            let provider = node.provider;
+            let engine_provider = provider.clone();
+            let engine_storage = storage_for_sidecar.clone();
+            let evm_config = node.evm_config;
+            let engine_factory = move || -> eyre::Result<
+                Box<dyn ProofHistoryEngine<reth_ethereum_primitives::Block>>,
+            > {
+                Ok(Box::new(spawn_proof_history_engine(
+                    evm_config.clone(),
+                    engine_provider.clone(),
+                    engine_storage.clone(),
+                )))
+            };
+            let sidecar = ProofHistorySidecar::<NodeAdapter<T, CB::Components>, _, _>::new(
+                provider,
                 task_executor.clone(),
                 storage_for_sidecar,
                 storage_for_init,
                 config,
                 readiness_for_sidecar,
+                engine_factory,
             );
             task_executor.spawn_critical_with_graceful_shutdown_signal(
                 "taiko::proof_history::sidecar",
@@ -154,9 +159,15 @@ where
         HeaderProvider<Header = reth::primitives::Header> + Clone + Send + Sync + 'static,
 {
     let (storage, readiness) = handles;
+    // The proof-backed `eth_` override must cover both RPC surfaces: reth's authenticated
+    // module serves its own `eth_getProof`, which is window-limited and unaware of proof
+    // history, so leaving it stock would answer differently from the public endpoint.
     let eth_ext =
         TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone(), readiness.clone());
+    let auth_eth_ext =
+        TaikoEthProofExt::new(ctx.registry.eth_api().clone(), storage.clone(), readiness.clone());
     ctx.modules.add_or_replace_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
+    ctx.auth_module.replace_auth_methods(auth_eth_ext.into_rpc())?;
 
     let debug_ext = TaikoDebugWitnessExt::new(
         ctx.node().provider().clone(),
@@ -171,7 +182,7 @@ where
 /// Spawns periodic metric collection for the proof-history MDBX database.
 fn spawn_proofs_db_metrics(
     executor: TaskExecutor,
-    storage: Arc<MdbxProofsStorage>,
+    storage: Arc<MdbxProofsStorageV2>,
     metrics_report_interval: Duration,
 ) {
     executor.spawn_critical_task("taiko-proofs-storage-metrics", async move {

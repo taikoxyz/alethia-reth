@@ -31,6 +31,8 @@ pub struct ProofHistoryConfig {
     /// Whether empty proof-history storage waits until the finalized retention window starts.
     pub backfill_window_only: bool,
     /// Wall-clock interval between proof-history prune passes.
+    ///
+    /// This must be greater than zero when proof history is enabled.
     pub prune_interval: Duration,
     /// Block interval between proof-history consistency checks; zero disables verification.
     pub verification_interval: u64,
@@ -50,6 +52,14 @@ impl ProofHistoryConfig {
             verification_interval: DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
             max_startup_prune_blocks: DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         }
+    }
+
+    /// Validates invariants required before enabled proof-history tasks are installed.
+    pub fn validate(&self) -> eyre::Result<()> {
+        if self.enabled && self.prune_interval.is_zero() {
+            return Err(eyre!("proof-history prune interval must be greater than zero"))
+        }
+        Ok(())
     }
 
     /// Returns the configured storage path or an error if proof history requires one.
@@ -92,5 +102,19 @@ mod tests {
 
         assert!(config.required_storage_path().is_err());
         assert!(config.backfill_window_only);
+    }
+
+    #[test]
+    fn enabled_config_rejects_zero_prune_interval() {
+        let config = ProofHistoryConfig {
+            enabled: true,
+            storage_path: Some(PathBuf::from("proof-history")),
+            prune_interval: Duration::ZERO,
+            ..ProofHistoryConfig::disabled()
+        };
+
+        let error = config.validate().expect_err("zero would panic Tokio's interval timer");
+
+        assert_eq!(error.to_string(), "proof-history prune interval must be greater than zero");
     }
 }

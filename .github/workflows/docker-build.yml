@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/trace-anchor-replay-v1.3.0]
   release:
     types: [published]
 

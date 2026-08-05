@@ -24,7 +24,7 @@ use revm_database_interface::{Database, DatabaseCommit};
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
-    alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoZkGasEvm},
+    alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoAnchorEvm, TaikoZkGasEvm},
     handler::get_treasury_address,
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
@@ -138,7 +138,19 @@ where
     R: ReceiptBuilder,
 {
     /// Creates a new [`TaikoBlockExecutor`]
-    pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self {
+    pub fn new(
+        mut evm: Evm,
+        ctx: TaikoBlockExecutionCtx<'a>,
+        spec: Spec,
+        receipt_builder: R,
+    ) -> Self
+    where
+        Evm: TaikoAnchorEvm,
+    {
+        // The executor installs the authoritative anchor context through the anchor system
+        // call in `apply_pre_execution_changes`; replay-only derivation must stay off so a
+        // missing initialization keeps failing loudly.
+        evm.set_anchor_ctx_derivation_enabled(false);
         Self {
             evm,
             ctx,

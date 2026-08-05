@@ -158,6 +158,15 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// the EVM's lifetime, mirroring the per-block snapshot the system call takes: a crafted
     /// golden-touch transaction later in the block does not match the snapshot nonce and keeps
     /// consensus semantics (normal balance check).
+    ///
+    /// That protection is per EVM instance. Tracing helpers that create a fresh EVM per
+    /// transaction (`debug_traceBlock*`, and the target EVM of `debug_traceTransaction`)
+    /// re-derive from the already-advanced database nonce, so a deliberately crafted
+    /// golden-touch -> treasury transaction placed after the anchor is still wrongly exempted
+    /// in those traces while consensus charges it fees. Real anchors are unaffected in every
+    /// topology because the anchor system-call marker commits no state. Closing that gap needs
+    /// the block-start nonce carried through the EVM environment; see
+    /// `fresh_replay_evm_still_exempts_crafted_golden_touch_tx_after_anchor`.
     fn maybe_derive_anchor_execution_ctx(&mut self, tx: &TxEnv) -> Result<(), EVMError<DB::Error>> {
         if !self.derive_anchor_ctx || self.base_evm().extra_execution_ctx.is_some() {
             return Ok(());
@@ -809,6 +818,47 @@ mod tests {
         assert!(
             result.state.get(&treasury).is_none_or(|account| account.info.balance.is_zero()),
             "derived context must not route basefee income to the treasury"
+        );
+    }
+
+    #[test]
+    fn fresh_replay_evm_still_exempts_crafted_golden_touch_tx_after_anchor() {
+        // KNOWN LIMITATION, deliberately pinned: reth's tracing helpers create a fresh EVM per
+        // transaction (`debug_traceBlock*`) or for the traced target (`debug_traceTransaction`),
+        // sharing only the database between instances. A fresh EVM created after the real
+        // anchor committed sees the advanced golden-touch nonce and re-derives the anchor
+        // context from it, so a deliberately crafted golden-touch -> treasury transaction
+        // placed later in the block is wrongly exempted here, while consensus executes it as a
+        // fee-paying normal transaction. Real anchors are unaffected in every topology: the
+        // anchor system-call marker commits no state, so a block-start EVM always sees the
+        // pre-anchor nonce.
+        //
+        // Closing this requires the block-start golden-touch nonce (block-position metadata)
+        // to be carried through the EVM environment. When that lands, this test must flip to
+        // assert that the balance check applies to the crafted transaction again.
+        let chain_id = 167_000;
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_id);
+
+        // EVM #1 replays the real anchor (nonce 7) and commits it, advancing the golden-touch
+        // nonce to 8 in the shared database.
+        let mut evm =
+            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
+        let (db, env) = evm.finish();
+
+        // EVM #2 mirrors tracing a later crafted golden-touch -> treasury transaction: a fresh
+        // instance over the same database. The snapshot protection covered by
+        // `derived_anchor_context_only_exempts_the_snapshot_nonce` does not carry over.
+        let mut fresh_evm = TaikoEvmFactory::default().create_evm(db, env);
+        let result = fresh_evm
+            .transact(anchor_tx(treasury, 8))
+            .expect("fresh EVM wrongly exempts the crafted tx (see known limitation above)");
+        assert!(result.result.is_success(), "crafted tx executes: {:?}", result.result);
+        assert_eq!(
+            result.state.get(&golden_touch).expect("golden touch state").info.balance,
+            U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+            "fresh EVM grants the fee exemption; consensus would charge gas fees here"
         );
     }
 

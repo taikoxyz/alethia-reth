@@ -163,30 +163,36 @@ fn reward_beneficiary<CTX: ContextTr>(
         );
 
         // If the transaction is not an anchor transaction, we share the base fee income with the
-        // coinbase and treasury.
+        // coinbase and treasury. Sharing requires the authoritative context installed by the
+        // anchor system call: a context derived for replay-style execution carries no
+        // basefee-share percentage (it comes from block extra data), so redistribution stays
+        // disabled there, matching pre-existing replay behavior.
         if ctx.anchor_caller_address() != tx_caller ||
             ctx.anchor_caller_nonce() != tx_nonce ||
             context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
         {
-            // Total base fee income; guard against underflow if refunded exceeds spent.
-            let spent_minus_refund = gas.total_gas_spent().saturating_sub(gas.refunded() as u64);
-            let total_fee = U256::from(basefee.saturating_mul(spent_minus_refund as u128));
+            if ctx.is_from_anchor_system_call() {
+                // Total base fee income; guard against underflow if refunded exceeds spent.
+                let spent_minus_refund =
+                    gas.total_gas_spent().saturating_sub(gas.refunded() as u64);
+                let total_fee = U256::from(basefee.saturating_mul(spent_minus_refund as u128));
 
-            // Share the base fee income with the coinbase and treasury.
-            let fee_coinbase = total_fee.saturating_mul(U256::from(ctx.base_fee_share_pctg())) /
-                U256::from(100u64);
-            let fee_treasury = total_fee.saturating_sub(fee_coinbase);
+                // Share the base fee income with the coinbase and treasury.
+                let fee_coinbase = total_fee.saturating_mul(U256::from(ctx.base_fee_share_pctg())) /
+                    U256::from(100u64);
+                let fee_treasury = total_fee.saturating_sub(fee_coinbase);
 
-            context.journal_mut().balance_incr(beneficiary, fee_coinbase)?;
+                context.journal_mut().balance_incr(beneficiary, fee_coinbase)?;
 
-            let chain_id = context.cfg().chain_id();
-            context.journal_mut().balance_incr(get_treasury_address(chain_id), fee_treasury)?;
+                let chain_id = context.cfg().chain_id();
+                context.journal_mut().balance_incr(get_treasury_address(chain_id), fee_treasury)?;
 
-            debug!(
-                target: "taiko_evm",
-                "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
-                fee_coinbase, fee_treasury, ctx.base_fee_share_pctg(), block_number
-            );
+                debug!(
+                    target: "taiko_evm",
+                    "Share basefee with coinbase: {} and treasury: {}, share percentage: {} at block: {:?}",
+                    fee_coinbase, fee_treasury, ctx.base_fee_share_pctg(), block_number
+                );
+            }
         } else {
             // If the transaction is an anchor transaction, we do not share the base fee income.
             debug!(

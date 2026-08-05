@@ -67,11 +67,11 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
         anchor_caller_address: Address,
         anchor_caller_nonce: u64,
     ) {
-        self.extra_execution_ctx = Some(TaikoEvmExtraExecutionCtx {
+        self.extra_execution_ctx = Some(TaikoEvmExtraExecutionCtx::new(
             base_fee_share_pctg,
             anchor_caller_address,
             anchor_caller_nonce,
-        });
+        ));
     }
 }
 
@@ -240,16 +240,42 @@ pub struct TaikoEvmExtraExecutionCtx {
     anchor_caller_address: Address,
     /// Anchor caller nonce used to detect anchor transactions.
     anchor_caller_nonce: u64,
+    /// Whether this context was installed by the authoritative anchor system call issued by the
+    /// block executor. A `false` value marks a context derived on the fly for replay-style
+    /// execution (RPC tracing), where the basefee-share percentage from block extra data is
+    /// unknown and basefee sharing must therefore stay disabled.
+    from_anchor_system_call: bool,
 }
 
 impl TaikoEvmExtraExecutionCtx {
-    /// Creates a new instance of [`TaikoEvmExecutionExtraCtx`].
+    /// Creates the authoritative context installed by the anchor system call.
     pub fn new(
         base_fee_share_pctg: u64,
         anchor_caller_address: Address,
         anchor_caller_nonce: u64,
     ) -> Self {
-        Self { base_fee_share_pctg, anchor_caller_address, anchor_caller_nonce }
+        Self {
+            base_fee_share_pctg,
+            anchor_caller_address,
+            anchor_caller_nonce,
+            from_anchor_system_call: true,
+        }
+    }
+
+    /// Creates a context derived from database state for replay-style execution paths that
+    /// never issue the anchor system call (RPC tracing and transaction replay).
+    ///
+    /// The derived context carries the anchor caller identity needed for the anchor
+    /// exemptions, but no basefee-share percentage: that value comes from block extra data,
+    /// which replay paths do not have. [`Self::is_from_anchor_system_call`] returns `false` so
+    /// fee-sharing logic can tell the two apart.
+    pub fn derived(anchor_caller_address: Address, anchor_caller_nonce: u64) -> Self {
+        Self {
+            base_fee_share_pctg: 0,
+            anchor_caller_address,
+            anchor_caller_nonce,
+            from_anchor_system_call: false,
+        }
     }
 
     /// Returns the base fee share percentage.
@@ -268,6 +294,13 @@ impl TaikoEvmExtraExecutionCtx {
     #[inline]
     pub fn anchor_caller_nonce(&self) -> u64 {
         self.anchor_caller_nonce
+    }
+
+    /// Returns whether this context was installed by the authoritative anchor system call
+    /// (as opposed to being derived from database state for replay-style execution).
+    #[inline]
+    pub fn is_from_anchor_system_call(&self) -> bool {
+        self.from_anchor_system_call
     }
 }
 

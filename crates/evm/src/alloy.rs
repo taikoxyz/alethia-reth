@@ -20,7 +20,7 @@ use reth_revm::{
 use tracing::debug;
 
 use crate::{
-    evm::TaikoEvm,
+    evm::{TaikoEvm, TaikoEvmExtraExecutionCtx},
     handler::get_treasury_address,
     spec::TaikoSpecId,
     zk_gas::{
@@ -38,6 +38,11 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     inner: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
+    /// Whether [`Self::maybe_derive_anchor_execution_ctx`] may install a derived anchor
+    /// context for replay-style execution. Enabled by default; the block executor turns it off
+    /// because it installs the authoritative context through the anchor system call, and a
+    /// missing pre-execution initialization must keep failing loudly there.
+    derive_anchor_ctx: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
@@ -46,7 +51,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
         evm: TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>,
         inspect: bool,
     ) -> Self {
-        Self { inner: evm, inspect }
+        Self { inner: evm, inspect, derive_anchor_ctx: true }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -82,6 +87,69 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
         } else {
             self.inner.inner.inspector.meter_mut()
         }
+    }
+
+    /// Derives and installs the anchor execution context from database state when no
+    /// authoritative context is present and the incoming transaction is anchor-shaped
+    /// (golden touch calling the network treasury).
+    ///
+    /// Block execution installs the context through the anchor system call before any
+    /// transaction runs, so this only fires on replay-style paths (`debug_trace*`, `trace_*`
+    /// and the `eth_call` family) that execute block transactions without the block executor.
+    /// Without a context those paths fail the anchor's balance check, which is what made every
+    /// trace of a real block error with `insufficient funds`.
+    ///
+    /// The golden-touch nonce is snapshotted on first derivation and the context is kept for
+    /// the EVM's lifetime, mirroring the per-block snapshot the system call takes: a crafted
+    /// golden-touch transaction later in the block does not match the snapshot nonce and keeps
+    /// consensus semantics (normal balance check).
+    ///
+    /// That protection is per EVM instance. Tracing helpers that create a fresh EVM per
+    /// transaction (`debug_traceBlock*`, and the target EVM of `debug_traceTransaction`)
+    /// re-derive from the already-advanced database nonce, so a deliberately crafted
+    /// golden-touch -> treasury transaction placed after the anchor is still wrongly exempted
+    /// in those traces while consensus charges it fees. Real anchors are unaffected in every
+    /// topology because the anchor system-call marker commits no state. Closing that gap needs
+    /// the block-start nonce carried through the EVM environment; see
+    /// `fresh_replay_evm_still_exempts_crafted_golden_touch_tx_after_anchor`.
+    fn maybe_derive_anchor_execution_ctx(&mut self, tx: &TxEnv) -> Result<(), EVMError<DB::Error>> {
+        if !self.derive_anchor_ctx || self.inner.extra_execution_ctx.is_some() {
+            return Ok(());
+        }
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        if tx.caller != golden_touch ||
+            tx.kind != TxKind::Call(get_treasury_address(self.ctx().cfg.chain_id))
+        {
+            return Ok(());
+        }
+        let nonce = self
+            .ctx_mut()
+            .journaled_state
+            .database
+            .basic(golden_touch)
+            .map_err(EVMError::Database)?
+            .map_or(0, |account| account.nonce);
+        self.inner.extra_execution_ctx =
+            Some(TaikoEvmExtraExecutionCtx::derived(golden_touch, nonce));
+        Ok(())
+    }
+}
+
+/// EVM extension trait controlling the replay-only anchor context derivation.
+pub trait TaikoAnchorEvm {
+    /// Enables or disables on-the-fly anchor context derivation for replay-style execution.
+    ///
+    /// The block executor disables it before executing a block: it installs the authoritative
+    /// context through the anchor system call, and executing an anchor without that
+    /// initialization must keep failing loudly rather than silently falling back to derived
+    /// replay semantics.
+    fn set_anchor_ctx_derivation_enabled(&mut self, enabled: bool);
+}
+
+impl<DB: Database, I, P> TaikoAnchorEvm for TaikoEvmWrapper<DB, I, P> {
+    /// Enables or disables on-the-fly anchor context derivation for replay-style execution.
+    fn set_anchor_ctx_derivation_enabled(&mut self, enabled: bool) {
+        self.derive_anchor_ctx = enabled;
     }
 }
 
@@ -228,6 +296,7 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        self.maybe_derive_anchor_execution_ctx(&tx)?;
         if self.inspect { self.inner.inspect_tx(tx) } else { self.inner.transact(tx) }
     }
 
@@ -407,7 +476,11 @@ pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
 mod tests {
     use alloy_evm::{Evm, EvmEnv, EvmFactory};
     use alloy_primitives::U256;
-    use reth_revm::{context::ContextTr, db::InMemoryDB, state::AccountInfo};
+    use reth_revm::{
+        context::{ContextTr, result::InvalidTransaction},
+        db::InMemoryDB,
+        state::AccountInfo,
+    };
 
     use super::*;
     use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
@@ -469,6 +542,213 @@ mod tests {
         assert!(
             treasury_account.is_cold_transaction_id(next_tx_id),
             "treasury must be cold again for the first real transaction"
+        );
+    }
+
+    /// Golden-touch dust balance observed on mainnet: non-zero, but far below the anchor's
+    /// upfront cost of `gas_limit * gas_price` (`1_000_000 * 10_000_000 = 1e13` wei).
+    const GOLDEN_TOUCH_DUST_BALANCE: u64 = 316_794_861_226;
+
+    /// Basefee used by the replay tests, matching the anchor's gas price (wei).
+    const REPLAY_BASEFEE: u64 = 10_000_000;
+
+    /// Builds an [`EvmEnv`] the way RPC replay paths do: block context only, no anchor
+    /// system call ever happens on the resulting EVM.
+    fn replay_env(chain_id: u64) -> EvmEnv<TaikoSpecId> {
+        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        env.cfg_env.chain_id = chain_id;
+        env.block_env.basefee = REPLAY_BASEFEE;
+        env.block_env.gas_limit = 30_000_000;
+        env
+    }
+
+    /// Builds an anchor-shaped transaction: golden touch calling the treasury at the given
+    /// nonce, paying exactly the basefee.
+    fn anchor_tx(treasury: Address, nonce: u64) -> TxEnv {
+        TxEnv::builder()
+            .caller(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
+            .kind(TxKind::Call(treasury))
+            .nonce(nonce)
+            .gas_limit(1_000_000)
+            .gas_price(u128::from(REPLAY_BASEFEE))
+            .chain_id(None)
+            .build()
+            .expect("valid anchor tx env")
+    }
+
+    /// Builds a plain funded-user transfer paying exactly the basefee.
+    fn user_tx(caller: Address, nonce: u64) -> TxEnv {
+        TxEnv::builder()
+            .caller(caller)
+            .kind(TxKind::Call(Address::with_last_byte(0xB0)))
+            .nonce(nonce)
+            .gas_limit(21_000)
+            .gas_price(u128::from(REPLAY_BASEFEE))
+            .chain_id(None)
+            .build()
+            .expect("valid user tx env")
+    }
+
+    /// Seeds a database with the golden-touch account at the given nonce plus an empty
+    /// treasury account, mirroring on-chain pre-block state.
+    fn replay_db(golden_touch_nonce: u64, treasury: Address) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
+            AccountInfo {
+                nonce: golden_touch_nonce,
+                balance: U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+                ..Default::default()
+            },
+        );
+        db.insert_account_info(treasury, AccountInfo::default());
+        db
+    }
+
+    #[test]
+    fn replayed_anchor_transaction_executes_without_prior_system_call() {
+        // RPC trace/replay paths (`debug_trace*`, `trace_*`) create the EVM straight from the
+        // factory and never issue the anchor system call, so the anchor exemption must be
+        // derivable from the transaction itself plus database state.
+        let chain_id = 167_000;
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_id);
+
+        let mut evm =
+            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+
+        let result = evm
+            .transact(anchor_tx(treasury, 7))
+            .expect("anchor must execute during replay without a prior anchor system call");
+        assert!(result.result.is_success(), "anchor replay must succeed: {:?}", result.result);
+
+        let golden_touch_state =
+            result.state.get(&golden_touch).expect("golden touch must appear in the state");
+        assert_eq!(
+            golden_touch_state.info.balance,
+            U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+            "anchor must not pay fees during replay"
+        );
+        assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the golden touch nonce");
+    }
+
+    #[test]
+    fn derived_anchor_context_only_exempts_the_snapshot_nonce() {
+        // The derived context snapshots the golden-touch nonce before the anchor runs. A
+        // crafted golden-touch -> treasury transaction later in the same block is a normal
+        // transaction under consensus, so the replay must apply the balance check to it.
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+
+        let mut evm =
+            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
+
+        let err = evm
+            .transact(anchor_tx(treasury, 8))
+            .expect_err("a follow-up golden-touch tx must not inherit the anchor exemption");
+        assert!(
+            matches!(err, EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })),
+            "expected a balance-check failure, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn derived_anchor_context_does_not_apply_base_fee_sharing() {
+        // The basefee-share percentage comes from block extra data, which only the
+        // authoritative anchor system call knows. A derived replay context must keep the
+        // pre-existing replay behavior of not redistributing basefee income.
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+        let alice = Address::with_last_byte(0xA1);
+
+        let mut db = replay_db(7, treasury);
+        db.insert_account_info(
+            alice,
+            AccountInfo { balance: U256::from(10).pow(U256::from(18)), ..Default::default() },
+        );
+        let mut evm = TaikoEvmFactory::default().create_evm(db, replay_env(chain_id));
+
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
+
+        let result = evm.transact(user_tx(alice, 0)).expect("funded user tx must execute");
+        assert!(result.result.is_success(), "user tx must succeed: {:?}", result.result);
+        assert!(
+            result.state.get(&treasury).is_none_or(|account| account.info.balance.is_zero()),
+            "derived context must not route basefee income to the treasury"
+        );
+    }
+
+    #[test]
+    fn fresh_replay_evm_still_exempts_crafted_golden_touch_tx_after_anchor() {
+        // KNOWN LIMITATION, deliberately pinned: reth's tracing helpers create a fresh EVM per
+        // transaction (`debug_traceBlock*`) or for the traced target (`debug_traceTransaction`),
+        // sharing only the database between instances. A fresh EVM created after the real
+        // anchor committed sees the advanced golden-touch nonce and re-derives the anchor
+        // context from it, so a deliberately crafted golden-touch -> treasury transaction
+        // placed later in the block is wrongly exempted here, while consensus executes it as a
+        // fee-paying normal transaction. Real anchors are unaffected in every topology: the
+        // anchor system-call marker commits no state, so a block-start EVM always sees the
+        // pre-anchor nonce.
+        //
+        // Closing this requires the block-start golden-touch nonce (block-position metadata)
+        // to be carried through the EVM environment. When that lands, this test must flip to
+        // assert that the balance check applies to the crafted transaction again.
+        let chain_id = 167_000;
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_id);
+
+        // EVM #1 replays the real anchor (nonce 7) and commits it, advancing the golden-touch
+        // nonce to 8 in the shared database.
+        let mut evm =
+            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
+        let (db, env) = evm.finish();
+
+        // EVM #2 mirrors tracing a later crafted golden-touch -> treasury transaction: a fresh
+        // instance over the same database. The snapshot protection covered by
+        // `derived_anchor_context_only_exempts_the_snapshot_nonce` does not carry over.
+        let mut fresh_evm = TaikoEvmFactory::default().create_evm(db, env);
+        let result = fresh_evm
+            .transact(anchor_tx(treasury, 8))
+            .expect("fresh EVM wrongly exempts the crafted tx (see known limitation above)");
+        assert!(result.result.is_success(), "crafted tx executes: {:?}", result.result);
+        assert_eq!(
+            result.state.get(&golden_touch).expect("golden touch state").info.balance,
+            U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+            "fresh EVM grants the fee exemption; consensus would charge gas fees here"
+        );
+    }
+
+    #[test]
+    fn system_call_context_shares_base_fee_for_regular_transactions() {
+        // The authoritative context installed by the anchor system call must keep sharing
+        // basefee income between coinbase and treasury for non-anchor transactions.
+        let chain_id = 167_000;
+        let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_id);
+        let alice = Address::with_last_byte(0xA1);
+
+        let mut db = replay_db(7, treasury);
+        db.insert_account_info(
+            alice,
+            AccountInfo { balance: U256::from(10).pow(U256::from(18)), ..Default::default() },
+        );
+        let mut evm = TaikoEvmFactory::default().create_evm(db, replay_env(chain_id));
+
+        evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
+            .expect("anchor system call must succeed");
+
+        let result = evm.transact(user_tx(alice, 0)).expect("funded user tx must execute");
+        assert!(result.result.is_success(), "user tx must succeed: {:?}", result.result);
+
+        let base_fee_income = U256::from(21_000u64) * U256::from(REPLAY_BASEFEE);
+        let coinbase_share = base_fee_income * U256::from(25u64) / U256::from(100u64);
+        assert_eq!(
+            result.state.get(&treasury).expect("treasury must be rewarded").info.balance,
+            base_fee_income - coinbase_share,
+            "treasury must receive the non-coinbase share of the basefee income"
         );
     }
 }

@@ -391,6 +391,20 @@ mod tests {
     }
 
     #[test]
+    fn pruner_lagging_persisted_finality_clamps_to_the_block_before_latest() {
+        let fixture = PruneFixture::new(40);
+        fixture.persist_finalized(60);
+
+        let outcome = fixture.pruner(10).run_once().expect("lagging prune succeeds");
+
+        assert_eq!(
+            outcome,
+            FinalityPruneOutcome::Pruned { from: fixture.blocks[0], to: fixture.blocks[39] }
+        );
+        assert_eq!(fixture.earliest(), fixture.blocks[39]);
+    }
+
+    #[test]
     fn noncanonical_earliest_aborts_without_commit() {
         let fixture = PruneFixture::new(80);
         let before = fixture.earliest();

@@ -88,7 +88,10 @@ pub struct TaikoProofHistoryArgs {
     )]
     pub storage_path: Option<PathBuf>,
 
-    /// Number of recent blocks retained in proof-history storage.
+    /// Number of finalized blocks retained in proof-history storage behind the persisted
+    /// finalized head. Pruning always keeps the stored head and at least the block below it, so
+    /// once persisted finality passes the stored head a zero window retains only those two
+    /// blocks.
     #[arg(
         long = "proofs-history.window",
         value_name = "BLOCKS",

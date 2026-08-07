@@ -799,6 +799,94 @@ fn canonical_update_persisted(
     canonical_target_hash == Some(barrier.target.hash)
 }
 
+/// Composes an installed-engine reconciliation snapshot from one persisted canonical database
+/// snapshot and the live chain view of the same provider.
+///
+/// The live-view currency check is load-bearing for pure reverts: the routed ancestor's hash
+/// already sits at the target height in the persisted database before the unwind persists, so
+/// only a persisted best still above the live best keeps the barrier gated until the removed
+/// suffix leaves the database.
+fn installed_reconciliation_snapshot<Provider>(
+    provider: &Provider,
+    proof_window: Option<ProofWindowRange>,
+    barrier: CanonicalUpdateBarrier,
+    storage_path: &Path,
+) -> eyre::Result<InstalledReconciliation>
+where
+    Provider: DatabaseProviderFactory + BlockNumReader,
+    Provider::Provider: BlockNumReader + HeaderProvider,
+{
+    let Some(proof_window) = proof_window else {
+        return Ok(InstalledReconciliation {
+            action: ProofHistoryStartupAction::Uninitialized,
+            update_persisted: false,
+            canonical_update_persisted: false,
+            proof_latest: BlockNumHash::new(0, B256::ZERO),
+            canonical_best: 0,
+            proof_latest_current: false,
+        });
+    };
+
+    let canonical = provider.database_provider_ro()?;
+    let snapshot = proof_history_canonical_snapshot(&canonical, proof_window, storage_path)?;
+    let canonical_best_hash = canonical
+        .sealed_header(snapshot.canonical_best)?
+        .ok_or_else(|| {
+            eyre!(
+                "canonical database snapshot has no header for its best block {}",
+                snapshot.canonical_best
+            )
+        })?
+        .hash();
+    let canonical_target_hash = if barrier.target.number <= snapshot.canonical_best {
+        Some(
+            canonical
+                .sealed_header(barrier.target.number)?
+                .ok_or_else(|| {
+                    eyre!(
+                        "canonical database snapshot has no header for routed proof-history target block {} at or below canonical best {}",
+                        barrier.target.number,
+                        snapshot.canonical_best,
+                    )
+                })?
+                .hash(),
+        )
+    } else {
+        None
+    };
+    drop(canonical);
+
+    let live_info = provider.chain_info()?;
+    let canonical_snapshot_current = snapshot.canonical_best <= live_info.best_number &&
+        provider.block_hash(snapshot.canonical_best)? == Some(canonical_best_hash);
+    let proof_latest_current = proof_window.latest.number <= live_info.best_number &&
+        provider.block_hash(proof_window.latest.number)? == Some(proof_window.latest.hash);
+
+    let action = proof_history_startup_action(
+        Some(proof_window),
+        snapshot.canonical_best,
+        snapshot.canonical_earliest_hash,
+        snapshot.canonical_latest_hash,
+        snapshot.first_removed,
+        storage_path,
+    )?;
+    let canonical_update_persisted =
+        canonical_snapshot_current && canonical_update_persisted(canonical_target_hash, barrier);
+    Ok(InstalledReconciliation {
+        action,
+        update_persisted: canonical_update_barrier_persisted(
+            proof_window.latest,
+            canonical_target_hash,
+            canonical_snapshot_current,
+            barrier,
+        ),
+        canonical_update_persisted,
+        proof_latest: proof_window.latest,
+        canonical_best: snapshot.canonical_best,
+        proof_latest_current,
+    })
+}
+
 /// Whether routing one notification requires a persisted-state reconciliation pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NotificationHandlingOutcome {
@@ -2136,80 +2224,12 @@ where
         let storage_path = self.config.required_storage_path()?;
         let provider_ro = self.storage.provider_ro()?;
         let proof_window = match provider_ro.get_proof_window() {
-            Ok(range) => range,
-            Err(OpProofsStorageError::NoBlocksFound) => {
-                return Ok(InstalledReconciliation {
-                    action: ProofHistoryStartupAction::Uninitialized,
-                    update_persisted: false,
-                    canonical_update_persisted: false,
-                    proof_latest: BlockNumHash::new(0, B256::ZERO),
-                    canonical_best: 0,
-                    proof_latest_current: false,
-                });
-            }
+            Ok(range) => Some(range),
+            Err(OpProofsStorageError::NoBlocksFound) => None,
             Err(error) => return Err(error.into()),
         };
         drop(provider_ro);
-
-        let canonical = self.provider.database_provider_ro()?;
-        let snapshot = proof_history_canonical_snapshot(&canonical, proof_window, storage_path)?;
-        let canonical_best_hash = canonical
-            .sealed_header(snapshot.canonical_best)?
-            .ok_or_else(|| {
-                eyre!(
-                    "canonical database snapshot has no header for its best block {}",
-                    snapshot.canonical_best
-                )
-            })?
-            .hash();
-        let canonical_target_hash = if barrier.target.number <= snapshot.canonical_best {
-            Some(
-                canonical
-                    .sealed_header(barrier.target.number)?
-                    .ok_or_else(|| {
-                        eyre!(
-                            "canonical database snapshot has no header for routed proof-history target block {} at or below canonical best {}",
-                            barrier.target.number,
-                            snapshot.canonical_best,
-                        )
-                    })?
-                    .hash(),
-            )
-        } else {
-            None
-        };
-        drop(canonical);
-
-        let live_info = self.provider.chain_info()?;
-        let canonical_snapshot_current = snapshot.canonical_best <= live_info.best_number &&
-            self.provider.block_hash(snapshot.canonical_best)? == Some(canonical_best_hash);
-        let proof_latest_current = proof_window.latest.number <= live_info.best_number &&
-            self.provider.block_hash(proof_window.latest.number)? ==
-                Some(proof_window.latest.hash);
-
-        let action = proof_history_startup_action(
-            Some(proof_window),
-            snapshot.canonical_best,
-            snapshot.canonical_earliest_hash,
-            snapshot.canonical_latest_hash,
-            snapshot.first_removed,
-            storage_path,
-        )?;
-        let canonical_update_persisted = canonical_snapshot_current &&
-            canonical_update_persisted(canonical_target_hash, barrier);
-        Ok(InstalledReconciliation {
-            action,
-            update_persisted: canonical_update_barrier_persisted(
-                proof_window.latest,
-                canonical_target_hash,
-                canonical_snapshot_current,
-                barrier,
-            ),
-            canonical_update_persisted,
-            proof_latest: proof_window.latest,
-            canonical_best: snapshot.canonical_best,
-            proof_latest_current,
-        })
+        installed_reconciliation_snapshot(&self.provider, proof_window, barrier, storage_path)
     }
 
     /// Reads the executed head from a fresh persisted main-database snapshot.
@@ -2560,8 +2580,9 @@ mod tests {
         PendingReconciliationProgress, PendingSyncProgress, ProofHistoryCanonicalSnapshot,
         ProofHistoryLiveAction, ProofHistoryStartupAction, ReconciliationOutcome,
         ReconciliationState, ReorgRoutingSnapshot, canonical_update_barrier_persisted,
-        committed_chain_is_contiguous, ensure_canonical_update_above_earliest,
-        install_engine_generation, pending_commit_routing, pending_reconciliation_progress,
+        canonical_update_persisted, committed_chain_is_contiguous,
+        ensure_canonical_update_above_earliest, install_engine_generation,
+        installed_reconciliation_snapshot, pending_commit_routing, pending_reconciliation_progress,
         pending_reorg_barrier, prepare_notification_readiness, proof_history_live_action,
         proof_history_startup_action, proof_history_startup_reconciliation,
         read_notification_routing_snapshot, reconcile_installed_engine,
@@ -2575,7 +2596,8 @@ mod tests {
     use alloy_consensus::{BlockHeader, Header};
     use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
     use alloy_primitives::{B256, U256};
-    use reth::providers::BlockWriter;
+    use reth::providers::{BlockHashReader, BlockNumReader, BlockWriter, DatabaseProviderFactory};
+    use reth_chainspec::ChainInfo;
     use reth_db::Database;
     use reth_db_common::init::init_genesis;
     use reth_ethereum_primitives::{Block, BlockBody, EthPrimitives};
@@ -2587,7 +2609,7 @@ mod tests {
     };
     use reth_primitives_traits::{Block as _, RecoveredBlock};
     use reth_provider::{
-        CanonStateNotification, ProviderFactory,
+        CanonStateNotification, ProviderFactory, ProviderResult,
         test_utils::{MockNodeTypesWithDB, create_test_provider_factory},
     };
     use reth_storage_api::StorageSettingsCache;
@@ -2900,6 +2922,92 @@ mod tests {
             proof_rw.commit().expect("synthetic proof suffix commits");
 
             Self { factory, storage, canonical, proof_path }
+        }
+    }
+
+    /// Builds a persisted canonical chain of deterministic empty blocks through `latest`.
+    fn persisted_canonical_chain(
+        latest: u64,
+    ) -> (ProviderFactory<MockNodeTypesWithDB>, Vec<BlockNumHash>) {
+        let factory = create_test_provider_factory();
+        let genesis_hash = init_genesis(&factory).expect("genesis initializes");
+        let mut canonical = vec![BlockNumHash::new(0, genesis_hash)];
+        let provider = factory.provider_rw().expect("canonical writer opens");
+        for number in 1..=latest {
+            let parent_hash = canonical.last().expect("canonical parent exists").hash;
+            let block = RecoveredBlock::new_unhashed(
+                Block {
+                    header: Header {
+                        parent_hash,
+                        number,
+                        timestamp: number,
+                        difficulty: U256::from(number),
+                        ..Default::default()
+                    },
+                    body: BlockBody::default(),
+                },
+                Vec::new(),
+            );
+            provider.insert_block(&block).expect("canonical block inserts");
+            canonical.push(BlockNumHash::new(number, block.hash()));
+        }
+        provider.commit().expect("canonical blocks commit");
+        (factory, canonical)
+    }
+
+    /// Provider whose persisted database and live chain views diverge, as the production
+    /// blockchain provider does between a routed in-memory revert and its persisted unwind.
+    struct SplitViewProvider {
+        /// Persisted canonical database, possibly still holding a removed suffix.
+        persisted: ProviderFactory<MockNodeTypesWithDB>,
+        /// Live canonical chain indexed by block number.
+        live: Vec<BlockNumHash>,
+    }
+
+    impl BlockHashReader for SplitViewProvider {
+        fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
+            Ok(self.live.get(number as usize).map(|block| block.hash))
+        }
+
+        fn canonical_hashes_range(&self, start: u64, end: u64) -> ProviderResult<Vec<B256>> {
+            Ok((start..end)
+                .filter_map(|number| self.live.get(number as usize))
+                .map(|block| block.hash)
+                .collect())
+        }
+    }
+
+    impl BlockNumReader for SplitViewProvider {
+        fn chain_info(&self) -> ProviderResult<ChainInfo> {
+            let best = self.live.last().expect("live chain is never empty");
+            Ok(ChainInfo { best_hash: best.hash, best_number: best.number })
+        }
+
+        fn best_block_number(&self) -> ProviderResult<u64> {
+            Ok(self.live.last().expect("live chain is never empty").number)
+        }
+
+        fn last_block_number(&self) -> ProviderResult<u64> {
+            self.persisted.last_block_number()
+        }
+
+        fn block_number(&self, hash: B256) -> ProviderResult<Option<u64>> {
+            Ok(self.live.iter().find(|block| block.hash == hash).map(|block| block.number))
+        }
+    }
+
+    impl DatabaseProviderFactory for SplitViewProvider {
+        type DB = <ProviderFactory<MockNodeTypesWithDB> as DatabaseProviderFactory>::DB;
+        type Provider = <ProviderFactory<MockNodeTypesWithDB> as DatabaseProviderFactory>::Provider;
+        type ProviderRW =
+            <ProviderFactory<MockNodeTypesWithDB> as DatabaseProviderFactory>::ProviderRW;
+
+        fn database_provider_ro(&self) -> ProviderResult<Self::Provider> {
+            self.persisted.database_provider_ro()
+        }
+
+        fn database_provider_rw(&self) -> ProviderResult<Self::ProviderRW> {
+            self.persisted.database_provider_rw()
         }
     }
 
@@ -4182,6 +4290,50 @@ mod tests {
             true,
             revert_barrier,
         ));
+    }
+
+    #[test]
+    fn pure_revert_reconciliation_stays_gated_until_the_unwind_is_persisted() {
+        let (persisted, canonical) = persisted_canonical_chain(40);
+        let barrier =
+            CanonicalUpdateBarrier { target: canonical[30], first_removed: Some(canonical[31]) };
+        assert!(barrier.is_pure_revert());
+        let proof_window = ProofWindowRange { earliest: canonical[0], latest: canonical[40] };
+
+        // Mid-revert: the live chain rebased onto block 30 while blocks 31..=40 are still
+        // persisted. The bare target predicate already passes against the persisted header at
+        // the target height, so only the live-view currency check keeps the barrier gated.
+        let provider = SplitViewProvider { persisted, live: canonical[..=30].to_vec() };
+        let reconciliation = installed_reconciliation_snapshot(
+            &provider,
+            Some(proof_window),
+            barrier,
+            storage_path(),
+        )
+        .expect("mid-revert reconciliation snapshot resolves");
+
+        assert!(canonical_update_persisted(Some(canonical[30].hash), barrier));
+        assert_eq!(reconciliation.action, ProofHistoryStartupAction::Ready);
+        assert_eq!(reconciliation.canonical_best, 40);
+        assert!(!reconciliation.canonical_update_persisted);
+        assert!(!reconciliation.update_persisted);
+        assert!(!reconciliation.proof_latest_current);
+
+        // Once the unwind persists, the same live chain over a database without the removed
+        // suffix crosses the barrier.
+        let (persisted, unwound) = persisted_canonical_chain(30);
+        assert_eq!(unwound[30], canonical[30]);
+        let provider = SplitViewProvider { persisted, live: unwound };
+        let reconciliation = installed_reconciliation_snapshot(
+            &provider,
+            Some(proof_window),
+            barrier,
+            storage_path(),
+        )
+        .expect("post-unwind reconciliation snapshot resolves");
+
+        assert!(reconciliation.canonical_update_persisted);
+        assert_eq!(reconciliation.canonical_best, 30);
     }
 
     #[test]

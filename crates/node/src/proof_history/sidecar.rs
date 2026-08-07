@@ -779,48 +779,24 @@ struct InstalledReconciliation {
 /// Returns whether proof storage and persisted canonical state both crossed a routed update.
 fn canonical_update_barrier_persisted(
     proof_latest: BlockNumHash,
-    canonical_best: u64,
-    canonical_first_removed_hash: Option<B256>,
     canonical_target_hash: Option<B256>,
     canonical_snapshot_current: bool,
     barrier: CanonicalUpdateBarrier,
-    action: ProofHistoryStartupAction,
 ) -> bool {
     let proof_reached_exact_target = proof_latest.number > barrier.target.number ||
         (proof_latest.number == barrier.target.number &&
             proof_latest.hash == barrier.target.hash);
-    // A later reorg may supersede the routed target with a shorter branch. `Ready` and equality
-    // with the persisted head prove the endpoint is canonical, while the replacement-start bound
-    // rejects a transient common ancestor observed during the main-database unwind.
-    let proof_reached_canonical_successor = action == ProofHistoryStartupAction::Ready &&
-        proof_latest.number == canonical_best &&
-        barrier
-            .first_removed
-            .is_none_or(|first_removed| proof_latest.number >= first_removed.number);
     canonical_snapshot_current &&
-        (proof_reached_exact_target || proof_reached_canonical_successor) &&
-        canonical_update_persisted(
-            canonical_best,
-            canonical_first_removed_hash,
-            canonical_target_hash,
-            barrier,
-        )
+        proof_reached_exact_target &&
+        canonical_update_persisted(canonical_target_hash, barrier)
 }
 
 /// Returns whether the persisted canonical database crossed the routed or recovered target.
 fn canonical_update_persisted(
-    canonical_best: u64,
-    canonical_first_removed_hash: Option<B256>,
     canonical_target_hash: Option<B256>,
     barrier: CanonicalUpdateBarrier,
 ) -> bool {
-    match barrier.first_removed {
-        Some(first_removed) if canonical_best < first_removed.number => {
-            barrier.target.number < first_removed.number && canonical_best == barrier.target.number
-        }
-        Some(first_removed) => canonical_first_removed_hash != Some(first_removed.hash),
-        None => canonical_target_hash == Some(barrier.target.hash),
-    }
+    canonical_target_hash == Some(barrier.target.hash)
 }
 
 /// Whether routing one notification requires a persisted-state reconciliation pass.
@@ -2186,23 +2162,6 @@ where
                 )
             })?
             .hash();
-        let canonical_first_removed_hash = match barrier.first_removed {
-            Some(first_removed) if first_removed.number <= snapshot.canonical_best => {
-                Some(
-                    canonical
-                        .sealed_header(first_removed.number)?
-                        .ok_or_else(|| {
-                            eyre!(
-                                "canonical database snapshot has no header for routed proof-history old-fork block {} at or below canonical best {}",
-                                first_removed.number,
-                                snapshot.canonical_best,
-                            )
-                        })?
-                        .hash(),
-                )
-            }
-            _ => None,
-        };
         let canonical_target_hash = if barrier.target.number <= snapshot.canonical_best {
             Some(
                 canonical
@@ -2237,22 +2196,14 @@ where
             storage_path,
         )?;
         let canonical_update_persisted = canonical_snapshot_current &&
-            canonical_update_persisted(
-                snapshot.canonical_best,
-                canonical_first_removed_hash,
-                canonical_target_hash,
-                barrier,
-            );
+            canonical_update_persisted(canonical_target_hash, barrier);
         Ok(InstalledReconciliation {
             action,
             update_persisted: canonical_update_barrier_persisted(
                 proof_window.latest,
-                snapshot.canonical_best,
-                canonical_first_removed_hash,
                 canonical_target_hash,
                 canonical_snapshot_current,
                 barrier,
-                action,
             ),
             canonical_update_persisted,
             proof_latest: proof_window.latest,
@@ -4180,15 +4131,8 @@ mod tests {
         let readiness = ready_flag();
         readiness.set_not_ready();
 
-        let update_persisted = canonical_update_barrier_persisted(
-            common_ancestor,
-            common_ancestor.number,
-            Some(first_removed.hash),
-            None,
-            true,
-            barrier,
-            ProofHistoryStartupAction::Ready,
-        );
+        let update_persisted =
+            canonical_update_barrier_persisted(common_ancestor, None, true, barrier);
         assert!(!update_persisted);
         let first = installed_reconciliation_fixture(
             ProofHistoryStartupAction::Ready,
@@ -4214,45 +4158,29 @@ mod tests {
     }
 
     #[test]
-    fn shorter_successor_passes_only_above_the_original_replacement_start() {
+    fn partial_reorg_prefix_stays_gated_below_the_original_target() {
         let barrier = CanonicalUpdateBarrier {
             target: BlockNumHash::new(110, hash(0x6e)),
             first_removed: Some(BlockNumHash::new(105, hash(0x69))),
         };
-        let successor = BlockNumHash::new(108, hash(0x7c));
-        assert!(canonical_update_barrier_persisted(
-            successor,
-            successor.number,
-            Some(hash(0x7a)),
-            None,
-            true,
-            barrier,
-            ProofHistoryStartupAction::Ready,
-        ));
+        let partial_prefix = BlockNumHash::new(108, hash(0x7c));
 
-        let transient_ancestor = BlockNumHash::new(104, hash(0x68));
-        assert!(!canonical_update_barrier_persisted(
-            transient_ancestor,
-            transient_ancestor.number,
-            Some(hash(0x7a)),
-            None,
-            true,
-            barrier,
-            ProofHistoryStartupAction::Ready,
-        ));
+        assert!(!canonical_update_barrier_persisted(partial_prefix, None, true, barrier));
+    }
 
+    #[test]
+    fn exact_revert_target_passes_the_persistence_barrier() {
+        let target = BlockNumHash::new(104, hash(0x68));
         let revert_barrier = CanonicalUpdateBarrier {
-            target: transient_ancestor,
+            target,
             first_removed: Some(BlockNumHash::new(105, hash(0x7b))),
         };
+
         assert!(canonical_update_barrier_persisted(
-            transient_ancestor,
-            transient_ancestor.number,
-            None,
-            Some(transient_ancestor.hash),
+            target,
+            Some(target.hash),
             true,
             revert_barrier,
-            ProofHistoryStartupAction::Ready,
         ));
     }
 
@@ -4508,13 +4436,10 @@ mod tests {
             assert!(matches!(state, ReconciliationState::Pending { .. }));
         }
         assert!(canonical_update_barrier_persisted(
-            BlockNumHash::new(reorg_barrier.target.number, hash(0x7e)),
-            reorg_barrier.target.number,
-            Some(hash(0x7a)),
-            Some(hash(0x7e)),
+            reorg_barrier.target,
+            Some(reorg_barrier.target.hash),
             true,
             reorg_barrier,
-            ProofHistoryStartupAction::Ready,
         ));
         assert_eq!(
             pending_reconciliation_progress(waiting_for_canonical, None),

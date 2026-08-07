@@ -185,8 +185,9 @@ where
         return Ok(FinalityPruneOutcome::CanonicalMismatch);
     }
 
-    let desired = finalized.saturating_sub(window);
-    if desired <= proof_window.earliest.number || desired >= proof_window.latest.number {
+    let desired =
+        finalized.saturating_sub(window).min(proof_window.latest.number.saturating_sub(1));
+    if desired <= proof_window.earliest.number {
         return Ok(FinalityPruneOutcome::UpToDate);
     }
 
@@ -376,15 +377,17 @@ mod tests {
     }
 
     #[test]
-    fn prune_does_not_reach_or_cross_latest() {
+    fn zero_window_prunes_to_the_block_before_latest() {
         let fixture = PruneFixture::new(40);
-        fixture.persist_finalized(60);
-        let before = fixture.earliest();
+        fixture.persist_finalized(40);
 
-        let outcome = fixture.pruner(0).run_once().expect("unsafe target is a no-op");
+        let outcome = fixture.pruner(0).run_once().expect("zero-window prune succeeds");
 
-        assert_eq!(outcome, FinalityPruneOutcome::UpToDate);
-        assert_eq!(fixture.earliest(), before);
+        assert_eq!(
+            outcome,
+            FinalityPruneOutcome::Pruned { from: fixture.blocks[0], to: fixture.blocks[39] }
+        );
+        assert_eq!(fixture.earliest(), fixture.blocks[39]);
     }
 
     #[test]

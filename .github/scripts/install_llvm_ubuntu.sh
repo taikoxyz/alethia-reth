@@ -39,7 +39,7 @@ for attempt in $(seq "$attempts"); do
 done
 # Pin the upstream installer so CI and Docker builds fail loudly when it changes; review the new
 # script before updating this hash.
-echo "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36  $llvm_installer" | sha256sum -c -
+echo "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae  $llvm_installer" | sha256sum -c -
 chmod +x "$llvm_installer"
 "$llvm_installer" "$version" all
 rm -f "$llvm_installer"

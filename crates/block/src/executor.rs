@@ -145,12 +145,16 @@ where
         receipt_builder: R,
     ) -> Self
     where
-        Evm: TaikoAnchorEvm,
+        Evm: TaikoAnchorEvm + TaikoZkGasEvm,
     {
         // The executor installs the authoritative anchor context through the anchor system
         // call in `apply_pre_execution_changes`; replay-only derivation must stay off so a
         // missing initialization keeps failing loudly.
         evm.set_anchor_ctx_derivation_enabled(false);
+        // The executor owns the per-transaction zk gas bracket (reset, intrinsic charge,
+        // commit) in `execute_transaction_without_commit`; the wrapper's per-transact entry
+        // reset must stay off or it would wipe the intrinsic charged before `transact` runs.
+        evm.set_per_transact_zk_gas_reset_enabled(false);
         Self {
             evm,
             ctx,

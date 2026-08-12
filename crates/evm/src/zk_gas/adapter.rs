@@ -73,6 +73,16 @@ impl<I> ZkGasInspector<I> {
     pub(crate) fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
         self.metering.as_mut().map(|state| &mut state.meter)
     }
+
+    /// Discards in-flight transaction metering state, if metering is enabled.
+    ///
+    /// Clears both the meter's per-transaction usage and the inspector's step bookkeeping so
+    /// nothing recorded by an aborted transaction can charge into the next one.
+    pub(crate) fn reset_transaction(&mut self) {
+        if let Some(metering) = &mut self.metering {
+            metering.reset_transaction();
+        }
+    }
 }
 
 impl<DB, I> Inspector<TaikoEvmContext<DB>, EthInterpreter> for ZkGasInspector<I>
@@ -259,6 +269,21 @@ impl ZkGasMeteringState {
             has_deferred_steps: false,
             max_active_depth: 0,
         }
+    }
+
+    /// Discards the in-flight transaction zk gas together with all per-frame step bookkeeping.
+    ///
+    /// The unwind of a failed transaction drains deferred steps through `call_end`/`create_end`
+    /// today, but that invariant lives in revm's frame handling; resetting everything here keeps
+    /// the transaction boundary self-contained regardless of how execution aborted.
+    fn reset_transaction(&mut self) {
+        self.meter.reset_transaction();
+        for index in 0..=self.max_active_depth {
+            self.pending_steps[index] = PendingStep::EMPTY;
+            self.deferred_steps[index] = None;
+        }
+        self.has_deferred_steps = false;
+        self.max_active_depth = 0;
     }
 
     /// Records the opcode and gas snapshot for the current frame depth.
@@ -461,6 +486,24 @@ mod tests {
         assert!(metering.has_deferred_steps);
         assert!(metering.deferred_steps[0].is_none());
         assert!(metering.deferred_steps[1].is_some());
+    }
+
+    #[test]
+    fn reset_transaction_clears_meter_and_step_bookkeeping() {
+        let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
+        metering.begin_step(1, 0x01, 10);
+        metering.defer_step(0, FinishedStep { opcode: 0xf1, step_gas: 5, spawned: true });
+        metering.defer_step(1, FinishedStep { opcode: 0x01, step_gas: 3, spawned: false });
+        metering.meter.charge_opcode(0x01, 3).expect("charge fits");
+
+        metering.reset_transaction();
+
+        assert_eq!(metering.meter.tx_zk_gas_used(), 0);
+        assert!(!metering.has_deferred_steps);
+        assert!(metering.deferred_steps[..2].iter().all(Option::is_none));
+        assert_eq!(metering.pending_steps[1].opcode, 0);
+        assert_eq!(metering.pending_steps[1].gas_remaining, 0);
+        assert_eq!(metering.max_active_depth, 0);
     }
 
     #[test]

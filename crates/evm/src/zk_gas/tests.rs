@@ -20,7 +20,7 @@ use revm_database_interface::{
     BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BENCH_TARGET_BALANCE,
 };
 
-use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+use crate::{alloy::TaikoZkGasEvm, factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
@@ -329,6 +329,88 @@ fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
         inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
 
     assert_eq!(production_zk_gas, inspector_zk_gas);
+}
+
+#[test]
+fn transact_meters_each_run_from_zero_on_a_reused_evm() {
+    // RPC helpers like `eth_estimateGas` build one EVM and re-run the same transaction many
+    // times (initial run, optimistic run, binary search). Every run must meter against a fresh
+    // transaction budget instead of inheriting the in-flight zk gas of the previous runs.
+    let mut evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+
+    evm.transact(tx_env(100_000)).expect("first run should execute");
+    let first_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+    assert!(first_run > 0, "the metered run must charge zk gas");
+
+    evm.transact(tx_env(100_000)).expect("second run should execute");
+    let second_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+
+    assert_eq!(
+        second_run, first_run,
+        "a reused EVM must not accumulate in-flight zk gas across transact calls"
+    );
+}
+
+#[test]
+fn inspected_transact_meters_each_run_from_zero_on_a_reused_evm() {
+    // Same reused-EVM shape as the production-path test above, on the inspector metering path.
+    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
+        db_with_contract(simple_arithmetic_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+
+    evm.transact(tx_env(100_000)).expect("first run should execute");
+    let first_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+    assert!(first_run > 0, "the metered run must charge zk gas");
+
+    evm.transact(tx_env(100_000)).expect("second run should execute");
+    let second_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+
+    assert_eq!(
+        second_run, first_run,
+        "a reused EVM must not accumulate in-flight zk gas across transact calls"
+    );
+}
+
+#[test]
+fn disabled_per_transact_reset_preserves_executor_accumulation_semantics() {
+    // The block executor calls `set_per_transact_zk_gas_reset_enabled(false)` and brackets
+    // each transaction itself (reset, intrinsic charge, commit); with the entry reset
+    // disabled, in-flight usage must keep accumulating across transact calls.
+    let mut evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    evm.set_per_transact_zk_gas_reset_enabled(false);
+
+    evm.transact(tx_env(100_000)).expect("first run should execute");
+    let first_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+    assert!(first_run > 0, "the metered run must charge zk gas");
+
+    evm.transact(tx_env(100_000)).expect("second run should execute");
+    let second_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+
+    assert_eq!(
+        second_run,
+        first_run * 2,
+        "a disabled entry reset must preserve cross-transact accumulation for the executor"
+    );
+}
+
+#[test]
+fn reused_evm_replays_a_heavy_tx_without_tripping_the_block_limit() {
+    // Regression for the observed `eth_estimateGas` failure: a transaction whose single run
+    // costs ~68M zk gas (under the 100M Unzen block limit) was pushed over the limit by the
+    // estimate flow's repeated simulations because the meter carried usage between runs.
+    let mut evm = TaikoEvmFactory::default()
+        .create_evm(db_with_contract(half_limit_keccak_bytecode()), evm_env(TaikoSpecId::UNZEN));
+
+    for run in 0..4u32 {
+        let result = evm
+            .transact(tx_env(5_000_000))
+            .unwrap_or_else(|err| panic!("run {run} must not hit the zk gas limit: {err}"));
+        assert!(result.result.is_success(), "run {run} must succeed: {:?}", result.result);
+    }
 }
 
 /// Executes `bytecode` on Unzen through the production (no-inspector) and the inspected
@@ -693,6 +775,22 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         0x20,
         opcode::PUSH3,
         0x18,
+        0x00,
+        0x00,
+        opcode::KECCAK256,
+        opcode::STOP,
+    ]))
+}
+
+fn half_limit_keccak_bytecode() -> Bytecode {
+    // Same shape as `limit_exceeding_keccak_bytecode`, sized down so the memory expansion stops
+    // near 1 MiB: one metered run costs ~68M zk gas — under the 100M Unzen block limit — while
+    // two accumulated runs would bust it.
+    Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH1,
+        0x20,
+        opcode::PUSH3,
+        0x10,
         0x00,
         0x00,
         opcode::KECCAK256,

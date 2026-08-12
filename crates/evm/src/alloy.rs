@@ -60,6 +60,13 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// because it installs the authoritative context through the anchor system call, and a
     /// missing pre-execution initialization must keep failing loudly there.
     derive_anchor_ctx: bool,
+    /// Whether [`Evm::transact_raw`] discards in-flight zk gas before executing. Enabled by
+    /// default so replay-style consumers that reuse one EVM for repeated simulations
+    /// (`eth_estimateGas`'s binary search, `eth_createAccessList`, `eth_simulateV1`) meter
+    /// every run against a fresh transaction budget; the block executor turns it off because
+    /// it owns the per-transaction bracket (reset, intrinsic charge, commit) and an entry
+    /// reset here would wipe the intrinsic zk gas it charges before execution.
+    reset_zk_gas_per_transact: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
@@ -69,18 +76,23 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     where
         P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
     {
-        Self { inner: revmc::revm_evm::JitEvm::disabled(evm), inspect, derive_anchor_ctx: true }
+        Self {
+            inner: revmc::revm_evm::JitEvm::disabled(evm),
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+        }
     }
 
     /// Creates an interpreter-backed [`TaikoEvmWrapper`] instance.
     #[cfg(not(feature = "jit"))]
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true }
+        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
     }
 
     /// Creates a wrapper around an already configured optional JIT dispatcher.
     pub(crate) fn new_with_inner(evm: InnerTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true }
+        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -210,6 +222,15 @@ impl<DB: Database, I, P> TaikoAnchorEvm for TaikoEvmWrapper<DB, I, P> {
 
 /// EVM extension trait for reading and mutating the zk gas meter state.
 pub trait TaikoZkGasEvm {
+    /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
+    ///
+    /// Enabled by default: RPC-style consumers (`eth_estimateGas`'s binary search,
+    /// `eth_createAccessList`, `eth_simulateV1`) reuse one EVM for repeated simulations, and
+    /// each run must meter from zero. The block executor disables it because it drives the
+    /// meter through its own reset/intrinsic-charge/commit bracket, which an entry reset
+    /// would corrupt by wiping the intrinsic charged before execution.
+    fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool);
+
     /// Discards any in-flight zk gas recorded for the current transaction.
     fn reset_transaction_zk_gas(&mut self);
 
@@ -236,6 +257,11 @@ where
     I: Inspector<TaikoEvmContext<DB>>,
     P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
 {
+    /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
+    fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool) {
+        self.reset_zk_gas_per_transact = enabled;
+    }
+
     /// Discards any in-flight zk gas recorded for the current transaction.
     fn reset_transaction_zk_gas(&mut self) {
         if let Some(meter) = self.meter_mut() {
@@ -363,6 +389,13 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Replay-style callers (`eth_estimateGas`'s binary search, `eth_createAccessList`,
+        // `eth_simulateV1`) reuse this EVM for repeated runs; without a reset the in-flight
+        // zk gas of previous runs accumulates and eventually trips the block budget. The block
+        // executor disables this and manages the per-transaction bracket itself.
+        if self.reset_zk_gas_per_transact {
+            self.reset_transaction_zk_gas();
+        }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
         self.ctx_mut().set_tx(tx);
         // Run [`TaikoEvmHandler`] against the (possibly JIT-dispatching) inner EVM directly:

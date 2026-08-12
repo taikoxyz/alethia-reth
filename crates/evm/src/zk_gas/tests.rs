@@ -398,6 +398,57 @@ fn disabled_per_transact_reset_preserves_executor_accumulation_semantics() {
 }
 
 #[test]
+fn reset_clears_deferred_charges_left_by_a_limit_exceeded_nested_call() {
+    // A zk gas limit hit inside a nested call aborts execution while CALL-family steps are
+    // still deferred (`flush_deferred_steps` deliberately keeps later entries on error). The
+    // per-transact reset must drop that bookkeeping too, or the next transaction on the same
+    // EVM starts by flushing the previous transaction's charges into its fresh meter.
+    let cheap_target = Address::with_last_byte(0xEE);
+
+    assert_no_deferred_leak_across_transacts(limit_exceeding_keccak_bytecode(), cheap_target);
+}
+
+#[test]
+fn reset_clears_deferred_charges_when_the_flush_itself_is_over_budget() {
+    // Variant where the budget is ground down by ~250k-zk keccak iterations, so the remaining
+    // budget at failure time is below one CALL spawn estimate and the unwind-time flush of the
+    // deferred CALL charges errors instead of draining them.
+    assert_no_deferred_leak_across_transacts(
+        quarter_million_keccak_loop_bytecode(),
+        Address::with_last_byte(0xEF),
+    );
+}
+
+/// Runs the shared deferred-leak scenario: a nested call chain to `buster_bytecode` busts the
+/// zk gas limit on a reused EVM, then a cheap unrelated transaction must meter exactly like a
+/// fresh EVM would — any difference is leftover bookkeeping leaking across transacts.
+fn assert_no_deferred_leak_across_transacts(buster_bytecode: Bytecode, cheap_target: Address) {
+    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
+        nested_limit_db(cheap_target, buster_bytecode.clone()),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    let err = evm.transact(tx_env(16_000_000)).expect_err("nested call must bust the limit");
+    assert!(err.to_string().contains(ZK_GAS_LIMIT_ERR), "unexpected error: {err}");
+
+    evm.transact(cheap_tx_env(cheap_target)).expect("cheap tx should execute after the failure");
+    let reused = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+
+    let mut fresh_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+        nested_limit_db(cheap_target, buster_bytecode),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    fresh_evm.transact(cheap_tx_env(cheap_target)).expect("cheap tx should execute");
+    let fresh = fresh_evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
+
+    assert_eq!(
+        reused, fresh,
+        "deferred steps left by a failed transaction must not leak into the next one"
+    );
+}
+
+#[test]
 fn reused_evm_replays_a_heavy_tx_without_tripping_the_block_limit() {
     // Regression for the observed `eth_estimateGas` failure: a transaction whose single run
     // costs ~68M zk gas (under the 100M Unzen block limit) was pushed over the limit by the
@@ -780,6 +831,86 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::KECCAK256,
         opcode::STOP,
     ]))
+}
+
+/// Pushes a zero-arg, zero-value `CALL` to `target` forwarding `gas`, then `STOP`.
+fn call_into_bytecode(target: Address, gas: u32) -> Bytecode {
+    let mut code = vec![
+        opcode::PUSH1,
+        0x00, // retLen
+        opcode::PUSH1,
+        0x00, // retOff
+        opcode::PUSH1,
+        0x00, // argLen
+        opcode::PUSH1,
+        0x00, // argOff
+        opcode::PUSH1,
+        0x00, // value
+        opcode::PUSH20,
+    ];
+    code.extend_from_slice(target.as_slice());
+    code.push(opcode::PUSH4);
+    code.extend_from_slice(&gas.to_be_bytes());
+    code.push(opcode::CALL);
+    code.push(opcode::STOP);
+    Bytecode::new_raw(Bytes::from(code))
+}
+
+/// `BENCH_TARGET` -> middle -> buster call chain, so two CALL-family steps are still deferred
+/// when the deepest frame busts the block zk gas limit; `cheap_target` holds an unrelated
+/// cheap contract for the follow-up transaction.
+fn nested_limit_db(cheap_target: Address, buster_bytecode: Bytecode) -> InMemoryDB {
+    let middle = Address::with_last_byte(0xCA);
+    let buster = Address::with_last_byte(0xDB);
+    let mut db = db_with_contract(call_into_bytecode(middle, 15_000_000));
+    insert_contract(&mut db, middle, call_into_bytecode(buster, 14_000_000));
+    insert_contract(&mut db, buster, buster_bytecode);
+    insert_contract(&mut db, cheap_target, simple_arithmetic_bytecode());
+    db
+}
+
+/// Loops `KECCAK256` over a fixed ~42 KiB span so every iteration charges just under 250k zk
+/// gas. When the budget dies, the remaining zk gas is below one CALL spawn estimate (250k), so
+/// the deferred CALL charges cannot be flushed during the failure unwind. The zk budget is
+/// exhausted long before the forwarded EVM gas.
+fn quarter_million_keccak_loop_bytecode() -> Bytecode {
+    Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH2,
+        0xA7,
+        0x60, // size: 42,848 bytes
+        opcode::PUSH1,
+        0x00,             // offset
+        opcode::JUMPDEST, // pc = 5
+        opcode::KECCAK256,
+        opcode::POP,
+        opcode::PUSH2,
+        0xA7,
+        0x60,
+        opcode::PUSH1,
+        0x00,
+        opcode::PUSH1,
+        0x05,
+        opcode::JUMP,
+    ]))
+}
+
+fn insert_contract(db: &mut InMemoryDB, address: Address, bytecode: Bytecode) {
+    let code_hash = bytecode.hash_slow();
+    db.insert_account_info(
+        address,
+        AccountInfo { nonce: 1, code_hash, code: Some(bytecode), ..Default::default() },
+    );
+}
+
+/// A 100k-gas call from `BENCH_CALLER` to `target`.
+fn cheap_tx_env(target: Address) -> TxEnv {
+    TxEnv::builder()
+        .caller(BENCH_CALLER)
+        .kind(TxKind::Call(target))
+        .chain_id(Some(167))
+        .gas_limit(100_000)
+        .build()
+        .unwrap()
 }
 
 fn half_limit_keccak_bytecode() -> Bytecode {

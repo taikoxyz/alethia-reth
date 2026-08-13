@@ -94,6 +94,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+      - name: Test LLVM installer wrapper
+        run: .github/scripts/tests/install_llvm_ubuntu_test.sh
       # Guards the Docker build on ARM64 hosts: apt.llvm.org omits arm64 packages for some
       # Debian releases (bookworm has no arm64 LLVM 22), which only surfaces when installing
       # on an ARM64 machine. Runs the same installer inside the Docker base distribution.

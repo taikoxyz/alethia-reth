@@ -89,6 +89,28 @@ fn meter_promotes_committed_tx_usage_into_block_usage() {
 }
 
 #[test]
+fn meter_reserves_finalized_block_budget_without_touching_in_flight_usage() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+    meter.charge_opcode(0xf0, 7).expect("in-flight charge");
+
+    meter.reserve_block_budget(2_000_000).expect("reserve");
+
+    assert_eq!(meter.block_zk_gas_used(), 2_000_000);
+    assert_eq!(meter.tx_zk_gas_used(), 7);
+}
+
+#[test]
+fn meter_rejects_reserve_past_remaining_budget_without_mutation() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let mut meter = ZkGasMeter::new(schedule);
+    meter.reserve_block_budget(schedule.block_limit - 1).expect("initial reserve");
+
+    assert_eq!(meter.reserve_block_budget(2), Err(ZkGasOutcome::LimitExceeded));
+    assert_eq!(meter.block_zk_gas_used(), schedule.block_limit - 1);
+}
+
+#[test]
 fn meter_charge_tx_intrinsic_adds_schedule_value_to_in_flight_tx() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let mut meter = ZkGasMeter::new(schedule);

@@ -30,6 +30,10 @@ pub const BENCH_SUCCESS_TARGET: Address = Address::with_last_byte(0x21);
 /// Target address for contracts whose execution exceeds the zk gas limit.
 pub const BENCH_LIMIT_TARGET: Address = Address::with_last_byte(0x22);
 
+/// Target address for contracts whose execution fits the full block zk gas budget but not the
+/// tx-pool budget after reserving zk gas for the anchor transaction.
+pub const BENCH_NEAR_LIMIT_TARGET: Address = Address::with_last_byte(0x23);
+
 /// Returns a [`TaikoChainSpec`] with Unzen activated at timestamp 0.
 pub fn unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
@@ -104,6 +108,7 @@ pub fn db_with_contracts(accounts: &[(Address, u64)]) -> InMemoryDB {
     let mut db = InMemoryDB::default();
     insert_contract(&mut db, BENCH_SUCCESS_TARGET, arithmetic_bytecode());
     insert_contract(&mut db, BENCH_LIMIT_TARGET, limit_exceeding_keccak_bytecode());
+    insert_contract(&mut db, BENCH_NEAR_LIMIT_TARGET, near_limit_keccak_bytecode());
     for &(address, nonce) in accounts {
         db.insert_account_info(
             address,
@@ -160,6 +165,23 @@ pub fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::PUSH1,
         0x00,         // jump destination 0
         opcode::JUMP, // loop
+    ]))
+}
+
+/// KECCAK256 bytecode that consumes about 99.04M zk gas under the Unzen schedule.
+///
+/// Expanding memory to offset `0x135a00` keeps the transaction below the full 100M block budget,
+/// but pushes it above the 98M user budget left after the tx-pool anchor reserve.
+pub fn near_limit_keccak_bytecode() -> Bytecode {
+    Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH1,
+        0x20, // hash one 32-byte word
+        opcode::PUSH3,
+        0x13,
+        0x5a,
+        0x00, // memory offset 0x135a00
+        opcode::KECCAK256,
+        opcode::STOP,
     ]))
 }
 

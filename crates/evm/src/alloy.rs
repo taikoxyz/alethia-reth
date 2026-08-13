@@ -249,6 +249,11 @@ pub trait TaikoZkGasEvm {
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
+    /// Reserves finalized block zk gas without executing a transaction.
+    ///
+    /// Returns the new finalized block total, or `None` when no meter is installed.
+    fn reserve_block_zk_gas(&mut self, amount: u64) -> Result<Option<u64>, ZkGasOutcome>;
+
     /// Charges the fixed per-transaction intrinsic zk gas defined by the active schedule.
     ///
     /// Returns `Ok(())` when the EVM has no meter installed (pre-Unzen specs).
@@ -295,6 +300,15 @@ where
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64> {
         self.meter().map(|m| m.block_zk_gas_used())
+    }
+
+    /// Reserves finalized block zk gas through the active meter.
+    fn reserve_block_zk_gas(&mut self, amount: u64) -> Result<Option<u64>, ZkGasOutcome> {
+        let Some(meter) = self.meter_mut() else {
+            return Ok(None);
+        };
+        meter.reserve_block_budget(amount)?;
+        Ok(Some(meter.block_zk_gas_used()))
     }
 
     /// Charges the fixed per-transaction intrinsic zk gas through the meter.

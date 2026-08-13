@@ -2,7 +2,8 @@ use super::{
     lookup::{MAX_BACKWARD_SCAN_BLOCKS, max_backward_scan_blocks},
     *,
 };
-use alethia_reth_chainspec::TAIKO_MAINNET;
+use alethia_reth_block::{executor::TaikoBlockExecutor, factory::TaikoBlockExecutionCtx};
+use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
@@ -21,13 +22,18 @@ use reth_db::{
 };
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_ethereum::{TransactionSigned, chainspec::MAINNET};
+use reth_evm::{EvmEnv, EvmFactory};
+use reth_evm_ethereum::RethReceiptBuilder;
 use reth_primitives_traits::{RecoveredBlock, SealedHeader};
 use reth_provider::{
     BlockWriter, ProviderFactory,
     providers::{BlockchainProvider, RocksDBBuilder, StaticFileProvider},
     test_utils::MockNodeTypesWithDB,
 };
+use reth_revm::{State, db::InMemoryDB};
 use std::{path::PathBuf, sync::Arc};
+
+use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -206,6 +212,37 @@ fn tx_pool_content_params_conversion_defaults_min_tip_to_zero() {
 fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
     assert_eq!(super::combined_tx_lists_gas_limit(30_000_000, 4).unwrap(), 120_000_000);
     assert!(super::combined_tx_lists_gas_limit(u64::MAX, 2).is_err());
+}
+
+#[test]
+fn reserves_anchor_zk_gas_for_tx_pool_selection() {
+    let mut state =
+        State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
+    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    env.cfg_env.spec = TaikoSpecId::UNZEN;
+    let evm = TaikoEvmFactory::default().create_evm(&mut state, env);
+    let ctx = TaikoBlockExecutionCtx {
+        parent_hash: Default::default(),
+        parent_beacon_block_root: Some(Default::default()),
+        ommers: &[],
+        withdrawals: None,
+        basefee_per_gas: 0,
+        extra_data: Default::default(),
+        is_unzen_active: true,
+        expected_difficulty: None,
+        finalized_block_zk_gas: Default::default(),
+    };
+    let mut executor = TaikoBlockExecutor::new(
+        evm,
+        ctx.clone(),
+        TAIKO_DEVNET.clone(),
+        RethReceiptBuilder::default(),
+    );
+
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor)
+        .expect("tx-pool anchor reserve should fit");
+
+    assert_eq!(ctx.finalized_block_zk_gas(), super::TX_POOL_ANCHOR_ZK_GAS_RESERVE);
 }
 
 // ---------------------------------------------------------------------------

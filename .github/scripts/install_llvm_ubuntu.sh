@@ -41,6 +41,28 @@ done
 # script before updating this hash.
 echo "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae  $llvm_installer" | sha256sum -c -
 chmod +x "$llvm_installer"
+# Fetch the signing key with the same bounded GET used for the installer. The upstream script
+# otherwise probes this URL with `wget --method=HEAD` before downloading it; that probe repeatedly
+# timed out on the arm64 runner even while GETs from apt.llvm.org succeeded. Install the key only
+# after a complete download so a failed attempt cannot make upstream skip the key setup.
+llvm_key_path=/etc/apt/trusted.gpg.d/apt.llvm.org.asc
+if [[ ! -f "$llvm_key_path" ]]; then
+    llvm_key_download=$(mktemp)
+    for key_attempt in $(seq "$attempts"); do
+        if wget -nv --timeout=20 --tries=1 -O "$llvm_key_download" \
+            https://apt.llvm.org/llvm-snapshot.gpg.key; then
+            break
+        fi
+        if [[ "$key_attempt" -eq "$attempts" ]]; then
+            echo "Error: could not download the apt.llvm.org signing key ($attempts attempts)" >&2
+            exit 1
+        fi
+        echo "Retrying the apt.llvm.org signing key in $((key_attempt * 5))s" >&2
+        sleep $((key_attempt * 5))
+    done
+    install -m 0644 "$llvm_key_download" "$llvm_key_path"
+    rm -f "$llvm_key_download"
+fi
 # Retry the installer too. Before touching apt it preflights apt.llvm.org with a single
 # `wget --method=HEAD` (its check_url), and reports *any* failure of that probe -- including a
 # connection blip -- as a fatal "Distribution 'debian' in version '13 (trixie)' is not supported

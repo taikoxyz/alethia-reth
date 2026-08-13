@@ -54,6 +54,22 @@ impl<'a> ZkGasMeter<'a> {
         Ok(())
     }
 
+    /// Reserves finalized block zk gas without charging the in-flight transaction.
+    ///
+    /// This is intended for simulations that must account for a mandatory transaction they
+    /// cannot execute directly. The reservation is rejected without mutation when it exceeds
+    /// the remaining block budget or overflows the finalized block total.
+    pub fn reserve_block_budget(&mut self, amount: u64) -> Result<(), ZkGasOutcome> {
+        let next_block =
+            self.block_zk_gas_used.checked_add(amount).ok_or(ZkGasOutcome::LimitExceeded)?;
+        if next_block > self.schedule.block_limit || amount > self.remaining_zk_gas {
+            return Err(ZkGasOutcome::LimitExceeded);
+        }
+        self.block_zk_gas_used = next_block;
+        self.remaining_zk_gas -= amount;
+        Ok(())
+    }
+
     /// Returns the finalized zk gas from fully committed transactions.
     pub const fn block_zk_gas_used(&self) -> u64 {
         self.block_zk_gas_used

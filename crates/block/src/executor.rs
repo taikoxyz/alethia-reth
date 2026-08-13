@@ -184,6 +184,22 @@ where
         }
     }
 
+    /// Reserves finalized block zk gas without executing or committing a transaction.
+    ///
+    /// This supports simulations that need to preserve budget for a mandatory transaction they
+    /// cannot execute. Pre-Unzen EVMs have no meter, so the reservation is a successful no-op.
+    pub fn reserve_block_zk_gas(&mut self, amount: u64) -> Result<(), BlockExecutionError>
+    where
+        Evm: TaikoZkGasEvm,
+    {
+        match self.evm.reserve_block_zk_gas(amount) {
+            Ok(Some(zk_gas)) => self.ctx.set_finalized_block_zk_gas(zk_gas),
+            Ok(None) => {}
+            Err(ZkGasOutcome::LimitExceeded) => return Err(Self::zk_gas_limit_error()),
+        }
+        Ok(())
+    }
+
     /// Discards any in-flight zk gas for the current transaction while preserving the committed
     /// block total.
     fn reset_current_transaction_zk_gas(&mut self)
@@ -575,7 +591,7 @@ mod test {
     };
 
     use alethia_reth_evm::{
-        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory,
+        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
         zk_gas::unzen::TX_INTRINSIC_ZK_GAS,
     };
 
@@ -615,6 +631,38 @@ mod test {
             )),
             base_fee_share_pctg
         );
+    }
+
+    #[test]
+    fn executor_reserves_block_zk_gas_and_synchronizes_execution_context() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state =
+            State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let ctx = unzen_execution_ctx();
+        let mut executor =
+            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
+
+        executor.reserve_block_zk_gas(2_000_000).expect("reserve should fit");
+
+        assert_eq!(ctx.finalized_block_zk_gas(), 2_000_000);
+    }
+
+    #[test]
+    fn executor_reserves_block_zk_gas_as_noop_without_meter() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state =
+            State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
+        let mut env = unzen_evm_env();
+        env.cfg_env.spec = TaikoSpecId::SHASTA;
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, env);
+        let ctx = unzen_execution_ctx();
+        let mut executor =
+            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
+
+        executor.reserve_block_zk_gas(2_000_000).expect("pre-Unzen reserve should be a no-op");
+
+        assert_eq!(ctx.finalized_block_zk_gas(), 0);
     }
 
     #[test]

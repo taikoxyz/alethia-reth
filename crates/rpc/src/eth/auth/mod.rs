@@ -14,7 +14,11 @@ use reth::{
 };
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
-use reth_evm::ConfigureEngineEvm;
+use reth_evm::{
+    ConfigureEngineEvm,
+    block::{BlockExecutionError, BlockExecutor},
+    execute::BlockBuilder,
+};
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
 use reth_provider::{
@@ -29,6 +33,7 @@ use crate::eth::error::internal_eth_error;
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::TaikoNextBlockEnvAttributes,
+    executor::ZkGasLimitExceeded,
     factory::TaikoBlockExecutorFactory,
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
@@ -39,7 +44,9 @@ use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
-use alethia_reth_evm::factory::TaikoEvmFactory;
+use alethia_reth_evm::{
+    alloy::TaikoZkGasEvm, factory::TaikoEvmFactory, zk_gas::meter::ZkGasOutcome,
+};
 use alethia_reth_primitives::{
     engine::types::TaikoExecutionData, payload::attributes::RpcL1Origin,
 };
@@ -50,6 +57,30 @@ mod lookup;
 mod types;
 
 pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipParams};
+
+/// Conservative zk gas reserved for the mandatory anchor during tx-pool preselection.
+///
+/// Recent mainnet anchor-only blocks used 1,160,754 zk gas. The 2M reservation leaves modest
+/// headroom for anchor execution changes while retaining 98% of the Unzen block budget for user
+/// transactions. Revisit this value if the anchor implementation changes substantially.
+const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
+
+/// Applies the anchor zk gas safety margin before tx-pool transaction simulation.
+///
+/// The margin is reserved straight on the EVM meter rather than through
+/// `TaikoBlockExecutor::reserve_block_zk_gas`: this branch's `reth` exposes the block builder's
+/// executor only behind a `BlockExecutorFor` bound, so the concrete executor type cannot be
+/// named at the call site. The executor method additionally mirrors the new total into the
+/// execution context the assembler reads, which this path has no use for — it returns candidate
+/// tx lists without ever assembling a block, and selection enforces the budget through the meter.
+fn reserve_anchor_zk_gas_for_tx_pool_selection(
+    evm: &mut impl TaikoZkGasEvm,
+) -> Result<(), BlockExecutionError> {
+    match evm.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE) {
+        Ok(_) => Ok(()),
+        Err(ZkGasOutcome::LimitExceeded) => Err(BlockExecutionError::other(ZkGasLimitExceeded)),
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -351,6 +382,9 @@ where
             .map_err(|_| {
                 EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
             })?;
+
+        reserve_anchor_zk_gas_for_tx_pool_selection(builder.executor_mut().evm_mut())
+            .map_err(|err| EthApiError::Internal(err.into()))?;
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 

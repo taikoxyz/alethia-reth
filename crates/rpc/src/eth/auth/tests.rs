@@ -21,13 +21,17 @@ use reth_db::{
 };
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_ethereum::{TransactionSigned, chainspec::MAINNET};
+use reth_evm::{EvmEnv, EvmFactory};
 use reth_primitives_traits::{RecoveredBlock, SealedHeader};
 use reth_provider::{
     BlockWriter, ProviderFactory,
     providers::{BlockchainProvider, RocksDBBuilder, StaticFileProvider},
     test_utils::MockNodeTypesWithDB,
 };
+use reth_revm::{State, db::InMemoryDB};
 use std::{path::PathBuf, sync::Arc};
+
+use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -206,6 +210,35 @@ fn tx_pool_content_params_conversion_defaults_min_tip_to_zero() {
 fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
     assert_eq!(super::combined_tx_lists_gas_limit(30_000_000, 4).unwrap(), 120_000_000);
     assert!(super::combined_tx_lists_gas_limit(u64::MAX, 2).is_err());
+}
+
+#[test]
+fn reserves_anchor_zk_gas_for_tx_pool_selection() {
+    let mut state =
+        State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
+    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    env.cfg_env.spec = TaikoSpecId::UNZEN;
+    let mut evm = TaikoEvmFactory::default().create_evm(&mut state, env);
+
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut evm)
+        .expect("tx-pool anchor reserve should fit");
+
+    assert_eq!(evm.block_zk_gas_used(), Some(super::TX_POOL_ANCHOR_ZK_GAS_RESERVE));
+}
+
+#[test]
+fn anchor_zk_gas_reserve_is_a_no_op_without_a_meter() {
+    // Pre-Unzen specs install no meter, so the reservation must succeed and charge nothing.
+    let mut state =
+        State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
+    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    env.cfg_env.spec = TaikoSpecId::SHASTA;
+    let mut evm = TaikoEvmFactory::default().create_evm(&mut state, env);
+
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut evm)
+        .expect("unmetered reserve should be a no-op");
+
+    assert_eq!(evm.block_zk_gas_used(), None);
 }
 
 // ---------------------------------------------------------------------------

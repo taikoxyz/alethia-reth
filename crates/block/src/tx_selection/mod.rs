@@ -287,8 +287,9 @@ mod tests {
     use crate::{
         executor::TaikoBlockExecutor,
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
-            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_NEAR_LIMIT_TARGET, BENCH_SUCCESS_TARGET,
+            ExecutorBackedBuilder, db_with_contracts, recovered_tx, unzen_chain_spec,
+            unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_evm::factory::TaikoEvmFactory;
@@ -297,6 +298,45 @@ mod tests {
     const BENCH_INCLUDED_CALLER: Address = Address::with_last_byte(0x31);
     const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x32);
     const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x33);
+
+    fn select_near_limit_transaction(reserved_zk_gas: u64) -> (SelectionOutcome, u64) {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(BENCH_INCLUDED_CALLER, 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let ctx = unzen_execution_ctx();
+        let executor =
+            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
+        let mut builder = ExecutorBackedBuilder { executor };
+        builder.executor.reserve_block_zk_gas(reserved_zk_gas).expect("test reserve should fit");
+        let pool = testing_pool();
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("test runtime");
+        rt.block_on(pool.add_consensus_transaction(
+            recovered_tx(BENCH_INCLUDED_CALLER, BENCH_NEAR_LIMIT_TARGET, 0, 10),
+            TransactionOrigin::External,
+        ))
+        .expect("near-limit tx should enter the pool");
+
+        let outcome = select_and_execute_pool_transactions(
+            &mut builder,
+            &pool,
+            &TxSelectionConfig {
+                base_fee: 0,
+                gas_limit_per_list: 30_000_000,
+                max_da_bytes_per_list: 1_000_000,
+                da_size_zlib_guard_bytes: 0,
+                max_lists: 1,
+                min_tip: 0,
+                locals: vec![],
+            },
+            || false,
+        )
+        .expect("near-limit selection should complete cleanly");
+
+        (outcome, ctx.finalized_block_zk_gas())
+    }
 
     #[test]
     fn tx_selection_does_not_preallocate_the_caller_supplied_list_limit() {
@@ -334,6 +374,24 @@ mod tests {
         };
         assert_eq!(lists.len(), 1);
         assert!(lists[0].transactions.is_empty());
+    }
+
+    #[test]
+    fn tx_selection_respects_reserved_anchor_zk_gas() {
+        let (without_reserve, without_reserve_zk_gas) = select_near_limit_transaction(0);
+        let SelectionOutcome::Completed(without_reserve) = without_reserve else {
+            panic!("selection should not cancel")
+        };
+        assert_eq!(without_reserve[0].transactions.len(), 1);
+        assert!(without_reserve_zk_gas > 98_000_000);
+        assert!(without_reserve_zk_gas <= 100_000_000);
+
+        let (with_reserve, with_reserve_zk_gas) = select_near_limit_transaction(2_000_000);
+        let SelectionOutcome::Completed(with_reserve) = with_reserve else {
+            panic!("selection should not cancel")
+        };
+        assert!(with_reserve[0].transactions.is_empty());
+        assert_eq!(with_reserve_zk_gas, 2_000_000);
     }
 
     #[test]

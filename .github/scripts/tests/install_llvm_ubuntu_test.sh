@@ -3,6 +3,7 @@
 set -euo pipefail
 
 readonly llvm_key_url="https://apt.llvm.org/llvm-snapshot.gpg.key"
+readonly llvm_repo_url="https://apt.llvm.org/trixie/"
 readonly llvm_script_url="https://apt.llvm.org/llvm.sh"
 
 fake_wget() {
@@ -34,7 +35,8 @@ fake_wget() {
         esac
     done
 
-    if [[ "$url" == "$llvm_key_url" && "$method" == "HEAD" ]]; then
+    if [[ "$method" == "HEAD" && \
+          ( "$url" == "$llvm_key_url" || "$url" == "$llvm_repo_url" ) ]]; then
         return 1
     fi
 
@@ -52,10 +54,20 @@ fake_wget() {
     esac
 }
 
+check_url() {
+    wget -q --method=HEAD --timeout=15 --tries=3 "$1"
+}
+
 fake_installer() {
     local version="$1"
     local key_path="/etc/apt/trusted.gpg.d/apt.llvm.org.asc"
     local bin
+    local BASE_URL="https://apt.llvm.org"
+    local CODENAME="trixie"
+
+    if ! check_url "${BASE_URL}/${CODENAME}/"; then
+        return 2
+    fi
 
     if [[ ! -f "$key_path" ]]; then
         wget -q --method=HEAD --timeout=15 --tries=3 "$llvm_key_url"
@@ -121,7 +133,7 @@ run_test() {
     done
 
     if ! PATH="/tmp/fake-bin:$PATH" /work/install_llvm_ubuntu.sh; then
-        echo "Expected the installer wrapper to avoid the failing GPG-key HEAD probe." >&2
+        echo "Expected the installer wrapper to avoid the failing upstream HEAD probes." >&2
         return 1
     fi
 

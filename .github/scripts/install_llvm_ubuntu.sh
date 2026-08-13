@@ -41,7 +41,30 @@ done
 # script before updating this hash.
 echo "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae  $llvm_installer" | sha256sum -c -
 chmod +x "$llvm_installer"
-"$llvm_installer" "$version" all
+# Retry the installer too. Before touching apt it preflights apt.llvm.org with a single
+# `wget --method=HEAD` (its check_url), and reports *any* failure of that probe -- including a
+# connection blip -- as a fatal "Distribution 'debian' in version '13 (trixie)' is not supported
+# by this script.", exit 2. Neither the download loop above nor Acquire::Retries covers that raw
+# wget, so one unlucky HEAD request aborted an arm64 image build even though the repository was
+# up. The probe runs before any state is written, so re-running the installer is the fix.
+install_attempts=3
+for install_attempt in $(seq "$install_attempts"); do
+    if "$llvm_installer" "$version" all; then
+        break
+    fi
+    if [[ "$install_attempt" -eq "$install_attempts" ]]; then
+        echo "Error: the apt.llvm.org installer failed $install_attempts times." >&2
+        echo "Note: an 'is not supported by this script' error above can also mean apt.llvm.org" \
+             "was unreachable rather than that the distribution is genuinely unsupported." >&2
+        exit 1
+    fi
+    # On distributions that get the deb822 layout the installer appends its stanza with `tee -a`,
+    # so an attempt that failed after writing it would leave apt with a duplicate on the next pass.
+    # Dropping the file is safe here because the retry immediately below rewrites it.
+    rm -f /etc/apt/sources.list.d/*apt_llvm_org*.sources
+    echo "Retrying the apt.llvm.org installer in $((install_attempt * 10))s" >&2
+    sleep $((install_attempt * 10))
+done
 rm -f "$llvm_installer"
 
 for bin in "${bins[@]}"; do

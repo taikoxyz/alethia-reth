@@ -7,6 +7,7 @@ use alethia_reth_consensus::validation::{TaikoBeaconConsensus, TaikoBlockReader}
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 use alloy_primitives::B256;
 use reth::{
+    args::JitArgs,
     network::{EthNetworkPrimitives, NetworkHandle, PeersInfo},
     transaction_pool::{PoolTransaction, TransactionPool},
 };
@@ -24,6 +25,20 @@ use tracing::info;
 #[derive(Debug, Clone, Default)]
 pub struct TaikoExecutorBuilder;
 
+/// Rejects reth's `--jit` flag (present upstream since v2.4.0).
+///
+/// Alethia executes exclusively through the interpreter, so a JIT request fails loudly rather
+/// than being silently ignored. Shared by the node's [`ExecutorBuilder`] and by CLI subcommands
+/// that parse their own `JitArgs` but execute blocks outside the node builder (`re-execute`).
+pub fn reject_jit_args(jit: &JitArgs) -> eyre::Result<()> {
+    if jit.enabled {
+        return Err(eyre::eyre!(
+            "JIT compilation was requested with --jit, but alethia-reth does not support revmc JIT execution"
+        ));
+    }
+    Ok(())
+}
+
 impl<Types, Node> ExecutorBuilder<Node> for TaikoExecutorBuilder
 where
     Types: NodeTypes<
@@ -36,20 +51,14 @@ where
     /// The EVM config to use.
     type EVM = TaikoEvmConfig;
 
-    /// Creates the EVM config.
-    ///
-    /// Alethia executes exclusively through the interpreter, so reth's `--jit` flag (present
-    /// upstream since v2.4.0) is rejected rather than silently ignored.
+    /// Creates the EVM config, rejecting `--jit` via [`reject_jit_args`].
     fn build_evm(
         self,
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
-        if ctx.config().jit.enabled {
-            return future::ready(Err(eyre::eyre!(
-                "JIT compilation was requested with --jit, but alethia-reth does not support revmc JIT execution"
-            )));
-        }
-        future::ready(Ok(TaikoEvmConfig::new(ctx.chain_spec())))
+        future::ready(
+            reject_jit_args(&ctx.config().jit).map(|()| TaikoEvmConfig::new(ctx.chain_spec())),
+        )
     }
 }
 

@@ -33,26 +33,13 @@ use crate::{
 /// Maximum transaction gas limit enforced once Osaka/Unzen semantics are active.
 const MAX_SYSTEM_CALL_GAS_LIMIT: u64 = 16_777_216;
 
-/// Base Taiko EVM implementation before optional JIT dispatch is applied.
+/// Taiko EVM implementation wrapped by the Alloy adapter.
 type BaseTaikoEvm<DB, I, P> = TaikoEvm<TaikoEvmContext<DB>, ZkGasInspector<I>, P>;
-
-/// Taiko EVM implementation used by the Alloy adapter when JIT support is compiled in.
-#[cfg(feature = "jit")]
-type InnerTaikoEvm<DB, I, P> = revmc::revm_evm::JitEvm<BaseTaikoEvm<DB, I, P>>;
-
-/// Taiko EVM implementation used by the Alloy adapter without JIT support.
-#[cfg(not(feature = "jit"))]
-type InnerTaikoEvm<DB, I, P> = BaseTaikoEvm<DB, I, P>;
 
 /// A wrapper around the Taiko EVM that implements the `Evm` trait in `alloy_evm`.
 pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// Wrapped Taiko EVM instance implementing execution behavior.
-    ///
-    /// WARNING (jit builds): revmc's `JitEvm` publicly implements `ExecuteEvm`/`InspectEvm`
-    /// backed by revm's `MainnetHandler`. Never call those entry points on this field — always
-    /// drive it with [`TaikoEvmHandler`] (see `transact_raw`), otherwise Taiko's anchor and
-    /// fee-share semantics are silently dropped.
-    inner: InnerTaikoEvm<DB, I, P>,
+    inner: BaseTaikoEvm<DB, I, P>,
     /// Whether to run transactions through the inspector execution path.
     inspect: bool,
     /// Whether [`Self::maybe_derive_anchor_execution_ctx`] may install a derived anchor
@@ -73,58 +60,23 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
-    /// Creates an interpreter-backed [`TaikoEvmWrapper`] instance.
-    #[cfg(feature = "jit")]
-    pub fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self
-    where
-        P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
-    {
-        Self {
-            inner: revmc::revm_evm::JitEvm::disabled(evm),
-            inspect,
-            derive_anchor_ctx: true,
-            reset_zk_gas_per_transact: true,
-        }
-    }
-
-    /// Creates an interpreter-backed [`TaikoEvmWrapper`] instance.
-    #[cfg(not(feature = "jit"))]
+    /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
-    }
-
-    /// Creates a wrapper around an already configured optional JIT dispatcher.
-    pub(crate) fn new_with_inner(evm: InnerTaikoEvm<DB, I, P>, inspect: bool) -> Self {
         Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
     }
 
     /// Consumes self and return the inner EVM instance.
     pub fn into_inner(self) -> BaseTaikoEvm<DB, I, P> {
-        #[cfg(feature = "jit")]
-        {
-            self.inner.into_inner()
-        }
-        #[cfg(not(feature = "jit"))]
         self.inner
     }
 
-    /// Returns the base Taiko EVM wrapped by the optional JIT dispatcher.
-    fn base_evm(&self) -> &BaseTaikoEvm<DB, I, P> {
-        #[cfg(feature = "jit")]
-        {
-            self.inner.inner()
-        }
-        #[cfg(not(feature = "jit"))]
+    /// Returns the wrapped Taiko EVM.
+    const fn base_evm(&self) -> &BaseTaikoEvm<DB, I, P> {
         &self.inner
     }
 
-    /// Returns the mutable base Taiko EVM wrapped by the optional JIT dispatcher.
+    /// Returns the wrapped Taiko EVM mutably.
     fn base_evm_mut(&mut self) -> &mut BaseTaikoEvm<DB, I, P> {
-        #[cfg(feature = "jit")]
-        {
-            self.inner.inner_mut()
-        }
-        #[cfg(not(feature = "jit"))]
         &mut self.inner
     }
 
@@ -423,28 +375,12 @@ where
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
         self.ctx_mut().set_tx(tx);
-        // Run [`TaikoEvmHandler`] against the (possibly JIT-dispatching) inner EVM directly:
-        // revmc's own `ExecuteEvm`/`InspectEvm` entry points would run revm's `MainnetHandler`
-        // and silently drop Taiko's anchor and fee-share semantics.
-        //
-        // Those entry points also re-validate revmc's per-instance lookup cache against the
-        // active spec (`JitEvm::invalidate_cache`, private upstream). Skipping that here is
-        // sound only because reth constructs a fresh EVM per block environment, so the spec
-        // never changes within this instance's lifetime.
+        // Run [`TaikoEvmHandler`] against the inner EVM directly so Taiko's anchor and
+        // fee-share semantics apply on both the plain and the inspected path.
         let mut handler = TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(
             self.base_evm().extra_execution_ctx.clone(),
         );
         let result = if self.inspect {
-            // Trace correctness requires inspected execution to run on the disabled JIT backend:
-            // compiled code cannot deliver per-step inspector callbacks (revmc forwards only
-            // log, selfdestruct, and frame-end events). `create_evm_with_inspector` and
-            // `set_inspector_enabled` both pin the disabled backend; this guards the invariant
-            // against future refactors.
-            #[cfg(feature = "jit")]
-            debug_assert!(
-                !self.inner.backend().enabled(),
-                "inspected execution must run with the disabled JIT backend",
-            );
             handler.inspect_run(&mut self.inner)
         } else {
             handler.run(&mut self.inner)
@@ -598,14 +534,6 @@ where
         if enabled && self.base_evm().zk_gas_meter().is_some() {
             return;
         }
-        // Inspected execution cannot dispatch to compiled code (no per-step inspector
-        // callbacks), so switching an instance to inspect mode permanently downgrades it to a
-        // disabled backend. EVMs built through `create_evm_with_inspector` already hold one;
-        // this covers EVMs built through `create_evm` on non-metered specs.
-        #[cfg(feature = "jit")]
-        if enabled {
-            self.inner.set_backend(crate::jit::JitBackend::disabled());
-        }
         self.inspect = enabled;
     }
 
@@ -679,7 +607,7 @@ mod tests {
 
         let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
         env.cfg_env.chain_id = chain_id;
-        let mut evm = TaikoEvmFactory::default().create_evm(db, env);
+        let mut evm = TaikoEvmFactory.create_evm(db, env);
 
         evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
             .expect("anchor system call should short-circuit successfully");
@@ -723,7 +651,7 @@ mod tests {
         let broke_caller = Address::with_last_byte(0xBC);
         let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
         env.cfg_env.chain_id = 167_000;
-        let mut evm = TaikoEvmFactory::default().create_evm(InMemoryDB::default(), env);
+        let mut evm = TaikoEvmFactory.create_evm(InMemoryDB::default(), env);
 
         let tx = TxEnv::builder()
             .caller(broke_caller)
@@ -813,8 +741,7 @@ mod tests {
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let treasury = get_treasury_address(chain_id);
 
-        let mut evm =
-            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
 
         let result = evm
             .transact(anchor_tx(treasury, 7))
@@ -839,8 +766,7 @@ mod tests {
         let chain_id = 167_000;
         let treasury = get_treasury_address(chain_id);
 
-        let mut evm =
-            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
 
         evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
 
@@ -867,7 +793,7 @@ mod tests {
             alice,
             AccountInfo { balance: U256::from(10).pow(U256::from(18)), ..Default::default() },
         );
-        let mut evm = TaikoEvmFactory::default().create_evm(db, replay_env(chain_id));
+        let mut evm = TaikoEvmFactory.create_evm(db, replay_env(chain_id));
 
         evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
 
@@ -900,15 +826,14 @@ mod tests {
 
         // EVM #1 replays the real anchor (nonce 7) and commits it, advancing the golden-touch
         // nonce to 8 in the shared database.
-        let mut evm =
-            TaikoEvmFactory::default().create_evm(replay_db(7, treasury), replay_env(chain_id));
+        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
         evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
         let (db, env) = evm.finish();
 
         // EVM #2 mirrors tracing a later crafted golden-touch -> treasury transaction: a fresh
         // instance over the same database. The snapshot protection covered by
         // `derived_anchor_context_only_exempts_the_snapshot_nonce` does not carry over.
-        let mut fresh_evm = TaikoEvmFactory::default().create_evm(db, env);
+        let mut fresh_evm = TaikoEvmFactory.create_evm(db, env);
         let result = fresh_evm
             .transact(anchor_tx(treasury, 8))
             .expect("fresh EVM wrongly exempts the crafted tx (see known limitation above)");
@@ -934,7 +859,7 @@ mod tests {
             alice,
             AccountInfo { balance: U256::from(10).pow(U256::from(18)), ..Default::default() },
         );
-        let mut evm = TaikoEvmFactory::default().create_evm(db, replay_env(chain_id));
+        let mut evm = TaikoEvmFactory.create_evm(db, replay_env(chain_id));
 
         evm.transact_system_call(golden_touch, treasury, encode_anchor_system_call_data(25, 7))
             .expect("anchor system call must succeed");

@@ -21,20 +21,6 @@ use tracing::info;
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
-    // When revmc re-executes this binary as its out-of-process compile helper, serve that role
-    // and exit before any node setup runs.
-    #[cfg(feature = "jit")]
-    {
-        match alethia_reth_node::maybe_run_jit_helper() {
-            Ok(std::ops::ControlFlow::Break(())) => return,
-            Ok(std::ops::ControlFlow::Continue(())) => {}
-            Err(err) => {
-                eprintln!("Error: {err:?}");
-                std::process::exit(1);
-            }
-        }
-    }
-
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };

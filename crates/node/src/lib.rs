@@ -12,8 +12,6 @@ pub use alethia_reth_evm as evm;
 pub use alethia_reth_payload as payload;
 pub use alethia_reth_primitives as primitives;
 pub use alethia_reth_rpc as rpc;
-#[cfg(feature = "jit")]
-pub use evm::jit::maybe_run_jit_helper;
 
 use chainspec::spec::TaikoChainSpec;
 use components::{TaikoConsensusBuilder, TaikoExecutorBuilder, TaikoNetworkBuilder};

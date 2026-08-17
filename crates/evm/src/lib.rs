@@ -12,8 +12,6 @@ pub mod execution;
 pub mod factory;
 /// Taiko-specific handler behavior for fee sharing and anchor processing.
 pub mod handler;
-/// Configuration and runtime integration for revmc JIT execution.
-pub mod jit;
 /// Taiko hardfork spec identifiers and conversions.
 pub mod spec;
 /// Fork-scoped zk gas schedules for Taiko consensus.

@@ -651,7 +651,7 @@ mod test {
         let chain_spec = Arc::new(unzen_chain_spec());
         let mut state =
             State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let ctx = unzen_execution_ctx();
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
@@ -668,7 +668,7 @@ mod test {
             State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
         let mut env = unzen_evm_env();
         env.cfg_env.spec = TaikoSpecId::SHASTA;
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, env);
+        let evm = TaikoEvmFactory.create_evm(&mut state, env);
         let ctx = unzen_execution_ctx();
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
@@ -685,7 +685,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         assert_eq!(evm.block_zk_gas_used(), Some(0));
         let ctx = unzen_execution_ctx();
         let mut executor = TaikoBlockExecutor::new(
@@ -724,7 +724,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let ctx = unzen_execution_ctx();
         let mut executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
@@ -748,7 +748,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let ctx = unzen_execution_ctx();
         let executor =
             TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
@@ -772,7 +772,7 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let mut ctx = unzen_execution_ctx();
         ctx.expected_difficulty = Some(U256::ZERO);
         let mut executor =

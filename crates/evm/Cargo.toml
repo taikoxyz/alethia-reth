@@ -10,7 +10,6 @@ path = "src/lib.rs"
 
 [features]
 default = ["std"]
-jit = ["std", "dep:revmc"]
 serde = ["dep:serde"]
 std = [
     "alethia-reth-chainspec/std",
@@ -27,6 +26,5 @@ alloy-primitives = { workspace = true }
 reth-evm = { workspace = true, default-features = false }
 reth-revm = { workspace = true, default-features = false }
 revm-database-interface = { workspace = true }
-revmc = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 tracing = { workspace = true }

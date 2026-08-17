@@ -220,7 +220,7 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
         State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
     let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
-    let evm = TaikoEvmFactory::default().create_evm(&mut state, env);
+    let evm = TaikoEvmFactory.create_evm(&mut state, env);
     let ctx = TaikoBlockExecutionCtx {
         parent_hash: Default::default(),
         parent_beacon_block_root: Some(Default::default()),

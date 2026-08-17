@@ -277,7 +277,7 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 #[test]
 fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
-    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         StepGasProbeInspector::default(),
@@ -315,13 +315,13 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
-    let mut production_evm = TaikoEvmFactory::default()
+    let mut production_evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -335,13 +335,13 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
-    let mut production_evm = TaikoEvmFactory::default()
+    let mut production_evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(simple_arithmetic_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -358,7 +358,7 @@ fn transact_meters_each_run_from_zero_on_a_reused_evm() {
     // RPC helpers like `eth_estimateGas` build one EVM and re-run the same transaction many
     // times (initial run, optimistic run, binary search). Every run must meter against a fresh
     // transaction budget instead of inheriting the in-flight zk gas of the previous runs.
-    let mut evm = TaikoEvmFactory::default()
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     evm.transact(tx_env(100_000)).expect("first run should execute");
@@ -377,7 +377,7 @@ fn transact_meters_each_run_from_zero_on_a_reused_evm() {
 #[test]
 fn inspected_transact_meters_each_run_from_zero_on_a_reused_evm() {
     // Same reused-EVM shape as the production-path test above, on the inspector metering path.
-    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(simple_arithmetic_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -401,7 +401,7 @@ fn disabled_per_transact_reset_preserves_executor_accumulation_semantics() {
     // The block executor calls `set_per_transact_zk_gas_reset_enabled(false)` and brackets
     // each transaction itself (reset, intrinsic charge, commit); with the entry reset
     // disabled, in-flight usage must keep accumulating across transact calls.
-    let mut evm = TaikoEvmFactory::default()
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
     evm.set_per_transact_zk_gas_reset_enabled(false);
 
@@ -445,7 +445,7 @@ fn reset_clears_deferred_charges_when_the_flush_itself_is_over_budget() {
 /// zk gas limit on a reused EVM, then a cheap unrelated transaction must meter exactly like a
 /// fresh EVM would — any difference is leftover bookkeeping leaking across transacts.
 fn assert_no_deferred_leak_across_transacts(buster_bytecode: Bytecode, cheap_target: Address) {
-    let mut evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         nested_limit_db(cheap_target, buster_bytecode.clone()),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -456,7 +456,7 @@ fn assert_no_deferred_leak_across_transacts(buster_bytecode: Bytecode, cheap_tar
     evm.transact(cheap_tx_env(cheap_target)).expect("cheap tx should execute after the failure");
     let reused = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
 
-    let mut fresh_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut fresh_evm = TaikoEvmFactory.create_evm_with_inspector(
         nested_limit_db(cheap_target, buster_bytecode),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -475,7 +475,7 @@ fn reused_evm_replays_a_heavy_tx_without_tripping_the_block_limit() {
     // Regression for the observed `eth_estimateGas` failure: a transaction whose single run
     // costs ~68M zk gas (under the 100M Unzen block limit) was pushed over the limit by the
     // estimate flow's repeated simulations because the meter carried usage between runs.
-    let mut evm = TaikoEvmFactory::default()
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(half_limit_keccak_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     for run in 0..4u32 {
@@ -494,8 +494,8 @@ fn metered_paths_zk_gas_for_halting_tx(
     gas_limit: u64,
     expected_halt: fn(&HaltReason) -> bool,
 ) -> (u64, u64) {
-    let mut production_evm = TaikoEvmFactory::default()
-        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
+    let mut production_evm =
+        TaikoEvmFactory.create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
     let result = production_evm.transact(tx_env(gas_limit)).expect("production path executes");
     assert!(
         matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
@@ -505,7 +505,7 @@ fn metered_paths_zk_gas_for_halting_tx(
     let production_zk_gas =
         production_evm.meter().expect("production path installs a meter").tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory::default().create_evm_with_inspector(
+    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(bytecode),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
@@ -575,7 +575,7 @@ fn metered_paths_charge_static_gas_zk_gas_for_a_stack_underflow_step() {
 
 #[test]
 fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
-    let mut evm = TaikoEvmFactory::default().create_evm(
+    let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -592,7 +592,7 @@ fn unzen_adapter_raises_dedicated_error_when_limit_is_exceeded() {
 
 #[test]
 fn unzen_default_create_evm_path_is_metered() {
-    let mut evm = TaikoEvmFactory::default().create_evm(
+    let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -603,7 +603,7 @@ fn unzen_default_create_evm_path_is_metered() {
 
 #[test]
 fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
-    let mut evm = TaikoEvmFactory::default().create_evm(
+    let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
@@ -621,8 +621,7 @@ fn production_metered_path_stays_metered_when_noop_inspector_is_enabled() {
 #[test]
 fn factory_installs_unzen_schedule() {
     let env = evm_env(TaikoSpecId::UNZEN);
-    let evm = TaikoEvmFactory::default()
-        .create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
+    let evm = TaikoEvmFactory.create_evm(db_with_contract(limit_exceeding_keccak_bytecode()), env);
     let meter = evm.meter().expect("Unzen schedule should install a meter");
 
     assert!(std::ptr::eq(meter.schedule(), &UNZEN_ZK_GAS_SCHEDULE));
@@ -633,7 +632,7 @@ fn factory_installs_unzen_schedule() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let mut evm = TaikoEvmFactory::default()
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
 
     evm.charge_tx_intrinsic_zk_gas().expect("intrinsic should fit");
@@ -645,7 +644,7 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_adds_intrinsic_to_in_flight_tx() {
 fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
     use crate::alloy::TaikoZkGasEvm;
 
-    let mut evm = TaikoEvmFactory::default()
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
@@ -654,131 +653,11 @@ fn taiko_zk_gas_evm_charge_tx_intrinsic_is_ok_when_metering_is_disabled() {
 
 #[test]
 fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
-    let mut evm = TaikoEvmFactory::default()
+    let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
     assert!(evm.meter().is_none());
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
-}
-
-/// Builds a blocking, in-process JIT backend so tests observe compilation synchronously.
-#[cfg(feature = "jit")]
-fn blocking_jit_backend() -> revmc::runtime::JitBackend {
-    use revmc::runtime::{JitBackend, JitMode, RuntimeConfig};
-
-    JitBackend::new(RuntimeConfig {
-        enabled: true,
-        blocking: true,
-        single_error: false,
-        jit_mode: JitMode::InProcess,
-        ..RuntimeConfig::default()
-    })
-    .expect("blocking JIT backend should start")
-}
-
-#[cfg(feature = "jit")]
-#[test]
-fn jit_requires_local_support_and_falls_back_for_unzen() {
-    let backend = blocking_jit_backend();
-    let factory = TaikoEvmFactory::new(backend.clone());
-
-    let mut unsupported_evm = factory
-        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
-    unsupported_evm
-        .transact(tx_env(100_000))
-        .expect("locally disabled JIT execution should use the interpreter");
-    assert_eq!(backend.stats().compilations_succeeded, 0);
-
-    let factory = factory.with_jit_support();
-
-    let mut pre_unzen_evm = factory
-        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
-    pre_unzen_evm.transact(tx_env(100_000)).expect("pre-Unzen JIT execution should succeed");
-
-    let compiled = backend.stats();
-    assert_eq!(compiled.compilations_succeeded, 1);
-    assert_eq!(compiled.lookup_hits, 1);
-
-    let mut unzen_evm = factory
-        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    unzen_evm.transact(tx_env(100_000)).expect("Unzen interpreter execution should succeed");
-
-    let after_unzen = backend.stats();
-    assert_eq!(after_unzen.compilations_succeeded, compiled.compilations_succeeded);
-    assert_eq!(after_unzen.lookup_hits, compiled.lookup_hits);
-    assert!(unzen_evm.meter().is_some());
-}
-
-/// Executes `bytecode` through a blocking JIT-enabled factory and an interpreter-only factory,
-/// returning both outcomes and the JIT backend's stats.
-#[cfg(feature = "jit")]
-fn jit_and_interpreter_outputs(
-    bytecode: Bytecode,
-) -> (
-    reth_revm::context::result::ResultAndState<reth_revm::context::result::HaltReason>,
-    reth_revm::context::result::ResultAndState<reth_revm::context::result::HaltReason>,
-    revmc::runtime::RuntimeStatsSnapshot,
-) {
-    let backend = blocking_jit_backend();
-
-    let mut jit_evm = TaikoEvmFactory::new(backend.clone())
-        .with_jit_support()
-        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
-    let jit_output = jit_evm.transact(tx_env(100_000)).expect("JIT execution should succeed");
-
-    let mut interpreter_evm = TaikoEvmFactory::default()
-        .create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::SHASTA));
-    let interpreter_output =
-        interpreter_evm.transact(tx_env(100_000)).expect("interpreter execution should succeed");
-
-    (jit_output, interpreter_output, backend.stats())
-}
-
-/// LOG0 over 32 bytes of live memory: logging is forwarded to the interpreter-side builtin,
-/// and its memory operands participate in revmc's gas analysis (revmc#400).
-#[cfg(feature = "jit")]
-fn log0_with_memory_bytecode() -> Bytecode {
-    // PUSH1 0x42 PUSH1 0 MSTORE PUSH1 32 PUSH1 0 LOG0 STOP
-    Bytecode::new_raw([0x60, 0x42, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xa0, 0x00].into())
-}
-
-/// SELFDESTRUCT to a cold beneficiary: one of the diverging builtins whose stack handoff
-/// revmc#394 synchronizes between compiled code and the interpreter.
-#[cfg(feature = "jit")]
-fn selfdestruct_bytecode() -> Bytecode {
-    // PUSH1 0xbe SELFDESTRUCT
-    Bytecode::new_raw([0x60, 0xbe, 0xff].into())
-}
-
-#[cfg(feature = "jit")]
-#[test]
-fn jit_execution_matches_interpreter_execution() {
-    for (name, bytecode) in [
-        ("arithmetic", simple_arithmetic_bytecode()),
-        ("staticcall", staticcall_identity_bytecode()),
-        ("log-memory", log0_with_memory_bytecode()),
-        ("selfdestruct", selfdestruct_bytecode()),
-    ] {
-        let (jit_output, interpreter_output, stats) = jit_and_interpreter_outputs(bytecode);
-
-        assert_eq!(jit_output, interpreter_output, "JIT and interpreter diverged for {name}");
-        assert!(stats.lookup_hits >= 1, "expected the JIT path to serve compiled code for {name}");
-    }
-}
-
-/// Ensures JIT execution preserves the interpreter's dynamic-gas failure ordering.
-#[cfg(feature = "jit")]
-#[test]
-fn jit_matches_interpreter_on_dynamic_gas_failure_order() {
-    let bytecode = Bytecode::new_raw([0x60, 0x01, 0x60, 0xea, 0x55, 0x01].into());
-
-    let (jit_output, interpreter_output, stats) = jit_and_interpreter_outputs(bytecode);
-
-    assert_eq!(
-        jit_output, interpreter_output,
-        "JIT and interpreter must agree on halt reason, gas, and journaled state",
-    );
-    assert!(stats.lookup_hits >= 1, "the comparison is vacuous unless compiled code actually ran");
 }
 
 fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {

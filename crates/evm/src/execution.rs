@@ -16,12 +16,11 @@ use revm_database_interface::Database;
 
 use crate::{evm::TaikoEvm, handler::TaikoEvmHandler};
 
-/// Inspected-execution plumbing required so [`TaikoEvm`] can sit inside revmc's `JitEvm`
-/// dispatcher, whose `InspectorEvmTr` implementation delegates to the wrapped EVM. Inspected
-/// frames themselves run revm's default inspected interpreter loop (with `ZkGasInspector`
-/// hooks); only the accessors are delegated here. That default loop materializes exceptional
-/// halts before `step_end`, matching the production loop's charge point (see
-/// `zk_gas::runtime::run_metered_plain`).
+/// Inspected-execution plumbing so [`TaikoEvmHandler`] can drive [`TaikoEvm`] through
+/// `inspect_run`. Inspected frames themselves run revm's default inspected interpreter loop
+/// (with `ZkGasInspector` hooks); only the accessors are delegated here. That default loop
+/// materializes exceptional halts before `step_end`, matching the production loop's charge
+/// point (see `zk_gas::runtime::run_metered_plain`).
 impl<CTX, INSP, P> InspectorEvmTr for TaikoEvm<CTX, INSP, P>
 where
     CTX: ContextSetters<Journal: JournalTr<State = EvmState> + JournalExt>,

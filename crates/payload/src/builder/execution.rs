@@ -347,7 +347,7 @@ mod tests {
             ]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),
@@ -381,7 +381,7 @@ mod tests {
             .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory::default().create_evm(&mut state, unzen_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
             unzen_execution_ctx(),

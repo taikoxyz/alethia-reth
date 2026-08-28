@@ -96,16 +96,6 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
     ]))
 });
 
-/// Taiko Masaya list of hardforks.
-pub static TAIKO_MASAYA_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
-    ChainHardforks::new(extend_with_shared_hardforks(vec![
-        (TaikoHardfork::Ontake.boxed(), ForkCondition::Block(0)),
-        (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
-        (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(0)),
-    ]))
-});
-
 /// Extend Taiko hardfork activation tables with shared Ethereum hardfork definitions.
 fn extend_with_shared_hardforks(
     hardforks: Vec<(Box<dyn Hardfork>, ForkCondition)>,
@@ -302,22 +292,5 @@ mod test {
         let unzen = TAIKO_HOODI_HARDFORKS.fork(TaikoHardfork::Unzen);
         assert!(unzen.is_timestamp(), "unzen activation should be timestamp-based");
         assert_eq!(unzen, ForkCondition::Timestamp(1_781_787_600));
-    }
-
-    #[test]
-    fn test_masaya_shasta_uses_timestamp_activation() {
-        let shasta = TAIKO_MASAYA_HARDFORKS.fork(TaikoHardfork::Shasta);
-        assert!(shasta.is_timestamp(), "shasta activation should be timestamp-based");
-        assert_eq!(shasta, ForkCondition::Timestamp(0));
-    }
-
-    #[test]
-    fn test_masaya_unzen_activates_at_genesis() {
-        let unzen = TAIKO_MASAYA_HARDFORKS.fork(TaikoHardfork::Unzen);
-        assert_eq!(
-            unzen,
-            ForkCondition::Timestamp(0),
-            "post-reset Masaya forks into Unzen at genesis"
-        );
     }
 }

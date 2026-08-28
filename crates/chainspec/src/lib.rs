@@ -9,10 +9,7 @@ use reth_chainspec::ChainSpec;
 use reth_ethereum_forks::ChainHardforks;
 
 use crate::{
-    hardfork::{
-        TAIKO_DEVNET_HARDFORKS, TAIKO_HOODI_HARDFORKS, TAIKO_MAINNET_HARDFORKS,
-        TAIKO_MASAYA_HARDFORKS,
-    },
+    hardfork::{TAIKO_DEVNET_HARDFORKS, TAIKO_HOODI_HARDFORKS, TAIKO_MAINNET_HARDFORKS},
     spec::TaikoChainSpec,
 };
 
@@ -39,11 +36,6 @@ pub const TAIKO_HOODI_GENESIS_HASH: B256 =
 pub const TAIKO_MAINNET_GENESIS_HASH: B256 =
     b256!("0x90bc60466882de9637e269e87abab53c9108cf9113188bc4f80bcfcb10e489b9");
 
-/// Genesis hash for the Taiko Masaya network. After the reset, Masaya activates Unzen at genesis
-/// (`Timestamp(0)`), which makes the genesis header an Osaka-era block.
-pub const TAIKO_MASAYA_GENESIS_HASH: B256 =
-    b256!("0xd3597fd63c823352526ce2a4cfafe0837d878e3c9ac8558129bc04ce900402ae");
-
 /// EVM chain id for the Taiko Devnet network.
 pub const TAIKO_DEVNET_CHAIN_ID: u64 = 167_001;
 
@@ -52,9 +44,6 @@ pub const TAIKO_HOODI_CHAIN_ID: u64 = 167_013;
 
 /// EVM chain id for the Taiko Mainnet network.
 pub const TAIKO_MAINNET_CHAIN_ID: u64 = 167_000;
-
-/// EVM chain id for the Taiko Masaya network.
-pub const TAIKO_MASAYA_CHAIN_ID: u64 = 167_011;
 
 /// The Taiko Mainnet spec
 pub static TAIKO_MAINNET: LazyLock<Arc<TaikoChainSpec>> =
@@ -67,10 +56,6 @@ pub static TAIKO_DEVNET: LazyLock<Arc<TaikoChainSpec>> =
 /// The Taiko Hoodi spec
 pub static TAIKO_HOODI: LazyLock<Arc<TaikoChainSpec>> =
     LazyLock::new(|| make_taiko_hoodi_chain_spec().into());
-
-/// The Taiko Masaya spec
-pub static TAIKO_MASAYA: LazyLock<Arc<TaikoChainSpec>> =
-    LazyLock::new(|| make_taiko_masaya_chain_spec().into());
 
 /// Create a new [`ChainSpec`] for the Taiko Devnet network.
 fn make_taiko_devnet_chain_spec() -> TaikoChainSpec {
@@ -96,15 +81,6 @@ fn make_taiko_mainnet_chain_spec() -> TaikoChainSpec {
         include_str!("genesis/mainnet.json"),
         TAIKO_MAINNET_GENESIS_HASH,
         TAIKO_MAINNET_HARDFORKS.clone(),
-    )
-}
-
-/// Create a new [`ChainSpec`] for the Taiko Masaya network.
-fn make_taiko_masaya_chain_spec() -> TaikoChainSpec {
-    make_taiko_chain_spec(
-        include_str!("genesis/masaya.json"),
-        TAIKO_MASAYA_GENESIS_HASH,
-        TAIKO_MASAYA_HARDFORKS.clone(),
     )
 }
 
@@ -150,11 +126,6 @@ mod test {
                 make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
                 TAIKO_MAINNET_GENESIS_HASH,
             ),
-            (
-                "masaya",
-                make_taiko_masaya_chain_spec as fn() -> TaikoChainSpec,
-                TAIKO_MASAYA_GENESIS_HASH,
-            ),
         ];
 
         for (name, make_spec, expected_hash) in cases {
@@ -184,11 +155,6 @@ mod test {
                 "mainnet",
                 make_taiko_mainnet_chain_spec as fn() -> TaikoChainSpec,
                 TAIKO_MAINNET_CHAIN_ID,
-            ),
-            (
-                "masaya",
-                make_taiko_masaya_chain_spec as fn() -> TaikoChainSpec,
-                TAIKO_MASAYA_CHAIN_ID,
             ),
         ];
 

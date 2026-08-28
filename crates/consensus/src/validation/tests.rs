@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use super::{anchor::validate_input_selector, *};
 use alethia_reth_chainspec::{
-    TAIKO_DEVNET, TAIKO_HOODI, TAIKO_MAINNET, TAIKO_MASAYA, hardfork::TaikoHardfork,
-    spec::TaikoChainSpec,
+    TAIKO_DEVNET, TAIKO_HOODI, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoChainSpec,
 };
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy,
@@ -301,7 +300,6 @@ fn shipped_taiko_specs_never_activate_amsterdam() {
         ("mainnet", &**TAIKO_MAINNET),
         ("taiko-hoodi", &**TAIKO_HOODI),
         ("devnet", &**TAIKO_DEVNET),
-        ("masaya", &**TAIKO_MASAYA),
     ] {
         assert!(
             !spec.is_amsterdam_active_at_timestamp(u64::MAX),

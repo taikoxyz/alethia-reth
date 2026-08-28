@@ -12,9 +12,7 @@ use reth_provider::{BlockReaderIdExt, ChainSpecProvider, DBProvider, DatabasePro
 use reth_rpc_eth_types::EthApiError;
 
 use crate::eth::error::{TaikoApiError, internal_eth_error};
-use alethia_reth_chainspec::{
-    TAIKO_DEVNET_CHAIN_ID, TAIKO_HOODI_CHAIN_ID, TAIKO_MAINNET_CHAIN_ID, TAIKO_MASAYA_CHAIN_ID,
-};
+use alethia_reth_chainspec::{TAIKO_DEVNET_CHAIN_ID, TAIKO_HOODI_CHAIN_ID, TAIKO_MAINNET_CHAIN_ID};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{BatchToLastBlock, StoredL1OriginTable};
 use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
@@ -260,7 +258,7 @@ fn batch_lookup_last_pacaya_block_threshold(chain_id: u64) -> Option<U256> {
     match chain_id {
         TAIKO_MAINNET_CHAIN_ID => Some(U256::from(TAIKO_MAINNET_LAST_PACAYA_BATCH_LOOKUP_BLOCK)),
         TAIKO_HOODI_CHAIN_ID => Some(U256::from(TAIKO_HOODI_LAST_PACAYA_BATCH_LOOKUP_BLOCK)),
-        TAIKO_DEVNET_CHAIN_ID | TAIKO_MASAYA_CHAIN_ID => None,
+        TAIKO_DEVNET_CHAIN_ID => None,
         _ => None,
     }
 }

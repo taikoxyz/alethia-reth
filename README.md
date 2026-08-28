@@ -73,7 +73,6 @@ Use `--chain` with one of the supported presets:
 - `mainnet`
 - `taiko-hoodi`
 - `devnet`
-- `masaya`
 
 ### Common Runtime Flags
 

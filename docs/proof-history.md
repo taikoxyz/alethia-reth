@@ -8,7 +8,9 @@ arbitrary transaction lists.
 ## Initialization and retention
 
 An empty database copies one consistent snapshot of the node's persisted current
-state. The snapshot root is checked against its block header before use. Without
+state after execution, hashing and Merkle stages agree with the Finish checkpoint
+and no partial Merkle work remains. The copied root is checked against its block
+header; an invalid copy is discarded and retried. Without
 `--proofs-history.backfill-window-only`, indexing starts at that snapshot and
 history grows as the node advances.
 
@@ -24,22 +26,34 @@ backfill; missing history fails initialization.
 The `backfill-target` file beside the database pins an unfinished bootstrap's
 target across restarts. Committed backward batches resume from the stored earliest
 block. An interrupted initial snapshot copy restarts because its original source
-transaction no longer exists. If a pending bootstrap's anchor is reorged, its
-never-served V2 data is cleared atomically and copied again. Once backfill
-completes, the target file is removed before indexing and historical reads start.
+transaction no longer exists. Both bounds of a pending bootstrap are checked
+against canonical hashes. If either diverges, its V2 data is cleared atomically
+and copied again. Backfill uses one upstream snapshot-assisted job with aggregate
+progress and ETA; shutdown or a reorg cancels it at a write-batch boundary. Once
+backfill completes, the auxiliary snapshot and target file are removed before
+indexing and historical reads start. Cancellation waits for in-flight work and
+does not impose a fixed shutdown deadline.
 
 Live commits use precomputed trie updates. Missing updates and periodic
-verification blocks are replayed by the upstream engine once execution reaches
-the node's on-disk database. Idle polling also catches up without new canonical
-notifications. Pruning runs in the engine's persistence transaction;
-`--proofs-history.prune-interval` controls idle maintenance polling.
+verification blocks are executed through the upstream engine's synchronous API.
+Execution and root errors stop the sidecar and revoke readiness; temporarily
+unavailable parent state is retried. Each submission is confirmed durable before
+advancing, preserving per-block persistence and RPC freshness. Idle polling also
+catches up to the canonical in-memory tail without new notifications. Pruning
+runs in the engine's persistence transaction;
+`--proofs-history.prune-interval` controls idle maintenance polling and must be
+greater than zero.
 `--proofs-history.max-startup-prune-blocks` still limits automatic pruning after a
 retention configuration change.
 
 Canonical reconciliation gates historical reads during startup and reorg
-recovery. Reorgs below a completed retained anchor require rebuilding history.
-Shutdown joins the indexing threads; accepted blocks not yet persisted are
-recovered from the node on restart.
+recovery. A durable height-to-block-hash journal identifies the last retained
+common block, so shallow reorgs preserve the canonical prefix even when their
+notifications are stale or missing. Older V2 stores without journal entries
+conservatively fall back to the earliest retained anchor. Reorgs replacing that
+anchor automatically rebuild the snapshot with historical reads paused. Shutdown
+joins the indexing threads; accepted blocks not yet persisted are recovered from
+the node on restart.
 
 ## Upgrading a V1 proof database
 

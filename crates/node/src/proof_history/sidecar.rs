@@ -20,27 +20,32 @@ use reth_db::Database;
 use reth_ethereum_primitives::{Block, EthPrimitives};
 use reth_evm::ConfigureEvm;
 use reth_optimism_trie::{
-    EngineHandle, OpProofStoragePruner, OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
-    proof::DatabaseStateRoot,
+    EngineHandle, OpProofStoragePruner, OpProofsBackfillProvider, OpProofsProviderRO,
+    OpProofsProviderRw, OpProofsStore, proof::DatabaseStateRoot,
 };
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{
     BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification, CanonStateSubscriptions,
     ChainStateBlockReader, ChangeSetReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
     StageCheckpointReader, StateProviderFactory, StateReader, StorageChangeSetReader,
-    StorageSettingsCache,
+    StorageSettingsCache, TransactionVariant,
 };
 use reth_trie::StateRoot;
 use reth_trie_common::SortedTrieData;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{sync::broadcast, task, time};
 use tracing::{debug, warn};
 
-/// Maximum backward history extension per startup step, in blocks.
-const BACKFILL_BATCH_SIZE: u64 = 50;
+/// Maximum forward replay work before handling another notification or shutdown.
+const REPLAY_BATCH_SIZE: u64 = 32;
+/// Retry unavailable state for this long before reconciling the canonical window again.
+const PERSISTENCE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Delay between attempts when canonical state has not reached the retained window.
 const STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(5);
-/// Persist even a single idle block; frequent head polls must not postpone idle flushing.
+/// Preserve per-block durability and RPC freshness; explicit replay waits for each commit.
 const PERSISTENCE_THRESHOLD: u64 = 1;
 /// Bound accepted in-memory work while a persistence transaction is running, in blocks.
 const BACKPRESSURE_THRESHOLD: u64 = 10;
@@ -64,9 +69,11 @@ pub(super) enum ProofHistoryStartupAction {
     Uninitialized,
     /// Stored proof-history bounds match canonical state and can be served as-is.
     Ready,
-    /// Stored proof-history must be unwound to its retained earliest block before syncing forward.
-    UnwindToEarliest {
-        /// Earliest retained proof-history block that still matches canonical state.
+    /// The retained base is non-canonical; rebuild the snapshot with readers paused.
+    Rebuild,
+    /// Stored proof-history diverges; find the last common block using the retained hash journal.
+    ReconcileFork {
+        /// Validated fallback anchor when older databases have no hash journal.
         earliest: BlockNumHash,
     },
     /// Canonical chain has not yet reached the stored earliest block; reconciliation must retry
@@ -109,16 +116,14 @@ pub(super) fn proof_history_startup_action(
 
     // No canonical header at the earliest height yet: the chain database is (re-)syncing and has
     // not reached the retained range. Failing here would crash the node before it could ever sync
-    // past this point, so wait instead; a *mismatching* hash stays a hard error below.
+    // past this point, so wait instead; a mismatching anchor must be rebuilt.
     let Some(canonical_earliest) = canonical_earliest_hash else {
         return Ok(ProofHistoryStartupAction::WaitForCanonicalEarliest {
             earliest: earliest_number,
         });
     };
     if canonical_earliest != earliest_hash {
-        return Err(eyre!(
-            "proof-history earliest stored block {earliest_number} hash {earliest_hash:?} is not canonical; wipe proof-history storage and restart initialization"
-        ));
+        return Ok(ProofHistoryStartupAction::Rebuild);
     }
 
     // The stored head runs ahead of the canonical chain. This is the normal aftermath of an
@@ -144,8 +149,8 @@ pub(super) fn proof_history_startup_action(
     }
 
     // The canonical chain reached the stored height with a different block: real divergence
-    // (a reorg happened while the sidecar was down). Rewind to the validated earliest anchor.
-    Ok(ProofHistoryStartupAction::UnwindToEarliest {
+    // (a reorg happened while the sidecar was down). Locate the fork before unwinding.
+    Ok(ProofHistoryStartupAction::ReconcileFork {
         earliest: BlockNumHash::new(earliest_number, earliest_hash),
     })
 }
@@ -163,7 +168,7 @@ enum StartupStep {
 /// Owns Taiko lifecycle policy while upstream owns indexing, persistence and pruning.
 #[derive(Debug, Constructor)]
 pub(super) struct ProofHistorySidecar<Evm, Provider> {
-    /// Canonical provider supplying notifications and persisted catch-up targets.
+    /// Canonical provider supplying notifications and blocks for catch-up.
     provider: Provider,
     /// Taiko EVM configuration used by upstream replay.
     evm_config: Evm,
@@ -181,25 +186,6 @@ pub(super) struct ProofHistorySidecar<Evm, Provider> {
 /// proof-history head, so its blocks can be consumed directly from the notification.
 const fn committed_chain_is_contiguous(first_block: u64, latest_stored: u64) -> bool {
     first_block <= latest_stored.saturating_add(1)
-}
-
-/// Ensures a canonical reorg or revert does not replace the retained proof-history anchor.
-fn ensure_canonical_update_above_earliest(
-    update_kind: &'static str,
-    earliest: BlockNumHash,
-    first_old: BlockNumHash,
-) -> eyre::Result<()> {
-    if first_old.number <= earliest.number {
-        return Err(eyre!(
-            "proof-history {update_kind} touches retained earliest block {} hash {:?} with old block {} hash {:?}; wipe proof-history storage and restart initialization",
-            earliest.number,
-            earliest.hash,
-            first_old.number,
-            first_old.hash
-        ));
-    }
-
-    Ok(())
 }
 
 impl<Evm, Provider> ProofHistorySidecar<Evm, Provider>
@@ -222,7 +208,8 @@ where
         + ChangeSetReader
         + StorageChangeSetReader
         + StorageSettingsCache
-        + StageCheckpointReader,
+        + StageCheckpointReader
+        + Sync,
     <Provider::DB as Database>::TX: Sync,
 {
     /// Runs until shutdown, keeping all engine operations and final thread joins off Tokio.
@@ -230,10 +217,27 @@ where
     where
         Provider: CanonStateSubscriptions<Primitives = EthPrimitives>,
     {
+        if self.config.prune_interval.is_zero() {
+            return Err(eyre!("proof-history maintenance interval must be greater than zero"));
+        }
         let this = Arc::new(self);
-        // Keep shutdown pending until provider runtimes and engine threads have been joined.
         let cleanup_guard = shutdown.clone();
-        let result = Self::run_loop(&this, shutdown).await;
+        let mut monitor = shutdown.clone();
+        let result = {
+            let running = Self::run_loop(&this, shutdown);
+            tokio::pin!(running);
+            tokio::select! {
+                biased;
+                guard = &mut monitor => {
+                    this.init_storage.cancel_bootstrap();
+                    // The worker observes cancellation at a write-batch boundary and then joins.
+                    let result = running.await;
+                    drop(guard);
+                    result
+                }
+                result = &mut running => result,
+            }
+        };
         this.readiness.set_not_ready();
         blocking(move || {
             drop(this);
@@ -252,7 +256,7 @@ where
         let mut notifications = this.provider.subscribe_to_canonical_state();
         let mut engine = None;
         let mut retry = Duration::ZERO;
-        let mut interval = time::interval(this.config.prune_interval.max(Duration::from_millis(1)));
+        let mut interval = time::interval(this.config.prune_interval);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
         loop {
@@ -265,8 +269,33 @@ where
                     return Ok(());
                 }
                 _ = time::sleep(retry), if engine.is_none() => {
+                    this.init_storage.resume_bootstrap();
                     let worker = Arc::clone(this);
-                    match blocking(move || worker.prepare()).await? {
+                    let preparing = blocking(move || worker.prepare());
+                    tokio::pin!(preparing);
+                    let mut listen = true;
+                    let result = loop {
+                        tokio::select! {
+                            result = &mut preparing => break result,
+                            notification = notifications.recv(), if listen => {
+                                match notification {
+                                    Ok(CanonStateNotification::Commit { .. }) => {}
+                                    other => {
+                                        listen = !matches!(other, Err(broadcast::error::RecvError::Closed));
+                                        this.init_storage.cancel_bootstrap();
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    if this.init_storage.bootstrap_cancelled() {
+                        // Preparation may have returned an engine just as cancellation arrived.
+                        blocking(move || { drop(result); Ok(()) }).await?;
+                        if !listen { return Ok(()); }
+                        retry = Duration::ZERO;
+                        continue;
+                    }
+                    match result? {
                         StartupStep::Wait => retry = STARTUP_RETRY_INTERVAL,
                         StartupStep::Progress => retry = Duration::ZERO,
                         StartupStep::Ready(handle) => {
@@ -302,30 +331,37 @@ where
             }
             let handle = engine.take().expect("running engine selected");
             let worker = Arc::clone(this);
-            engine = blocking(move || {
-                let result = (|| -> eyre::Result<bool> {
+            let (next_engine, more_replay) = blocking(move || {
+                let result = (|| -> eyre::Result<(bool, bool)> {
                     let valid = match notification {
                         Some(notification) => worker.handle_notification(&handle, &notification)?,
                         None => {
                             matches!(worker.startup_action()?, ProofHistoryStartupAction::Ready)
                         }
                     };
+                    let (valid, more) =
+                        if valid { worker.replay_available(&handle)? } else { (false, false) };
                     if valid {
-                        handle.sync_to(
-                            worker.provider.database_provider_ro()?.best_block_number()?,
-                        )?;
+                        let window = worker.storage.provider_ro()?.get_proof_window()?;
+                        worker
+                            .init_storage
+                            .retain_hashes(window.earliest.number, window.latest.number)?;
                     }
-                    Ok(valid)
+                    Ok((valid, more))
                 })();
-                if !matches!(result, Ok(true)) {
+                if !matches!(result, Ok((true, _))) {
                     worker.readiness.set_not_ready();
                     // Drop the only handle here: no engine writer may survive reconciliation.
                     drop(handle);
-                    return result.map(|_| None);
+                    return result.map(|_| (None, false));
                 }
-                Ok(Some(handle))
+                Ok((Some(handle), result?.1))
             })
             .await?;
+            engine = next_engine;
+            if more_replay {
+                interval.reset_immediately();
+            }
             if engine.is_some() {
                 this.readiness.set_ready();
             } else {
@@ -335,21 +371,30 @@ where
         }
     }
 
-    /// Reconciles storage and performs at most one snapshot or bounded backward batch.
+    /// Reconciles storage and performs a cancellable snapshot or backward backfill job.
     fn prepare(&self) -> eyre::Result<StartupStep> {
         let target_path = self.config.required_storage_path()?.join("backfill-target");
         let pending_target = pending_backfill_target(&target_path)?;
-        if pending_target.is_some() &&
-            let Some((number, hash)) =
-                opt_block(self.storage.provider_ro()?.get_earliest_block())? &&
-            self.provider.block_hash(number)?.is_some_and(|canonical| canonical != hash)
-        {
-            // A current-state snapshot can be reorged before backfill reaches a stable anchor.
-            // The pending marker proves this bootstrap has never been served or indexed live.
-            self.init_storage.reset_bootstrap()?;
-            return Ok(StartupStep::Progress);
+        if let Some((number, hash)) = opt_block(self.storage.provider_ro()?.get_earliest_block())? {
+            let latest = self.storage.provider_ro()?.get_latest_block()?;
+            let invalid_base =
+                self.provider.block_hash(number)?.is_some_and(|canonical| canonical != hash);
+            let invalid_snapshot = pending_target.is_some() &&
+                self.provider
+                    .block_hash(latest.number)?
+                    .is_some_and(|canonical| canonical != latest.hash);
+            if invalid_base || invalid_snapshot {
+                warn!(target: "reth::taiko::proof_history", earliest = number, latest = latest.number,
+                    "rebuilding proof history after its anchor became non-canonical");
+                self.init_storage.reset_bootstrap()?;
+                return Ok(StartupStep::Progress);
+            }
         }
         match self.startup_action()? {
+            ProofHistoryStartupAction::Rebuild => {
+                self.init_storage.reset_bootstrap()?;
+                return Ok(StartupStep::Progress);
+            }
             ProofHistoryStartupAction::Uninitialized => {
                 if self.config.backfill_window_only {
                     let db = self.provider.database_provider_ro()?;
@@ -361,36 +406,53 @@ where
                     }
                 }
                 // An unfinished copy can restart at a newer source head; replace its target too.
+                self.init_storage.reset_bootstrap()?;
                 finish_backfill(&target_path)?;
-                initialize_proof_history_storage(
+                let initialized = initialize_proof_history_storage(
                     &self.provider,
                     self.init_storage.clone(),
-                    self.config
-                        .backfill_window_only
-                        .then_some((target_path.as_path(), self.config.window)),
+                    Some((
+                        target_path.as_path(),
+                        if self.config.backfill_window_only { self.config.window } else { 0 },
+                    )),
                 )?;
-                return Ok(StartupStep::Progress);
+                return Ok(if initialized { StartupStep::Progress } else { StartupStep::Wait });
             }
-            ProofHistoryStartupAction::WaitForCanonicalEarliest { .. } |
-            ProofHistoryStartupAction::WaitForCanonicalLatest { .. } => {
-                debug!(target: "reth::taiko::proof_history", "waiting for canonical proof-history state");
+            ProofHistoryStartupAction::WaitForCanonicalEarliest { earliest } => {
+                debug!(target: "reth::taiko::proof_history", earliest, "waiting for canonical proof-history anchor");
                 return Ok(StartupStep::Wait);
             }
-            ProofHistoryStartupAction::UnwindToEarliest { earliest } => {
-                let first = earliest
+            ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
+                warn!(target: "reth::taiko::proof_history", latest, canonical_best,
+                    "proof-history head is ahead of canonical state; historical reads are paused");
+                return Ok(StartupStep::Wait);
+            }
+            ProofHistoryStartupAction::ReconcileFork { earliest } => {
+                let latest = self.storage.provider_ro()?.get_latest_block()?;
+                let mut fork = earliest;
+                // Only a hash-identified common block proves the entire preceding chain matches.
+                if self.init_storage.indexed_hash(latest.number)? == Some(latest.hash) {
+                    for number in (earliest.number..latest.number).rev() {
+                        let Some(hash) = self.init_storage.indexed_hash(number)? else { break };
+                        if self.provider.block_hash(number)? == Some(hash) {
+                            fork = BlockNumHash::new(number, hash);
+                            break;
+                        }
+                    }
+                }
+                warn!(target: "reth::taiko::proof_history", from = latest.number, to = fork.number,
+                    "unwinding divergent proof history to its last known common block");
+                let first = fork
                     .number
                     .checked_add(1)
                     .ok_or_else(|| eyre!("cannot unwind beyond u64::MAX"))?;
-                let hash = self
-                    .provider
-                    .block_hash(first)?
-                    .ok_or_else(|| eyre!("missing proof-history unwind block {first}"))?;
                 let rw = self.storage.provider_rw()?;
                 rw.unwind_history(BlockWithParent::new(
-                    earliest.hash,
-                    BlockNumHash::new(first, hash),
+                    fork.hash,
+                    BlockNumHash::new(first, B256::ZERO),
                 ))?;
                 rw.commit()?;
+                self.init_storage.retain_hashes(earliest.number, fork.number)?;
                 return Ok(StartupStep::Progress);
             }
             ProofHistoryStartupAction::Ready => {}
@@ -405,6 +467,12 @@ where
             Default::default(),
         )?;
         if root != header.state_root() {
+            if pending_target.is_some() {
+                warn!(target: "reth::taiko::proof_history", block = window.latest.number,
+                    "discarding invalid pending proof-history snapshot");
+                self.init_storage.reset_bootstrap()?;
+                return Ok(StartupStep::Progress);
+            }
             return Err(eyre!(
                 "proof-history state root mismatch at block {}",
                 window.latest.number
@@ -412,10 +480,12 @@ where
         }
         if let Some(target) = pending_target {
             if window.earliest.number > target {
-                let next = window.earliest.number.saturating_sub(BACKFILL_BATCH_SIZE).max(target);
-                backfill_proof_history_storage(&self.provider, self.init_storage.clone(), next)?;
+                backfill_proof_history_storage(&self.provider, self.init_storage.clone(), target)?;
                 return Ok(StartupStep::Progress);
             }
+            let rw = self.init_storage.provider_rw()?;
+            rw.clear_snapshot()?;
+            OpProofsProviderRw::commit(rw)?;
             finish_backfill(&target_path)?;
         }
         let to_prune = window
@@ -439,6 +509,8 @@ where
         let rw = self.storage.provider_rw()?;
         pruner.prune_with_provider(&rw)?;
         rw.commit()?;
+        let retained = self.storage.provider_ro()?.get_proof_window()?;
+        self.init_storage.retain_hashes(retained.earliest.number, retained.latest.number)?;
         Ok(StartupStep::Ready(EngineHandle::spawn_with_thresholds(
             self.evm_config.clone(),
             self.provider.clone(),
@@ -447,6 +519,73 @@ where
             PERSISTENCE_THRESHOLD,
             BACKPRESSURE_THRESHOLD,
         )))
+    }
+
+    /// Replays available canonical blocks, including the in-memory tail of missed notifications.
+    /// Returns (canonical branch still valid, more work), keeping cancellation distinct from idle.
+    fn replay_available(&self, engine: &EngineHandle<Block>) -> eyre::Result<(bool, bool)> {
+        for _ in 0..REPLAY_BATCH_SIZE {
+            if self.init_storage.bootstrap_cancelled() {
+                return Ok((false, false));
+            }
+            let tip = self.storage.provider_ro()?.get_latest_block()?;
+            if tip.number >= self.provider.best_block_number()? {
+                return Ok((true, false));
+            }
+            let number = tip.number + 1;
+            let Some(block) =
+                self.provider.recovered_block(number.into(), TransactionVariant::NoHash)?
+            else {
+                return Ok((false, false));
+            };
+            if self.provider.block_hash(number)? != Some(block.hash()) ||
+                block.parent_hash() != tip.hash
+            {
+                return Ok((false, false));
+            }
+            self.init_storage.record_hashes([(number, block.hash())])?;
+            if !self.persist_block(BlockNumHash::new(number, block.hash()), || {
+                engine.execute_block(&block)?;
+                Ok(())
+            })? {
+                return Ok((false, false));
+            }
+        }
+        Ok((true, true))
+    }
+
+    /// Submits idempotent contiguous work and confirms durability before advancing the journal.
+    /// Retries successful upstream no-ops (temporarily unavailable parent state); explicit errors
+    /// propagate. Canonical changes, cancellation or prolonged stalls request reconciliation.
+    fn persist_block(
+        &self,
+        expected: BlockNumHash,
+        mut submit: impl FnMut() -> eyre::Result<()>,
+    ) -> eyre::Result<bool> {
+        let deadline = Instant::now() + PERSISTENCE_TIMEOUT;
+        let mut retry_at = Instant::now();
+        loop {
+            if self.provider.block_hash(expected.number)? != Some(expected.hash) {
+                return Ok(false);
+            }
+            if self.init_storage.bootstrap_cancelled() {
+                return Ok(false);
+            }
+            let latest = self.storage.provider_ro()?.get_latest_block()?;
+            if latest == expected {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                warn!(target: "reth::taiko::proof_history", block = expected.number, stored = latest.number,
+                    "proof-history made no durable progress; reconciling before retry");
+                return Ok(false);
+            }
+            if Instant::now() >= retry_at {
+                submit()?;
+                retry_at = Instant::now() + Duration::from_millis(100);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Checks both persisted window anchors against the currently observed canonical chain.
@@ -488,21 +627,16 @@ where
                     return Ok(false);
                 }
                 let earliest = self.storage.provider_ro()?.get_earliest_block()?;
-                if old.first().number() <= earliest.number &&
-                    self.provider.block_hash(earliest.number)? == Some(earliest.hash)
-                {
-                    return Ok(false); // queued reorg already covered by a newer canonical anchor
+                if old.first().number() <= earliest.number {
+                    return Ok(false);
                 }
-                ensure_canonical_update_above_earliest(
-                    "reorg",
-                    earliest,
-                    BlockNumHash::new(old.first().number(), old.first().hash()),
-                )?;
                 if !new.is_empty() && old.fork_block() != new.fork_block() {
                     return Err(eyre!("proof-history reorg fork blocks do not match"));
                 }
                 // The engine's buffered tip may exceed the persisted tip: always forward unwind.
                 engine.unwind(old.first().block_with_parent())?;
+                let window = self.storage.provider_ro()?.get_proof_window()?;
+                self.init_storage.retain_hashes(window.earliest.number, window.latest.number)?;
                 if new.is_empty() {
                     return Ok(true);
                 }
@@ -515,24 +649,37 @@ where
         let latest = self.storage.provider_ro()?.get_latest_block()?.number;
         if !committed_chain_is_contiguous(new.first().number(), latest) {
             // Submitting a gap would make upstream replay up to an unpersisted notification tip.
-            // The caller instead sets sync_to to the on-disk executed head.
+            // The caller explicitly replays the missing canonical prefix first.
             return Ok(true);
         }
         for (number, block) in new.blocks() {
+            let tip = self.storage.provider_ro()?.get_latest_block()?;
+            if *number <= tip.number {
+                continue;
+            }
+            if *number != tip.number.saturating_add(1) {
+                break;
+            }
+            if block.parent_hash() != tip.hash {
+                return Ok(false);
+            }
             let verify = self.config.verification_interval > 0 &&
                 number.is_multiple_of(self.config.verification_interval);
-            if !verify && let Some(data) = new.trie_data_at(*number) {
-                let SortedTrieData { hashed_state, trie_updates } = &data.get().sorted;
-                engine.index_block(
-                    block.block_with_parent(),
-                    (**trie_updates).clone(),
-                    (**hashed_state).clone(),
-                )?;
-            } else {
-                // Replay from the on-disk head through sync_to. execute_block can silently skip
-                // unavailable parent state; submitting the next live block would then turn it
-                // into a gap and raise upstream's replay target beyond persisted execution.
-                break;
+            self.init_storage.record_hashes([(*number, block.hash())])?;
+            if !self.persist_block(BlockNumHash::new(*number, block.hash()), || {
+                if !verify && let Some(data) = new.trie_data_at(*number) {
+                    let SortedTrieData { hashed_state, trie_updates } = &data.get().sorted;
+                    engine.index_block(
+                        block.block_with_parent(),
+                        (**trie_updates).clone(),
+                        (**hashed_state).clone(),
+                    )?;
+                } else {
+                    engine.execute_block(block)?;
+                }
+                Ok(())
+            })? {
+                return Ok(false);
             }
         }
         Ok(true)
@@ -543,8 +690,7 @@ where
 mod tests {
     use super::{
         ProofHistoryDatabase, ProofHistorySidecar, ProofHistoryStartupAction, StartupStep,
-        committed_chain_is_contiguous, ensure_canonical_update_above_earliest,
-        proof_history_startup_action,
+        committed_chain_is_contiguous, proof_history_startup_action,
     };
     use crate::proof_history::{
         ProofHistoryConfig, storage_init::initialize_proof_history_storage,
@@ -557,9 +703,7 @@ mod tests {
     use reth_db_common::init::init_genesis;
     use reth_ethereum_primitives::{Block, BlockBody};
     use reth_evm_ethereum::EthEvmConfig;
-    use reth_optimism_trie::{
-        EngineHandle, OpProofStoragePruner, OpProofsInitProvider, OpProofsProviderRO, OpProofsStore,
-    };
+    use reth_optimism_trie::{OpProofsInitProvider, OpProofsProviderRO, OpProofsStore};
     use reth_primitives_traits::Block as _;
     use reth_provider::{
         providers::BlockchainProvider,
@@ -577,7 +721,7 @@ mod tests {
         init_genesis(&factory).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
-        initialize_proof_history_storage(&factory, storage.clone(), None).unwrap();
+        assert!(initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
         let sidecar = ProofHistorySidecar::new(
             BlockchainProvider::new(factory).unwrap(),
             EthEvmConfig::ethereum(spec.clone()),
@@ -656,17 +800,9 @@ mod tests {
     }
 
     #[test]
-    fn reorg_replaces_buffered_blocks_above_the_persisted_tip() {
+    fn reorg_replaces_the_persisted_tip() {
         let (sidecar, spec, _dir) = sidecar_fixture();
-        // Hold updates in memory to exercise the real buffered-tip/persisted-tip distinction.
-        let engine = EngineHandle::spawn_with_thresholds(
-            sidecar.evm_config.clone(),
-            sidecar.provider.clone(),
-            sidecar.storage.clone(),
-            OpProofStoragePruner::new(sidecar.storage.clone(), sidecar.provider.clone(), 100),
-            100,
-            101,
-        );
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
         let old = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
         let state = sidecar.provider.canonical_in_memory_state();
         let commit = NewCanonicalChain::Commit { new: vec![old.clone()] };
@@ -674,7 +810,7 @@ mod tests {
         state.update_chain(commit);
         state.set_canonical_head(old.recovered_block.clone_sealed_header());
         assert!(sidecar.handle_notification(&engine, &notification).unwrap());
-        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 1);
 
         let new = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 2);
         let update = NewCanonicalChain::Reorg { old: vec![old], new: vec![new.clone()] };
@@ -683,7 +819,7 @@ mod tests {
         state.set_canonical_head(new.recovered_block.clone_sealed_header());
         assert!(sidecar.handle_notification(&engine, &notification).unwrap());
         // A following block must accept the replacement's hash as parent, proving that the
-        // buffered old branch was actually removed instead of skipped using the persisted tip.
+        // previous branch was actually removed before accepting its replacement.
         engine
             .index_block(
                 alloy_eips::eip1898::BlockWithParent::new(
@@ -758,9 +894,8 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_replays_verified_blocks_only_after_disk_execution_advances() {
+    fn sidecar_replays_canonical_memory_tail_without_notifications() {
         use reth::tasks::Runtime;
-        use reth_provider::{BlockWriter, DBProvider, DatabaseProviderFactory, ExecutionOutcome};
         use std::time::Duration;
         let (mut sidecar, spec, _dir) = sidecar_fixture();
         sidecar.config.prune_interval = Duration::from_millis(20);
@@ -783,27 +918,9 @@ mod tests {
             .unwrap();
             let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
             let update = NewCanonicalChain::Commit { new: vec![block.clone()] };
-            let notification = update.to_chain_notification();
             state.update_chain(update);
             state.set_canonical_head(block.recovered_block.clone_sealed_header());
-            state.notify_canon_state(notification);
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
-
-            let rw = provider.database_provider_rw().unwrap();
-            rw.append_blocks_with_state(
-                vec![(*block.recovered_block).clone()],
-                &ExecutionOutcome {
-                    first_block: 1,
-                    receipts: vec![vec![]],
-                    requests: vec![Default::default()],
-                    ..Default::default()
-                },
-                Default::default(),
-            )
-            .unwrap();
-            rw.commit().unwrap();
-            // No second canonical notification: the disk-head poll must discover this gap.
+            // A paused in-memory tail must be replayed even without a notification.
             tokio::time::timeout(Duration::from_secs(5), async {
                 while storage.provider_ro().unwrap().get_latest_block().unwrap().number != 1 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -841,44 +958,6 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_update_guard_rejects_reorg_touching_earliest() {
-        let error = ensure_canonical_update_above_earliest(
-            "reorg",
-            BlockNumHash::new(10, hash(10)),
-            BlockNumHash::new(10, hash(11)),
-        )
-        .expect_err("reorg replacing earliest must fail closed");
-
-        let message = error.to_string();
-        assert!(message.contains("proof-history reorg touches retained earliest block 10"));
-        assert!(message.contains("wipe proof-history storage"));
-    }
-
-    #[test]
-    fn proof_history_update_guard_rejects_revert_touching_earliest() {
-        let error = ensure_canonical_update_above_earliest(
-            "revert",
-            BlockNumHash::new(10, hash(10)),
-            BlockNumHash::new(10, hash(10)),
-        )
-        .expect_err("revert unwinding earliest must fail closed");
-
-        let message = error.to_string();
-        assert!(message.contains("proof-history revert touches retained earliest block 10"));
-        assert!(message.contains("wipe proof-history storage"));
-    }
-
-    #[test]
-    fn proof_history_update_guard_allows_reorg_above_earliest() {
-        ensure_canonical_update_above_earliest(
-            "reorg",
-            BlockNumHash::new(10, hash(10)),
-            BlockNumHash::new(11, hash(11)),
-        )
-        .expect("reorg after retained earliest should be allowed");
-    }
-
-    #[test]
     fn proof_history_startup_action_ready_when_latest_is_canonical() {
         let action = proof_history_startup_action(
             Some((10, hash(10))),
@@ -893,17 +972,17 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_latest_canonical_but_earliest_noncanonical() {
-        let error = proof_history_startup_action(
+    fn proof_history_startup_action_rebuilds_when_latest_canonical_but_earliest_noncanonical() {
+        let action = proof_history_startup_action(
             Some((10, hash(11))),
             Some((20, hash(20))),
             20,
             Some(hash(10)),
             Some(hash(20)),
         )
-        .expect_err("noncanonical earliest must fail even when latest is canonical");
+        .unwrap();
 
-        assert!(error.to_string().contains("earliest stored block"));
+        assert_eq!(action, ProofHistoryStartupAction::Rebuild);
     }
 
     #[test]
@@ -919,9 +998,7 @@ mod tests {
 
         assert_eq!(
             action,
-            ProofHistoryStartupAction::UnwindToEarliest {
-                earliest: BlockNumHash::new(10, hash(10))
-            }
+            ProofHistoryStartupAction::ReconcileFork { earliest: BlockNumHash::new(10, hash(10)) }
         );
     }
 
@@ -958,19 +1035,17 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_earliest_is_noncanonical() {
-        let error = proof_history_startup_action(
+    fn proof_history_startup_action_rebuilds_when_earliest_is_noncanonical() {
+        let action = proof_history_startup_action(
             Some((10, hash(11))),
             Some((20, hash(21))),
             20,
             Some(hash(10)),
             Some(hash(20)),
         )
-        .expect_err("noncanonical earliest must not be served");
+        .unwrap();
 
-        let message = error.to_string();
-        assert!(message.contains("earliest stored block"));
-        assert!(message.contains("wipe proof-history storage"));
+        assert_eq!(action, ProofHistoryStartupAction::Rebuild);
     }
 
     #[test]
@@ -987,5 +1062,343 @@ mod tests {
         .expect_err("missing canonical hash below best must fail closed");
 
         assert!(error.to_string().contains("no canonical hash"));
+    }
+
+    use reth_provider::BlockHashReader;
+
+    /// Waits until the persisted proof-history latest block reaches `number`.
+    fn wait_for_latest(storage: &super::ProofHistoryStorage, number: u64) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let latest = storage.provider_ro().unwrap().get_latest_block().unwrap().number;
+            if latest == number {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "latest stuck at {latest}, wanted {number}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn stale_reorg_preserves_the_canonical_prefix() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let state = sidecar.provider.canonical_in_memory_state();
+        let root = spec.genesis_header().state_root;
+
+        // Canonical blocks 1 and 2 are indexed from notifications and persisted (threshold 1).
+        let b1 = executed(1, spec.genesis_hash(), root, 1);
+        let commit1 = NewCanonicalChain::Commit { new: vec![b1.clone()] };
+        let n1 = commit1.to_chain_notification();
+        state.update_chain(commit1);
+        state.set_canonical_head(b1.recovered_block.clone_sealed_header());
+        assert!(sidecar.handle_notification(&engine, &n1).unwrap());
+        wait_for_latest(&sidecar.storage, 1);
+        let b2 = executed(2, b1.recovered_block.hash(), root, 2);
+        let commit2 = NewCanonicalChain::Commit { new: vec![b2.clone()] };
+        let n2 = commit2.to_chain_notification();
+        state.update_chain(commit2);
+        state.set_canonical_head(b2.recovered_block.clone_sealed_header());
+        assert!(sidecar.handle_notification(&engine, &n2).unwrap());
+        wait_for_latest(&sidecar.storage, 2);
+
+        // Reorg A replaces block 2; reorg B replaces the replacement before the sidecar sees A.
+        let b2a = executed(2, b1.recovered_block.hash(), root, 3);
+        let reorg_a = NewCanonicalChain::Reorg { old: vec![b2.clone()], new: vec![b2a.clone()] };
+        let na = reorg_a.to_chain_notification();
+        state.update_chain(reorg_a);
+        state.set_canonical_head(b2a.recovered_block.clone_sealed_header());
+        let b2b = executed(2, b1.recovered_block.hash(), root, 4);
+        let reorg_b = NewCanonicalChain::Reorg { old: vec![b2a.clone()], new: vec![b2b.clone()] };
+        state.update_chain(reorg_b);
+        state.set_canonical_head(b2b.recovered_block.clone_sealed_header());
+
+        // The stale reorg A is refused; run_loop then drops the engine and reconciles.
+        assert!(!sidecar.handle_notification(&engine, &na).unwrap());
+        drop(engine);
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        // Equal state roots on every block cannot identify the fork; retain the hash-matched
+        // prefix.
+        let latest = sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number;
+        assert_eq!(latest, 1);
+        assert_eq!(sidecar.provider.block_hash(1).unwrap(), Some(b1.recovered_block.hash()));
+    }
+
+    #[test]
+    fn stale_revert_preserves_the_canonical_prefix() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let state = sidecar.provider.canonical_in_memory_state();
+        let root = spec.genesis_header().state_root;
+        let b1 = executed(1, spec.genesis_hash(), root, 1);
+        let commit1 = NewCanonicalChain::Commit { new: vec![b1.clone()] };
+        let n1 = commit1.to_chain_notification();
+        state.update_chain(commit1);
+        state.set_canonical_head(b1.recovered_block.clone_sealed_header());
+        assert!(sidecar.handle_notification(&engine, &n1).unwrap());
+        wait_for_latest(&sidecar.storage, 1);
+        let b2 = executed(2, b1.recovered_block.hash(), root, 2);
+        let commit2 = NewCanonicalChain::Commit { new: vec![b2.clone()] };
+        let n2 = commit2.to_chain_notification();
+        state.update_chain(commit2);
+        state.set_canonical_head(b2.recovered_block.clone_sealed_header());
+        assert!(sidecar.handle_notification(&engine, &n2).unwrap());
+        wait_for_latest(&sidecar.storage, 2);
+
+        // Pure revert of block 2 (driver reset), then a new block 2' lands before the sidecar
+        // consumes the revert notification.
+        let revert = NewCanonicalChain::Reorg { old: vec![b2.clone()], new: vec![] };
+        let nr = revert.to_chain_notification();
+        state.update_chain(revert);
+        state.set_canonical_head(b1.recovered_block.clone_sealed_header());
+        let b2a = executed(2, b1.recovered_block.hash(), root, 3);
+        let commit2a = NewCanonicalChain::Commit { new: vec![b2a.clone()] };
+        state.update_chain(commit2a);
+        state.set_canonical_head(b2a.recovered_block.clone_sealed_header());
+
+        assert!(!sidecar.handle_notification(&engine, &nr).unwrap());
+        drop(engine);
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        let latest = sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number;
+        assert_eq!(latest, 1);
+    }
+
+    #[test]
+    fn replayed_root_mismatch_stops_the_sidecar() {
+        use reth::tasks::Runtime;
+        use reth_provider::{BlockWriter, DBProvider, DatabaseProviderFactory, ExecutionOutcome};
+        use std::time::Duration;
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        sidecar.config.prune_interval = Duration::from_secs(5);
+        sidecar.config.verification_interval = 1;
+        let provider = sidecar.provider.clone();
+        let storage = sidecar.storage.clone();
+        let readiness = sidecar.readiness.clone();
+        let runtime = Runtime::test();
+        let task = runtime.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
+            sidecar.run(shutdown).await.unwrap();
+        });
+        runtime.handle().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !readiness.is_ready() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            // Block 1 persisted on disk with a WRONG state root (divergent execution).
+            let block = executed(1, spec.genesis_hash(), B256::repeat_byte(0xAA), 1);
+            let rw = provider.database_provider_rw().unwrap();
+            rw.append_blocks_with_state(
+                vec![(*block.recovered_block).clone()],
+                &ExecutionOutcome {
+                    first_block: 1,
+                    receipts: vec![vec![]],
+                    requests: vec![Default::default()],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap();
+            rw.commit().unwrap();
+            // Mirror what reth's engine tree does on every commit so the upstream
+            // runner's best_block clamp does not hide the replay.
+            let state = provider.canonical_in_memory_state();
+            let commit = NewCanonicalChain::Commit { new: vec![block.clone()] };
+            let notification = commit.to_chain_notification();
+            state.update_chain(commit);
+            state.set_canonical_head(block.recovered_block.clone_sealed_header());
+            // Real production path: Commit notification whose tip is a verification block.
+            state.notify_canon_state(notification);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while readiness.is_ready() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let latest = storage.provider_ro().unwrap().get_latest_block().unwrap().number;
+            assert!(!readiness.is_ready(), "root mismatch must revoke readiness");
+            assert_eq!(latest, 0);
+        });
+        assert!(
+            runtime
+                .handle()
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(5), task).await.unwrap()
+                })
+                .is_err()
+        );
+        assert!(runtime.graceful_shutdown_with_timeout(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn snapshot_waits_for_pipeline_stages_to_agree() {
+        use reth_provider::{DBProvider, DatabaseProviderFactory, StageCheckpointWriter};
+        use reth_stages_types::{StageCheckpoint, StageId};
+        let (sidecar, _spec, _dir) = sidecar_fixture();
+        // Simulate the execution stage committing ahead of Finish.
+        let db = sidecar.provider.database_provider_rw().unwrap();
+        db.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(1)).unwrap();
+        db.commit().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        let mut sidecar = sidecar;
+        sidecar.storage = storage.clone().into();
+        sidecar.init_storage = storage;
+        sidecar.config.storage_path = Some(dir.path().to_path_buf());
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Wait));
+        assert!(sidecar.storage.provider_ro().unwrap().get_latest_block().is_err());
+    }
+
+    #[test]
+    fn default_snapshot_recovers_when_its_anchor_is_reorged() {
+        let (mut sidecar, _spec, _dir) = sidecar_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        let init = storage.initialization_provider().unwrap();
+        init.set_initial_state_anchor(BlockNumHash::new(0, B256::repeat_byte(7))).unwrap();
+        init.commit_initial_state().unwrap();
+        init.commit().unwrap();
+        sidecar.storage = storage.clone().into();
+        sidecar.init_storage = storage;
+        sidecar.config.storage_path = Some(dir.path().to_path_buf());
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        assert!(sidecar.storage.provider_ro().unwrap().get_latest_block().is_err());
+    }
+
+    #[test]
+    fn live_verification_does_not_force_subsequent_commits_into_disk_replay() {
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        sidecar.config.verification_interval = 2;
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let state = sidecar.provider.canonical_in_memory_state();
+        let mut parent = spec.genesis_hash();
+        for number in 1..=4 {
+            let block = executed(number, parent, spec.genesis_header().state_root, number as u8);
+            parent = block.recovered_block.hash();
+            let commit = NewCanonicalChain::Commit { new: vec![block.clone()] };
+            let notification = commit.to_chain_notification();
+            state.update_chain(commit);
+            state.set_canonical_head(block.recovered_block.clone_sealed_header());
+            assert!(sidecar.handle_notification(&engine, &notification).unwrap());
+            assert_eq!(
+                sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().hash,
+                parent
+            );
+        }
+    }
+    fn index_empty_chain(
+        sidecar: &ProofHistorySidecar<EthEvmConfig, BlockchainProvider<MockNodeTypesWithDB>>,
+        spec: &ChainSpec,
+        count: u64,
+    ) -> Vec<ExecutedBlock> {
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let state = sidecar.provider.canonical_in_memory_state();
+        let mut parent = spec.genesis_hash();
+        let mut blocks = Vec::new();
+        for number in 1..=count {
+            let block = executed(number, parent, spec.genesis_header().state_root, number as u8);
+            parent = block.recovered_block.hash();
+            let commit = NewCanonicalChain::Commit { new: vec![block.clone()] };
+            let notification = commit.to_chain_notification();
+            state.update_chain(commit);
+            state.set_canonical_head(block.recovered_block.clone_sealed_header());
+            assert!(sidecar.handle_notification(&engine, &notification).unwrap());
+            blocks.push(block);
+        }
+        blocks
+    }
+
+    #[test]
+    fn successful_noop_submission_is_retried_until_durable() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![block.clone()] });
+        state.set_canonical_head(block.recovered_block.clone_sealed_header());
+        let expected = BlockNumHash::new(1, block.recovered_block.hash());
+        sidecar.init_storage.record_hashes([(1, expected.hash)]).unwrap();
+        let mut attempts = 0;
+        assert!(
+            sidecar
+                .persist_block(expected, || {
+                    attempts += 1;
+                    // Model upstream's recoverable StateForHashNotFound -> Ok(()) contract.
+                    if attempts > 1 {
+                        engine.execute_block(&block.recovered_block)?;
+                    }
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(attempts > 1);
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap(), expected);
+    }
+
+    #[test]
+    fn pending_backfill_rebuilds_when_only_its_latest_anchor_reorgs() {
+        let (sidecar, spec, dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        std::fs::write(dir.path().join("backfill-target"), "0").unwrap();
+        let new =
+            executed(2, blocks[0].recovered_block.hash(), spec.genesis_header().state_root, 9);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Reorg {
+            old: vec![blocks[1].clone()],
+            new: vec![new.clone()],
+        });
+        state.set_canonical_head(new.recovered_block.clone_sealed_header());
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        assert!(sidecar.storage.provider_ro().unwrap().get_earliest_block().is_err());
+    }
+
+    #[test]
+    fn startup_prune_enforces_limit_and_prunes_the_hash_journal() {
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        sidecar.config.window = 0;
+        sidecar.config.max_startup_prune_blocks = 1;
+        assert!(sidecar.prepare().err().unwrap().to_string().contains("requires pruning 2"));
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 0);
+        sidecar.config.window = 1;
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Ready(_)));
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 1);
+        assert_eq!(sidecar.init_storage.indexed_hash(0).unwrap(), None);
+        assert_eq!(
+            sidecar.init_storage.indexed_hash(1).unwrap(),
+            Some(blocks[0].recovered_block.hash())
+        );
+    }
+
+    #[test]
+    fn snapshot_waits_for_partial_merkle_work_and_discards_a_bad_copy() {
+        use reth_db::{tables, transaction::DbTxMut};
+        use reth_provider::{DBProvider, DatabaseProviderFactory, StageCheckpointWriter};
+        use reth_stages_types::StageId;
+        let (sidecar, _spec, _dir) = sidecar_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        let db = sidecar.provider.database_provider_rw().unwrap();
+        db.save_stage_checkpoint_progress(StageId::MerkleExecute, vec![1]).unwrap();
+        db.commit().unwrap();
+        assert!(
+            !initialize_proof_history_storage(&sidecar.provider, storage.clone(), None).unwrap()
+        );
+        assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
+        let db = sidecar.provider.database_provider_rw().unwrap();
+        db.save_stage_checkpoint_progress(StageId::MerkleExecute, vec![]).unwrap();
+        // Matching checkpoints alone do not validate corrupted or inconsistent state tables.
+        db.tx_ref().clear::<tables::AccountsTrie>().unwrap();
+        db.tx_ref().clear::<tables::HashedAccounts>().unwrap();
+        db.commit().unwrap();
+        assert!(
+            !initialize_proof_history_storage(&sidecar.provider, storage.clone(), None).unwrap()
+        );
+        assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
     }
 }

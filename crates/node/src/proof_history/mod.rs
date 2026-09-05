@@ -91,7 +91,8 @@ where
         + HeaderProvider
         + StorageChangeSetReader
         + StageCheckpointReader
-        + StorageSettingsCache,
+        + StorageSettingsCache
+        + Sync,
     <T::DB as Database>::TX: Sync,
 {
     if !config.enabled {

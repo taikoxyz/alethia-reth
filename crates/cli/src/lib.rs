@@ -99,7 +99,7 @@ pub struct TaikoProofHistoryArgs {
         long = "proofs-history.prune-interval",
         value_name = "DURATION",
         default_value = "15s",
-        value_parser = humantime::parse_duration,
+        value_parser = parse_nonzero_duration,
         help_heading = "Taiko Proof History"
     )]
     pub prune_interval: Duration,
@@ -277,6 +277,15 @@ impl<
     }
 }
 
+/// Parses a maintenance duration, rejecting zero to prevent a busy polling loop.
+fn parse_nonzero_duration(value: &str) -> Result<Duration, String> {
+    let duration = humantime::parse_duration(value).map_err(|error| error.to_string())?;
+    if duration.is_zero() {
+        return Err("duration must be greater than zero".into());
+    }
+    Ok(duration)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -302,6 +311,13 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         ext: TaikoCliExtArgs,
+    }
+
+    #[test]
+    fn rejects_zero_proof_history_maintenance_interval() {
+        let result =
+            TestCli::try_parse_from(["alethia-reth", "--proofs-history.prune-interval", "0s"]);
+        assert!(result.is_err());
     }
 
     #[test]

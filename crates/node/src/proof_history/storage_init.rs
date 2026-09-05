@@ -5,8 +5,9 @@ use alloy_consensus::BlockHeader;
 use eyre::{WrapErr, eyre};
 use reth_db::Database;
 use reth_optimism_trie::{
-    BackfillJob, InitializationJob, OpProofsProviderRO, OpProofsStore, RethTrieStorageLayout,
-    proof::DatabaseStateRoot,
+    BackfillJob, InitializationJob, OpProofsBackfillStore, OpProofsProviderRO,
+    OpProofsSnapshotInitProvider, OpProofsStore, RethTrieStorageLayout, SnapshotInitStatus,
+    backfill::DEFAULT_BACKFILL_BATCH_SIZE, proof::DatabaseStateRoot,
 };
 use reth_provider::{
     BlockHashReader, BlockNumReader, ChainStateBlockReader, ChangeSetReader, DBProvider,
@@ -19,9 +20,9 @@ use std::{fs, io, path::Path, sync::Arc};
 use tracing::{info, warn};
 
 /// Copies a single persisted current-state snapshot using the upstream initialization job.
-/// The header and trie tables come from the same read transaction; the resulting root is
-/// verified before the sidecar publishes readiness. Use an unwrapped store to avoid collecting
-/// a metrics observation for every copied row.
+/// Trie tables share one MDBX snapshot, while headers are backed by reth's shared static files.
+/// A root mismatch retries once with a fresh source, then fails with repair guidance. Canonical
+/// reconciliation checks the copied anchor before reads begin. Bulk rows bypass metrics wrappers.
 pub(super) fn initialize_proof_history_storage<Provider>(
     provider: &Provider,
     storage: Arc<ProofHistoryDatabase>,
@@ -36,53 +37,67 @@ where
         + StageCheckpointReader,
     <Provider::DB as Database>::TX: Sync,
 {
-    let db = provider.database_provider_ro()?.disable_long_read_transaction_safety();
-    let number = db.best_block_number()?;
-    for stage in [
-        StageId::Execution,
-        StageId::AccountHashing,
-        StageId::StorageHashing,
-        StageId::MerkleExecute,
-    ] {
-        let checkpoint = db.get_stage_checkpoint(stage)?.unwrap_or_default().block_number;
-        if checkpoint != number {
-            info!(target: "reth::taiko::proof_history", ?stage, checkpoint, finish = number,
+    for attempt in 0..2 {
+        let db = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+        let number = db.best_block_number()?;
+        for stage in [
+            StageId::Execution,
+            StageId::AccountHashing,
+            StageId::StorageHashing,
+            StageId::MerkleExecute,
+        ] {
+            let checkpoint = db.get_stage_checkpoint(stage)?.unwrap_or_default().block_number;
+            if checkpoint != number {
+                info!(target: "reth::taiko::proof_history", ?stage, checkpoint, finish = number,
                 "waiting for consistent pipeline state before proof-history snapshot");
+                return Ok(false);
+            }
+        }
+        if db.get_stage_checkpoint_progress(StageId::MerkleExecute)?.is_some_and(|p| !p.is_empty())
+        {
+            info!(target: "reth::taiko::proof_history", number, "waiting for partial Merkle execution to finish");
             return Ok(false);
         }
+        let Some(header) = db.sealed_header(number)? else {
+            return Ok(false);
+        };
+        let layout = if db.cached_storage_settings().is_v2() {
+            RethTrieStorageLayout::Packed
+        } else {
+            RethTrieStorageLayout::Legacy
+        };
+        if let Some((path, window)) = backfill {
+            let finalized = db.last_finalized_block_number()?.unwrap_or(number);
+            let target = number.max(finalized).saturating_sub(window).min(number);
+            let temporary = path.with_extension("tmp");
+            fs::write(&temporary, target.to_string())?;
+            fs::File::open(&temporary)?.sync_all()?;
+            fs::rename(temporary, path)?;
+            sync_backfill_directory(path)?;
+        }
+        storage.record_hashes([(number, header.hash())])?;
+        InitializationJob::new(storage.clone(), db.into_tx(), layout).run(number, header.hash())?;
+        let root = StateRoot::overlay_root(storage.provider_ro()?, number, Default::default())?;
+        if root != header.state_root() {
+            storage.reset_bootstrap()?;
+            if attempt == 0 {
+                warn!(target: "reth::taiko::proof_history", number, actual = ?root,
+                expected = ?header.state_root(), "snapshot root mismatch; retrying once with a fresh source");
+                continue;
+            }
+            return Err(eyre!(
+                "proof-history snapshot state root mismatch at block {number} ({:?}): \
+                 computed {root:?}, expected {:?}; the invalid copy was discarded. \
+                 Verify or repair the node's source trie/hashed state and storage layout before \
+                 restarting; copying the same source again cannot repair it",
+                header.hash(),
+                header.state_root()
+            ));
+        }
+        info!(target: "reth::taiko::proof_history", number, "initialized proof-history snapshot");
+        return Ok(true);
     }
-    if db.get_stage_checkpoint_progress(StageId::MerkleExecute)?.is_some_and(|p| !p.is_empty()) {
-        info!(target: "reth::taiko::proof_history", number, "waiting for partial Merkle execution to finish");
-        return Ok(false);
-    }
-    let header = db
-        .sealed_header(number)?
-        .ok_or_else(|| eyre!("missing proof-history snapshot header {number}"))?;
-    let layout = if db.cached_storage_settings().is_v2() {
-        RethTrieStorageLayout::Packed
-    } else {
-        RethTrieStorageLayout::Legacy
-    };
-    if let Some((path, window)) = backfill {
-        let finalized = db.last_finalized_block_number()?.unwrap_or(number);
-        let target = number.max(finalized).saturating_sub(window).min(number);
-        let temporary = path.with_extension("tmp");
-        fs::write(&temporary, target.to_string())?;
-        fs::File::open(&temporary)?.sync_all()?;
-        fs::rename(temporary, path)?;
-        sync_backfill_directory(path)?;
-    }
-    storage.record_hashes([(number, header.hash())])?;
-    InitializationJob::new(storage.clone(), db.into_tx(), layout).run(number, header.hash())?;
-    let root = StateRoot::overlay_root(storage.provider_ro()?, number, Default::default())?;
-    if root != header.state_root() {
-        warn!(target: "reth::taiko::proof_history", number, actual = ?root, expected = ?header.state_root(),
-            "discarding invalid proof-history snapshot; initialization will retry");
-        storage.reset_bootstrap()?;
-        return Ok(false);
-    }
-    info!(target: "reth::taiko::proof_history", number, "initialized proof-history snapshot");
-    Ok(true)
+    unreachable!("each final snapshot attempt returns")
 }
 
 /// Reads the pending backward-bootstrap target. Absence means bootstrap is complete or disabled.
@@ -111,9 +126,9 @@ fn sync_backfill_directory(path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Extends a completed snapshot backward from its committed earliest block to `target`.
-/// The upstream snapshot-assisted job validates historical roots and commits atomic batches.
-/// Cancellation is observed when opening the next batch transaction.
+/// Advances backward by at most 10,000 blocks, then releases the pinned node read transaction.
+/// Preparation revalidates canonical bounds before the next chunk. Upstream commits atomic
+/// batches and checks cancellation at their boundaries; tiny fresh ranges avoid a second copy.
 pub(super) fn backfill_proof_history_storage<Provider>(
     provider: &Provider,
     storage: Arc<ProofHistoryDatabase>,
@@ -132,19 +147,78 @@ where
         + Send
         + Sync,
 {
+    backfill_proof_history_chunk(provider, storage, target, 10_000)
+}
+
+/// Runs one bounded backward chunk from a fresh, canonically validated node read transaction.
+/// `max_blocks` is positive and limits retained MDBX pages between source-provider refreshes.
+fn backfill_proof_history_chunk<Provider>(
+    provider: &Provider,
+    storage: Arc<ProofHistoryDatabase>,
+    target: u64,
+    max_blocks: u64,
+) -> eyre::Result<()>
+where
+    Provider: DatabaseProviderFactory,
+    Provider::Provider: BlockNumReader
+        + BlockHashReader
+        + HeaderProvider
+        + DBProvider
+        + ChangeSetReader
+        + StorageChangeSetReader
+        + StorageSettingsCache
+        + StageCheckpointReader
+        + Send
+        + Sync,
+{
+    storage.check_bootstrap_cancelled()?;
     let db = provider.database_provider_ro()?.disable_long_read_transaction_safety();
-    let earliest = storage.provider_ro()?.get_earliest_block()?.number;
-    // Write ahead only below the committed earliest block; a crash leaves harmless extra rows.
-    for start in (target..earliest).step_by(1000) {
-        storage.check_bootstrap_cancelled()?;
-        let end = start.saturating_add(1000).min(earliest);
-        let hashes = db.canonical_hashes_range(start, end)?;
-        if hashes.len() as u64 != end - start {
-            return Err(eyre!("missing canonical hashes for proof-history backfill {start}..{end}"));
-        }
-        storage.record_hashes((start..end).zip(hashes))?;
+    let window = storage.provider_ro()?.get_proof_window()?;
+    if db.block_hash(window.earliest.number)? != Some(window.earliest.hash) ||
+        db.block_hash(window.latest.number)? != Some(window.latest.hash)
+    {
+        info!(target: "reth::taiko::proof_history", earliest = window.earliest.number,
+            latest = window.latest.number, "backfill source changed; returning to reconciliation");
+        return Ok(());
     }
-    BackfillJob::new(db, storage).run_with_snapshot(target).wrap_err(
+    let earliest = window.earliest.number;
+    if target >= earliest {
+        return Ok(());
+    }
+    let next = earliest.saturating_sub(max_blocks.max(1)).max(target);
+    let result = (|| -> eyre::Result<()> {
+        // Journal only this chunk, below committed earliest. A crash leaves harmless extra rows.
+        for start in (next..earliest).step_by(1000) {
+            storage.check_bootstrap_cancelled()?;
+            let end = start.saturating_add(1000).min(earliest);
+            let hashes = db.canonical_hashes_range(start, end)?;
+            if hashes.len() as u64 != end - start {
+                return Err(eyre!(
+                    "missing canonical hashes for proof-history backfill {start}..{end}"
+                ));
+            }
+            storage.record_hashes((start..end).zip(hashes))?;
+        }
+        let snapshot = storage.snapshot_initialization_provider()?.snapshot_init_anchor()?;
+        // Keep an existing snapshot in sync even when only its final small chunk remains. Use
+        // total remaining distance, not the chunk size, to choose the initial strategy.
+        let use_snapshot = !matches!(snapshot.status, SnapshotInitStatus::NotStarted) ||
+            earliest - target > DEFAULT_BACKFILL_BATCH_SIZE as u64;
+        let job = BackfillJob::new(db, Arc::clone(&storage));
+        if use_snapshot { job.run_with_snapshot(next) } else { job.run(next) }.map_err(Into::into)
+    })();
+    if result.is_err() {
+        // Static-file headers can change even while the job's MDBX snapshot stays pinned.
+        // An ordinary reorg must return to reconciliation instead of becoming a fatal root error.
+        let current = provider.database_provider_ro()?;
+        let retained = storage.provider_ro()?.get_proof_window()?;
+        if current.block_hash(retained.earliest.number)? != Some(retained.earliest.hash) ||
+            current.block_hash(retained.latest.number)? != Some(retained.latest.hash)
+        {
+            return Ok(());
+        }
+    }
+    result.wrap_err(
         "failed to backfill proof history; required historical changesets must remain unpruned",
     )
 }
@@ -167,7 +241,7 @@ mod tests {
         let init = legacy.initialization_provider().unwrap();
         init.set_initial_state_anchor(BlockNumHash::new(7, B256::repeat_byte(7))).unwrap();
         init.commit_initial_state().unwrap();
-        init.commit().unwrap();
+        OpProofsInitProvider::commit(init).unwrap();
         drop(legacy);
 
         let result = ProofHistoryDatabase::open(dir.path());
@@ -184,7 +258,7 @@ mod tests {
         let init = storage.initialization_provider().unwrap();
         init.set_initial_state_anchor(BlockNumHash::new(7, B256::repeat_byte(7))).unwrap();
         init.store_hashed_accounts(vec![(B256::repeat_byte(1), Some(Default::default()))]).unwrap();
-        init.commit().unwrap();
+        OpProofsInitProvider::commit(init).unwrap();
         drop(storage);
 
         let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
@@ -194,7 +268,7 @@ mod tests {
         assert!(anchor.latest_hashed_account_key.is_none());
         init.set_initial_state_anchor(BlockNumHash::new(9, B256::repeat_byte(9))).unwrap();
         init.commit_initial_state().unwrap();
-        init.commit().unwrap();
+        OpProofsInitProvider::commit(init).unwrap();
         drop(storage);
 
         let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
@@ -299,21 +373,119 @@ mod tests {
         // During partial sync, do not backfill older than the finalized window start (5 - 3).
         assert_eq!(pending_backfill_target(&target_path).unwrap(), Some(2));
 
+        // An obsolete proof anchor must return to canonical reconciliation before a fresh
+        // source provider can journal or backfill any part of a replacement branch.
+        let stale_dir = tempfile::tempdir().unwrap();
+        let stale = Arc::new(ProofHistoryDatabase::open(stale_dir.path()).unwrap());
+        let init = stale.initialization_provider().unwrap();
+        init.set_initial_state_anchor(BlockNumHash::new(3, B256::repeat_byte(0xee))).unwrap();
+        init.commit_initial_state().unwrap();
+        OpProofsInitProvider::commit(init).unwrap();
+        assert!(backfill_proof_history_storage(&factory, stale.clone(), 2).is_ok());
+        assert_eq!(stale.provider_ro().unwrap().get_earliest_block().unwrap().number, 3);
+        assert_eq!(stale.indexed_hash(2).unwrap(), None);
+
         storage.cancel_bootstrap();
         assert!(backfill_proof_history_storage(&factory, storage.clone(), 2).is_err());
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 3);
         storage.resume_bootstrap();
         backfill_proof_history_storage(&factory, storage.clone(), 2).unwrap();
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 2);
+        use reth_optimism_trie::{
+            OpProofsBackfillStore, OpProofsSnapshotInitProvider, SnapshotInitStatus,
+        };
+        assert!(
+            matches!(
+                storage
+                    .snapshot_initialization_provider()
+                    .unwrap()
+                    .snapshot_init_anchor()
+                    .unwrap()
+                    .status,
+                SnapshotInitStatus::NotStarted
+            ),
+            "a one-block backfill must not duplicate the entire state"
+        );
         drop(storage);
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
         assert_eq!(pending_backfill_target(&target_path).unwrap(), Some(2));
         finish_backfill(&target_path).unwrap();
         assert_eq!(pending_backfill_target(&target_path).unwrap(), None);
-        backfill_proof_history_storage(&factory, storage.clone(), 0).unwrap();
+        reth_optimism_trie::SnapshotInitJob::new(
+            factory.database_provider_ro().unwrap(),
+            storage.clone(),
+        )
+        .run(2)
+        .unwrap();
+        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap();
+        assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 1);
+        assert_eq!(
+            storage
+                .snapshot_initialization_provider()
+                .unwrap()
+                .snapshot_init_anchor()
+                .unwrap()
+                .block
+                .unwrap()
+                .number,
+            1
+        );
+        drop(storage);
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap();
+        assert_eq!(
+            storage
+                .snapshot_initialization_provider()
+                .unwrap()
+                .snapshot_init_anchor()
+                .unwrap()
+                .block
+                .unwrap()
+                .number,
+            0
+        );
         let window = storage.provider_ro().unwrap().get_proof_window().unwrap();
         assert_eq!(window.earliest, BlockNumHash::new(0, spec.genesis_hash()));
         assert_eq!(window.latest, BlockNumHash::new(3, parent));
+
+        std::fs::write(&target_path, "0").unwrap();
+        let readiness = alethia_reth_rpc::proof_state::ProofHistoryReadiness::new();
+        let sidecar = super::super::sidecar::ProofHistorySidecar::new(
+            reth_provider::providers::BlockchainProvider::new(factory.clone()).unwrap(),
+            EthEvmConfig::ethereum(spec.clone()),
+            storage.clone().into(),
+            storage.clone(),
+            super::super::ProofHistoryConfig {
+                storage_path: Some(dir.path().to_path_buf()),
+                ..super::super::ProofHistoryConfig::disabled()
+            },
+            readiness.clone(),
+        );
+        let runtime = reth::tasks::Runtime::test();
+        let task = runtime.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
+            sidecar.run(shutdown).await.unwrap();
+        });
+        runtime.handle().block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !readiness.is_ready() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        });
+        assert!(!target_path.exists());
+        assert!(matches!(
+            storage
+                .snapshot_initialization_provider()
+                .unwrap()
+                .snapshot_init_anchor()
+                .unwrap()
+                .status,
+            SnapshotInitStatus::NotStarted
+        ));
+        assert!(runtime.graceful_shutdown_with_timeout(std::time::Duration::from_secs(5)));
+        runtime.handle().block_on(task).unwrap();
 
         for (number, root) in roots.into_iter().enumerate() {
             let state = reth_optimism_trie::provider::OpProofsStateProviderRef::new(

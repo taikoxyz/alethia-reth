@@ -14,7 +14,7 @@ use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use alloy_primitives::B256;
 use derive_more::Constructor;
-use eyre::eyre;
+use eyre::{WrapErr, eyre};
 use reth::tasks::shutdown::GracefulShutdown;
 use reth_db::Database;
 use reth_ethereum_primitives::{Block, EthPrimitives};
@@ -41,7 +41,7 @@ use tracing::{debug, warn};
 
 /// Maximum forward replay work before handling another notification or shutdown.
 const REPLAY_BATCH_SIZE: u64 = 32;
-/// Retry unavailable state for this long before reconciling the canonical window again.
+/// Allow unavailable state or an outstanding save this long before requesting reconciliation.
 const PERSISTENCE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Delay between attempts when canonical state has not reached the retained window.
 const STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -248,6 +248,45 @@ where
         result
     }
 
+    /// Preserves a pinned copy through reorgs, but rechecks any engine prepared while they arrive.
+    /// Closing the notification source cancels work; shutdown cancellation is owned by `run`.
+    async fn await_preparation(
+        &self,
+        preparing: impl std::future::Future<Output = eyre::Result<StartupStep>>,
+        notifications: &mut broadcast::Receiver<CanonStateNotification<EthPrimitives>>,
+    ) -> (eyre::Result<StartupStep>, bool) {
+        tokio::pin!(preparing);
+        let mut listen = true;
+        let mut reconcile = false;
+        let result = loop {
+            tokio::select! {
+                result = &mut preparing => break result,
+                notification = notifications.recv(), if listen => {
+                    match notification {
+                        Ok(CanonStateNotification::Commit { .. }) => {}
+                        Err(broadcast::error::RecvError::Closed) => {
+                            listen = false;
+                            self.init_storage.cancel_bootstrap();
+                        }
+                        Ok(CanonStateNotification::Reorg { .. }) |
+                        Err(broadcast::error::RecvError::Lagged(_)) => reconcile = true,
+                    }
+                }
+            }
+        };
+        let result = match result {
+            Ok(StartupStep::Ready(handle)) if reconcile => {
+                blocking(move || {
+                    drop(handle);
+                    Ok(StartupStep::Progress)
+                })
+                .await
+            }
+            result => result,
+        };
+        (result, listen)
+    }
+
     /// Drives initialization and canonical updates while the caller owns final resource cleanup.
     async fn run_loop(this: &Arc<Self>, mut shutdown: GracefulShutdown) -> eyre::Result<()>
     where
@@ -272,22 +311,9 @@ where
                     this.init_storage.resume_bootstrap();
                     let worker = Arc::clone(this);
                     let preparing = blocking(move || worker.prepare());
-                    tokio::pin!(preparing);
-                    let mut listen = true;
-                    let result = loop {
-                        tokio::select! {
-                            result = &mut preparing => break result,
-                            notification = notifications.recv(), if listen => {
-                                match notification {
-                                    Ok(CanonStateNotification::Commit { .. }) => {}
-                                    other => {
-                                        listen = !matches!(other, Err(broadcast::error::RecvError::Closed));
-                                        this.init_storage.cancel_bootstrap();
-                                    }
-                                }
-                            }
-                        }
-                    };
+                    let (result, listen) = this
+                        .await_preparation(preparing, &mut notifications)
+                        .await;
                     if this.init_storage.bootstrap_cancelled() {
                         // Preparation may have returned an engine just as cancellation arrived.
                         blocking(move || { drop(result); Ok(()) }).await?;
@@ -375,21 +401,6 @@ where
     fn prepare(&self) -> eyre::Result<StartupStep> {
         let target_path = self.config.required_storage_path()?.join("backfill-target");
         let pending_target = pending_backfill_target(&target_path)?;
-        if let Some((number, hash)) = opt_block(self.storage.provider_ro()?.get_earliest_block())? {
-            let latest = self.storage.provider_ro()?.get_latest_block()?;
-            let invalid_base =
-                self.provider.block_hash(number)?.is_some_and(|canonical| canonical != hash);
-            let invalid_snapshot = pending_target.is_some() &&
-                self.provider
-                    .block_hash(latest.number)?
-                    .is_some_and(|canonical| canonical != latest.hash);
-            if invalid_base || invalid_snapshot {
-                warn!(target: "reth::taiko::proof_history", earliest = number, latest = latest.number,
-                    "rebuilding proof history after its anchor became non-canonical");
-                self.init_storage.reset_bootstrap()?;
-                return Ok(StartupStep::Progress);
-            }
-        }
         match self.startup_action()? {
             ProofHistoryStartupAction::Rebuild => {
                 self.init_storage.reset_bootstrap()?;
@@ -458,25 +469,9 @@ where
             ProofHistoryStartupAction::Ready => {}
         }
         let window = self.storage.provider_ro()?.get_proof_window()?;
-        let header = self.provider.sealed_header(window.latest.number)?.ok_or_else(|| {
-            eyre!("missing proof-history snapshot header {}", window.latest.number)
-        })?;
-        let root = StateRoot::overlay_root(
-            self.storage.provider_ro()?,
-            window.latest.number,
-            Default::default(),
-        )?;
-        if root != header.state_root() {
-            if pending_target.is_some() {
-                warn!(target: "reth::taiko::proof_history", block = window.latest.number,
-                    "discarding invalid pending proof-history snapshot");
-                self.init_storage.reset_bootstrap()?;
-                return Ok(StartupStep::Progress);
-            }
-            return Err(eyre!(
-                "proof-history state root mismatch at block {}",
-                window.latest.number
-            ));
+        let header = self.provider.sealed_header(window.latest.number)?;
+        if !self.validate_snapshot_header(window.latest, header, pending_target.is_some())? {
+            return Ok(StartupStep::Wait);
         }
         if let Some(target) = pending_target {
             if window.earliest.number > target {
@@ -521,48 +516,103 @@ where
         )))
     }
 
+    /// Validates a retained root against a fetched header before publishing historical reads.
+    /// Returns false if the header disappeared or changed; inconsistent stored roots fail loudly.
+    fn validate_snapshot_header(
+        &self,
+        latest: BlockNumHash,
+        header: Option<reth_primitives_traits::SealedHeader<Provider::Header>>,
+        pending: bool,
+    ) -> eyre::Result<bool> {
+        let Some(header) = header.filter(|header| header.hash() == latest.hash) else {
+            debug!(target: "reth::taiko::proof_history", block = latest.number,
+                "snapshot header changed during validation; retrying reconciliation");
+            return Ok(false);
+        };
+        let root = StateRoot::overlay_root(
+            self.storage.provider_ro()?,
+            latest.number,
+            Default::default(),
+        )?;
+        if root != header.state_root() {
+            if pending {
+                self.init_storage.reset_bootstrap()?;
+            }
+            return Err(eyre!(
+                "proof-history state root mismatch at block {} ({:?}): computed {:?}, expected {:?}; \
+                 inspect the node's source state and EVM configuration. After repairing the cause, \
+                 use a new, empty --proofs-history.storage-path to rebuild; preserve the old \
+                 directory for diagnosis",
+                latest.number,
+                latest.hash,
+                root,
+                header.state_root()
+            ));
+        }
+        Ok(true)
+    }
+
     /// Replays available canonical blocks, including the in-memory tail of missed notifications.
     /// Returns (canonical branch still valid, more work), keeping cancellation distinct from idle.
     fn replay_available(&self, engine: &EngineHandle<Block>) -> eyre::Result<(bool, bool)> {
-        for _ in 0..REPLAY_BATCH_SIZE {
+        let tip = self.storage.provider_ro()?.get_latest_block()?;
+        let best = self.provider.best_block_number()?;
+        if tip.number >= best {
+            return Ok((true, false));
+        }
+        let end = tip.number.saturating_add(REPLAY_BATCH_SIZE).min(best);
+        let mut parent = tip.hash;
+        let mut blocks = Vec::new();
+        for number in tip.number + 1..=end {
             if self.init_storage.bootstrap_cancelled() {
                 return Ok((false, false));
             }
-            let tip = self.storage.provider_ro()?.get_latest_block()?;
-            if tip.number >= self.provider.best_block_number()? {
-                return Ok((true, false));
-            }
-            let number = tip.number + 1;
             let Some(block) =
                 self.provider.recovered_block(number.into(), TransactionVariant::NoHash)?
             else {
                 return Ok((false, false));
             };
             if self.provider.block_hash(number)? != Some(block.hash()) ||
-                block.parent_hash() != tip.hash
+                block.parent_hash() != parent
             {
                 return Ok((false, false));
             }
-            self.init_storage.record_hashes([(number, block.hash())])?;
-            if !self.persist_block(BlockNumHash::new(number, block.hash()), || {
+            parent = block.hash();
+            blocks.push(block);
+        }
+        // Hashes are write-ahead metadata: one bounded batch is safe, while submissions must
+        // still wait individually because upstream may successfully skip unavailable parents.
+        self.init_storage
+            .record_hashes(blocks.iter().map(|block| (block.number(), block.hash())))?;
+        for block in blocks {
+            if !self.persist_block(BlockNumHash::new(block.number(), block.hash()), || {
                 engine.execute_block(&block)?;
                 Ok(())
             })? {
                 return Ok((false, false));
             }
         }
-        Ok((true, true))
+        Ok((true, end < self.provider.best_block_number()?))
     }
 
-    /// Submits idempotent contiguous work and confirms durability before advancing the journal.
+    /// Submits idempotent contiguous work after write-ahead journaling and waits for durability.
     /// Retries successful upstream no-ops (temporarily unavailable parent state); explicit errors
     /// propagate. Canonical changes, cancellation or prolonged stalls request reconciliation.
     fn persist_block(
         &self,
         expected: BlockNumHash,
+        submit: impl FnMut() -> eyre::Result<()>,
+    ) -> eyre::Result<bool> {
+        self.persist_block_until(expected, Instant::now() + PERSISTENCE_TIMEOUT, submit)
+    }
+
+    /// Waits for one accepted block until `deadline`; timeout requests canonical reconciliation.
+    fn persist_block_until(
+        &self,
+        expected: BlockNumHash,
+        deadline: Instant,
         mut submit: impl FnMut() -> eyre::Result<()>,
     ) -> eyre::Result<bool> {
-        let deadline = Instant::now() + PERSISTENCE_TIMEOUT;
         let mut retry_at = Instant::now();
         loop {
             if self.provider.block_hash(expected.number)? != Some(expected.hash) {
@@ -581,7 +631,18 @@ where
                 return Ok(false);
             }
             if Instant::now() >= retry_at {
-                submit()?;
+                if let Err(error) = submit() {
+                    if self.provider.block_hash(expected.number)? != Some(expected.hash) {
+                        return Ok(false);
+                    }
+                    return Err(error).wrap_err_with(|| format!(
+                        "proof-history failed to index block {} ({:?}); check retained node bodies/state \
+                         and EVM consistency. Restore required pruned history before replay; after \
+                         repairing the cause, use a new, empty --proofs-history.storage-path to \
+                         rebuild and preserve the old directory for diagnosis",
+                        expected.number, expected.hash
+                    ));
+                }
                 retry_at = Instant::now() + Duration::from_millis(100);
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -594,6 +655,19 @@ where
         let earliest = opt_block(ro.get_earliest_block())?;
         let latest = opt_block(ro.get_latest_block())?;
         let best = self.provider.best_block_number()?;
+        if let (Some((earliest_number, earliest_hash)), Some((latest_number, latest_hash))) =
+            (earliest, latest) &&
+            latest_number > best &&
+            self.init_storage.indexed_hash(latest_number)? == Some(latest_hash) &&
+            let (Some(indexed), Some(canonical)) =
+                (self.init_storage.indexed_hash(best)?, self.provider.block_hash(best)?) &&
+            indexed != canonical &&
+            self.provider.block_hash(earliest_number)? == Some(earliest_hash)
+        {
+            return Ok(ProofHistoryStartupAction::ReconcileFork {
+                earliest: BlockNumHash::new(earliest_number, earliest_hash),
+            });
+        }
         proof_history_startup_action(
             earliest,
             latest,
@@ -631,7 +705,9 @@ where
                     return Ok(false);
                 }
                 if !new.is_empty() && old.fork_block() != new.fork_block() {
-                    return Err(eyre!("proof-history reorg fork blocks do not match"));
+                    // Ancestor FCUs may include the ancestor as `new`; reconcile that shape
+                    // against the journal instead of assuming two equal-height replacement forks.
+                    return Ok(false);
                 }
                 // The engine's buffered tip may exceed the persisted tip: always forward unwind.
                 engine.unwind(old.first().block_with_parent())?;
@@ -652,6 +728,14 @@ where
             // The caller explicitly replays the missing canonical prefix first.
             return Ok(true);
         }
+        if latest < new.tip().number {
+            self.init_storage.record_hashes(
+                new.blocks()
+                    .iter()
+                    .filter(|(number, _)| **number > latest)
+                    .map(|(number, block)| (*number, block.hash())),
+            )?;
+        }
         for (number, block) in new.blocks() {
             let tip = self.storage.provider_ro()?.get_latest_block()?;
             if *number <= tip.number {
@@ -665,7 +749,6 @@ where
             }
             let verify = self.config.verification_interval > 0 &&
                 number.is_multiple_of(self.config.verification_interval);
-            self.init_storage.record_hashes([(*number, block.hash())])?;
             if !self.persist_block(BlockNumHash::new(*number, block.hash()), || {
                 if !verify && let Some(data) = new.trie_data_at(*number) {
                     let SortedTrieData { hashed_state, trie_updates } = &data.get().sorted;
@@ -898,13 +981,23 @@ mod tests {
         use reth::tasks::Runtime;
         use std::time::Duration;
         let (mut sidecar, spec, _dir) = sidecar_fixture();
-        sidecar.config.prune_interval = Duration::from_millis(20);
+        sidecar.config.prune_interval = Duration::from_secs(60);
         sidecar.config.verification_interval = 1;
         let provider = sidecar.provider.clone();
         let state = provider.canonical_in_memory_state();
         let storage = sidecar.storage.clone();
         let readiness = sidecar.readiness.clone();
         let runtime = Runtime::test();
+        let mut parent = spec.genesis_hash();
+        let mut blocks = Vec::new();
+        for number in 1..=65 {
+            let block = executed(number, parent, spec.genesis_header().state_root, 1);
+            parent = block.recovered_block.hash();
+            blocks.push(block);
+        }
+        let header = blocks.last().unwrap().recovered_block.clone_sealed_header();
+        state.update_chain(NewCanonicalChain::Commit { new: blocks });
+        state.set_canonical_head(header);
         let task = runtime.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
             sidecar.run(shutdown).await.unwrap();
         });
@@ -916,13 +1009,9 @@ mod tests {
             })
             .await
             .unwrap();
-            let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
-            let update = NewCanonicalChain::Commit { new: vec![block.clone()] };
-            state.update_chain(update);
-            state.set_canonical_head(block.recovered_block.clone_sealed_header());
             // A paused in-memory tail must be replayed even without a notification.
             tokio::time::timeout(Duration::from_secs(5), async {
-                while storage.provider_ro().unwrap().get_latest_block().unwrap().number != 1 {
+                while storage.provider_ro().unwrap().get_latest_block().unwrap().number != 65 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
@@ -1239,19 +1328,26 @@ mod tests {
     fn snapshot_waits_for_pipeline_stages_to_agree() {
         use reth_provider::{DBProvider, DatabaseProviderFactory, StageCheckpointWriter};
         use reth_stages_types::{StageCheckpoint, StageId};
-        let (sidecar, _spec, _dir) = sidecar_fixture();
-        // Simulate the execution stage committing ahead of Finish.
-        let db = sidecar.provider.database_provider_rw().unwrap();
-        db.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(1)).unwrap();
-        db.commit().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
-        let mut sidecar = sidecar;
-        sidecar.storage = storage.clone().into();
-        sidecar.init_storage = storage;
-        sidecar.config.storage_path = Some(dir.path().to_path_buf());
-        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Wait));
-        assert!(sidecar.storage.provider_ro().unwrap().get_latest_block().is_err());
+        for stage in [
+            StageId::Execution,
+            StageId::AccountHashing,
+            StageId::StorageHashing,
+            StageId::MerkleExecute,
+        ] {
+            let (sidecar, _spec, _dir) = sidecar_fixture();
+            // Simulate the execution stage committing ahead of Finish.
+            let db = sidecar.provider.database_provider_rw().unwrap();
+            db.save_stage_checkpoint(stage, StageCheckpoint::new(1)).unwrap();
+            db.commit().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+            let mut sidecar = sidecar;
+            sidecar.storage = storage.clone().into();
+            sidecar.init_storage = storage;
+            sidecar.config.storage_path = Some(dir.path().to_path_buf());
+            assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Wait));
+            assert!(sidecar.storage.provider_ro().unwrap().get_latest_block().is_err());
+        }
     }
 
     #[test]
@@ -1341,7 +1437,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_backfill_rebuilds_when_only_its_latest_anchor_reorgs() {
+    fn pending_backfill_retains_history_when_only_its_latest_anchor_reorgs() {
         let (sidecar, spec, dir) = sidecar_fixture();
         let blocks = index_empty_chain(&sidecar, &spec, 2);
         std::fs::write(dir.path().join("backfill-target"), "0").unwrap();
@@ -1354,7 +1450,11 @@ mod tests {
         });
         state.set_canonical_head(new.recovered_block.clone_sealed_header());
         assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
-        assert!(sidecar.storage.provider_ro().unwrap().get_earliest_block().is_err());
+        let window = sidecar.storage.provider_ro().unwrap().get_proof_window().unwrap();
+        assert_eq!(window.earliest.number, 0);
+        assert_eq!(window.latest.number, 1);
+        assert_eq!(window.latest.hash, blocks[0].recovered_block.hash());
+        assert!(dir.path().join("backfill-target").exists());
     }
 
     #[test]
@@ -1396,9 +1496,250 @@ mod tests {
         db.tx_ref().clear::<tables::AccountsTrie>().unwrap();
         db.tx_ref().clear::<tables::HashedAccounts>().unwrap();
         db.commit().unwrap();
-        assert!(
-            !initialize_proof_history_storage(&sidecar.provider, storage.clone(), None).unwrap()
-        );
+        let error = initialize_proof_history_storage(&sidecar.provider, storage.clone(), None)
+            .expect_err("a corrupt pinned source must fail instead of copying forever");
+        assert!(error.to_string().contains("state root mismatch"));
         assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
+    }
+
+    #[test]
+    fn replay_uses_proof_state_while_pipeline_state_is_ahead_of_finish() {
+        use reth_db::{tables, transaction::DbTxMut};
+        use reth_provider::{DBProvider, DatabaseProviderFactory, StageCheckpointWriter};
+        use reth_stages_types::{StageCheckpoint, StageId};
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![block.clone()] });
+        state.set_canonical_head(block.recovered_block.clone_sealed_header());
+        // The canonical provider's latest state is deliberately wrong for the parent. The
+        // upstream proof provider must continue to supply the copied genesis accounts and root.
+        let db = sidecar.provider.database_provider_rw().unwrap();
+        db.tx_ref().clear::<tables::PlainAccountState>().unwrap();
+        db.tx_ref().clear::<tables::HashedAccounts>().unwrap();
+        db.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(2)).unwrap();
+        db.commit().unwrap();
+        assert_eq!(sidecar.replay_available(&engine).unwrap(), (true, false));
+        assert_eq!(
+            sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().hash,
+            block.recovered_block.hash()
+        );
+    }
+
+    #[test]
+    fn shorter_divergent_chain_reconciles_before_regrowing_to_stored_tip() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 3);
+        let replacement =
+            executed(2, blocks[0].recovered_block.hash(), spec.genesis_header().state_root, 9);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Reorg {
+            old: blocks[1..].to_vec(),
+            new: vec![replacement.clone()],
+        });
+        state.set_canonical_head(replacement.recovered_block.clone_sealed_header());
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        let window = sidecar.storage.provider_ro().unwrap().get_proof_window().unwrap();
+        assert_eq!(window.earliest.number, 0);
+        assert_eq!(window.latest.number, 1);
+    }
+
+    #[test]
+    fn journal_gaps_conservatively_retain_the_earliest_anchor() {
+        for (low, high) in [(0, 2), (3, 3)] {
+            let (sidecar, spec, _dir) = sidecar_fixture();
+            let blocks = index_empty_chain(&sidecar, &spec, 3);
+            sidecar.init_storage.retain_hashes(low, high).unwrap();
+            let replacement =
+                executed(3, blocks[1].recovered_block.hash(), spec.genesis_header().state_root, 9);
+            let state = sidecar.provider.canonical_in_memory_state();
+            state.update_chain(NewCanonicalChain::Reorg {
+                old: vec![blocks[2].clone()],
+                new: vec![replacement.clone()],
+            });
+            state.set_canonical_head(replacement.recovered_block.clone_sealed_header());
+            assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+            assert_eq!(
+                sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn persistence_stops_before_submitting_cancelled_or_reorged_work() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let expected = BlockNumHash::new(1, B256::repeat_byte(1));
+        assert!(!sidecar.persist_block(expected, || panic!("must not submit stale work")).unwrap());
+        sidecar.init_storage.cancel_bootstrap();
+        assert!(
+            !sidecar
+                .persist_block(BlockNumHash::new(0, spec.genesis_hash()), || panic!(
+                    "must not submit cancelled work"
+                ))
+                .unwrap()
+        );
+    }
+    #[test]
+    fn reorg_during_snapshot_preparation_does_not_cancel_the_copy() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let runtime = reth::tasks::Runtime::test();
+        runtime.handle().block_on(async {
+            let (sender, mut notifications) = tokio::sync::broadcast::channel(4);
+            let old = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+            let new = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 2);
+            sender
+                .send(
+                    NewCanonicalChain::Reorg { old: vec![old], new: vec![new] }
+                        .to_chain_notification(),
+                )
+                .unwrap();
+            let (proceed, waiting) = tokio::sync::oneshot::channel();
+            let preparation = sidecar.await_preparation(
+                async {
+                    waiting.await.unwrap();
+                    Ok(StartupStep::Progress)
+                },
+                &mut notifications,
+            );
+            tokio::pin!(preparation);
+            assert!(futures_util::poll!(&mut preparation).is_pending());
+            assert!(
+                !sidecar.init_storage.bootstrap_cancelled(),
+                "a buffered reorg must not abandon the pinned initial copy"
+            );
+            proceed.send(()).unwrap();
+            let (result, listen) = preparation.await;
+            assert!(listen);
+            assert!(matches!(result.unwrap(), StartupStep::Progress));
+        });
+    }
+
+    #[test]
+    fn preparation_rechecks_a_ready_engine_after_a_buffered_reorg() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let runtime = reth::tasks::Runtime::test();
+        runtime.handle().block_on(async {
+            let (sender, mut notifications) = tokio::sync::broadcast::channel(4);
+            let old = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+            sender
+                .send(
+                    NewCanonicalChain::Reorg { old: vec![old], new: vec![] }
+                        .to_chain_notification(),
+                )
+                .unwrap();
+            let (proceed, waiting) = tokio::sync::oneshot::channel();
+            let preparation = sidecar.await_preparation(
+                async {
+                    waiting.await.unwrap();
+                    Ok(StartupStep::Ready(engine))
+                },
+                &mut notifications,
+            );
+            tokio::pin!(preparation);
+            assert!(futures_util::poll!(&mut preparation).is_pending());
+            proceed.send(()).unwrap();
+            let (result, listen) = preparation.await;
+            assert!(listen);
+            assert!(
+                matches!(result.unwrap(), StartupStep::Progress),
+                "readiness must wait for another canonical check"
+            );
+        });
+    }
+
+    #[test]
+    fn snapshot_header_reorg_is_retried_without_claiming_corruption() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let latest = BlockNumHash::new(0, spec.genesis_hash());
+        let replacement = executed(0, B256::ZERO, B256::repeat_byte(0xaa), 9);
+        assert!(
+            !sidecar
+                .validate_snapshot_header(
+                    latest,
+                    Some(replacement.recovered_block.clone_sealed_header()),
+                    false
+                )
+                .unwrap()
+        );
+        assert!(!sidecar.validate_snapshot_header(latest, None, false).unwrap());
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap(), latest);
+    }
+
+    #[test]
+    fn replay_error_includes_block_and_non_destructive_recovery_guidance() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![block.clone()] });
+        state.set_canonical_head(block.recovered_block.clone_sealed_header());
+        let error = sidecar
+            .persist_block(BlockNumHash::new(1, block.recovered_block.hash()), || {
+                Err(eyre::eyre!("execution failed"))
+            })
+            .unwrap_err();
+        let report = format!("{error:#}");
+        assert!(report.contains("block 1"));
+        assert!(report.contains("--proofs-history.storage-path"));
+        assert!(report.contains("execution failed"));
+    }
+
+    #[test]
+    fn ancestor_fcu_notification_requests_reconciliation() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Reorg { old: vec![blocks[1].clone()], new: vec![] });
+        state.set_canonical_head(blocks[0].recovered_block.clone_sealed_header());
+        let notification =
+            NewCanonicalChain::Reorg { old: vec![blocks[1].clone()], new: vec![blocks[0].clone()] }
+                .to_chain_notification();
+        assert!(!sidecar.handle_notification(&engine, &notification).unwrap());
+    }
+
+    #[test]
+    fn persistence_timeout_requests_reconciliation_without_resubmitting() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![block.clone()] });
+        state.set_canonical_head(block.recovered_block.clone_sealed_header());
+        assert!(
+            !sidecar
+                .persist_block_until(
+                    BlockNumHash::new(1, block.recovered_block.hash()),
+                    std::time::Instant::now(),
+                    || panic!("must not submit after the deadline")
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn closed_notifications_cancel_preparation_and_join_its_worker() {
+        let (sidecar, _spec, _dir) = sidecar_fixture();
+        let runtime = reth::tasks::Runtime::test();
+        runtime.handle().block_on(async {
+            let (sender, mut notifications) = tokio::sync::broadcast::channel(4);
+            drop(sender);
+            let (proceed, waiting) = tokio::sync::oneshot::channel();
+            let preparation = sidecar.await_preparation(
+                async {
+                    waiting.await.unwrap();
+                    Ok(StartupStep::Progress)
+                },
+                &mut notifications,
+            );
+            tokio::pin!(preparation);
+            assert!(futures_util::poll!(&mut preparation).is_pending());
+            assert!(sidecar.init_storage.bootstrap_cancelled());
+            proceed.send(()).unwrap();
+            let (result, listen) = preparation.await;
+            assert!(!listen);
+            assert!(matches!(result.unwrap(), StartupStep::Progress));
+        });
     }
 }

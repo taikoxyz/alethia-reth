@@ -3,9 +3,8 @@
 use alloy_primitives::B256;
 use eyre::eyre;
 use reth_db::{
-    Database, DatabaseEnv, TableSet,
+    Database, DatabaseEnv,
     cursor::{DbCursorRO, DbCursorRW},
-    table::TableInfo,
     tables::CanonicalHeaders,
     transaction::{DbTx, DbTxMut},
 };
@@ -21,24 +20,28 @@ use std::{
     },
 };
 
-/// Adds a height-to-hash journal to the proof database using reth's existing table codec.
-struct JournalTables;
+/// The indexed branch journal belongs to proof history, independently of canonical node tables.
+mod journal {
+    use alloy_primitives::{B256, BlockNumber};
+    use reth_db::{TableSet, TableType, TableViewer, table::TableInfo, tables};
+    use std::fmt;
 
-impl TableSet for JournalTables {
-    /// Creates only the journal table; proof state uses the upstream OP schema.
-    fn tables() -> Box<dyn Iterator<Item = Box<dyn TableInfo>>> {
-        Box::new(std::iter::once(
-            Box::new(reth_db::tables::Tables::CanonicalHeaders) as Box<dyn TableInfo>
-        ))
+    tables! {
+        /// Maps accepted block heights to the indexed branch's hashes, including uncommitted tips.
+        table IndexedBlockHashes {
+            type Key = BlockNumber;
+            type Value = B256;
+        }
     }
 }
+use journal::IndexedBlockHashes;
 
 /// V2 storage using upstream providers, with exclusive bootstrap reset on the same MDBX handle.
 #[derive(Debug)]
 pub struct ProofHistoryDatabase {
     /// The single environment shared by RPC readers, indexing and bootstrap recovery.
     env: DatabaseEnv,
-    /// Stops bootstrap at the next upstream write-batch boundary, without interrupting live saves.
+    /// Stops new bootstrap and replay work; accepted write transactions still finish atomically.
     bootstrap_cancelled: AtomicBool,
 }
 
@@ -59,8 +62,20 @@ impl ProofHistoryDatabase {
         };
 
         let mut db = init_db_for::<_, Tables>(path, DatabaseArguments::default())?;
-        db.create_and_track_tables_for::<JournalTables>()?;
+        db.create_and_track_tables_for::<journal::Tables>()?;
         let tx = db.tx_mut()?;
+        match tx.inner().open_db(Some("CanonicalHeaders")) {
+            Ok(_) => {
+                let mut cursor = tx.cursor_read::<CanonicalHeaders>()?;
+                for entry in cursor.walk(None)? {
+                    let (number, hash) = entry?;
+                    tx.put::<IndexedBlockHashes>(number, hash)?;
+                }
+                tx.clear::<CanonicalHeaders>()?;
+            }
+            Err(reth_db::mdbx::Error::NotFound) => {}
+            Err(error) => return Err(error.into()),
+        }
         if tx.entries::<ProofWindow>()? > 0 ||
             tx.entries::<AccountTrieHistory>()? > 0 ||
             tx.entries::<StorageTrieHistory>()? > 0 ||
@@ -95,7 +110,7 @@ impl ProofHistoryDatabase {
 
     /// Clears only upstream V2 tables, atomically with the caller's metadata transaction.
     fn clear_v2(tx: &<DatabaseEnv as Database>::TXMut) -> eyre::Result<()> {
-        tx.clear::<CanonicalHeaders>()?;
+        tx.clear::<IndexedBlockHashes>()?;
         // The pinned upstream schema explicitly reserves the V2 prefix for all V2 tables,
         // including auxiliary snapshots. Keep the V1 tables intact for rollback.
         for table in Tables::ALL.iter().map(Tables::name).filter(|name| name.starts_with("V2")) {
@@ -113,7 +128,7 @@ impl ProofHistoryDatabase {
     ) -> eyre::Result<()> {
         let tx = self.env.tx_mut()?;
         for (number, hash) in hashes {
-            tx.put::<CanonicalHeaders>(number, hash)?;
+            tx.put::<IndexedBlockHashes>(number, hash)?;
         }
         tx.commit()?;
         Ok(())
@@ -121,13 +136,13 @@ impl ProofHistoryDatabase {
 
     /// Reads the indexed branch's hash, independently of reth's current canonical branch.
     pub(super) fn indexed_hash(&self, number: u64) -> eyre::Result<Option<B256>> {
-        Ok(self.env.tx()?.get::<CanonicalHeaders>(number)?)
+        Ok(self.env.tx()?.get::<IndexedBlockHashes>(number)?)
     }
 
     /// Removes obsolete journal entries after proof pruning or a completed unwind.
     pub(super) fn retain_hashes(&self, earliest: u64, latest: u64) -> eyre::Result<()> {
         let tx = self.env.tx_mut()?;
-        let mut cursor = tx.cursor_write::<CanonicalHeaders>()?;
+        let mut cursor = tx.cursor_write::<IndexedBlockHashes>()?;
         while cursor.first()?.is_some_and(|(n, _)| n < earliest) {
             cursor.delete_current()?;
         }
@@ -148,7 +163,7 @@ impl ProofHistoryDatabase {
         self.bootstrap_cancelled.store(false, Ordering::Release);
     }
 
-    /// Returns whether shutdown or a canonical reorg cancelled the current bootstrap.
+    /// Returns whether shutdown or a closed notification source cancelled new work.
     pub(super) fn bootstrap_cancelled(&self) -> bool {
         self.bootstrap_cancelled.load(Ordering::Acquire)
     }
@@ -167,7 +182,11 @@ impl ProofHistoryDatabase {
     pub(super) fn report_metrics(&self) -> eyre::Result<()> {
         let tables = (|| -> eyre::Result<()> {
             let tx = self.env.tx()?;
-            for table in Tables::ALL.iter().map(Tables::name) {
+            for table in Tables::ALL
+                .iter()
+                .map(Tables::name)
+                .chain(journal::Tables::ALL.iter().map(journal::Tables::name))
+            {
                 let db = tx.inner().open_db(Some(table))?;
                 let stats = tx.inner().db_stat(db.dbi())?;
                 let pages = stats.leaf_pages() + stats.branch_pages() + stats.overflow_pages();
@@ -374,5 +393,32 @@ mod tests {
         );
         value("optimism_proof_storage.freelist", vec![]);
         value("optimism_proof_storage.timed_out_not_aborted_transactions", vec![]);
+    }
+    #[test]
+    fn opening_migrates_the_unreleased_canonical_headers_journal() {
+        struct LegacyJournal;
+        impl reth_db::TableSet for LegacyJournal {
+            fn tables() -> Box<dyn Iterator<Item = Box<dyn reth_db::table::TableInfo>>> {
+                Box::new(std::iter::once(Box::new(reth_db::tables::Tables::CanonicalHeaders)
+                    as Box<dyn reth_db::table::TableInfo>))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = ProofHistoryDatabase::open(dir.path()).unwrap();
+        storage.env.create_and_track_tables_for::<LegacyJournal>().unwrap();
+        let init = storage.initialization_provider().unwrap();
+        init.set_initial_state_anchor(BlockNumHash::new(7, B256::repeat_byte(7))).unwrap();
+        init.commit_initial_state().unwrap();
+        OpProofsInitProvider::commit(init).unwrap();
+        let tx = storage.env.tx_mut().unwrap();
+        tx.put::<CanonicalHeaders>(7, B256::repeat_byte(7)).unwrap();
+        tx.commit().unwrap();
+        drop(storage);
+        let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
+        assert_eq!(storage.indexed_hash(7).unwrap(), Some(B256::repeat_byte(7)));
+        assert_eq!(storage.env.tx().unwrap().entries::<CanonicalHeaders>().unwrap(), 0);
+        drop(storage);
+        let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
+        assert_eq!(storage.indexed_hash(7).unwrap(), Some(B256::repeat_byte(7)));
     }
 }

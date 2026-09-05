@@ -1,10 +1,10 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
-mod init;
-mod live;
 mod sidecar;
 mod storage_init;
+mod store;
+pub use store::ProofHistoryDatabase;
 
 pub use config::{
     DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS, DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL,
@@ -26,25 +26,26 @@ use reth::{
     },
     tasks::TaskExecutor,
 };
-use reth_db::{Database, database_metrics::DatabaseMetrics};
+use reth_db::Database;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{FullNodeComponents, NodeAddOns};
 use reth_node_builder::{
     NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, WithLaunchContext,
     rpc::{RethRpcAddOns, RpcContext},
 };
-use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError, db::MdbxProofsStorage};
+use reth_optimism_trie::{OpProofsStorage, OpProofsStorageError};
 use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_storage_api::{
-    ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
+    ChainStateBlockReader, ChangeSetReader, StageCheckpointReader, StorageChangeSetReader,
+    StorageSettingsCache,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::info;
 
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
-pub type ProofHistoryStorage = OpProofsStorage<Arc<MdbxProofsStorage>>;
+pub type ProofHistoryStorage = OpProofsStorage<Arc<ProofHistoryDatabase>>;
 
 /// Adapts the storage bound accessors' `NoBlocksFound` error back to the `Option` shape the
 /// reconciliation logic in this module was written against.
@@ -89,6 +90,7 @@ where
         + DBProvider
         + HeaderProvider
         + StorageChangeSetReader
+        + StageCheckpointReader
         + StorageSettingsCache,
     <T::DB as Database>::TX: Sync,
 {
@@ -98,7 +100,7 @@ where
 
     let storage_path = config.required_storage_path()?.clone();
     let mdbx =
-        Arc::new(MdbxProofsStorage::new(&storage_path).wrap_err_with(|| {
+        Arc::new(ProofHistoryDatabase::open(&storage_path).wrap_err_with(|| {
             format!("failed to create proof-history MDBX at {storage_path:?}")
         })?);
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
@@ -117,10 +119,9 @@ where
                 mdbx,
                 node.config.metrics.push_gateway_interval,
             );
-            let sidecar = ProofHistorySidecar::<NodeAdapter<T, CB::Components>, _>::new(
+            let sidecar = ProofHistorySidecar::new(
                 node.provider,
                 node.evm_config,
-                task_executor.clone(),
                 storage_for_sidecar,
                 storage_for_init,
                 config,
@@ -171,7 +172,7 @@ where
 /// Spawns periodic metric collection for the proof-history MDBX database.
 fn spawn_proofs_db_metrics(
     executor: TaskExecutor,
-    storage: Arc<MdbxProofsStorage>,
+    storage: Arc<ProofHistoryDatabase>,
     metrics_report_interval: Duration,
 ) {
     executor.spawn_critical_task("taiko-proofs-storage-metrics", async move {
@@ -183,7 +184,9 @@ fn spawn_proofs_db_metrics(
 
         loop {
             sleep(metrics_report_interval).await;
-            storage.report_metrics();
+            if let Err(error) = storage.report_metrics() {
+                tracing::error!(target: "reth::taiko::proof_history", %error, "failed to read proof database metrics");
+            }
         }
     });
 }

@@ -83,6 +83,9 @@ Use `--chain` with one of the supported presets:
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
+For proof-history setup, retention, and V1 database upgrades, see
+[Proof history](docs/proof-history.md).
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

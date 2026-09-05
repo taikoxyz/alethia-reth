@@ -86,7 +86,7 @@ pub struct TaikoProofHistoryArgs {
     )]
     pub window: u64,
 
-    /// Delay empty proof-history initialization until the finalized window start is reached.
+    /// Wait for local execution to reach the finalized window, then backfill a current snapshot.
     #[arg(
         long = "proofs-history.backfill-window-only",
         default_value_t = false,
@@ -94,7 +94,7 @@ pub struct TaikoProofHistoryArgs {
     )]
     pub backfill_window_only: bool,
 
-    /// Wall-clock interval between proof-history prune passes.
+    /// Interval between proof-history maintenance polls; writes also prune retained history.
     #[arg(
         long = "proofs-history.prune-interval",
         value_name = "DURATION",

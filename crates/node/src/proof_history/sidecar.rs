@@ -1,90 +1,60 @@
-//! Proof-history sidecar: notification handling, sync loop, pruner task.
+//! Canonical-chain adapter for the upstream proof-history engine.
 
 use super::{
+    ProofHistoryStorage,
     config::ProofHistoryConfig,
-    live::LiveTrieCollector,
     opt_block,
     storage_init::{
-        DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
-        finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, migrate_legacy_proof_history_storage,
-        proof_history_historical_init_metadata_path, proof_history_storage_needs_initialization,
-        proof_history_sync_target, read_historical_init_metadata,
+        backfill_proof_history_storage, finish_backfill, initialize_proof_history_storage,
+        pending_backfill_target,
     },
+    store::ProofHistoryDatabase,
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
-use alloy_consensus::BlockHeader;
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use alloy_primitives::B256;
+use derive_more::Constructor;
 use eyre::eyre;
-use reth::{
-    providers::{
-        BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification,
-        CanonStateSubscriptions, DBProvider, DatabaseProviderFactory, HeaderProvider,
-        TransactionVariant,
-    },
-    tasks::{TaskExecutor, shutdown::GracefulShutdown},
-};
+use reth::tasks::shutdown::GracefulShutdown;
 use reth_db::Database;
-use reth_execution_types::Chain;
-use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
+use reth_ethereum_primitives::{Block, EthPrimitives};
+use reth_evm::ConfigureEvm;
 use reth_optimism_trie::{
-    OpProofStoragePruner, OpProofsStorage, OpProofsStorageError, OpProofsStore,
-    api::{OpProofsProviderRO, OpProofsProviderRw},
+    EngineHandle, OpProofStoragePruner, OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
+    proof::DatabaseStateRoot,
 };
-use reth_storage_api::{
-    ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
+use reth_primitives_traits::AlloyBlockHeader;
+use reth_provider::{
+    BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification, CanonStateSubscriptions,
+    ChainStateBlockReader, ChangeSetReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
+    StageCheckpointReader, StateProviderFactory, StateReader, StorageChangeSetReader,
+    StorageSettingsCache,
 };
-use reth_trie_common::{HashedPostStateSorted, SortedTrieData, updates::TrieUpdatesSorted};
-use std::{panic, path::PathBuf, sync::Arc, time::Duration};
-use tokio::{
-    sync::{Mutex, Notify, broadcast},
-    task,
-    time::{self, MissedTickBehavior},
-};
-use tracing::{debug, error, info, warn};
+use reth_trie::StateRoot;
+use reth_trie_common::SortedTrieData;
+use std::{sync::Arc, time::Duration};
+use tokio::{sync::broadcast, task, time};
+use tracing::{debug, warn};
 
-/// Converts blocking-task join failures into errors while preserving panics as panics.
-fn blocking_join_result<T>(
-    result: Result<T, task::JoinError>,
-    task_name: &'static str,
+/// Maximum backward history extension per startup step, in blocks.
+const BACKFILL_BATCH_SIZE: u64 = 50;
+/// Delay between attempts when canonical state has not reached the retained window.
+const STARTUP_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+/// Persist even a single idle block; frequent head polls must not postpone idle flushing.
+const PERSISTENCE_THRESHOLD: u64 = 1;
+/// Bound accepted in-memory work while a persistence transaction is running, in blocks.
+const BACKPRESSURE_THRESHOLD: u64 = 10;
+
+/// Awaits blocking work while preserving worker panics as critical-task failures.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> eyre::Result<T> + Send + 'static,
 ) -> eyre::Result<T> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) if error.is_panic() => panic::resume_unwind(error.into_panic()),
-        Err(error) => Err(eyre!("{task_name} failed to join: {error}")),
+    match task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(eyre!("proof-history worker failed to join: {error}")),
     }
 }
-
-/// Logs a join failure from the proof-history pruner worker, preserving panics.
-fn log_prune_join_result(result: Result<(), task::JoinError>) {
-    if let Err(error) = blocking_join_result(result, "proof-history pruner worker") {
-        error!(
-            target: "reth::taiko::proof_history",
-            ?error,
-            "proof-history pruner task failed to join blocking worker"
-        );
-    }
-}
-
-/// Number of blocks the proof-history sync task executes in one batch.
-const PROOF_HISTORY_SYNC_BATCH_SIZE: usize = 50;
-
-/// Distance from canonical tip where proof-history can process notification data directly.
-const PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD: u64 = 1024;
-
-/// Delay used when proof-history has no locally executable backfill work.
-const PROOF_HISTORY_SYNC_IDLE_SLEEP: Duration = Duration::from_secs(5);
-
-/// Delay used while waiting for delayed proof-history initialization to become possible.
-const PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Delay between polls of the node's executed head while proof-history is caught up, so a
-/// staged-sync gap is backfilled even when no live canonical notification arrives.
-const PROOF_HISTORY_HEAD_POLL_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Number of proof-history blocks pruned in one pruning transaction.
-const PROOF_HISTORY_PRUNE_BATCH_SIZE: u64 = 200;
 
 /// Startup reconciliation action for existing proof-history storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,30 +150,31 @@ pub(super) fn proof_history_startup_action(
     })
 }
 
-/// Taiko proof-history sidecar that keeps OP proofs storage behind locally executed state.
-#[derive(Debug)]
-pub(super) struct ProofHistorySidecar<Node, Storage>
-where
-    Node: FullNodeComponents,
-{
-    /// Canonical provider used for state notifications and block reads.
-    provider: Node::Provider,
-    /// EVM configuration used to execute blocks for proof-history updates.
-    evm_config: Node::Evm,
-    /// Task executor used to spawn critical proof-history workers.
-    task_executor: TaskExecutor,
-    /// Proof-history storage populated by the extension.
-    storage: OpProofsStorage<Storage>,
-    /// Raw proof-history storage handle used for the initial current-state snapshot.
-    init_storage: Storage,
-    /// Runtime settings that govern proof-history retention and startup behavior.
+/// Startup either waits for canonical state, makes bounded progress, or starts indexing.
+enum StartupStep {
+    /// Canonical state is still unavailable; retry after a delay.
+    Wait,
+    /// Snapshot/backfill/reconciliation progressed; retry without an idle delay.
+    Progress,
+    /// Initialization and canonical reconciliation completed.
+    Ready(EngineHandle<Block>),
+}
+
+/// Owns Taiko lifecycle policy while upstream owns indexing, persistence and pruning.
+#[derive(Debug, Constructor)]
+pub(super) struct ProofHistorySidecar<Evm, Provider> {
+    /// Canonical provider supplying notifications and persisted catch-up targets.
+    provider: Provider,
+    /// Taiko EVM configuration used by upstream replay.
+    evm_config: Evm,
+    /// Metrics-wrapped storage used by live indexing and RPC.
+    storage: ProofHistoryStorage,
+    /// Unwrapped storage used for bulk initialization and backward backfill.
+    init_storage: Arc<ProofHistoryDatabase>,
+    /// Retention, verification and maintenance settings.
     config: ProofHistoryConfig,
-    /// Sidecar file that records historical initialization target metadata.
-    historical_init_metadata_path: Option<PathBuf>,
-    /// Readiness flag consumed by the RPC layer; set only while storage is reconciled.
+    /// Read permission published only after canonical reconciliation.
     readiness: ProofHistoryReadiness,
-    /// Serializes proof-history writers across live notifications, background sync, and pruning.
-    write_lock: Arc<Mutex<()>>,
 }
 
 /// Returns whether a committed chain starting at `first_block` leaves no gap above the stored
@@ -231,879 +202,619 @@ fn ensure_canonical_update_above_earliest(
     Ok(())
 }
 
-impl<Node, Storage> ProofHistorySidecar<Node, Storage>
+impl<Evm, Provider> ProofHistorySidecar<Evm, Provider>
 where
-    Node: FullNodeComponents,
-{
-    /// Creates a proof-history sidecar with Taiko backfill guards.
-    pub(super) fn new(
-        provider: Node::Provider,
-        evm_config: Node::Evm,
-        task_executor: TaskExecutor,
-        storage: OpProofsStorage<Storage>,
-        init_storage: Storage,
-        config: ProofHistoryConfig,
-        readiness: ProofHistoryReadiness,
-    ) -> Self {
-        let historical_init_metadata_path =
-            config.storage_path.as_deref().map(proof_history_historical_init_metadata_path);
-        Self {
-            provider,
-            evm_config,
-            task_executor,
-            storage,
-            init_storage,
-            config,
-            historical_init_metadata_path,
-            readiness,
-            write_lock: Arc::new(Mutex::new(())),
-        }
-    }
-}
-
-impl<Node, Storage, Primitives> ProofHistorySidecar<Node, Storage>
-where
-    Node: FullNodeComponents<Types: NodeTypes<Primitives = Primitives>>,
-    Node::Provider: BlockHashReader
+    Evm: ConfigureEvm<Primitives = EthPrimitives> + 'static,
+    Provider: BlockHashReader
         + BlockNumReader
-        + BlockReader
-        + CanonStateSubscriptions
-        + DatabaseProviderFactory,
-    <Node::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
+        + BlockReader<Block = Block>
+        + DatabaseProviderFactory
+        + StateReader
+        + StateProviderFactory
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    Provider::Provider: BlockNumReader
+        + HeaderProvider
+        + DBProvider
         + ChainStateBlockReader
         + ChangeSetReader
-        + DBProvider
-        + HeaderProvider
         + StorageChangeSetReader
-        + StorageSettingsCache,
-    <Node::Provider as DatabaseProviderFactory>::DB: Database,
-    <<Node::Provider as DatabaseProviderFactory>::DB as Database>::TX: Sync,
-    Primitives: NodePrimitives,
-    Storage: OpProofsStore + Clone + Send + 'static,
+        + StorageSettingsCache
+        + StageCheckpointReader,
+    <Provider::DB as Database>::TX: Sync,
 {
-    /// Runs proof-history indexing until the node shuts down.
-    pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
-        // Databases initialized under the previous storage dependency may lack a `LatestBlock`
-        // row; repair them before any reconciliation reads the storage bounds.
-        migrate_legacy_proof_history_storage(&self.storage)?;
+    /// Runs until shutdown, keeping all engine operations and final thread joins off Tokio.
+    pub(super) async fn run(self, shutdown: GracefulShutdown) -> eyre::Result<()>
+    where
+        Provider: CanonStateSubscriptions<Primitives = EthPrimitives>,
+    {
+        let this = Arc::new(self);
+        // Keep shutdown pending until provider runtimes and engine threads have been joined.
+        let cleanup_guard = shutdown.clone();
+        let result = Self::run_loop(&this, shutdown).await;
+        this.readiness.set_not_ready();
+        blocking(move || {
+            drop(this);
+            Ok(())
+        })
+        .await?;
+        drop(cleanup_guard);
+        result
+    }
 
-        let collector =
-            LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
-        let mut notifications = self.provider.subscribe_to_canonical_state();
-        let mut sync_wake = self.try_start().await?;
-        let mut retry_interval = time::interval(PROOF_HISTORY_DELAYED_START_RETRY_INTERVAL);
-        retry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    /// Drives initialization and canonical updates while the caller owns final resource cleanup.
+    async fn run_loop(this: &Arc<Self>, mut shutdown: GracefulShutdown) -> eyre::Result<()>
+    where
+        Provider: CanonStateSubscriptions<Primitives = EthPrimitives>,
+    {
+        let mut notifications = this.provider.subscribe_to_canonical_state();
+        let mut engine = None;
+        let mut retry = Duration::ZERO;
+        let mut interval = time::interval(this.config.prune_interval.max(Duration::from_millis(1)));
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
         loop {
-            tokio::select! {
-                notification = notifications.recv() => {
-                    let notification = match notification {
-                        Ok(notification) => notification,
-                        Err(broadcast::error::RecvError::Closed) => break,
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            warn!(
-                                target: "reth::taiko::proof_history",
-                                skipped,
-                                "proof-history sidecar lagged canonical notifications; reconciling storage"
-                            );
-                            // Replace the lagged receiver before reconciliation. The old
-                            // receiver's retained suffix is no longer useful after storage is
-                            // reconciled, and the fresh receiver buffers commits published while
-                            // recovery brings storage back in line with canonical state.
-                            notifications = self.provider.subscribe_to_canonical_state();
-                            if let Some(wake) = sync_wake.as_ref() {
-                                self.recover_from_lag(wake).await?;
-                            } else {
-                                sync_wake = self.try_start().await?;
+            let notification = tokio::select! {
+                biased;
+                guard = &mut shutdown => {
+                    this.readiness.set_not_ready();
+                    blocking(move || { drop(engine); Ok(()) }).await?;
+                    drop(guard);
+                    return Ok(());
+                }
+                _ = time::sleep(retry), if engine.is_none() => {
+                    let worker = Arc::clone(this);
+                    match blocking(move || worker.prepare()).await? {
+                        StartupStep::Wait => retry = STARTUP_RETRY_INTERVAL,
+                        StartupStep::Progress => retry = Duration::ZERO,
+                        StartupStep::Ready(handle) => {
+                            engine = Some(handle);
+                            this.readiness.set_ready();
+                        }
+                    }
+                    continue;
+                }
+                notification = notifications.recv(), if engine.is_some() => {
+                    match notification {
+                        Ok(notification) => Some(notification),
+                        Err(error) => {
+                            this.readiness.set_not_ready();
+                            let stopped = engine.take();
+                            blocking(move || { drop(stopped); Ok(()) }).await?;
+                            if matches!(error, broadcast::error::RecvError::Closed) {
+                                return Ok(());
                             }
+                            warn!(target: "reth::taiko::proof_history", ?error,
+                                "canonical notifications lagged; reconciling proof history");
+                            notifications = this.provider.subscribe_to_canonical_state();
+                            retry = Duration::ZERO;
                             continue;
                         }
-                    };
-                    if sync_wake.is_none() {
-                        sync_wake = self.try_start().await?;
                     }
+                }
+                _ = interval.tick(), if engine.is_some() => None,
+            };
 
-                    let Some(wake) = sync_wake.as_ref() else {
-                        continue;
+            if matches!(notification, Some(CanonStateNotification::Reorg { .. })) {
+                this.readiness.set_not_ready();
+            }
+            let handle = engine.take().expect("running engine selected");
+            let worker = Arc::clone(this);
+            engine = blocking(move || {
+                let result = (|| -> eyre::Result<bool> {
+                    let valid = match notification {
+                        Some(notification) => worker.handle_notification(&handle, &notification)?,
+                        None => {
+                            matches!(worker.startup_action()?, ProofHistoryStartupAction::Ready)
+                        }
                     };
-
-                    self.handle_notification(notification, &collector, wake).await?;
+                    if valid {
+                        handle.sync_to(
+                            worker.provider.database_provider_ro()?.best_block_number()?,
+                        )?;
+                    }
+                    Ok(valid)
+                })();
+                if !matches!(result, Ok(true)) {
+                    worker.readiness.set_not_ready();
+                    // Drop the only handle here: no engine writer may survive reconciliation.
+                    drop(handle);
+                    return result.map(|_| None);
                 }
-                _ = &mut shutdown => break,
-                _ = retry_interval.tick(), if sync_wake.is_none() => {
-                    sync_wake = self.try_start().await?;
-                }
+                Ok(Some(handle))
+            })
+            .await?;
+            if engine.is_some() {
+                this.readiness.set_ready();
+            } else {
+                notifications = this.provider.subscribe_to_canonical_state();
+                retry = Duration::ZERO;
             }
         }
-
-        Ok(())
     }
 
-    /// Reconciles storage if possible and spawns the sync and pruner tasks on first success.
-    async fn try_start(&self) -> eyre::Result<Option<Arc<Notify>>> {
-        if !self.reconcile_or_wait().await? {
-            return Ok(None);
+    /// Reconciles storage and performs at most one snapshot or bounded backward batch.
+    fn prepare(&self) -> eyre::Result<StartupStep> {
+        let target_path = self.config.required_storage_path()?.join("backfill-target");
+        let pending_target = pending_backfill_target(&target_path)?;
+        if pending_target.is_some() &&
+            let Some((number, hash)) =
+                opt_block(self.storage.provider_ro()?.get_earliest_block())? &&
+            self.provider.block_hash(number)?.is_some_and(|canonical| canonical != hash)
+        {
+            // A current-state snapshot can be reorged before backfill reaches a stable anchor.
+            // The pending marker proves this bootstrap has never been served or indexed live.
+            self.init_storage.reset_bootstrap()?;
+            return Ok(StartupStep::Progress);
         }
-        // Storage bounds are now validated against canonical hashes: allow the RPC layer to
-        // serve from proof-history. Workers only extend storage consistently from here on.
-        self.readiness.set_ready();
-        let sync_wake = self.spawn_sync_task();
-        self.spawn_pruner_task();
-        Ok(Some(sync_wake))
-    }
-
-    /// Reconciles proof-history storage after missing canonical notifications.
-    async fn recover_from_lag(&self, sync_wake: &Notify) -> eyre::Result<()> {
-        let _write_guard = self.write_lock.lock().await;
-        // Notifications were missed, so the stored bounds are unvalidated until reconciliation
-        // succeeds; stop serving proof-history state in the meantime.
-        self.readiness.set_not_ready();
-        if !self.reconcile_or_wait().await? {
-            return Err(eyre!(
-                "proof-history reconciliation cannot proceed while sync workers are running \
-                 (canonical state moved backwards during a notification lag); restart the node to \
-                 recover"
-            ));
-        }
-        self.readiness.set_ready();
-        sync_wake.notify_one();
-        Ok(())
-    }
-
-    /// Reconciles current proof-history bounds against the canonical database.
-    async fn reconcile_or_wait(&self) -> eyre::Result<bool> {
         match self.startup_action()? {
-            ProofHistoryStartupAction::Uninitialized => self.initialize_or_wait().await,
-            ProofHistoryStartupAction::Ready => {
-                self.ensure_initialized()?;
-                Ok(true)
+            ProofHistoryStartupAction::Uninitialized => {
+                if self.config.backfill_window_only {
+                    let db = self.provider.database_provider_ro()?;
+                    let Some(finalized) = db.last_finalized_block_number()? else {
+                        return Ok(StartupStep::Wait);
+                    };
+                    if db.best_block_number()? < finalized.saturating_sub(self.config.window) {
+                        return Ok(StartupStep::Wait);
+                    }
+                }
+                // An unfinished copy can restart at a newer source head; replace its target too.
+                finish_backfill(&target_path)?;
+                initialize_proof_history_storage(
+                    &self.provider,
+                    self.init_storage.clone(),
+                    self.config
+                        .backfill_window_only
+                        .then_some((target_path.as_path(), self.config.window)),
+                )?;
+                return Ok(StartupStep::Progress);
+            }
+            ProofHistoryStartupAction::WaitForCanonicalEarliest { .. } |
+            ProofHistoryStartupAction::WaitForCanonicalLatest { .. } => {
+                debug!(target: "reth::taiko::proof_history", "waiting for canonical proof-history state");
+                return Ok(StartupStep::Wait);
             }
             ProofHistoryStartupAction::UnwindToEarliest { earliest } => {
-                self.unwind_to_earliest(earliest).await?;
-                self.ensure_initialized()?;
-                Ok(true)
+                let first = earliest
+                    .number
+                    .checked_add(1)
+                    .ok_or_else(|| eyre!("cannot unwind beyond u64::MAX"))?;
+                let hash = self
+                    .provider
+                    .block_hash(first)?
+                    .ok_or_else(|| eyre!("missing proof-history unwind block {first}"))?;
+                let rw = self.storage.provider_rw()?;
+                rw.unwind_history(BlockWithParent::new(
+                    earliest.hash,
+                    BlockNumHash::new(first, hash),
+                ))?;
+                rw.commit()?;
+                return Ok(StartupStep::Progress);
             }
-            ProofHistoryStartupAction::WaitForCanonicalEarliest { earliest } => {
-                // Common during a chain re-sync that kept proof-history storage: stay quiet at
-                // debug level, this state can last for days and resolves on its own.
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    earliest,
-                    "canonical chain has not reached the proof-history earliest block; waiting for sync"
-                );
-                Ok(false)
-            }
-            ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
-                // Expected briefly after an ungraceful restart while the driver re-derives the
-                // gap; warn so a *stuck* wait (chain unwound for good) stays visible.
-                warn!(
-                    target: "reth::taiko::proof_history",
-                    latest,
-                    canonical_best,
-                    "canonical chain is behind the stored proof-history head; waiting for the node to catch up before reconciling"
-                );
-                Ok(false)
-            }
+            ProofHistoryStartupAction::Ready => {}
         }
+        let window = self.storage.provider_ro()?.get_proof_window()?;
+        let header = self.provider.sealed_header(window.latest.number)?.ok_or_else(|| {
+            eyre!("missing proof-history snapshot header {}", window.latest.number)
+        })?;
+        let root = StateRoot::overlay_root(
+            self.storage.provider_ro()?,
+            window.latest.number,
+            Default::default(),
+        )?;
+        if root != header.state_root() {
+            return Err(eyre!(
+                "proof-history state root mismatch at block {}",
+                window.latest.number
+            ));
+        }
+        if let Some(target) = pending_target {
+            if window.earliest.number > target {
+                let next = window.earliest.number.saturating_sub(BACKFILL_BATCH_SIZE).max(target);
+                backfill_proof_history_storage(&self.provider, self.init_storage.clone(), next)?;
+                return Ok(StartupStep::Progress);
+            }
+            finish_backfill(&target_path)?;
+        }
+        let to_prune = window
+            .latest
+            .number
+            .saturating_sub(self.config.window)
+            .saturating_sub(window.earliest.number);
+        if to_prune > self.config.max_startup_prune_blocks {
+            return Err(eyre!(
+                "configuration requires pruning {to_prune} proof-history blocks, exceeding {}; \
+                 raise --proofs-history.max-startup-prune-blocks or restore --proofs-history.window",
+                self.config.max_startup_prune_blocks
+            ));
+        }
+        let pruner = OpProofStoragePruner::new(
+            self.storage.clone(),
+            self.provider.clone(),
+            self.config.window,
+        );
+        // Prune startup excess before the engine exists; all subsequent pruning is in its save txn.
+        let rw = self.storage.provider_rw()?;
+        pruner.prune_with_provider(&rw)?;
+        rw.commit()?;
+        Ok(StartupStep::Ready(EngineHandle::spawn_with_thresholds(
+            self.evm_config.clone(),
+            self.provider.clone(),
+            self.storage.clone(),
+            pruner,
+            PERSISTENCE_THRESHOLD,
+            BACKPRESSURE_THRESHOLD,
+        )))
     }
 
-    /// Computes the reconciliation action for the current proof-history storage bounds.
+    /// Checks both persisted window anchors against the currently observed canonical chain.
     fn startup_action(&self) -> eyre::Result<ProofHistoryStartupAction> {
-        let provider_ro = self.storage.provider_ro()?;
-        let earliest = opt_block(provider_ro.get_earliest_block())?;
-        let latest = opt_block(provider_ro.get_latest_block())?;
-        let canonical_best = self.provider.best_block_number()?;
-        let canonical_earliest_hash =
-            earliest.map(|(number, _)| self.provider.block_hash(number)).transpose()?.flatten();
-        let canonical_latest_hash = latest
-            .filter(|(number, _)| *number <= canonical_best)
-            .map(|(number, _)| self.provider.block_hash(number))
-            .transpose()?
-            .flatten();
-
+        let ro = self.storage.provider_ro()?;
+        let earliest = opt_block(ro.get_earliest_block())?;
+        let latest = opt_block(ro.get_latest_block())?;
+        let best = self.provider.best_block_number()?;
         proof_history_startup_action(
             earliest,
             latest,
-            canonical_best,
-            canonical_earliest_hash,
-            canonical_latest_hash,
+            best,
+            earliest.map(|(n, _)| self.provider.block_hash(n)).transpose()?.flatten(),
+            latest
+                .filter(|(n, _)| *n <= best)
+                .map(|(n, _)| self.provider.block_hash(n))
+                .transpose()?
+                .flatten(),
         )
     }
 
-    /// Unwinds proof-history storage so its latest retained block is the canonical earliest block.
-    async fn unwind_to_earliest(&self, earliest: BlockNumHash) -> eyre::Result<()> {
-        let latest = opt_block(self.storage.provider_ro()?.get_latest_block())?
-            .ok_or_else(|| eyre!("no latest proof-history block to unwind"))?
-            .0;
-        if latest <= earliest.number {
-            return Ok(());
-        }
-
-        info!(
-            target: "reth::taiko::proof_history",
-            latest,
-            earliest = earliest.number,
-            "unwinding proof-history storage to retained canonical earliest block"
-        );
-
-        let unwind_block_number = earliest
-            .number
-            .checked_add(1)
-            .ok_or_else(|| eyre!("cannot unwind proof-history beyond u64::MAX block"))?;
-        let unwind_block_hash = self
-            .provider
-            .block_hash(unwind_block_number)?
-            .ok_or_else(|| eyre!("missing proof-history unwind block {unwind_block_number}"))?;
-        let unwind_to = BlockWithParent::new(
-            earliest.hash,
-            BlockNumHash::new(unwind_block_number, unwind_block_hash),
-        );
-
-        let storage = self.storage.clone();
-        let unwind_task = task::spawn_blocking(move || -> Result<(), OpProofsStorageError> {
-            let provider_rw = storage.provider_rw()?;
-            provider_rw.unwind_history(unwind_to)?;
-            provider_rw.commit()
-        });
-        blocking_join_result(unwind_task.await, "proof-history unwind worker")??;
-        Ok(())
-    }
-
-    /// Initializes proof-history storage immediately or waits for the finalized window.
-    async fn initialize_or_wait(&self) -> eyre::Result<bool> {
-        if proof_history_storage_needs_initialization(&self.storage)? {
-            let action = if let Some(resume) = self.historical_init_resume_action()? {
-                resume
-            } else if self.config.backfill_window_only {
-                self.finalized_window_initialization_action()?
-            } else {
-                ProofHistoryInitializationAction::CurrentState
-            };
-
-            match action {
-                ProofHistoryInitializationAction::Wait => return Ok(false),
-                ProofHistoryInitializationAction::CurrentState => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_proof_history_storage(&provider, storage)
-                    });
-                    blocking_join_result(init_task.await, "proof-history init worker")??;
-                }
-                ProofHistoryInitializationAction::HistoricalWindow {
-                    start_block,
-                    target_block,
-                } => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let metadata_path = self.historical_init_metadata_path.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_historical_proof_history_storage(
-                            &provider,
-                            storage,
-                            metadata_path.as_deref(),
-                            start_block,
-                            target_block,
-                        )
-                    });
-                    blocking_join_result(init_task.await, "proof-history historical init worker")??;
-                }
-            }
-        }
-        self.ensure_initialized()?;
-        Ok(true)
-    }
-
-    /// Returns the initialization action that resumes an interrupted historical initialization.
-    ///
-    /// The recorded metadata pins the anchor start block of the interrupted attempt; the target is
-    /// recomputed from the current on-disk executed head because the reverse-changeset overlay is
-    /// rebuilt against the current tables (and re-verified against the anchor state root), so an
-    /// interrupted initialization survives node restarts on a live chain.
-    fn historical_init_resume_action(
+    /// Applies a current notification, returning false when its branch needs reconciliation.
+    fn handle_notification(
         &self,
-    ) -> eyre::Result<Option<ProofHistoryInitializationAction>> {
-        let Some(path) = self.historical_init_metadata_path.as_deref() else {
-            return Ok(None);
-        };
-        let Some(metadata) = read_historical_init_metadata(path)? else {
-            return Ok(None);
-        };
-
-        let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
-        info!(
-            target: "reth::taiko::proof_history",
-            start_block = metadata.start_block.number,
-            executed_head,
-            "resuming interrupted historical proof-history initialization from recorded metadata"
-        );
-        Ok(Some(ProofHistoryInitializationAction::HistoricalWindow {
-            start_block: metadata.start_block.number,
-            target_block: executed_head,
-        }))
-    }
-
-    /// Returns how empty storage should initialize for a finalized proof-history window.
-    fn finalized_window_initialization_action(
-        &self,
-    ) -> eyre::Result<ProofHistoryInitializationAction> {
-        let finalized_block = finalized_block_number(&self.provider)?;
-        // Use the on-disk best block as `executed_head` so that the historical-init target header
-        // and reverse changesets are guaranteed to be persisted. The in-memory canonical tip from
-        // `provider().best_block_number()` can outpace disk by up to `engine.persistence-threshold`
-        // blocks, which previously caused the historical init to panic on a missing target header.
-        let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
-
-        match delayed_proof_history_start(finalized_block, executed_head, self.config.window) {
-            DelayedProofHistoryStart::WaitForFinalized => {
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    executed_head,
-                    "waiting for finalized head before initializing empty proof-history storage"
-                );
-                Ok(ProofHistoryInitializationAction::Wait)
-            }
-            DelayedProofHistoryStart::WaitForExecution { start_block } => {
-                debug!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "waiting for local execution to reach proof-history window start"
-                );
-                Ok(ProofHistoryInitializationAction::Wait)
-            }
-            DelayedProofHistoryStart::MissedStart { start_block } => {
-                info!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "empty proof-history storage missed the finalized window start; building historical proof-history anchor"
-                );
-                Ok(ProofHistoryInitializationAction::HistoricalWindow {
-                    start_block,
-                    target_block: executed_head,
-                })
-            }
-            DelayedProofHistoryStart::Ready { start_block } => {
-                info!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "initializing empty proof-history storage from finalized window"
-                );
-                Ok(ProofHistoryInitializationAction::CurrentState)
-            }
-        }
-    }
-
-    /// Verifies the proof-history database is initialized and safe to prune automatically.
-    fn ensure_initialized(&self) -> eyre::Result<()> {
-        let provider_ro = self.storage.provider_ro()?;
-        let earliest_block_number = opt_block(provider_ro.get_earliest_block())?
-            .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
-            .0;
-        let latest_block_number = opt_block(provider_ro.get_latest_block())?
-            .ok_or_else(|| eyre!("proof-history storage is not initialized"))?
-            .0;
-
-        let target_earliest = latest_block_number.saturating_sub(self.config.window);
-        if target_earliest > earliest_block_number {
-            let blocks_to_prune = target_earliest - earliest_block_number;
-            if blocks_to_prune > self.config.max_startup_prune_blocks {
-                return Err(eyre!(
-                    "configuration requires pruning {} proof-history blocks, which exceeds the safety threshold of {}; raise --proofs-history.max-startup-prune-blocks or restore the previous --proofs-history.window to proceed",
-                    blocks_to_prune,
-                    self.config.max_startup_prune_blocks
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Spawns the periodic proof-history pruning task.
-    fn spawn_pruner_task(&self) {
-        let pruner = Arc::new(
-            OpProofStoragePruner::new(
-                self.storage.clone(),
-                self.provider.clone(),
-                self.config.window,
-            )
-            .with_batch_size(PROOF_HISTORY_PRUNE_BATCH_SIZE),
-        );
-        let prune_interval = self.config.prune_interval;
-        let retention_window = self.config.window;
-        let write_lock = self.write_lock.clone();
-
-        self.task_executor
-            .spawn_critical_with_graceful_shutdown_signal(
-                "taiko::proof_history::pruner",
-                move |mut signal| Box::pin(async move {
-                    info!(
-                        target: "reth::taiko::proof_history",
-                        window = retention_window,
-                        interval_secs = prune_interval.as_secs(),
-                        "starting proof-history pruner task"
-                    );
-
-                    let mut interval = time::interval(prune_interval);
-                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-                    loop {
-                        tokio::select! {
-                            _ = &mut signal => {
-                                info!(target: "reth::taiko::proof_history", "proof-history pruner task stopped");
-                                break;
-                            }
-                            _ = interval.tick() => {
-                                let _write_guard = write_lock.lock().await;
-                                let pruner = pruner.clone();
-                                let mut prune_task = task::spawn_blocking(move || pruner.run());
-                                tokio::select! {
-                                    result = &mut prune_task => log_prune_join_result(result),
-                                    _ = &mut signal => {
-                                        // `spawn_blocking` workers cannot be aborted, so wait for
-                                        // the prune to finish to avoid tearing down a write txn
-                                        // mid-flight. A deeper fix would need a cancel-aware
-                                        // pruner API or smaller prune chunks.
-                                        info!(
-                                            target: "reth::taiko::proof_history",
-                                            "shutdown requested while proof-history prune is running; waiting for prune to finish"
-                                        );
-                                        log_prune_join_result(prune_task.await);
-                                        info!(target: "reth::taiko::proof_history", "proof-history pruner task stopped");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                })
-            );
-    }
-
-    /// Spawns the guarded proof-history backfill task and returns its wake-up handle.
-    fn spawn_sync_task(&self) -> Arc<Notify> {
-        let sync_wake = Arc::new(Notify::new());
-        let task_wake = sync_wake.clone();
-        let task_storage = self.storage.clone();
-        let task_provider = self.provider.clone();
-        let task_evm_config = self.evm_config.clone();
-        let task_write_lock = self.write_lock.clone();
-
-        self.task_executor.spawn_critical_with_graceful_shutdown_signal(
-            "taiko::proof_history::sync_loop",
-            move |shutdown| {
-                Box::pin(async move {
-                    Self::sync_loop(
-                        shutdown,
-                        task_wake,
-                        task_storage,
-                        task_provider,
-                        task_evm_config,
-                        task_write_lock,
-                    )
-                    .await;
-                })
-            },
-        );
-
-        sync_wake
-    }
-
-    /// Backfills proof-history only through blocks the node has locally executed.
-    ///
-    /// Live notifications only wake this loop up; the backfill target is always re-derived from
-    /// the node's on-disk executed head, so re-execution never reads unpersisted blocks and a
-    /// staged-sync gap is caught up even when no notification arrives.
-    async fn sync_loop(
-        mut shutdown: GracefulShutdown,
-        wake: Arc<Notify>,
-        storage: OpProofsStorage<Storage>,
-        provider: Node::Provider,
-        evm_config: Node::Evm,
-        write_lock: Arc<Mutex<()>>,
-    ) {
-        debug!(target: "reth::taiko::proof_history", "starting proof-history sync loop");
-
-        // Whether the current divergence episode (stored head ahead of executed head) has already
-        // been warned about, so the 5s idle poll does not re-emit the warning on every tick.
-        let mut divergence_logged = false;
-
-        loop {
-            let write_guard = write_lock.lock().await;
-            let latest = match storage.provider_ro().and_then(|p| p.get_latest_block()) {
-                Ok(numhash) => numhash.number,
-                Err(OpProofsStorageError::NoBlocksFound) => {
-                    error!(target: "reth::taiko::proof_history", "proof-history sync loop found no stored blocks; stopping sync loop");
-                    return;
-                }
-                Err(error) => {
-                    error!(target: "reth::taiko::proof_history", ?error, "failed to read proof-history latest block");
-                    drop(write_guard);
-                    if Self::sleep_or_shutdown(&mut shutdown, PROOF_HISTORY_SYNC_IDLE_SLEEP).await {
-                        return;
-                    }
-                    continue;
-                }
-            };
-
-            // Track the node's on-disk executed head, not just the last notified canonical tip.
-            // Using the on-disk head (rather than the in-memory tip) guarantees the blocks the
-            // backfill re-executes are persisted, and lets proof-history catch up across a
-            // staged-sync gap even when no live notification arrives.
-            let executed_head = match provider
-                .database_provider_ro()
-                .and_then(|p| p.best_block_number())
-            {
-                Ok(number) => number,
-                Err(error) => {
-                    error!(target: "reth::taiko::proof_history", ?error, "failed to read executed head for proof-history sync");
-                    drop(write_guard);
-                    if Self::sleep_or_shutdown(&mut shutdown, PROOF_HISTORY_SYNC_IDLE_SLEEP).await {
-                        return;
-                    }
-                    continue;
-                }
-            };
-
-            // Surface divergence: proof-history's stored head sits above the node's executed head.
-            // This only arises after the on-disk head regresses (a reorg/unwind) and is normally
-            // repaired by the notification-driven reorg/revert handlers — which never run when no
-            // live notification arrives, the staged-sync-gap case this loop guards. Warn once per
-            // episode (the idle poll would otherwise re-warn every tick) so a stuck/diverged
-            // sidecar is observable instead of indistinguishable from healthy idle.
-            if latest > executed_head {
-                if !divergence_logged {
-                    warn!(
-                        target: "reth::taiko::proof_history",
-                        latest,
-                        executed_head,
-                        "proof-history stored head is ahead of the node's executed head; awaiting a canonical notification to reconcile"
-                    );
-                    divergence_logged = true;
-                }
-            } else {
-                divergence_logged = false;
-            }
-
-            let Some(target) = proof_history_sync_target(latest, executed_head) else {
-                // Caught up to the locally executed head. Wake on the next live notification (fast
-                // path) or after a poll delay, so a staged-sync gap is still picked up with no
-                // notifications.
-                drop(write_guard);
-                tokio::select! {
-                    _ = &mut shutdown => {
-                        info!(target: "reth::taiko::proof_history", "proof-history sync loop stopped");
-                        return;
-                    }
-                    _ = wake.notified() => {}
-                    _ = time::sleep(PROOF_HISTORY_HEAD_POLL_INTERVAL) => {}
-                }
-                continue;
-            };
-
-            let batch_provider = provider.clone();
-            let batch_storage = storage.clone();
-            let batch_evm_config = evm_config.clone();
-            // Each block write commits independently; if this batch fails part-way through, the
-            // next loop rereads `latest` and resumes after the last committed block.
-            let mut batch_task = task::spawn_blocking(move || {
-                let collector_storage = batch_storage.clone();
-                let collector = LiveTrieCollector::new(
-                    batch_evm_config,
-                    batch_provider.clone(),
-                    &collector_storage,
-                );
-                Self::process_batch(
-                    latest,
-                    target,
-                    &batch_provider,
-                    &collector,
-                    PROOF_HISTORY_SYNC_BATCH_SIZE,
-                )
-            });
-            let batch_result = tokio::select! {
-                result = &mut batch_task => {
-                    blocking_join_result(result, "proof-history batch worker")
-                        .and_then(|result| result)
-                }
-                _ = &mut shutdown => {
-                    // `spawn_blocking` workers cannot be aborted; wait for the in-flight batch so
-                    // its per-block commits finish cleanly before stopping.
-                    info!(
-                        target: "reth::taiko::proof_history",
-                        "shutdown requested while proof-history backfill batch is running; waiting for batch to finish"
-                    );
-                    let result = blocking_join_result(batch_task.await, "proof-history batch worker")
-                        .and_then(|result| result);
-                    drop(write_guard);
-                    if let Err(error) = result {
-                        error!(target: "reth::taiko::proof_history", ?error, "proof-history batch processing failed");
-                    }
-                    info!(target: "reth::taiko::proof_history", "proof-history sync loop stopped");
-                    return;
-                }
-            };
-            drop(write_guard);
-
-            match batch_result {
-                Ok(backfilled_to) => {
-                    info!(
-                        target: "reth::taiko::proof_history",
-                        backfilled_to,
-                        head = executed_head,
-                        "proof-history backfill batch committed"
-                    );
-                }
-                Err(error) => {
-                    error!(target: "reth::taiko::proof_history", ?error, "proof-history batch processing failed");
-                    if Self::sleep_or_shutdown(&mut shutdown, PROOF_HISTORY_SYNC_IDLE_SLEEP).await {
-                        return;
-                    }
-                }
-            }
-
-            task::yield_now().await;
-        }
-    }
-
-    /// Sleeps for `duration` unless shutdown is requested first; returns whether to stop.
-    async fn sleep_or_shutdown(shutdown: &mut GracefulShutdown, duration: Duration) -> bool {
-        tokio::select! {
-            _ = shutdown => {
-                info!(target: "reth::taiko::proof_history", "proof-history sync loop stopped");
-                true
-            }
-            _ = time::sleep(duration) => false,
-        }
-    }
-
-    /// Processes a bounded batch of canonical blocks into proof-history storage.
-    ///
-    /// Returns the highest block number processed in this batch.
-    fn process_batch(
-        start: u64,
-        target: u64,
-        provider: &Node::Provider,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-        batch_size: usize,
-    ) -> eyre::Result<u64> {
-        let end = start.saturating_add(batch_size as u64).min(target);
-        debug!(target: "reth::taiko::proof_history", start, end, "processing proof-history batch");
-
-        for block_num in (start + 1)..=end {
-            let block = provider
-                .recovered_block(block_num.into(), TransactionVariant::NoHash)?
-                .ok_or_else(|| eyre!("missing block {block_num}"))?;
-            collector.execute_and_store_block_updates(&block)?;
-        }
-
-        Ok(end)
-    }
-
-    /// Handles a canonical notification and advances proof-history storage or wakes the backfill.
-    async fn handle_notification(
-        &self,
-        notification: CanonStateNotification<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-        sync_wake: &Notify,
-    ) -> eyre::Result<()> {
-        let _write_guard = self.write_lock.lock().await;
-        let provider_ro = self.storage.provider_ro()?;
-        let earliest_stored = opt_block(provider_ro.get_earliest_block())?
-            .ok_or_else(|| eyre!("no earliest proof-history block stored"))?;
-        let latest_stored = opt_block(provider_ro.get_latest_block())?
-            .ok_or_else(|| eyre!("no latest proof-history block stored"))?
-            .0;
-        let earliest_stored = BlockNumHash::new(earliest_stored.0, earliest_stored.1);
-
-        match &notification {
-            CanonStateNotification::Commit { new } => {
-                self.handle_chain_committed(new, latest_stored, collector, sync_wake)?
-            }
-            // A reorg that replaces the old blocks with nothing is a plain revert.
-            CanonStateNotification::Reorg { old, new } if new.is_empty() => {
-                self.handle_chain_reverted(old, earliest_stored, latest_stored, collector)?
-            }
+        engine: &EngineHandle<Block>,
+        notification: &CanonStateNotification<EthPrimitives>,
+    ) -> eyre::Result<bool> {
+        let new = match notification {
+            CanonStateNotification::Commit { new } => new,
             CanonStateNotification::Reorg { old, new } => {
-                self.handle_chain_reorged(old, new, earliest_stored, latest_stored, collector)?
+                let target = if new.is_empty() {
+                    old.fork_block()
+                } else {
+                    BlockNumHash::new(new.tip().number, new.tip().hash())
+                };
+                if self.provider.block_hash(target.number)? != Some(target.hash) ||
+                    (new.is_empty() && self.provider.best_block_number()? != target.number)
+                {
+                    return Ok(false);
+                }
+                let earliest = self.storage.provider_ro()?.get_earliest_block()?;
+                if old.first().number() <= earliest.number &&
+                    self.provider.block_hash(earliest.number)? == Some(earliest.hash)
+                {
+                    return Ok(false); // queued reorg already covered by a newer canonical anchor
+                }
+                ensure_canonical_update_above_earliest(
+                    "reorg",
+                    earliest,
+                    BlockNumHash::new(old.first().number(), old.first().hash()),
+                )?;
+                if !new.is_empty() && old.fork_block() != new.fork_block() {
+                    return Err(eyre!("proof-history reorg fork blocks do not match"));
+                }
+                // The engine's buffered tip may exceed the persisted tip: always forward unwind.
+                engine.unwind(old.first().block_with_parent())?;
+                if new.is_empty() {
+                    return Ok(true);
+                }
+                new
+            }
+        };
+        if self.provider.block_hash(new.tip().number)? != Some(new.tip().hash()) {
+            return Ok(false);
+        }
+        let latest = self.storage.provider_ro()?.get_latest_block()?.number;
+        if !committed_chain_is_contiguous(new.first().number(), latest) {
+            // Submitting a gap would make upstream replay up to an unpersisted notification tip.
+            // The caller instead sets sync_to to the on-disk executed head.
+            return Ok(true);
+        }
+        for (number, block) in new.blocks() {
+            let verify = self.config.verification_interval > 0 &&
+                number.is_multiple_of(self.config.verification_interval);
+            if !verify && let Some(data) = new.trie_data_at(*number) {
+                let SortedTrieData { hashed_state, trie_updates } = &data.get().sorted;
+                engine.index_block(
+                    block.block_with_parent(),
+                    (**trie_updates).clone(),
+                    (**hashed_state).clone(),
+                )?;
+            } else {
+                // Replay from the on-disk head through sync_to. execute_block can silently skip
+                // unavailable parent state; submitting the next live block would then turn it
+                // into a gap and raise upstream's replay target beyond persisted execution.
+                break;
             }
         }
-
-        Ok(())
-    }
-
-    /// Handles a canonical chain commit notification.
-    fn handle_chain_committed(
-        &self,
-        new: &Chain<Primitives>,
-        latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-        sync_wake: &Notify,
-    ) -> eyre::Result<()> {
-        if new.tip().number() <= latest_stored {
-            return Ok(());
-        }
-
-        let best_block = self.provider.best_block_number()?;
-        let is_contiguous = committed_chain_is_contiguous(new.first().number(), latest_stored);
-        let is_near_tip = best_block.saturating_sub(new.tip().number()) <
-            PROOF_HISTORY_REAL_TIME_BLOCKS_THRESHOLD;
-
-        if is_contiguous && is_near_tip {
-            for block_number in latest_stored.saturating_add(1)..=new.tip().number() {
-                self.process_block(block_number, new, collector)?;
-            }
-        } else {
-            sync_wake.notify_one();
-        }
-
-        Ok(())
-    }
-
-    /// Processes one block from notification trie data when possible, or by execution otherwise.
-    fn process_block(
-        &self,
-        block_number: u64,
-        chain: &Chain<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        let should_verify = self.config.verification_interval > 0 &&
-            block_number.is_multiple_of(self.config.verification_interval);
-
-        if !should_verify &&
-            let Some(block) = chain.blocks().get(&block_number) &&
-            let Some(trie_data) = chain.trie_data_at(block_number)
-        {
-            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
-            collector.store_block_updates(
-                block.block_with_parent(),
-                (**trie_updates).clone(),
-                (**hashed_state).clone(),
-            )?;
-            return Ok(());
-        }
-
-        let block = self
-            .provider
-            .recovered_block(block_number.into(), TransactionVariant::NoHash)?
-            .ok_or_else(|| eyre!("missing block {block_number} in provider"))?;
-        collector.execute_and_store_block_updates(&block)?;
-        Ok(())
-    }
-
-    /// Handles a canonical chain reorg notification.
-    fn handle_chain_reorged(
-        &self,
-        old: &Chain<Primitives>,
-        new: &Chain<Primitives>,
-        earliest_stored: BlockNumHash,
-        latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        if old.first().number() > latest_stored {
-            return Ok(());
-        }
-
-        ensure_canonical_update_above_earliest(
-            "reorg",
-            earliest_stored,
-            BlockNumHash::new(old.first().number(), old.first().hash()),
-        )?;
-
-        if old.fork_block() != new.fork_block() {
-            return Err(eyre!(
-                "proof-history fork blocks do not match: old={:?}, new={:?}",
-                old.fork_block(),
-                new.fork_block()
-            ));
-        }
-
-        // A reorg replacing the whole retained window bases at the earliest stored block, which
-        // `replace_updates` rejects even though `unwind_history` accepts unwinding one block
-        // higher. Route that boundary through the unwind path so the reorg still applies.
-        if old.first().number() == earliest_stored.number + 1 {
-            return self.reorg_by_unwind_and_reprocess(old, new, collector);
-        }
-
-        let mut block_updates: Vec<(
-            BlockWithParent,
-            Arc<TrieUpdatesSorted>,
-            Arc<HashedPostStateSorted>,
-        )> = Vec::with_capacity(new.len());
-
-        for (block_number, block) in new.blocks() {
-            let Some(trie_data) = new.trie_data_at(*block_number) else {
-                // Missing trie data on at least one new block.
-                return self.reorg_by_unwind_and_reprocess(old, new, collector);
-            };
-            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
-            block_updates.push((
-                block.block_with_parent(),
-                trie_updates.clone(),
-                hashed_state.clone(),
-            ));
-        }
-
-        if !block_updates.is_empty() {
-            collector.unwind_and_store_block_updates(block_updates)?;
-        }
-
-        Ok(())
-    }
-
-    /// Applies a reorg by unwinding the old branch first and reprocessing the new blocks
-    /// individually, so each block reads post-unwind parent state instead of stale
-    /// old-branch state. Blocks with notification trie data are stored directly; the rest are
-    /// re-executed.
-    fn reorg_by_unwind_and_reprocess(
-        &self,
-        old: &Chain<Primitives>,
-        new: &Chain<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        collector.unwind_history(old.first().block_with_parent())?;
-        for block_number in new.blocks().keys() {
-            self.process_block(*block_number, new, collector)?;
-        }
-        Ok(())
-    }
-
-    /// Handles a canonical chain revert notification.
-    fn handle_chain_reverted(
-        &self,
-        old: &Chain<Primitives>,
-        earliest_stored: BlockNumHash,
-        latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
-        if old.first().number() > latest_stored {
-            return Ok(());
-        }
-
-        ensure_canonical_update_above_earliest(
-            "revert",
-            earliest_stored,
-            BlockNumHash::new(old.first().number(), old.first().hash()),
-        )?;
-
-        collector.unwind_history(old.first().block_with_parent())?;
-        Ok(())
+        Ok(true)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ProofHistoryStartupAction, committed_chain_is_contiguous,
-        ensure_canonical_update_above_earliest, proof_history_startup_action,
+        ProofHistoryDatabase, ProofHistorySidecar, ProofHistoryStartupAction, StartupStep,
+        committed_chain_is_contiguous, ensure_canonical_update_above_earliest,
+        proof_history_startup_action,
     };
+    use crate::proof_history::{
+        ProofHistoryConfig, storage_init::initialize_proof_history_storage,
+    };
+    use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
     use alloy_eips::BlockNumHash;
     use alloy_primitives::B256;
+    use reth_chain_state::{ExecutedBlock, NewCanonicalChain};
+    use reth_chainspec::{ChainSpec, ChainSpecBuilder};
+    use reth_db_common::init::init_genesis;
+    use reth_ethereum_primitives::{Block, BlockBody};
+    use reth_evm_ethereum::EthEvmConfig;
+    use reth_optimism_trie::{
+        EngineHandle, OpProofStoragePruner, OpProofsInitProvider, OpProofsProviderRO, OpProofsStore,
+    };
+    use reth_primitives_traits::Block as _;
+    use reth_provider::{
+        providers::BlockchainProvider,
+        test_utils::{MockNodeTypesWithDB, create_test_provider_factory_with_chain_spec},
+    };
+    use std::sync::Arc;
+
+    fn sidecar_fixture() -> (
+        ProofHistorySidecar<EthEvmConfig, BlockchainProvider<MockNodeTypesWithDB>>,
+        Arc<ChainSpec>,
+        tempfile::TempDir,
+    ) {
+        let spec = Arc::new(ChainSpecBuilder::mainnet().paris_activated().build());
+        let factory = create_test_provider_factory_with_chain_spec(spec.clone());
+        init_genesis(&factory).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        initialize_proof_history_storage(&factory, storage.clone(), None).unwrap();
+        let sidecar = ProofHistorySidecar::new(
+            BlockchainProvider::new(factory).unwrap(),
+            EthEvmConfig::ethereum(spec.clone()),
+            storage.clone().into(),
+            storage,
+            ProofHistoryConfig {
+                storage_path: Some(dir.path().to_path_buf()),
+                ..ProofHistoryConfig::disabled()
+            },
+            ProofHistoryReadiness::new(),
+        );
+        (sidecar, spec, dir)
+    }
+
+    #[test]
+    fn prepare_rejects_a_completed_snapshot_with_an_invalid_root() {
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        let invalid_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(invalid_dir.path()).unwrap());
+        let init = storage.initialization_provider().unwrap();
+        init.set_initial_state_anchor(BlockNumHash::new(0, spec.genesis_hash())).unwrap();
+        init.commit_initial_state().unwrap();
+        init.commit().unwrap();
+        sidecar.storage = storage.clone().into();
+        sidecar.init_storage = storage;
+        assert!(sidecar.prepare().is_err(), "a completed marker cannot bypass root verification");
+    }
+
+    #[test]
+    fn prepare_restarts_a_pending_bootstrap_after_its_anchor_reorgs() {
+        let (mut sidecar, _spec, _dir) = sidecar_fixture();
+        let pending = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(pending.path()).unwrap());
+        let init = storage.initialization_provider().unwrap();
+        init.set_initial_state_anchor(BlockNumHash::new(0, B256::repeat_byte(7))).unwrap();
+        init.commit_initial_state().unwrap();
+        init.commit().unwrap();
+        std::fs::write(pending.path().join("backfill-target"), "0").unwrap();
+        sidecar.storage = storage.clone().into();
+        sidecar.init_storage = storage;
+        sidecar.config.storage_path = Some(pending.path().to_path_buf());
+
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        assert!(sidecar.storage.provider_ro().unwrap().get_earliest_block().is_err());
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Ready(_)));
+        assert!(!pending.path().join("backfill-target").exists());
+    }
+
+    #[test]
+    fn prepare_waits_for_finalized_window_before_snapshot() {
+        let (mut sidecar, _spec, _dir) = sidecar_fixture();
+        let empty = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(empty.path()).unwrap());
+        sidecar.storage = storage.clone().into();
+        sidecar.init_storage = storage;
+        sidecar.config.storage_path = Some(empty.path().to_path_buf());
+        sidecar.config.backfill_window_only = true;
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Wait));
+    }
+
+    fn executed(number: u64, parent_hash: B256, state_root: B256, fork: u8) -> ExecutedBlock {
+        let block = Block {
+            header: alloy_consensus::Header {
+                number,
+                parent_hash,
+                state_root,
+                extra_data: vec![fork].into(),
+                ..Default::default()
+            },
+            body: BlockBody::default(),
+        }
+        .try_into_recovered()
+        .unwrap();
+        ExecutedBlock { recovered_block: Arc::new(block), ..Default::default() }
+    }
+
+    #[test]
+    fn reorg_replaces_buffered_blocks_above_the_persisted_tip() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        // Hold updates in memory to exercise the real buffered-tip/persisted-tip distinction.
+        let engine = EngineHandle::spawn_with_thresholds(
+            sidecar.evm_config.clone(),
+            sidecar.provider.clone(),
+            sidecar.storage.clone(),
+            OpProofStoragePruner::new(sidecar.storage.clone(), sidecar.provider.clone(), 100),
+            100,
+            101,
+        );
+        let old = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let state = sidecar.provider.canonical_in_memory_state();
+        let commit = NewCanonicalChain::Commit { new: vec![old.clone()] };
+        let notification = commit.to_chain_notification();
+        state.update_chain(commit);
+        state.set_canonical_head(old.recovered_block.clone_sealed_header());
+        assert!(sidecar.handle_notification(&engine, &notification).unwrap());
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
+
+        let new = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 2);
+        let update = NewCanonicalChain::Reorg { old: vec![old], new: vec![new.clone()] };
+        let notification = update.to_chain_notification();
+        state.update_chain(update);
+        state.set_canonical_head(new.recovered_block.clone_sealed_header());
+        assert!(sidecar.handle_notification(&engine, &notification).unwrap());
+        // A following block must accept the replacement's hash as parent, proving that the
+        // buffered old branch was actually removed instead of skipped using the persisted tip.
+        engine
+            .index_block(
+                alloy_eips::eip1898::BlockWithParent::new(
+                    new.recovered_block.hash(),
+                    BlockNumHash::new(2, hash(9)),
+                ),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        drop(engine);
+    }
+
+    #[test]
+    fn stale_reorg_is_reconciled_before_touching_the_engine() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let old = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let stale = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 2);
+        let current = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 3);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![current.clone()] });
+        state.set_canonical_head(current.recovered_block.clone_sealed_header());
+        let stale_update = NewCanonicalChain::Reorg { old: vec![old], new: vec![stale] };
+        assert!(
+            !sidecar.handle_notification(&engine, &stale_update.to_chain_notification()).unwrap()
+        );
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
+        drop(engine);
+    }
+
+    #[test]
+    fn sidecar_persists_an_idle_commit_and_joins_on_shutdown() {
+        use reth::tasks::Runtime;
+        use std::time::Duration;
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        sidecar.config.prune_interval = Duration::from_millis(20);
+        let state = sidecar.provider.canonical_in_memory_state();
+        let storage = sidecar.storage.clone();
+        let readiness = sidecar.readiness.clone();
+        let runtime = Runtime::test();
+        let task = runtime.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
+            sidecar.run(shutdown).await.unwrap();
+        });
+        runtime.handle().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !readiness.is_ready() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+            let expected = block.recovered_block.hash();
+            let update = NewCanonicalChain::Commit { new: vec![block.clone()] };
+            let notification = update.to_chain_notification();
+            state.update_chain(update);
+            state.set_canonical_head(block.recovered_block.clone_sealed_header());
+            state.notify_canon_state(notification);
+            // Repeated head polls must not postpone persistence of a single paused tail block.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while storage.provider_ro().unwrap().get_latest_block().unwrap().hash != expected {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        });
+        assert!(runtime.graceful_shutdown_with_timeout(Duration::from_secs(5)));
+        runtime.handle().block_on(task).unwrap();
+        assert!(!readiness.is_ready());
+    }
+
+    #[test]
+    fn sidecar_replays_verified_blocks_only_after_disk_execution_advances() {
+        use reth::tasks::Runtime;
+        use reth_provider::{BlockWriter, DBProvider, DatabaseProviderFactory, ExecutionOutcome};
+        use std::time::Duration;
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        sidecar.config.prune_interval = Duration::from_millis(20);
+        sidecar.config.verification_interval = 1;
+        let provider = sidecar.provider.clone();
+        let state = provider.canonical_in_memory_state();
+        let storage = sidecar.storage.clone();
+        let readiness = sidecar.readiness.clone();
+        let runtime = Runtime::test();
+        let task = runtime.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
+            sidecar.run(shutdown).await.unwrap();
+        });
+        runtime.handle().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !readiness.is_ready() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+            let update = NewCanonicalChain::Commit { new: vec![block.clone()] };
+            let notification = update.to_chain_notification();
+            state.update_chain(update);
+            state.set_canonical_head(block.recovered_block.clone_sealed_header());
+            state.notify_canon_state(notification);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
+
+            let rw = provider.database_provider_rw().unwrap();
+            rw.append_blocks_with_state(
+                vec![(*block.recovered_block).clone()],
+                &ExecutionOutcome {
+                    first_block: 1,
+                    receipts: vec![vec![]],
+                    requests: vec![Default::default()],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap();
+            rw.commit().unwrap();
+            // No second canonical notification: the disk-head poll must discover this gap.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while storage.provider_ro().unwrap().get_latest_block().unwrap().number != 1 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        });
+        assert!(runtime.graceful_shutdown_with_timeout(Duration::from_secs(5)));
+        runtime.handle().block_on(task).unwrap();
+    }
 
     fn hash(byte: u8) -> B256 {
         B256::with_last_byte(byte)

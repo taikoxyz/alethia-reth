@@ -6,7 +6,7 @@ use std::{path::PathBuf, time::Duration};
 /// Default proof-history retention window in blocks.
 pub const DEFAULT_PROOF_HISTORY_WINDOW: u64 = 1_296_000;
 
-/// Default interval between proof-history prune passes.
+/// Default interval between proof-history maintenance polls.
 const DEFAULT_PROOF_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Default interval, in blocks, between proof-history consistency checks.
@@ -28,9 +28,9 @@ pub struct ProofHistoryConfig {
     pub storage_path: Option<PathBuf>,
     /// Number of recent blocks retained in proof-history storage.
     pub window: u64,
-    /// Whether empty proof-history storage waits until the finalized retention window starts.
+    /// Whether initialization waits for the finalized window, then backfills a current snapshot.
     pub backfill_window_only: bool,
-    /// Wall-clock interval between proof-history prune passes.
+    /// Idle interval between canonical-head polls; pruning also runs in each engine save.
     pub prune_interval: Duration,
     /// Block interval between proof-history consistency checks; zero disables verification.
     pub verification_interval: u64,

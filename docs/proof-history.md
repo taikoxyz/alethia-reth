@@ -11,8 +11,10 @@ An empty database copies one consistent snapshot of the node's persisted current
 state after execution, hashing and Merkle stages agree with the Finish checkpoint
 and no partial Merkle work remains. The copied root is checked against its block
 header. State tables use a pinned MDBX transaction, while headers come from shared
-static files. An invalid copy is discarded and retried once with a fresh source;
-a second mismatch fails initialization with repair guidance. Without
+static files. An invalid copy is discarded. A fresh header read determines whether
+to wait after a header change or fail immediately with source-repair guidance; a
+stable mismatch does not trigger another full copy. Missing Finish headers are
+logged while initialization waits. Without
 `--proofs-history.backfill-window-only`, indexing starts at that snapshot and
 history grows as the node advances.
 
@@ -38,13 +40,21 @@ rechecked before publishing readiness.
 Backward jobs run in chunks of at most 10,000 blocks, releasing the node read
 transaction and rechecking canonical bounds between chunks. This bounds the
 period during which backward backfill pins pages freed by ongoing node writes;
-the initial full-state copy still needs a long read transaction. Progress and ETA
-are reported per chunk. A fresh range of at most 25 blocks uses plain backfill to
+the initial full-state copy still needs a long read transaction. The auxiliary
+snapshot is built or resumed through short header lookups before opening a
+backfill chunk's pinned node transaction. A stale auxiliary anchor is discarded
+and rebuilt without clearing retained proofs or their journal. Progress and ETA are reported per chunk,
+with the overall retained height, target and remaining blocks logged at each
+checkpoint. A fresh range of at most one upstream backfill batch uses plain backfill to
 avoid duplicating the full state. Larger ranges use an auxiliary snapshot, and
 an existing snapshot stays active through the final chunk and restart. These are
 conservative operational limits, not benchmarked performance crossover points.
 After completion, the auxiliary snapshot and target file are removed before
-indexing and historical reads start.
+indexing and historical reads start. If persisted and canonical bounds disagree,
+backfill uses a delayed retry instead of reporting progress. Only
+header/root errors accompanied by changed canonical or auxiliary anchors are
+retried, with the
+error logged; missing changesets, journal hashes and storage failures remain fatal.
 
 Shutdown or a closed notification source cancels new work at batch boundaries.
 Accepted writes remain atomic and the sidecar waits for workers to join. The
@@ -73,8 +83,7 @@ recovery. A durable height-to-block-hash journal identifies the last retained
 common block, so shallow reorgs preserve the canonical prefix even when their
 notifications are stale or missing. Older V2 stores without journal entries
 conservatively fall back to the earliest retained anchor. The journal now uses
-`IndexedBlockHashes`; rows from the unreleased `CanonicalHeaders` journal are
-migrated transactionally on open. A shorter canonical chain can reconcile
+`IndexedBlockHashes`. A shorter canonical chain can reconcile
 immediately when the journal proves divergence at its tip; a matching prefix
 still waits for catch-up. Reorgs replacing that
 anchor automatically rebuild the snapshot with historical reads paused. Shutdown

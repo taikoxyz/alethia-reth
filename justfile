@@ -26,3 +26,4 @@ test:
   rustup toolchain install {{toolchain}} && \
   cargo +{{toolchain}} nextest -v run \
     --workspace --all-features
+  cargo +{{toolchain}} test --doc --workspace --all-features

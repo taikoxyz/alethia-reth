@@ -5,7 +5,6 @@ use eyre::eyre;
 use reth_db::{
     Database, DatabaseEnv,
     cursor::{DbCursorRO, DbCursorRW},
-    tables::CanonicalHeaders,
     transaction::{DbTx, DbTxMut},
 };
 use reth_optimism_trie::{
@@ -64,18 +63,6 @@ impl ProofHistoryDatabase {
         let mut db = init_db_for::<_, Tables>(path, DatabaseArguments::default())?;
         db.create_and_track_tables_for::<journal::Tables>()?;
         let tx = db.tx_mut()?;
-        match tx.inner().open_db(Some("CanonicalHeaders")) {
-            Ok(_) => {
-                let mut cursor = tx.cursor_read::<CanonicalHeaders>()?;
-                for entry in cursor.walk(None)? {
-                    let (number, hash) = entry?;
-                    tx.put::<IndexedBlockHashes>(number, hash)?;
-                }
-                tx.clear::<CanonicalHeaders>()?;
-            }
-            Err(reth_db::mdbx::Error::NotFound) => {}
-            Err(error) => return Err(error.into()),
-        }
         if tx.entries::<ProofWindow>()? > 0 ||
             tx.entries::<AccountTrieHistory>()? > 0 ||
             tx.entries::<StorageTrieHistory>()? > 0 ||
@@ -364,6 +351,7 @@ mod tests {
         init.set_initial_state_anchor(BlockNumHash::new(7, B256::repeat_byte(7))).unwrap();
         init.commit_initial_state().unwrap();
         OpProofsInitProvider::commit(init).unwrap();
+        storage.record_hashes([(7, B256::repeat_byte(7))]).unwrap();
         let capture = Capture::default();
         metrics::with_local_recorder(&capture, || storage.report_metrics()).unwrap();
         let gauges = capture.0.lock().unwrap();
@@ -386,6 +374,10 @@ mod tests {
             value("optimism_proof_storage.table_entries", vec![("table", "V2ProofWindow")]),
             entries as f64
         );
+        assert_eq!(
+            value("optimism_proof_storage.table_entries", vec![("table", "IndexedBlockHashes")]),
+            1.0
+        );
         assert!(value("optimism_proof_storage.page_size", vec![]) > 0.0);
         value(
             "optimism_proof_storage.table_pages",
@@ -393,32 +385,5 @@ mod tests {
         );
         value("optimism_proof_storage.freelist", vec![]);
         value("optimism_proof_storage.timed_out_not_aborted_transactions", vec![]);
-    }
-    #[test]
-    fn opening_migrates_the_unreleased_canonical_headers_journal() {
-        struct LegacyJournal;
-        impl reth_db::TableSet for LegacyJournal {
-            fn tables() -> Box<dyn Iterator<Item = Box<dyn reth_db::table::TableInfo>>> {
-                Box::new(std::iter::once(Box::new(reth_db::tables::Tables::CanonicalHeaders)
-                    as Box<dyn reth_db::table::TableInfo>))
-            }
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let mut storage = ProofHistoryDatabase::open(dir.path()).unwrap();
-        storage.env.create_and_track_tables_for::<LegacyJournal>().unwrap();
-        let init = storage.initialization_provider().unwrap();
-        init.set_initial_state_anchor(BlockNumHash::new(7, B256::repeat_byte(7))).unwrap();
-        init.commit_initial_state().unwrap();
-        OpProofsInitProvider::commit(init).unwrap();
-        let tx = storage.env.tx_mut().unwrap();
-        tx.put::<CanonicalHeaders>(7, B256::repeat_byte(7)).unwrap();
-        tx.commit().unwrap();
-        drop(storage);
-        let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
-        assert_eq!(storage.indexed_hash(7).unwrap(), Some(B256::repeat_byte(7)));
-        assert_eq!(storage.env.tx().unwrap().entries::<CanonicalHeaders>().unwrap(), 0);
-        drop(storage);
-        let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
-        assert_eq!(storage.indexed_hash(7).unwrap(), Some(B256::repeat_byte(7)));
     }
 }

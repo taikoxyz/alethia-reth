@@ -82,10 +82,8 @@ pub(super) enum ProofHistoryStartupAction {
         /// Earliest retained proof-history block number missing from the canonical chain.
         earliest: u64,
     },
-    /// Canonical chain is still behind the stored latest block; reconciliation must retry once
-    /// the node catches back up (e.g. right after a restart where the persisted head lags the
-    /// previously indexed in-memory tip), and only then compare hashes to decide between serving
-    /// as-is and unwinding.
+    /// The stored tip is unavailable in the observed canonical view: the node may be behind,
+    /// or the height and hash reads may straddle a revert. Retry before serving or unwinding.
     WaitForCanonicalLatest {
         /// Latest retained proof-history block number.
         latest: u64,
@@ -139,9 +137,11 @@ pub(super) fn proof_history_startup_action(
     }
 
     let Some(canonical_latest) = canonical_latest_hash else {
-        return Err(eyre!(
-            "canonical chain has no canonical hash for stored proof-history latest block {latest_number} at or below canonical best {canonical_best}"
-        ));
+        // The best-height and hash reads may straddle a canonical revert.
+        return Ok(ProofHistoryStartupAction::WaitForCanonicalLatest {
+            latest: latest_number,
+            canonical_best,
+        });
     };
 
     if canonical_latest == latest_hash {
@@ -435,7 +435,7 @@ where
             }
             ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
                 warn!(target: "reth::taiko::proof_history", latest, canonical_best,
-                    "proof-history head is ahead of canonical state; historical reads are paused");
+                    "waiting for canonical proof-history head; historical reads are paused");
                 return Ok(StartupStep::Wait);
             }
             ProofHistoryStartupAction::ReconcileFork { earliest } => {
@@ -470,13 +470,17 @@ where
         }
         let window = self.storage.provider_ro()?.get_proof_window()?;
         let header = self.provider.sealed_header(window.latest.number)?;
-        if !self.validate_snapshot_header(window.latest, header, pending_target.is_some())? {
+        if !self.validate_snapshot_header(window.latest, header)? {
             return Ok(StartupStep::Wait);
         }
         if let Some(target) = pending_target {
             if window.earliest.number > target {
-                backfill_proof_history_storage(&self.provider, self.init_storage.clone(), target)?;
-                return Ok(StartupStep::Progress);
+                let progressed = backfill_proof_history_storage(
+                    &self.provider,
+                    self.init_storage.clone(),
+                    target,
+                )?;
+                return Ok(if progressed { StartupStep::Progress } else { StartupStep::Wait });
             }
             let rw = self.init_storage.provider_rw()?;
             rw.clear_snapshot()?;
@@ -506,6 +510,9 @@ where
         rw.commit()?;
         let retained = self.storage.provider_ro()?.get_proof_window()?;
         self.init_storage.retain_hashes(retained.earliest.number, retained.latest.number)?;
+        if !matches!(self.startup_action()?, ProofHistoryStartupAction::Ready) {
+            return Ok(StartupStep::Progress);
+        }
         Ok(StartupStep::Ready(EngineHandle::spawn_with_thresholds(
             self.evm_config.clone(),
             self.provider.clone(),
@@ -522,7 +529,6 @@ where
         &self,
         latest: BlockNumHash,
         header: Option<reth_primitives_traits::SealedHeader<Provider::Header>>,
-        pending: bool,
     ) -> eyre::Result<bool> {
         let Some(header) = header.filter(|header| header.hash() == latest.hash) else {
             debug!(target: "reth::taiko::proof_history", block = latest.number,
@@ -535,9 +541,6 @@ where
             Default::default(),
         )?;
         if root != header.state_root() {
-            if pending {
-                self.init_storage.reset_bootstrap()?;
-            }
             return Err(eyre!(
                 "proof-history state root mismatch at block {} ({:?}): computed {:?}, expected {:?}; \
                  inspect the node's source state and EVM configuration. After repairing the cause, \
@@ -1138,19 +1141,19 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_latest_hash_is_missing_within_canonical_range() {
-        // The stored latest height is within the canonical chain, yet the canonical hash lookup
-        // returned nothing: a provider inconsistency that waiting cannot repair. Fail closed.
-        let error = proof_history_startup_action(
+    fn proof_history_startup_action_waits_when_latest_hash_disappears_during_revert() {
+        let action = proof_history_startup_action(
             Some((10, hash(10))),
             Some((20, hash(20))),
             20,
             Some(hash(10)),
             None,
         )
-        .expect_err("missing canonical hash below best must fail closed");
-
-        assert!(error.to_string().contains("no canonical hash"));
+        .unwrap();
+        assert_eq!(
+            action,
+            ProofHistoryStartupAction::WaitForCanonicalLatest { latest: 20, canonical_best: 20 }
+        );
     }
 
     use reth_provider::BlockHashReader;
@@ -1659,12 +1662,11 @@ mod tests {
             !sidecar
                 .validate_snapshot_header(
                     latest,
-                    Some(replacement.recovered_block.clone_sealed_header()),
-                    false
+                    Some(replacement.recovered_block.clone_sealed_header())
                 )
                 .unwrap()
         );
-        assert!(!sidecar.validate_snapshot_header(latest, None, false).unwrap());
+        assert!(!sidecar.validate_snapshot_header(latest, None).unwrap());
         assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap(), latest);
     }
 
@@ -1741,5 +1743,179 @@ mod tests {
             assert!(!listen);
             assert!(matches!(result.unwrap(), StartupStep::Progress));
         });
+    }
+    #[test]
+    fn pending_snapshot_corruption_preserves_evidence_across_reopen() {
+        let (mut sidecar, spec, _dir) = sidecar_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        let anchor = BlockNumHash::new(0, spec.genesis_hash());
+        let init = storage.initialization_provider().unwrap();
+        init.set_initial_state_anchor(anchor).unwrap();
+        init.commit_initial_state().unwrap();
+        init.commit().unwrap();
+        storage.record_hashes([(0, anchor.hash)]).unwrap();
+        std::fs::write(dir.path().join("backfill-target"), "0").unwrap();
+        sidecar.storage = storage.clone().into();
+        sidecar.init_storage = storage.clone();
+        sidecar.config.storage_path = Some(dir.path().to_path_buf());
+        let error = sidecar.prepare().err().unwrap();
+        assert!(error.to_string().contains("preserve the old"));
+        assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap(), anchor);
+        drop(sidecar);
+        drop(storage);
+        let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
+        assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap(), anchor);
+        assert_eq!(storage.indexed_hash(0).unwrap(), Some(anchor.hash));
+        assert!(dir.path().join("backfill-target").exists());
+    }
+
+    #[test]
+    fn preparation_rechecks_after_lag_even_if_the_remaining_notification_is_a_commit() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let runtime = reth::tasks::Runtime::test();
+        runtime.handle().block_on(async {
+            let (sender, mut notifications) = tokio::sync::broadcast::channel(1);
+            let block = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+            sender
+                .send(
+                    NewCanonicalChain::Reorg { old: vec![block.clone()], new: vec![] }
+                        .to_chain_notification(),
+                )
+                .unwrap();
+            sender
+                .send(NewCanonicalChain::Commit { new: vec![block] }.to_chain_notification())
+                .unwrap();
+            let (proceed, waiting) = tokio::sync::oneshot::channel();
+            let preparation = sidecar.await_preparation(
+                async {
+                    waiting.await.unwrap();
+                    Ok(StartupStep::Ready(engine))
+                },
+                &mut notifications,
+            );
+            tokio::pin!(preparation);
+            assert!(futures_util::poll!(&mut preparation).is_pending());
+            assert!(!sidecar.init_storage.bootstrap_cancelled());
+            proceed.send(()).unwrap();
+            let (result, listen) = preparation.await;
+            assert!(listen);
+            assert!(matches!(result.unwrap(), StartupStep::Progress));
+        });
+    }
+
+    #[test]
+    fn submission_error_after_a_reorg_requests_reconciliation() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let old = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 1);
+        let new = executed(1, spec.genesis_hash(), spec.genesis_header().state_root, 2);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![old.clone()] });
+        state.set_canonical_head(old.recovered_block.clone_sealed_header());
+        assert!(
+            !sidecar
+                .persist_block(BlockNumHash::new(1, old.recovered_block.hash()), || {
+                    state.update_chain(NewCanonicalChain::Reorg {
+                        old: vec![old.clone()],
+                        new: vec![new.clone()],
+                    });
+                    state.set_canonical_head(new.recovered_block.clone_sealed_header());
+                    Err(eyre::eyre!("parent disappeared during execution"))
+                })
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn shorter_chain_waits_without_journal_evidence_of_divergence() {
+        for missing_tip_hash in [false, true] {
+            let (sidecar, spec, _dir) = sidecar_fixture();
+            let blocks = index_empty_chain(&sidecar, &spec, 3);
+            let state = sidecar.provider.canonical_in_memory_state();
+            let new = if missing_tip_hash {
+                executed(2, blocks[0].recovered_block.hash(), spec.genesis_header().state_root, 9)
+            } else {
+                blocks[1].clone()
+            };
+            state.update_chain(NewCanonicalChain::Reorg {
+                old: blocks[1..].to_vec(),
+                new: vec![new.clone()],
+            });
+            state.set_canonical_head(new.recovered_block.clone_sealed_header());
+            if missing_tip_hash {
+                sidecar.init_storage.retain_hashes(0, 2).unwrap();
+            }
+            assert!(matches!(
+                sidecar.startup_action().unwrap(),
+                ProofHistoryStartupAction::WaitForCanonicalLatest { latest: 3, canonical_best: 2 }
+            ));
+        }
+    }
+
+    #[test]
+    fn pending_backfill_waits_when_the_canonical_anchor_is_only_in_memory() {
+        use reth_optimism_trie::OpProofsProviderRw;
+        let (sidecar, spec, dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 1);
+        let anchor = BlockNumHash::new(1, blocks[0].recovered_block.hash());
+        let rw = sidecar.storage.provider_rw().unwrap();
+        rw.prune_earliest_state(alloy_eips::eip1898::BlockWithParent::new(
+            spec.genesis_hash(),
+            anchor,
+        ))
+        .unwrap();
+        rw.commit().unwrap();
+        std::fs::write(dir.path().join("backfill-target"), "0").unwrap();
+        assert!(matches!(sidecar.startup_action().unwrap(), ProofHistoryStartupAction::Ready));
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Wait));
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_earliest_block().unwrap(), anchor);
+        assert!(dir.path().join("backfill-target").exists());
+    }
+
+    #[test]
+    fn a_reorg_during_journal_batch_does_not_corrupt_fork_reconciliation() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        let StartupStep::Ready(engine) = sidecar.prepare().unwrap() else { panic!("ready") };
+        let third =
+            executed(3, blocks[1].recovered_block.hash(), spec.genesis_header().state_root, 3);
+        let fourth = executed(4, third.recovered_block.hash(), spec.genesis_header().state_root, 4);
+        let replacement =
+            executed(2, blocks[0].recovered_block.hash(), spec.genesis_header().state_root, 9);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Commit { new: vec![third.clone(), fourth.clone()] });
+        state.set_canonical_head(fourth.recovered_block.clone_sealed_header());
+        sidecar
+            .init_storage
+            .record_hashes(
+                [(3, third.recovered_block.hash()), (4, fourth.recovered_block.hash())]
+                    .into_iter()
+                    .inspect(|(number, _)| {
+                        if *number == 4 {
+                            state.update_chain(NewCanonicalChain::Reorg {
+                                old: vec![blocks[1].clone(), third.clone(), fourth.clone()],
+                                new: vec![replacement.clone()],
+                            });
+                            state.set_canonical_head(
+                                replacement.recovered_block.clone_sealed_header(),
+                            );
+                        }
+                    }),
+            )
+            .unwrap();
+        assert!(
+            !sidecar
+                .persist_block(BlockNumHash::new(3, third.recovered_block.hash()), || panic!(
+                    "must not submit the obsolete batch"
+                ))
+                .unwrap()
+        );
+        drop(engine);
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 1);
+        for number in 2..=4 {
+            assert_eq!(sidecar.init_storage.indexed_hash(number).unwrap(), None);
+        }
     }
 }

@@ -133,7 +133,7 @@ where
                 move |shutdown| {
                     Box::pin(async move {
                         if let Err(error) = sidecar.run(shutdown).await {
-                            panic!("proof-history sidecar crashed: {error}");
+                            panic!("proof-history sidecar crashed: {error:#}");
                         }
                     })
                 },
@@ -186,7 +186,7 @@ fn spawn_proofs_db_metrics(
         loop {
             sleep(metrics_report_interval).await;
             if let Err(error) = storage.report_metrics() {
-                tracing::error!(target: "reth::taiko::proof_history", %error, "failed to read proof database metrics");
+                tracing::error!(target: "reth::taiko::proof_history", error = %format_args!("{error:#}"), "failed to read proof database metrics");
             }
         }
     });

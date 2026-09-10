@@ -7,15 +7,20 @@ arbitrary transaction lists.
 
 ## Initialization and retention
 
-An empty database copies one consistent snapshot of the node's persisted current
-state after execution, hashing and Merkle stages agree with the Finish checkpoint
-and no partial Merkle work remains. The copied root is checked against its block
-header. State tables use a pinned MDBX transaction, while headers come from shared
-static files. An invalid copy is discarded. A fresh header read determines whether
-to wait after a header change or fail immediately with source-repair guidance; a
-stable mismatch does not trigger another full copy. Missing Finish headers are
-logged while initialization waits. Without
-`--proofs-history.backfill-window-only`, indexing starts at that snapshot and
+An empty database copies the node's persisted state after execution, hashing and
+Merkle stages agree with the Finish checkpoint and no partial Merkle work
+remains. In normal reth unwinds, `commit_unwind` commits MDBX, waits for older
+readers, then commits static-file truncation. The copy's pinned reader therefore
+protects its visible header prefix as well as its state snapshot. Disabling the
+long-read timeout does not remove this synchronization.
+
+The copied root is checked after the initial job releases its reader. A stable
+mismatch or failed fresh-header probe preserves the copy and journal for diagnosis
+and fails with the anchor and computed/expected roots. A header changed or missing
+at that later probe permits discarding the copy and retrying; this is a defensive
+post-copy check, not evidence that a normal unwind can tear headers under the pin.
+Missing Finish headers are logged while initialization waits. Without
+`--proofs-history.backfill-window-only`, indexing starts at the snapshot and
 history grows as the node advances.
 
 With `--proofs-history.backfill-window-only`, initialization waits until finality
@@ -37,24 +42,38 @@ block, preserving already-backfilled history when the earliest anchor still
 matches. Reorg notifications do not cancel a pinned initial copy; its anchor is
 rechecked before publishing readiness.
 
-Backward jobs run in chunks of at most 10,000 blocks, releasing the node read
-transaction and rechecking canonical bounds between chunks. This bounds the
-period during which backward backfill pins pages freed by ongoing node writes;
-the initial full-state copy still needs a long read transaction. The auxiliary
-snapshot is built or resumed through short header lookups before opening a
-backfill chunk's pinned node transaction. A stale auxiliary anchor is discarded
-and rebuilt without clearing retained proofs or their journal. Progress and ETA are reported per chunk,
-with the overall retained height, target and remaining blocks logged at each
-checkpoint. A fresh range of at most one upstream backfill batch uses plain backfill to
-avoid duplicating the full state. Larger ranges use an auxiliary snapshot, and
-an existing snapshot stays active through the final chunk and restart. These are
-conservative operational limits, not benchmarked performance crossover points.
+Backward jobs run in chunks of at most 10,000 blocks, releasing the node reader
+and rechecking canonical bounds between chunks. A pinned reader prevents page
+reuse and can delay a persisted-block unwind: reth's persistence thread waits
+for older readers before completing static-file truncation. In-memory blocks can
+accumulate while persistence waits. Chunking bounds the blocks processed per pin,
+not its wall-clock duration. The initial full-state copy still holds one reader;
+a warning is emitted every 60 seconds while it runs. A bounded, resumable initial
+copy remains a follow-up; production copy duration and memory growth are unmeasured.
+
+The first snapshot-assisted chunk builds a second full-state copy: the auxiliary
+job drains the account trie, storage trie, hashed accounts and hashed storages in
+write batches before backward reconstruction starts. Its two node-header lookups
+are short; it does not pin the node database throughout this copy. The sidecar
+logs the auxiliary phase's start and completion, and upstream reports its copy
+progress. Readiness remains false until bootstrap completes. A stale auxiliary
+anchor clears only that cache and schedules immediate progress.
+
+Progress/ETA is reported per backward chunk, with retained height, target and
+remaining blocks at each checkpoint. A fresh range of at most one upstream
+backfill batch uses plain backfill to avoid duplicating state. Larger ranges use
+an auxiliary snapshot; an existing snapshot stays active through the final chunk
+and restart. These are conservative limits, not benchmarked crossover points.
 After completion, the auxiliary snapshot and target file are removed before
-indexing and historical reads start. If persisted and canonical bounds disagree,
-backfill uses a delayed retry instead of reporting progress. Only
-header/root errors accompanied by changed canonical or auxiliary anchors are
-retried, with the
-error logged; missing changesets, journal hashes and storage failures remain fatal.
+indexing and historical reads start.
+
+Changed canonical bounds request immediate reconciliation; a lagging persisted
+view uses a delayed retry. Eligible header/root/anchor errors with changed
+canonical or auxiliary identity are logged and reconciled. Normal pinned unwinds
+protect the chunk's visible header prefix; auxiliary lookups and probes after a
+reader is released remain separate observations. Pruning, journal and storage
+failures remain fatal. Probe failures retain and log the original error, and
+auxiliary-copy errors receive snapshot-specific context rather than pruning advice.
 
 Shutdown or a closed notification source cancels new work at batch boundaries.
 Accepted writes remain atomic and the sidecar waits for workers to join. The
@@ -70,8 +89,8 @@ advancing, preserving per-block persistence and RPC freshness. Write-ahead hashe
 are recorded once per replay batch or notification suffix. Submissions remain
 serialized because upstream can return success without accepting an unavailable
 parent; later blocks must not trigger implicit gap replay. Throughput and memory
-have not been benchmarked. Idle polling also
-catches up to the canonical in-memory tail without new notifications. Pruning
+have not been benchmarked. Idle polling also catches up to the canonical
+in-memory tail without new notifications. Pruning
 runs in the engine's persistence transaction;
 `--proofs-history.prune-interval` controls idle maintenance polling and must be
 greater than zero.
@@ -83,10 +102,13 @@ recovery. A durable height-to-block-hash journal identifies the last retained
 common block, so shallow reorgs preserve the canonical prefix even when their
 notifications are stale or missing. Older V2 stores without journal entries
 conservatively fall back to the earliest retained anchor. The journal now uses
-`IndexedBlockHashes`. A shorter canonical chain can reconcile
-immediately when the journal proves divergence at its tip; a matching prefix
-still waits for catch-up. Reorgs replacing that
-anchor automatically rebuild the snapshot with historical reads paused. Shutdown
+`IndexedBlockHashes`. A shorter canonical chain reconciles immediately when the
+journal proves divergence at its tip; a matching prefix waits for catch-up.
+A missing canonical hash at or below the observed head is labeled separately.
+Six consecutive identical observations (same retained tip and observed best)
+stop the sidecar with diagnostic guidance; changed observations or other startup
+outcomes reset that count. Ordinary catch-up above the canonical head is not
+subject to this escalation. Reorgs replacing the retained earliest anchor rebuild the snapshot with historical reads paused. Shutdown
 joins the indexing threads; accepted blocks not yet persisted are recovered from
 the node on restart.
 

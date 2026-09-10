@@ -3,10 +3,10 @@
 use super::{
     ProofHistoryStorage,
     config::ProofHistoryConfig,
-    opt_block,
+    is_canonical, opt_block,
     storage_init::{
-        backfill_proof_history_storage, finish_backfill, initialize_proof_history_storage,
-        pending_backfill_target,
+        BackfillStep, backfill_proof_history_storage, finish_backfill,
+        initialize_proof_history_storage, pending_backfill_target,
     },
     store::ProofHistoryDatabase,
 };
@@ -82,12 +82,18 @@ pub(super) enum ProofHistoryStartupAction {
         /// Earliest retained proof-history block number missing from the canonical chain.
         earliest: u64,
     },
-    /// The stored tip is unavailable in the observed canonical view: the node may be behind,
-    /// or the height and hash reads may straddle a revert. Retry before serving or unwinding.
+    /// The canonical chain is below the stored tip; wait for normal catch-up.
     WaitForCanonicalLatest {
         /// Latest retained proof-history block number.
         latest: u64,
         /// Canonical chain height observed at reconciliation time.
+        canonical_best: u64,
+    },
+    /// A hash disappeared at or below the observed head; repeated identical holes must escalate.
+    WaitForMissingCanonicalHash {
+        /// Retained tip whose canonical hash is unavailable.
+        latest: BlockNumHash,
+        /// Canonical height observed before reading the missing hash.
         canonical_best: u64,
     },
 }
@@ -137,9 +143,10 @@ pub(super) fn proof_history_startup_action(
     }
 
     let Some(canonical_latest) = canonical_latest_hash else {
-        // The best-height and hash reads may straddle a canonical revert.
-        return Ok(ProofHistoryStartupAction::WaitForCanonicalLatest {
-            latest: latest_number,
+        // The best-height and hash reads may straddle a canonical revert. Label this separately
+        // so a stationary hole can escalate without mistaking ordinary catch-up for corruption.
+        return Ok(ProofHistoryStartupAction::WaitForMissingCanonicalHash {
+            latest: BlockNumHash::new(latest_number, latest_hash),
             canonical_best,
         });
     };
@@ -161,8 +168,52 @@ enum StartupStep {
     Wait,
     /// Snapshot/backfill/reconciliation progressed; retry without an idle delay.
     Progress,
+    /// A canonical hash at or below the observed head is missing; apply bounded retry policy.
+    MissingCanonicalHash {
+        /// Retained tip whose canonical hash is unavailable.
+        latest: BlockNumHash,
+        /// Canonical height paired with this observation.
+        canonical_best: u64,
+    },
     /// Initialization and canonical reconciliation completed.
     Ready(EngineHandle<Block>),
+}
+
+/// Consecutive identical missing hashes tolerated before stopping with an actionable error.
+const MAX_MISSING_HASH_OBSERVATIONS: u8 = 6;
+
+/// Tracks stationary canonical holes separately from ordinary node catch-up or changing views.
+#[derive(Debug, Default)]
+struct MissingHashObservations {
+    /// Retained tip and observed canonical height of the preceding missing-hash observation.
+    previous: Option<(BlockNumHash, u64)>,
+    /// Number of consecutive observations of exactly the same missing hash.
+    consecutive: u8,
+}
+
+impl MissingHashObservations {
+    /// Resets on other startup outcomes or changed observations; escalates a persistent hole.
+    fn observe(&mut self, missing: Option<(BlockNumHash, u64)>) -> eyre::Result<()> {
+        let Some((latest, best)) = missing else {
+            *self = Self::default();
+            return Ok(());
+        };
+        self.consecutive =
+            if self.previous == missing { self.consecutive.saturating_add(1) } else { 1 };
+        self.previous = missing;
+        warn!(target: "reth::taiko::proof_history", latest = latest.number, hash = ?latest.hash,
+            canonical_best = best, consecutive = self.consecutive,
+            "canonical hash missing at or below the observed head; historical reads remain paused");
+        if self.consecutive >= MAX_MISSING_HASH_OBSERVATIONS {
+            return Err(eyre!(
+                "canonical hash for proof-history block {} ({:?}) is still missing at or below                  observed best {best} after {} identical observations; inspect node canonical                  headers and synchronization, and preserve proof history for diagnosis",
+                latest.number,
+                latest.hash,
+                self.consecutive
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Owns Taiko lifecycle policy while upstream owns indexing, persistence and pruning.
@@ -295,6 +346,7 @@ where
         let mut notifications = this.provider.subscribe_to_canonical_state();
         let mut engine = None;
         let mut retry = Duration::ZERO;
+        let mut missing_hashes = MissingHashObservations::default();
         let mut interval = time::interval(this.config.prune_interval);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
@@ -321,7 +373,13 @@ where
                         retry = Duration::ZERO;
                         continue;
                     }
-                    match result? {
+                    let step = result?;
+                    missing_hashes.observe(match &step {
+                        StartupStep::MissingCanonicalHash { latest, canonical_best } => Some((*latest, *canonical_best)),
+                        _ => None,
+                    })?;
+                    match step {
+                        StartupStep::MissingCanonicalHash { .. } => retry = STARTUP_RETRY_INTERVAL,
                         StartupStep::Wait => retry = STARTUP_RETRY_INTERVAL,
                         StartupStep::Progress => retry = Duration::ZERO,
                         StartupStep::Ready(handle) => {
@@ -438,6 +496,9 @@ where
                     "waiting for canonical proof-history head; historical reads are paused");
                 return Ok(StartupStep::Wait);
             }
+            ProofHistoryStartupAction::WaitForMissingCanonicalHash { latest, canonical_best } => {
+                return Ok(StartupStep::MissingCanonicalHash { latest, canonical_best });
+            }
             ProofHistoryStartupAction::ReconcileFork { earliest } => {
                 let latest = self.storage.provider_ro()?.get_latest_block()?;
                 let mut fork = earliest;
@@ -445,7 +506,7 @@ where
                 if self.init_storage.indexed_hash(latest.number)? == Some(latest.hash) {
                     for number in (earliest.number..latest.number).rev() {
                         let Some(hash) = self.init_storage.indexed_hash(number)? else { break };
-                        if self.provider.block_hash(number)? == Some(hash) {
+                        if is_canonical(&self.provider, BlockNumHash::new(number, hash))? {
                             fork = BlockNumHash::new(number, hash);
                             break;
                         }
@@ -480,7 +541,10 @@ where
                     self.init_storage.clone(),
                     target,
                 )?;
-                return Ok(if progressed { StartupStep::Progress } else { StartupStep::Wait });
+                return Ok(match progressed {
+                    BackfillStep::Progressed | BackfillStep::Reconcile => StartupStep::Progress,
+                    BackfillStep::Wait => StartupStep::Wait,
+                });
             }
             let rw = self.init_storage.provider_rw()?;
             rw.clear_snapshot()?;
@@ -510,8 +574,24 @@ where
         rw.commit()?;
         let retained = self.storage.provider_ro()?.get_proof_window()?;
         self.init_storage.retain_hashes(retained.earliest.number, retained.latest.number)?;
-        if !matches!(self.startup_action()?, ProofHistoryStartupAction::Ready) {
-            return Ok(StartupStep::Progress);
+        self.start_engine(pruner)
+    }
+
+    /// Rechecks canonical state after pruning and before creating any engine threads.
+    fn start_engine(
+        &self,
+        pruner: OpProofStoragePruner<ProofHistoryStorage, Provider>,
+    ) -> eyre::Result<StartupStep> {
+        match self.startup_action()? {
+            ProofHistoryStartupAction::Ready => {}
+            ProofHistoryStartupAction::WaitForMissingCanonicalHash { latest, canonical_best } => {
+                return Ok(StartupStep::MissingCanonicalHash { latest, canonical_best });
+            }
+            ProofHistoryStartupAction::WaitForCanonicalEarliest { .. } |
+            ProofHistoryStartupAction::WaitForCanonicalLatest { .. } => {
+                return Ok(StartupStep::Wait)
+            }
+            _ => return Ok(StartupStep::Progress),
         }
         Ok(StartupStep::Ready(EngineHandle::spawn_with_thresholds(
             self.evm_config.clone(),
@@ -575,7 +655,7 @@ where
             else {
                 return Ok((false, false));
             };
-            if self.provider.block_hash(number)? != Some(block.hash()) ||
+            if !is_canonical(&self.provider, BlockNumHash::new(number, block.hash()))? ||
                 block.parent_hash() != parent
             {
                 return Ok((false, false));
@@ -618,7 +698,7 @@ where
     ) -> eyre::Result<bool> {
         let mut retry_at = Instant::now();
         loop {
-            if self.provider.block_hash(expected.number)? != Some(expected.hash) {
+            if !is_canonical(&self.provider, expected)? {
                 return Ok(false);
             }
             if self.init_storage.bootstrap_cancelled() {
@@ -635,7 +715,7 @@ where
             }
             if Instant::now() >= retry_at {
                 if let Err(error) = submit() {
-                    if self.provider.block_hash(expected.number)? != Some(expected.hash) {
+                    if !is_canonical(&self.provider, expected)? {
                         return Ok(false);
                     }
                     return Err(error).wrap_err_with(|| format!(
@@ -665,7 +745,7 @@ where
             let (Some(indexed), Some(canonical)) =
                 (self.init_storage.indexed_hash(best)?, self.provider.block_hash(best)?) &&
             indexed != canonical &&
-            self.provider.block_hash(earliest_number)? == Some(earliest_hash)
+            is_canonical(&self.provider, BlockNumHash::new(earliest_number, earliest_hash))?
         {
             return Ok(ProofHistoryStartupAction::ReconcileFork {
                 earliest: BlockNumHash::new(earliest_number, earliest_hash),
@@ -698,7 +778,7 @@ where
                 } else {
                     BlockNumHash::new(new.tip().number, new.tip().hash())
                 };
-                if self.provider.block_hash(target.number)? != Some(target.hash) ||
+                if !is_canonical(&self.provider, target)? ||
                     (new.is_empty() && self.provider.best_block_number()? != target.number)
                 {
                     return Ok(false);
@@ -722,7 +802,7 @@ where
                 new
             }
         };
-        if self.provider.block_hash(new.tip().number)? != Some(new.tip().hash()) {
+        if !is_canonical(&self.provider, BlockNumHash::new(new.tip().number, new.tip().hash()))? {
             return Ok(false);
         }
         let latest = self.storage.provider_ro()?.get_latest_block()?.number;
@@ -1152,7 +1232,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             action,
-            ProofHistoryStartupAction::WaitForCanonicalLatest { latest: 20, canonical_best: 20 }
+            ProofHistoryStartupAction::WaitForMissingCanonicalHash {
+                latest: BlockNumHash::new(20, hash(20)),
+                canonical_best: 20
+            }
         );
     }
 
@@ -1479,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_waits_for_partial_merkle_work_and_discards_a_bad_copy() {
+    fn snapshot_waits_for_partial_merkle_work_and_preserves_a_bad_copy() {
         use reth_db::{tables, transaction::DbTxMut};
         use reth_provider::{DBProvider, DatabaseProviderFactory, StageCheckpointWriter};
         use reth_stages_types::StageId;
@@ -1502,7 +1585,8 @@ mod tests {
         let error = initialize_proof_history_storage(&sidecar.provider, storage.clone(), None)
             .expect_err("a corrupt pinned source must fail instead of copying forever");
         assert!(error.to_string().contains("state root mismatch"));
-        assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
+        assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
+        assert!(storage.indexed_hash(0).unwrap().is_some());
     }
 
     #[test]
@@ -1846,10 +1930,16 @@ mod tests {
             if missing_tip_hash {
                 sidecar.init_storage.retain_hashes(0, 2).unwrap();
             }
-            assert!(matches!(
-                sidecar.startup_action().unwrap(),
-                ProofHistoryStartupAction::WaitForCanonicalLatest { latest: 3, canonical_best: 2 }
-            ));
+            assert!(
+                matches!(
+                    sidecar.startup_action().unwrap(),
+                    ProofHistoryStartupAction::WaitForCanonicalLatest {
+                        latest: 3,
+                        canonical_best: 2
+                    }
+                ),
+                "missing_tip_hash={missing_tip_hash}"
+            );
         }
     }
 
@@ -1917,5 +2007,50 @@ mod tests {
         for number in 2..=4 {
             assert_eq!(sidecar.init_storage.indexed_hash(number).unwrap(), None);
         }
+    }
+    #[test]
+    fn stationary_missing_hash_escalates_and_changed_observations_reset_the_count() {
+        let mut observations = super::MissingHashObservations::default();
+        let missing = Some((BlockNumHash::new(20, hash(20)), 20));
+        for attempt in 1..=5 {
+            observations
+                .observe(missing)
+                .unwrap_or_else(|error| panic!("attempt {attempt}: {error:#}"));
+        }
+        let error = observations.observe(missing).unwrap_err();
+        assert!(error.to_string().contains("after 6 identical observations"));
+        observations.observe(Some((BlockNumHash::new(20, hash(20)), 21))).unwrap();
+        observations.observe(None).unwrap();
+        for _ in 0..5 {
+            observations.observe(missing).unwrap();
+        }
+        assert!(observations.observe(missing).is_err());
+    }
+
+    #[test]
+    fn canonical_change_before_engine_start_is_reconciled_without_spawning() {
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        assert_eq!(sidecar.startup_action().unwrap(), ProofHistoryStartupAction::Ready);
+        let replacement =
+            executed(2, blocks[0].recovered_block.hash(), spec.genesis_header().state_root, 9);
+        let state = sidecar.provider.canonical_in_memory_state();
+        state.update_chain(NewCanonicalChain::Reorg {
+            old: vec![blocks[1].clone()],
+            new: vec![replacement.clone()],
+        });
+        state.set_canonical_head(replacement.recovered_block.clone_sealed_header());
+        let pruner = reth_optimism_trie::OpProofStoragePruner::new(
+            sidecar.storage.clone(),
+            sidecar.provider.clone(),
+            sidecar.config.window,
+        );
+        assert!(matches!(sidecar.start_engine(pruner).unwrap(), StartupStep::Progress));
+        assert_eq!(
+            sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().hash,
+            blocks[1].recovered_block.hash()
+        );
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 1);
     }
 }

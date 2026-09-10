@@ -36,7 +36,9 @@ Alethia-Reth is a Rust execution client for the Taiko protocol, built atop Parad
 
 - **Formatting**: `just fmt` (installs toolchain, runs `rustfmt` + `cargo sort`).
 - **Clippy**: `just clippy` (warnings treated as errors). Fix lints before committing.
-- **Testing**: `just test` (runs `cargo nextest -v run --workspace --all-features`). Add targeted tests for new logic.
+- **Testing**: `just test` runs `cargo nextest -v run --workspace --all-features`,
+  then `cargo test --doc --workspace --all-features`. Both must pass. Add targeted
+  tests for new logic.
 - **Build**: `cargo build --release` places binary at `target/release/alethia-reth`.
 
 ## Agent Tips

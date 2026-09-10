@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - Workspace root uses Cargo with `bin/` for the executable, `crates/` for libraries (`node`, `block`, `chainspec`, `cli`, `consensus`, `db`, `evm`, `network`, `payload`, `primitives`, `rpc`).
-- Tests live beside implementation modules; integration flows run through `cargo nextest`.
+- Tests live beside implementation modules; `just test` runs nextest and workspace doctests.
 - Docker assets and CI scripts share the root; build artifacts land in `target/`.
 
 ## Build, Test, and Development Commands
@@ -10,7 +10,8 @@
 - `cargo build --release` – optimized binary at `target/release/alethia-reth`.
 - `just fmt` – install toolchain, run `rustfmt`, and apply `cargo sort`.
 - `just clippy` – lint with warnings treated as errors.
-- `just test` – executes `cargo nextest -v run --workspace --all-features`.
+- `just test` – runs `cargo nextest -v run --workspace --all-features`,
+  then `cargo test --doc --workspace --all-features`. Both must pass.
 - `cargo run -p alethia-reth-bin --release -- [args]` – launch the node locally.
 
 ## Coding Style & Naming Conventions

@@ -1,6 +1,6 @@
 //! V2 proof-history snapshot initialization and cancellable backward backfill.
 
-use super::store::ProofHistoryDatabase;
+use super::{is_canonical, store::ProofHistoryDatabase};
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
 use alloy_primitives::B256;
@@ -19,13 +19,18 @@ use reth_provider::{
 };
 use reth_stages_types::StageId;
 use reth_trie::StateRoot;
-use std::{fs, io, path::Path, sync::Arc};
+use std::{
+    fs, io,
+    path::Path,
+    sync::{Arc, mpsc},
+    time::{Duration, Instant},
+};
 use tracing::{info, warn};
 
-/// Copies a single persisted current-state snapshot using the upstream initialization job.
-/// Trie tables share one MDBX snapshot, while headers are backed by reth's shared static files.
-/// A root mismatch discards the copy, then waits if the header changed or fails with repair
-/// guidance if it is stable. Canonical reconciliation precedes reads. Bulk rows bypass metrics.
+/// Copies the node's persisted state while its MDBX reader prevents normal unwind truncation.
+/// A failed copy is retained on stable mismatch or probe failure; a changed post-copy header
+/// permits resetting and retrying. Ok(false) means source state/header is not ready for copying.
+/// Canonical reconciliation precedes reads, and bulk rows bypass metrics wrappers.
 pub(super) fn initialize_proof_history_storage<Provider>(
     provider: &Provider,
     storage: Arc<ProofHistoryDatabase>,
@@ -78,7 +83,9 @@ where
         sync_backfill_directory(path)?;
     }
     storage.record_hashes([(number, header.hash())])?;
-    InitializationJob::new(storage.clone(), db.into_tx(), layout).run(number, header.hash())?;
+    with_pinned_copy_warning(number, || {
+        InitializationJob::new(storage.clone(), db.into_tx(), layout).run(number, header.hash())
+    })?;
     let root = StateRoot::overlay_root(storage.provider_ro()?, number, Default::default())?;
     if root != header.state_root() {
         return reject_initial_snapshot(
@@ -94,8 +101,31 @@ where
     Ok(true)
 }
 
-/// Discards a failed initial copy and checks fresh header identity before choosing recovery.
-/// A moved/missing header waits for reconciliation; a stable mismatch fails without recopying.
+/// Reports a long initial copy while its reader can delay persisted unwind completion.
+/// Dropping the completion sender joins the reporter on success, error, or panic.
+fn with_pinned_copy_warning<T>(number: u64, copy: impl FnOnce() -> T) -> T {
+    info!(target: "reth::taiko::proof_history", number,
+        "starting pinned initial state copy; persisted unwinds may wait until it finishes");
+    std::thread::scope(|scope| {
+        let (finished, waiting) = mpsc::channel::<()>();
+        scope.spawn(move || {
+            let started = Instant::now();
+            while matches!(waiting.recv_timeout(Duration::from_secs(60)),
+                Err(mpsc::RecvTimeoutError::Timeout))
+            {
+                warn!(target: "reth::taiko::proof_history", number,
+                    elapsed_seconds = started.elapsed().as_secs(),
+                    "initial state copy remains pinned; persisted unwind completion may be blocked");
+            }
+        });
+        let result = copy();
+        drop(finished);
+        result
+    })
+}
+
+/// Classifies an initial-copy mismatch after the copy's pinned reader has been released.
+/// Stable mismatches and failed probes preserve the copy; a changed/missing header permits reset.
 fn reject_initial_snapshot(
     storage: &ProofHistoryDatabase,
     anchor: BlockNumHash,
@@ -103,19 +133,29 @@ fn reject_initial_snapshot(
     expected: B256,
     fresh_hash: impl FnOnce() -> eyre::Result<Option<B256>>,
 ) -> eyre::Result<bool> {
-    storage.reset_bootstrap()?;
-    if fresh_hash()? != Some(anchor.hash) {
+    let mismatch = format!(
+        "proof-history snapshot state root mismatch at block {} ({:?}): computed {computed:?}, expected {expected:?}",
+        anchor.number, anchor.hash
+    );
+    warn!(target: "reth::taiko::proof_history", block = anchor.number, hash = ?anchor.hash,
+        actual = ?computed, ?expected, "initial copy root mismatch; preserving evidence while probing its header");
+    let fresh = fresh_hash().wrap_err_with(|| format!(
+        "{mismatch}; failed to probe the post-copy header; the copy and journal are retained for diagnosis"
+    ))?;
+    if fresh != Some(anchor.hash) {
+        storage.reset_bootstrap().wrap_err_with(|| {
+            format!(
+                "{mismatch}; the post-copy header changed but discarding the invalid copy failed"
+            )
+        })?;
         warn!(target: "reth::taiko::proof_history", block = anchor.number, actual = ?computed,
-            ?expected, "snapshot header changed; discarded the invalid copy and waiting to retry");
+            ?expected, "post-copy header changed; discarded the invalid copy and waiting to retry");
         return Ok(false);
     }
     Err(eyre!(
-        "proof-history snapshot state root mismatch at block {} ({:?}): computed {computed:?}, \
-         expected {expected:?}; the invalid copy was discarded. Verify or repair the node's \
+        "{mismatch}; the copy and journal are retained for diagnosis. Verify or repair the node's \
          source trie/hashed state and storage layout before restarting; copying the same source \
-         again cannot repair it",
-        anchor.number,
-        anchor.hash
+         again cannot repair it"
     ))
 }
 
@@ -145,15 +185,26 @@ fn sync_backfill_directory(path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Scheduling outcome of one backward bootstrap step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BackfillStep {
+    /// History/cache work completed, or the requested target is already retained.
+    Progressed,
+    /// Fresh canonical evidence requires reconciliation before more work.
+    Reconcile,
+    /// The persisted source is unavailable; delay before checking again.
+    Wait,
+}
+
 /// Advances backward by at most 10,000 blocks, then releases the pinned node read transaction.
 /// Preparation revalidates canonical bounds before the next chunk. Upstream commits atomic
 /// batches and checks cancellation at their boundaries; tiny fresh ranges avoid a second copy.
-/// Returns false when source/canonical reconciliation needs a delayed retry.
+/// Distinguishes immediate progress/reconciliation from a delayed persisted-source retry.
 pub(super) fn backfill_proof_history_storage<Provider>(
     provider: &Provider,
     storage: Arc<ProofHistoryDatabase>,
     target: u64,
-) -> eyre::Result<bool>
+) -> eyre::Result<BackfillStep>
 where
     Provider: DatabaseProviderFactory + HeaderProvider + BlockHashReader + Sync,
     Provider::Provider: BlockNumReader
@@ -167,17 +218,19 @@ where
         + Send
         + Sync,
 {
-    backfill_proof_history_chunk(provider, storage, target, 10_000)
+    backfill_proof_history_chunk(provider, storage, target, 10_000, 1000)
 }
 
 /// Runs one bounded backward chunk from a fresh, canonically validated node read transaction.
-/// `max_blocks` is positive and limits retained MDBX pages between source-provider refreshes.
+/// `max_blocks` bounds source-reader lifetime by blocks; `journal_batch` bounds each hash write.
+/// Zero limits are clamped to one to ensure progress.
 fn backfill_proof_history_chunk<Provider>(
     provider: &Provider,
     storage: Arc<ProofHistoryDatabase>,
     target: u64,
     max_blocks: u64,
-) -> eyre::Result<bool>
+    journal_batch: usize,
+) -> eyre::Result<BackfillStep>
 where
     Provider: DatabaseProviderFactory + HeaderProvider + BlockHashReader + Sync,
     Provider::Provider: BlockNumReader
@@ -195,47 +248,64 @@ where
     let window = storage.provider_ro()?.get_proof_window()?;
     let earliest = window.earliest.number;
     if target >= earliest {
-        return Ok(true);
+        return Ok(BackfillStep::Progressed);
     }
     if !source_matches_window(provider, window)? {
         warn!(target: "reth::taiko::proof_history", ?window, "canonical backfill bounds changed; waiting for reconciliation");
-        return Ok(false);
+        return Ok(BackfillStep::Reconcile);
     }
     let next = earliest.saturating_sub(max_blocks.max(1)).max(target);
     let Some(snapshot) = auxiliary_snapshot_status(&storage, window.earliest)? else {
-        return Ok(false);
+        return Ok(BackfillStep::Progressed);
     };
     // Use the total remaining distance. An existing snapshot stays active through the last chunk.
     let use_snapshot = !matches!(snapshot, SnapshotInitStatus::NotStarted) ||
         earliest - target > DEFAULT_BACKFILL_BATCH_SIZE as u64;
     if use_snapshot && !matches!(snapshot, SnapshotInitStatus::Completed) {
-        // The high-level provider opens short reads for the hash/header lookups. Passing a DB
-        // provider here would pin its transaction throughout the full auxiliary copy.
-        let result = SnapshotInitJob::new(provider, storage.clone())
-            .run(earliest)
-            .map(|_| ())
-            .map_err(BackfillError::from);
-        if !backfill_result(result, || {
-            if auxiliary_snapshot_status(&storage, window.earliest)?.is_none() {
-                return Ok(false);
+        // The high-level provider uses short header reads. The following full proof-state copy
+        // must finish before a pinned backward chunk starts, and has its own upstream progress.
+        let started = Instant::now();
+        info!(target: "reth::taiko::proof_history", earliest, target, status = ?snapshot,
+            "building or resuming full auxiliary snapshot before backward chunks");
+        let outcome = match SnapshotInitJob::new(provider, storage.clone()).run(earliest) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return backfill_result(Err(error.into()), || {
+                    let retained = storage.provider_ro()?.get_proof_window()?;
+                    if auxiliary_snapshot_status(&storage, retained.earliest)?.is_none() {
+                        return Ok(false);
+                    }
+                    source_matches_window(provider, retained)
+                })
+                .wrap_err("failed to build or resume the auxiliary proof snapshot");
             }
-            source_matches_window(provider, window)
-        })? || auxiliary_snapshot_status(&storage, window.earliest)?.is_none()
-        {
-            return Ok(false);
+        };
+        if outcome.block != window.earliest {
+            warn!(target: "reth::taiko::proof_history", expected = ?window.earliest,
+                actual = ?outcome.block, "discarding auxiliary snapshot built at a stale anchor");
+            let rw = storage.snapshot_initialization_provider()?;
+            rw.clear_snapshot()?;
+            OpProofsBackfillProvider::commit(rw)?;
+            return Ok(BackfillStep::Reconcile);
         }
+        info!(target: "reth::taiko::proof_history", earliest,
+            elapsed_seconds = started.elapsed().as_secs(), "auxiliary snapshot ready for backward chunks");
     }
     // Open the long-lived source only after auxiliary snapshot initialization/resumption.
     let db = provider.database_provider_ro()?.disable_long_read_transaction_safety();
-    if !source_matches_window(provider, window)? || !source_matches_window(&db, window)? {
+    if !source_matches_window(provider, window)? {
+        return Ok(BackfillStep::Reconcile);
+    }
+    if !source_matches_window(&db, window)? {
         warn!(target: "reth::taiko::proof_history", ?window, "waiting for persisted backfill source to match canonical bounds");
-        return Ok(false);
+        return Ok(BackfillStep::Wait);
     }
     // Journal failures and missing hashes are actionable errors, even during a concurrent reorg.
     // Write only below committed earliest; a crash leaves harmless extra rows for this chunk.
-    for start in (next..earliest).step_by(1000) {
+    let journal_batch = journal_batch.max(1);
+    for start in (next..earliest).step_by(journal_batch) {
         storage.check_bootstrap_cancelled()?;
-        let end = start.saturating_add(1000).min(earliest);
+        let end = start.saturating_add(journal_batch as u64).min(earliest);
         let hashes = db.canonical_hashes_range(start, end)?;
         if hashes.len() as u64 != end - start {
             return Err(eyre!("missing canonical hashes for proof-history backfill {start}..{end}"));
@@ -246,8 +316,9 @@ where
     let result = if use_snapshot { job.run_with_snapshot(next) } else { job.run(next) };
     let progressed = backfill_result(result, || {
         source_matches_window(provider, storage.provider_ro()?.get_proof_window()?)
-    })?;
-    if progressed {
+    })
+    .wrap_err("failed to reconstruct backward proof history")?;
+    if progressed == BackfillStep::Progressed {
         info!(target: "reth::taiko::proof_history", earliest = next, target,
             remaining = next - target, "proof-history backfill checkpoint");
     }
@@ -256,7 +327,7 @@ where
 
 /// Checks derived snapshot identity before resume and after upstream's separate header/hash reads.
 /// A stale auxiliary anchor is discarded without changing retained proofs or their hash journal.
-/// Returns None after clearing it so the caller retries after a delay.
+/// Returns None after committing a clear, allowing the caller to schedule immediate progress.
 fn auxiliary_snapshot_status(
     storage: &ProofHistoryDatabase,
     earliest: BlockNumHash,
@@ -278,8 +349,7 @@ fn source_matches_window(
     provider: &impl BlockHashReader,
     window: ProofWindowRange,
 ) -> eyre::Result<bool> {
-    Ok(provider.block_hash(window.earliest.number)? == Some(window.earliest.hash) &&
-        provider.block_hash(window.latest.number)? == Some(window.latest.hash))
+    Ok(is_canonical(provider, window.earliest)? && is_canonical(provider, window.latest)?)
 }
 
 /// Recovers only header/root races proven by changed canonical or auxiliary anchors, logging the
@@ -288,9 +358,9 @@ fn source_matches_window(
 fn backfill_result(
     result: Result<(), BackfillError>,
     still_canonical: impl FnOnce() -> eyre::Result<bool>,
-) -> eyre::Result<bool> {
+) -> eyre::Result<BackfillStep> {
     match result {
-        Ok(()) => Ok(true),
+        Ok(()) => Ok(BackfillStep::Progressed),
         Err(error) => {
             let reorg_error = matches!(
                 &error,
@@ -302,12 +372,23 @@ fn backfill_result(
                             SnapshotError::SnapshotResumeDriftDetected { .. }
                     )
             );
-            if reorg_error && !still_canonical()? {
-                warn!(target: "reth::taiko::proof_history", %error,
-                    "backfill interrupted by a canonical change; waiting for reconciliation");
-                return Ok(false);
+            if reorg_error {
+                match still_canonical() {
+                    Ok(false) => {
+                        warn!(target: "reth::taiko::proof_history", %error,
+                            "backfill interrupted by a canonical change; requesting reconciliation");
+                        return Ok(BackfillStep::Reconcile);
+                    }
+                    Ok(true) => {}
+                    Err(probe) => {
+                        warn!(target: "reth::taiko::proof_history", %error, probe = %format_args!("{probe:#}"),
+                            "canonical probe failed after a backfill error; preserving both causes");
+                        return Err(error)
+                            .wrap_err(format!("canonical probe also failed: {probe:#}"));
+                    }
+                }
             }
-            Err(error).wrap_err("failed to backfill proof history; required historical changesets must remain unpruned")
+            Err(error.into())
         }
     }
 }
@@ -369,7 +450,6 @@ mod tests {
         use alloy_consensus::{SignableTransaction, TxEip2930};
         use alloy_primitives::{Address, TxKind, U256};
         use reth_chainspec::{ChainSpecBuilder, MAINNET};
-        use reth_db_common::init::init_genesis;
         use reth_ethereum_primitives::{Block, BlockBody, TransactionSigned};
         use reth_evm::{ConfigureEvm, execute::Executor};
         use reth_evm_ethereum::EthEvmConfig;
@@ -379,7 +459,6 @@ mod tests {
         use reth_provider::{
             BlockWriter, ChainStateBlockWriter, ExecutionOutcome, HashedPostStateProvider,
             LatestStateProviderRef, StateProofProvider, StateRootProvider,
-            test_utils::create_test_provider_factory_with_chain_spec,
         };
         use reth_revm::database::StateProviderDatabase;
 
@@ -402,8 +481,7 @@ mod tests {
         genesis.alloc.clear();
         genesis.alloc.entry(sender).or_default().balance = U256::from(10_u64.pow(18));
         let spec = Arc::new(ChainSpecBuilder::mainnet().genesis(genesis).paris_activated().build());
-        let factory = create_test_provider_factory_with_chain_spec(spec.clone());
-        init_genesis(&factory).unwrap();
+        let factory = initialized_chain_factory(spec.clone());
         let mut parent = spec.genesis_hash();
         let mut roots = vec![spec.genesis_header().state_root];
         for number in 1..=3 {
@@ -470,7 +548,10 @@ mod tests {
         init.set_initial_state_anchor(BlockNumHash::new(3, B256::repeat_byte(0xee))).unwrap();
         init.commit_initial_state().unwrap();
         OpProofsInitProvider::commit(init).unwrap();
-        assert!(!backfill_proof_history_storage(&factory, stale.clone(), 2).unwrap());
+        assert_eq!(
+            backfill_proof_history_storage(&factory, stale.clone(), 2).unwrap(),
+            BackfillStep::Reconcile
+        );
         assert_eq!(stale.provider_ro().unwrap().get_earliest_block().unwrap().number, 3);
         assert_eq!(stale.indexed_hash(2).unwrap(), None);
 
@@ -506,7 +587,7 @@ mod tests {
         )
         .run(2)
         .unwrap();
-        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap();
+        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap();
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 1);
         assert_eq!(
             storage
@@ -521,7 +602,7 @@ mod tests {
         );
         drop(storage);
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
-        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap();
+        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap();
         assert_eq!(
             storage
                 .snapshot_initialization_provider()
@@ -603,12 +684,24 @@ mod tests {
                     Ok(fresh)
                 });
             if fresh == Some(anchor.hash) {
-                assert!(result.unwrap_err().to_string().contains("copying the same source"));
+                assert!(
+                    result.unwrap_err().to_string().contains("copying the same source"),
+                    "fresh={fresh:?}"
+                );
             } else {
-                assert!(!result.unwrap());
+                assert!(!result.unwrap(), "fresh={fresh:?}");
             }
-            assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
-            assert_eq!(storage.indexed_hash(7).unwrap(), None);
+            if fresh == Some(anchor.hash) {
+                assert_eq!(
+                    storage.provider_ro().unwrap().get_latest_block().unwrap(),
+                    anchor,
+                    "stable mismatch must preserve its evidence: {fresh:?}"
+                );
+                assert_eq!(storage.indexed_hash(7).unwrap(), Some(anchor.hash), "{fresh:?}");
+            } else {
+                assert!(storage.provider_ro().unwrap().get_latest_block().is_err(), "{fresh:?}");
+                assert_eq!(storage.indexed_hash(7).unwrap(), None, "{fresh:?}");
+            }
         }
     }
 
@@ -630,26 +723,65 @@ mod tests {
                 BackfillError::Snapshot(SnapshotError::Provider(ProviderError::HeaderNotFound(
                     1.into(),
                 ))),
+                BackfillError::Snapshot(SnapshotError::SnapshotResumeDriftDetected {
+                    anchor_block: 1,
+                    reason: "test anchor drift",
+                }),
             ] {
+                let case = format!("{error:?}, canonical={canonical}");
                 let result = backfill_result(Err(error), || Ok(canonical));
                 if canonical {
-                    assert!(result.is_err());
+                    assert!(result.is_err(), "{case}");
                 } else {
-                    assert!(!result.unwrap());
+                    assert_eq!(result.unwrap(), BackfillStep::Reconcile, "{case}");
                 }
             }
         }
         for error in [
-            BackfillError::BlockBodyPruned(7),
-            BackfillError::Storage(reth_db::DatabaseError::Other("disk failure".into()).into()),
+            (BackfillError::BlockBodyPruned(7), "has been pruned by reth"),
+            (
+                BackfillError::Storage(reth_db::DatabaseError::Other("disk failure".into()).into()),
+                "disk failure",
+            ),
+            (
+                BackfillError::SnapshotAnchorMismatch {
+                    expected: BlockNumHash::new(1, B256::repeat_byte(1)),
+                    found: BlockNumHash::new(2, B256::repeat_byte(2)),
+                },
+                "does not match proofs",
+            ),
+            (
+                BackfillError::Snapshot(SnapshotError::SnapshotAlreadyExists {
+                    existing_block: 1,
+                    existing_status: SnapshotInitStatus::Completed,
+                }),
+                "snapshot already exists at block 1",
+            ),
+            (
+                BackfillError::Snapshot(SnapshotError::SnapshotInitTargetOutsideWindow {
+                    target_block: 1,
+                    earliest: 2,
+                    latest: 3,
+                }),
+                "outside proof window [2, 3]",
+            ),
         ] {
+            let (error, cause) = error;
             let report = backfill_result(Err(error), || {
                 panic!("unrelated errors must not inspect reorg state")
             })
             .unwrap_err();
             let report = format!("{report:#}");
-            assert!(report.contains("pruned") || report.contains("disk failure"));
+            assert!(report.contains(cause), "missing {cause:?} in {report}");
         }
+    }
+
+    fn initialized_chain_factory(
+        spec: Arc<reth_chainspec::ChainSpec>,
+    ) -> reth_provider::ProviderFactory<reth_provider::test_utils::MockNodeTypesWithDB> {
+        let factory = reth_provider::test_utils::create_test_provider_factory_with_chain_spec(spec);
+        reth_db_common::init::init_genesis(&factory).unwrap();
+        factory
     }
 
     fn empty_chain_factory(
@@ -659,17 +791,13 @@ mod tests {
         Vec<BlockNumHash>,
     ) {
         use reth_chainspec::{ChainSpecBuilder, MAINNET};
-        use reth_db_common::init::init_genesis;
         use reth_ethereum_primitives::{Block, BlockBody};
         use reth_primitives_traits::Block as _;
-        use reth_provider::{
-            BlockWriter, ExecutionOutcome, test_utils::create_test_provider_factory_with_chain_spec,
-        };
+        use reth_provider::{BlockWriter, ExecutionOutcome};
         let mut genesis = MAINNET.genesis.clone();
         genesis.alloc.clear();
         let spec = Arc::new(ChainSpecBuilder::mainnet().genesis(genesis).paris_activated().build());
-        let factory = create_test_provider_factory_with_chain_spec(spec.clone());
-        init_genesis(&factory).unwrap();
+        let factory = initialized_chain_factory(spec.clone());
         let mut hashes = vec![BlockNumHash::new(0, spec.genesis_hash())];
         let mut blocks = Vec::new();
         for number in 1..=count {
@@ -705,19 +833,26 @@ mod tests {
 
     #[test]
     fn backfill_chunks_cover_multiple_journal_batches_and_resume() {
-        let (factory, hashes) = empty_chain_factory(1027);
+        let (factory, hashes) = empty_chain_factory(9);
         let dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
         assert!(initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
-        assert!(backfill_proof_history_chunk(&factory, storage.clone(), 0, 1001).unwrap());
-        assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap(), hashes[26]);
-        for anchor in &hashes[26..] {
+        SnapshotInitJob::new(&factory, storage.clone()).run(9).unwrap();
+        assert_eq!(
+            backfill_proof_history_chunk(&factory, storage.clone(), 0, 7, 3).unwrap(),
+            BackfillStep::Progressed
+        );
+        assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap(), hashes[2]);
+        for anchor in &hashes[2..] {
             assert_eq!(storage.indexed_hash(anchor.number).unwrap(), Some(anchor.hash));
         }
-        assert_eq!(storage.indexed_hash(25).unwrap(), None);
+        assert_eq!(storage.indexed_hash(1).unwrap(), None);
         drop(storage);
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
-        assert!(backfill_proof_history_chunk(&factory, storage.clone(), 0, 1001).unwrap());
+        assert_eq!(
+            backfill_proof_history_chunk(&factory, storage.clone(), 0, 7, 3).unwrap(),
+            BackfillStep::Progressed
+        );
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap(), hashes[0]);
         for anchor in &hashes {
             assert_eq!(storage.indexed_hash(anchor.number).unwrap(), Some(anchor.hash));
@@ -731,7 +866,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
             assert!(initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
-            assert!(backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap());
+            assert_eq!(
+                backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap(),
+                BackfillStep::Progressed
+            );
             let status = storage
                 .snapshot_initialization_provider()
                 .unwrap()
@@ -767,7 +905,11 @@ mod tests {
                 snapshot.commit_snapshot().unwrap();
             }
             OpProofsSnapshotInitProvider::commit(snapshot).unwrap();
-            assert!(!backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap());
+            assert_eq!(
+                backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap(),
+                BackfillStep::Progressed,
+                "a committed stale-cache clear should allow immediate progress: completed={completed}"
+            );
             assert_eq!(storage.provider_ro().unwrap().get_proof_window().unwrap(), retained);
             assert_eq!(
                 storage.indexed_hash(retained.latest.number).unwrap(),
@@ -782,11 +924,89 @@ mod tests {
                     .status,
                 SnapshotInitStatus::NotStarted
             ));
-            assert!(backfill_proof_history_chunk(&factory, storage.clone(), 0, 1).unwrap());
+            assert_eq!(
+                backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap(),
+                BackfillStep::Progressed
+            );
             assert_eq!(
                 storage.provider_ro().unwrap().get_earliest_block().unwrap(),
                 hashes[hashes.len() - 2]
             );
         }
+    }
+    #[test]
+    fn failed_initial_mismatch_probe_preserves_roots_and_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
+        let anchor = BlockNumHash::new(7, B256::repeat_byte(1));
+        let init = storage.initialization_provider().unwrap();
+        init.set_initial_state_anchor(anchor).unwrap();
+        init.commit_initial_state().unwrap();
+        OpProofsInitProvider::commit(init).unwrap();
+        storage.record_hashes([(7, anchor.hash)]).unwrap();
+        let report = reject_initial_snapshot(
+            &storage,
+            anchor,
+            B256::repeat_byte(2),
+            B256::repeat_byte(3),
+            || Err(eyre!("header probe failed")),
+        )
+        .unwrap_err();
+        let report = format!("{report:#}");
+        assert!(report.contains("state root mismatch at block 7"), "{report}");
+        assert!(report.contains(&format!("{:?}", B256::repeat_byte(2))), "{report}");
+        assert!(report.contains(&format!("{:?}", B256::repeat_byte(3))), "{report}");
+        assert!(report.contains("header probe failed"), "{report}");
+        assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap(), anchor);
+        assert_eq!(storage.indexed_hash(7).unwrap(), Some(anchor.hash));
+    }
+
+    #[test]
+    fn failed_backfill_probe_preserves_the_original_root_error() {
+        let report = backfill_result(
+            Err(BackfillError::StateRootMismatch {
+                block_number: 7,
+                computed: B256::repeat_byte(2),
+                expected: B256::repeat_byte(3),
+            }),
+            || Err(eyre!("canonical probe failed")),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                report.downcast_ref::<BackfillError>(),
+                Some(BackfillError::StateRootMismatch { block_number: 7, .. })
+            ),
+            "{report:#}"
+        );
+        assert!(format!("{report:#}").contains("canonical probe failed"));
+    }
+
+    #[test]
+    fn snapshot_failures_do_not_receive_changeset_pruning_advice() {
+        let report = backfill_result(
+            Err(BackfillError::Snapshot(SnapshotError::Storage(
+                reth_db::DatabaseError::Other("snapshot disk failure".into()).into(),
+            ))),
+            || panic!("a storage failure must not probe canonical state"),
+        )
+        .unwrap_err();
+        let report = format!("{report:#}");
+        assert!(report.contains("snapshot disk failure"), "{report}");
+        assert!(!report.contains("unpruned"), "{report}");
+    }
+
+    #[test]
+    fn missing_finish_header_waits_before_copying_or_journaling() {
+        use reth_provider::{StaticFileProviderFactory, StaticFileSegment, StaticFileWriter};
+        let (factory, _) = empty_chain_factory(1);
+        let files = factory.static_file_provider();
+        files.get_writer(1, StaticFileSegment::Headers).unwrap().prune_headers(1).unwrap();
+        files.commit().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        assert!(!initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
+        assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
+        assert_eq!(storage.indexed_hash(1).unwrap(), None);
     }
 }

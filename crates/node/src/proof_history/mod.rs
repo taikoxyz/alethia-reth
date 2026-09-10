@@ -44,6 +44,14 @@ use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::info;
 
+/// Tests one indexed block against the provider's current canonical hash, including absence.
+fn is_canonical(
+    provider: &impl BlockHashReader,
+    block: alloy_eips::BlockNumHash,
+) -> eyre::Result<bool> {
+    Ok(provider.block_hash(block.number)? == Some(block.hash))
+}
+
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
 pub type ProofHistoryStorage = OpProofsStorage<Arc<ProofHistoryDatabase>>;
 

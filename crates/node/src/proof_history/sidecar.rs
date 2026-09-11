@@ -37,7 +37,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{sync::broadcast, task, time};
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 /// Maximum forward replay work before handling another notification or shutdown.
 const REPLAY_BATCH_SIZE: u64 = 32;
@@ -179,40 +179,50 @@ enum StartupStep {
     Ready(EngineHandle<Block>),
 }
 
-/// Consecutive identical missing hashes tolerated before stopping with an actionable error.
-const MAX_MISSING_HASH_OBSERVATIONS: u8 = 6;
+/// Observations of one unavailable retained tip before a non-fatal alert; five retry delays
+/// separate the first and sixth observations (normally about 25 seconds plus processing time).
+const MISSING_HASH_ALERT_OBSERVATIONS: u8 = 6;
 
-/// Tracks stationary canonical holes separately from ordinary node catch-up or changing views.
+/// Tracks an unavailable retained tip independently of movement in the canonical head tracker.
 #[derive(Debug, Default)]
 struct MissingHashObservations {
-    /// Retained tip and observed canonical height of the preceding missing-hash observation.
-    previous: Option<(BlockNumHash, u64)>,
-    /// Number of consecutive observations of exactly the same missing hash.
+    /// Retained tip whose canonical hash was unavailable in the preceding observation.
+    previous: Option<BlockNumHash>,
+    /// Consecutive observations of that retained tip; saturates without terminating the node.
     consecutive: u8,
 }
 
 impl MissingHashObservations {
-    /// Resets on other startup outcomes or changed observations; escalates a persistent hole.
-    fn observe(&mut self, missing: Option<(BlockNumHash, u64)>) -> eyre::Result<()> {
-        let Some((latest, best)) = missing else {
-            *self = Self::default();
-            return Ok(());
+    /// Publishes one alert per persistent episode and clears it when startup leaves this wait.
+    fn observe(&mut self, step: &StartupStep) {
+        let (latest, best) = match step {
+            StartupStep::MissingCanonicalHash { latest, canonical_best } => {
+                (*latest, *canonical_best)
+            }
+            StartupStep::Wait | StartupStep::Progress | StartupStep::Ready(_) => {
+                *self = Self::default();
+                metrics::gauge!("taiko_proof_history_missing_canonical_hash").set(0.0);
+                return;
+            }
         };
         self.consecutive =
-            if self.previous == missing { self.consecutive.saturating_add(1) } else { 1 };
-        self.previous = missing;
-        warn!(target: "reth::taiko::proof_history", latest = latest.number, hash = ?latest.hash,
-            canonical_best = best, consecutive = self.consecutive,
-            "canonical hash missing at or below the observed head; historical reads remain paused");
-        if self.consecutive >= MAX_MISSING_HASH_OBSERVATIONS {
-            return Err(eyre!(
-                "canonical hash for proof-history block {} ({:?}) is still missing at or below                  observed best {best} after {} identical observations; inspect node canonical                  headers and synchronization, and preserve proof history for diagnosis",
-                latest.number,
-                latest.hash,
-                self.consecutive
-            ));
+            if self.previous == Some(latest) { self.consecutive.saturating_add(1) } else { 1 };
+        self.previous = Some(latest);
+        let alerted = self.consecutive >= MISSING_HASH_ALERT_OBSERVATIONS;
+        metrics::gauge!("taiko_proof_history_missing_canonical_hash").set(if alerted {
+            1.0
+        } else {
+            0.0
+        });
+        if self.consecutive == 1 {
+            warn!(target: "reth::taiko::proof_history", latest = latest.number, hash = ?latest.hash,
+                canonical_best = best, "canonical hash missing; historical reads remain paused while retrying");
         }
-        Ok(())
+        if self.consecutive == MISSING_HASH_ALERT_OBSERVATIONS {
+            error!(target: "reth::taiko::proof_history", latest = latest.number, hash = ?latest.hash,
+                canonical_best = best, consecutive = self.consecutive,
+                "canonical hash remains unavailable; check node synchronization and headers; retrying without stopping the node");
+        }
     }
 }
 
@@ -275,7 +285,7 @@ where
         let cleanup_guard = shutdown.clone();
         let mut monitor = shutdown.clone();
         let result = {
-            let running = Self::run_loop(&this, shutdown);
+            let running = Self::run_loop(&this, shutdown, STARTUP_RETRY_INTERVAL);
             tokio::pin!(running);
             tokio::select! {
                 biased;
@@ -339,7 +349,11 @@ where
     }
 
     /// Drives initialization and canonical updates while the caller owns final resource cleanup.
-    async fn run_loop(this: &Arc<Self>, mut shutdown: GracefulShutdown) -> eyre::Result<()>
+    async fn run_loop(
+        this: &Arc<Self>,
+        mut shutdown: GracefulShutdown,
+        retry_interval: Duration,
+    ) -> eyre::Result<()>
     where
         Provider: CanonStateSubscriptions<Primitives = EthPrimitives>,
     {
@@ -374,13 +388,10 @@ where
                         continue;
                     }
                     let step = result?;
-                    missing_hashes.observe(match &step {
-                        StartupStep::MissingCanonicalHash { latest, canonical_best } => Some((*latest, *canonical_best)),
-                        _ => None,
-                    })?;
+                    missing_hashes.observe(&step);
                     match step {
-                        StartupStep::MissingCanonicalHash { .. } => retry = STARTUP_RETRY_INTERVAL,
-                        StartupStep::Wait => retry = STARTUP_RETRY_INTERVAL,
+                        StartupStep::MissingCanonicalHash { .. } |
+                        StartupStep::Wait => retry = retry_interval,
                         StartupStep::Progress => retry = Duration::ZERO,
                         StartupStep::Ready(handle) => {
                             engine = Some(handle);
@@ -488,7 +499,7 @@ where
                 return Ok(if initialized { StartupStep::Progress } else { StartupStep::Wait });
             }
             ProofHistoryStartupAction::WaitForCanonicalEarliest { earliest } => {
-                debug!(target: "reth::taiko::proof_history", earliest, "waiting for canonical proof-history anchor");
+                info!(target: "reth::taiko::proof_history", earliest, "waiting for canonical proof-history anchor");
                 return Ok(StartupStep::Wait);
             }
             ProofHistoryStartupAction::WaitForCanonicalLatest { latest, canonical_best } => {
@@ -534,21 +545,32 @@ where
         if !self.validate_snapshot_header(window.latest, header)? {
             return Ok(StartupStep::Wait);
         }
-        if let Some(target) = pending_target {
-            if window.earliest.number > target {
-                let progressed = backfill_proof_history_storage(
+        if let Some(target) = pending_target &&
+            window.earliest.number > target
+        {
+            let progressed = backfill_proof_history_storage(
                     &self.provider,
                     self.init_storage.clone(),
                     target,
-                )?;
-                return Ok(match progressed {
-                    BackfillStep::Progressed | BackfillStep::Reconcile => StartupStep::Progress,
-                    BackfillStep::Wait => StartupStep::Wait,
-                });
-            }
-            let rw = self.init_storage.provider_rw()?;
-            rw.clear_snapshot()?;
-            OpProofsProviderRw::commit(rw)?;
+                ).wrap_err_with(|| format!(
+                    "proof-history bootstrap toward block {target} failed. Stop the node and preserve \
+                     diagnostic data; repair the cause and rebuild with a new, empty \
+                     --proofs-history.storage-path. To abandon only older backfill for an otherwise \
+                     healthy retained window, remove {} while stopped and restart with shorter \
+                     coverage; canonical/root validation and replay prerequisites still apply",
+                    target_path.display()
+                ))?;
+            return Ok(match progressed {
+                BackfillStep::Progressed | BackfillStep::Reconcile => StartupStep::Progress,
+                BackfillStep::Wait => StartupStep::Wait,
+            });
+        }
+        // No backward work remains, including an operator-abandoned target. Only the auxiliary
+        // cache is cleared here, after retained canonical/root validation has succeeded.
+        let rw = self.init_storage.provider_rw()?;
+        rw.clear_snapshot()?;
+        OpProofsProviderRw::commit(rw)?;
+        if pending_target.is_some() {
             finish_backfill(&target_path)?;
         }
         let to_prune = window
@@ -591,7 +613,9 @@ where
             ProofHistoryStartupAction::WaitForCanonicalLatest { .. } => {
                 return Ok(StartupStep::Wait)
             }
-            _ => return Ok(StartupStep::Progress),
+            ProofHistoryStartupAction::Uninitialized |
+            ProofHistoryStartupAction::Rebuild |
+            ProofHistoryStartupAction::ReconcileFork { .. } => return Ok(StartupStep::Progress),
         }
         Ok(StartupStep::Ready(EngineHandle::spawn_with_thresholds(
             self.evm_config.clone(),
@@ -1585,8 +1609,24 @@ mod tests {
         let error = initialize_proof_history_storage(&sidecar.provider, storage.clone(), None)
             .expect_err("a corrupt pinned source must fail instead of copying forever");
         assert!(error.to_string().contains("state root mismatch"));
+        assert!(
+            error.to_string().contains("new, empty --proofs-history.storage-path"),
+            "{error:#}"
+        );
         assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
         assert!(storage.indexed_hash(0).unwrap().is_some());
+        // A repaired source does not overwrite the completed, invalid copy on restart.
+        let (mut repaired, _spec, _repaired_dir) = sidecar_fixture();
+        repaired.storage = storage.clone().into();
+        repaired.init_storage = storage.clone();
+        repaired.config.storage_path = Some(dir.path().to_path_buf());
+        let error =
+            repaired.prepare().err().expect("the old path must still reject its invalid root");
+        assert!(
+            error.to_string().contains("new, empty --proofs-history.storage-path"),
+            "{error:#}"
+        );
+        assert_eq!(storage.provider_ro().unwrap().get_latest_block().unwrap().number, 0);
     }
 
     #[test]
@@ -2009,22 +2049,40 @@ mod tests {
         }
     }
     #[test]
-    fn stationary_missing_hash_escalates_and_changed_observations_reset_the_count() {
-        let mut observations = super::MissingHashObservations::default();
-        let missing = Some((BlockNumHash::new(20, hash(20)), 20));
-        for attempt in 1..=5 {
-            observations
-                .observe(missing)
-                .unwrap_or_else(|error| panic!("attempt {attempt}: {error:#}"));
-        }
-        let error = observations.observe(missing).unwrap_err();
-        assert!(error.to_string().contains("after 6 identical observations"));
-        observations.observe(Some((BlockNumHash::new(20, hash(20)), 21))).unwrap();
-        observations.observe(None).unwrap();
-        for _ in 0..5 {
-            observations.observe(missing).unwrap();
-        }
-        assert!(observations.observe(missing).is_err());
+    fn missing_hash_alert_tracks_the_retained_tip_and_resets_after_recovery() {
+        use super::super::test_utils::TestMetrics;
+        let recorder = TestMetrics::default();
+        metrics::with_local_recorder(&recorder, || {
+            let mut observations = super::MissingHashObservations::default();
+            for best in 20..25 {
+                observations.observe(&StartupStep::MissingCanonicalHash {
+                    latest: BlockNumHash::new(20, hash(20)),
+                    canonical_best: best,
+                });
+                assert_eq!(
+                    recorder.value("taiko_proof_history_missing_canonical_hash", &[]),
+                    Some(0.0)
+                );
+            }
+            observations.observe(&StartupStep::MissingCanonicalHash {
+                latest: BlockNumHash::new(20, hash(20)),
+                canonical_best: 25,
+            });
+            assert_eq!(
+                recorder.value("taiko_proof_history_missing_canonical_hash", &[]),
+                Some(1.0)
+            );
+            observations.observe(&StartupStep::Progress);
+            assert_eq!(
+                recorder.value("taiko_proof_history_missing_canonical_hash", &[]),
+                Some(0.0)
+            );
+            observations.observe(&StartupStep::MissingCanonicalHash {
+                latest: BlockNumHash::new(21, hash(21)),
+                canonical_best: 25,
+            });
+            assert_eq!(observations.consecutive, 1);
+        });
     }
 
     #[test]
@@ -2052,5 +2110,180 @@ mod tests {
         );
         assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Progress));
         assert_eq!(sidecar.storage.provider_ro().unwrap().get_latest_block().unwrap().number, 1);
+    }
+    #[test]
+    fn a_missing_hash_remains_nonfatal_with_a_moving_or_frozen_head() {
+        for moving in [false, true] {
+            let mut observations = super::MissingHashObservations::default();
+            for attempt in 0..8 {
+                let best = if moving { 20 + attempt } else { 20 };
+                observations.observe(&StartupStep::MissingCanonicalHash {
+                    latest: BlockNumHash::new(20, hash(20)),
+                    canonical_best: best,
+                });
+            }
+            assert_eq!(observations.consecutive, 8, "moving={moving}");
+        }
+    }
+
+    #[test]
+    fn missing_hash_run_loop_alerts_keeps_syncing_and_recovers() {
+        use super::super::test_utils::TestMetrics;
+        use reth::tasks::Runtime;
+        use std::time::Duration;
+        let (sidecar, spec, _dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        let provider = sidecar.provider.clone();
+        let state = provider.canonical_in_memory_state();
+        // Simulate the engine's non-atomic revert: block 2 is gone, but its head tracker remains.
+        state.update_chain(NewCanonicalChain::Reorg { old: vec![blocks[1].clone()], new: vec![] });
+        assert!(matches!(
+            sidecar.startup_action().unwrap(),
+            ProofHistoryStartupAction::WaitForMissingCanonicalHash { .. }
+        ));
+        let readiness = sidecar.readiness.clone();
+        let recorder = Arc::new(TestMetrics::default());
+        let capture = recorder.clone();
+        let this = Arc::new(sidecar);
+        let runtime = Runtime::test();
+        let task = runtime.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
+            let mut future =
+                Box::pin(ProofHistorySidecar::run_loop(&this, shutdown, Duration::from_millis(2)));
+            std::future::poll_fn(|cx| {
+                metrics::with_local_recorder(&*capture, || {
+                    std::future::Future::poll(future.as_mut(), cx)
+                })
+            })
+            .await
+            .unwrap();
+        });
+        runtime.handle().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    assert!(
+                        !task.is_finished(),
+                        "a missing hash must not stop the execution client"
+                    );
+                    if recorder.value("taiko_proof_history_missing_canonical_hash", &[]) ==
+                        Some(1.0)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!readiness.is_ready());
+            state.update_chain(NewCanonicalChain::Commit { new: vec![blocks[1].clone()] });
+            state.set_canonical_head(blocks[1].recovered_block.clone_sealed_header());
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !readiness.is_ready() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                recorder.value("taiko_proof_history_missing_canonical_hash", &[]),
+                Some(0.0)
+            );
+        });
+        assert!(runtime.graceful_shutdown_with_timeout(Duration::from_secs(5)));
+        runtime.handle().block_on(task).unwrap();
+    }
+
+    #[test]
+    fn abandoning_backfill_clears_auxiliary_state_and_keeps_the_retained_window() {
+        use reth_optimism_trie::{
+            OpProofsBackfillStore, OpProofsSnapshotInitProvider, SnapshotInitJob,
+            SnapshotInitStatus,
+        };
+        let (sidecar, spec, dir) = sidecar_fixture();
+        index_empty_chain(&sidecar, &spec, 2);
+        SnapshotInitJob::new(&sidecar.provider, sidecar.init_storage.clone()).run(0).unwrap();
+        let window = sidecar.storage.provider_ro().unwrap().get_proof_window().unwrap();
+        std::fs::write(dir.path().join("backfill-target"), "0").unwrap();
+        std::fs::remove_file(dir.path().join("backfill-target")).unwrap();
+        assert!(matches!(sidecar.prepare().unwrap(), StartupStep::Ready(_)));
+        assert_eq!(sidecar.storage.provider_ro().unwrap().get_proof_window().unwrap(), window);
+        assert!(matches!(
+            sidecar
+                .init_storage
+                .snapshot_initialization_provider()
+                .unwrap()
+                .snapshot_init_anchor()
+                .unwrap()
+                .status,
+            SnapshotInitStatus::NotStarted
+        ));
+    }
+
+    #[test]
+    fn engine_start_preserves_each_unavailable_canonical_wait() {
+        use reth_optimism_trie::OpProofsProviderRw;
+        for case in ["behind_tip", "missing_tip", "behind_earliest"] {
+            let (sidecar, spec, _dir) = sidecar_fixture();
+            let blocks = index_empty_chain(&sidecar, &spec, 2);
+            if case == "behind_earliest" {
+                let rw = sidecar.storage.provider_rw().unwrap();
+                rw.prune_earliest_state(alloy_eips::eip1898::BlockWithParent::new(
+                    spec.genesis_hash(),
+                    BlockNumHash::new(1, blocks[0].recovered_block.hash()),
+                ))
+                .unwrap();
+                rw.commit().unwrap();
+            }
+            let state = sidecar.provider.canonical_in_memory_state();
+            state.update_chain(NewCanonicalChain::Reorg {
+                old: if case == "behind_earliest" {
+                    blocks.clone()
+                } else {
+                    vec![blocks[1].clone()]
+                },
+                new: vec![],
+            });
+            if case == "behind_tip" {
+                state.set_canonical_head(blocks[0].recovered_block.clone_sealed_header());
+            }
+            if case == "behind_earliest" {
+                state.set_canonical_head(spec.sealed_genesis_header());
+            }
+            let pruner = reth_optimism_trie::OpProofStoragePruner::new(
+                sidecar.storage.clone(),
+                sidecar.provider.clone(),
+                sidecar.config.window,
+            );
+            let step = sidecar.start_engine(pruner).unwrap();
+            if case == "missing_tip" {
+                assert!(matches!(step, StartupStep::MissingCanonicalHash { .. }), "{case}");
+            } else {
+                assert!(matches!(step, StartupStep::Wait), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_failure_names_both_recovery_paths_and_keeps_its_cause() {
+        use reth_optimism_trie::OpProofsProviderRw;
+        let (sidecar, spec, dir) = sidecar_fixture();
+        let blocks = index_empty_chain(&sidecar, &spec, 2);
+        let rw = sidecar.storage.provider_rw().unwrap();
+        rw.prune_earliest_state(alloy_eips::eip1898::BlockWithParent::new(
+            spec.genesis_hash(),
+            BlockNumHash::new(1, blocks[0].recovered_block.hash()),
+        ))
+        .unwrap();
+        rw.commit().unwrap();
+        let target = dir.path().join("backfill-target");
+        std::fs::write(&target, "0").unwrap();
+        sidecar.init_storage.cancel_bootstrap();
+        let error = sidecar.prepare().err().unwrap();
+        let report = format!("{error:#}");
+        assert!(report.contains("bootstrap cancelled"), "{report}");
+        assert!(report.contains("new, empty --proofs-history.storage-path"), "{report}");
+        assert!(report.contains(&target.display().to_string()), "{report}");
+        assert!(report.contains("healthy retained window"), "{report}");
+        assert!(target.exists());
     }
 }

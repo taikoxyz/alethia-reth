@@ -29,7 +29,8 @@ use tracing::{info, warn};
 
 /// Copies the node's persisted state while its MDBX reader prevents normal unwind truncation.
 /// A failed copy is retained on stable mismatch or probe failure; a changed post-copy header
-/// permits resetting and retrying. Ok(false) means source state/header is not ready for copying.
+/// permits resetting and retrying. Ok(false) requests a retry, either before copying unavailable
+/// source state or after rejecting and clearing a copy whose post-copy header changed.
 /// Canonical reconciliation precedes reads, and bulk rows bypass metrics wrappers.
 pub(super) fn initialize_proof_history_storage<Provider>(
     provider: &Provider,
@@ -83,7 +84,7 @@ where
         sync_backfill_directory(path)?;
     }
     storage.record_hashes([(number, header.hash())])?;
-    with_pinned_copy_warning(number, || {
+    with_pinned_read("initial_copy", number, || {
         InitializationJob::new(storage.clone(), db.into_tx(), layout).run(number, header.hash())
     })?;
     let root = StateRoot::overlay_root(storage.provider_ro()?, number, Default::default())?;
@@ -101,24 +102,71 @@ where
     Ok(true)
 }
 
-/// Reports a long initial copy while its reader can delay persisted unwind completion.
-/// Dropping the completion sender joins the reporter on success, error, or panic.
-fn with_pinned_copy_warning<T>(number: u64, copy: impl FnOnce() -> T) -> T {
-    info!(target: "reth::taiko::proof_history", number,
-        "starting pinned initial state copy; persisted unwinds may wait until it finishes");
+/// Metrics for a pinned read phase, finalized even when the work returns an error or panics.
+struct PinnedReadMetrics {
+    /// Bounded phase label: initial_copy or backfill.
+    phase: &'static str,
+    /// Initial copy height or earliest block at the start of a backward chunk.
+    number: u64,
+    /// Monotonic start used for elapsed seconds.
+    started: Instant,
+    /// One while this phase owns its reader, zero after it ends.
+    active: metrics::Gauge,
+    /// Current or last completed pin duration in seconds.
+    elapsed: metrics::Gauge,
+}
+
+impl Drop for PinnedReadMetrics {
+    /// Marks the phase inactive after its reader and periodic reporter have been dropped.
+    fn drop(&mut self) {
+        let elapsed_seconds = self.started.elapsed().as_secs_f64();
+        self.elapsed.set(elapsed_seconds);
+        self.active.set(0.0);
+        info!(target: "reth::taiko::proof_history", phase = self.phase, number = self.number,
+            elapsed_seconds, "pinned read phase ended");
+    }
+}
+
+/// Instruments a pinned initial copy or backward chunk with active and elapsed-time gauges.
+/// Metrics refresh every minute; periodic INFO is limited to every ten minutes. The scope joins
+/// its reporter on success, error or panic, and thread exhaustion leaves start/end metrics intact.
+fn with_pinned_read<T>(phase: &'static str, number: u64, work: impl FnOnce() -> T) -> T {
+    let guard = PinnedReadMetrics {
+        phase,
+        number,
+        started: Instant::now(),
+        active: metrics::gauge!("taiko_proof_history_pin_active", "phase" => phase),
+        elapsed: metrics::gauge!("taiko_proof_history_pin_elapsed_seconds", "phase" => phase),
+    };
+    guard.active.set(1.0);
+    guard.elapsed.set(0.0);
+    info!(target: "reth::taiko::proof_history", phase, number,
+        "pinned read phase started; persisted unwinds may wait for its reader");
     std::thread::scope(|scope| {
         let (finished, waiting) = mpsc::channel::<()>();
-        scope.spawn(move || {
-            let started = Instant::now();
-            while matches!(waiting.recv_timeout(Duration::from_secs(60)),
-                Err(mpsc::RecvTimeoutError::Timeout))
-            {
-                warn!(target: "reth::taiko::proof_history", number,
-                    elapsed_seconds = started.elapsed().as_secs(),
-                    "initial state copy remains pinned; persisted unwind completion may be blocked");
-            }
-        });
-        let result = copy();
+        let elapsed = guard.elapsed.clone();
+        let started = guard.started;
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("proof-history-pin-{phase}"))
+            .spawn_scoped(scope, move || {
+                let mut updates = 0;
+                while matches!(waiting.recv_timeout(Duration::from_secs(60)),
+                    Err(mpsc::RecvTimeoutError::Timeout))
+                {
+                    let elapsed_seconds = started.elapsed().as_secs_f64();
+                    elapsed.set(elapsed_seconds);
+                    updates = (updates + 1) % 10;
+                    if updates == 0 {
+                        info!(target: "reth::taiko::proof_history", phase, number, elapsed_seconds,
+                            "read phase remains pinned; persisted unwind completion may be waiting");
+                    }
+                }
+            })
+        {
+            warn!(target: "reth::taiko::proof_history", phase, %error,
+                "periodic pin reporting unavailable; continuing with start/end metrics");
+        }
+        let result = work();
         drop(finished);
         result
     })
@@ -138,9 +186,9 @@ fn reject_initial_snapshot(
         anchor.number, anchor.hash
     );
     warn!(target: "reth::taiko::proof_history", block = anchor.number, hash = ?anchor.hash,
-        actual = ?computed, ?expected, "initial copy root mismatch; preserving evidence while probing its header");
+        actual = ?computed, ?expected, "initial copy root mismatch detected; checking its post-copy header");
     let fresh = fresh_hash().wrap_err_with(|| format!(
-        "{mismatch}; failed to probe the post-copy header; the copy and journal are retained for diagnosis"
+        "{mismatch}; failed to probe the post-copy header. Stop the node and keep this directory offline for diagnosis; after repairing the cause, restart with a new, empty --proofs-history.storage-path"
     ))?;
     if fresh != Some(anchor.hash) {
         storage.reset_bootstrap().wrap_err_with(|| {
@@ -153,9 +201,10 @@ fn reject_initial_snapshot(
         return Ok(false);
     }
     Err(eyre!(
-        "{mismatch}; the copy and journal are retained for diagnosis. Verify or repair the node's \
-         source trie/hashed state and storage layout before restarting; copying the same source \
-         again cannot repair it"
+        "{mismatch}; stop the node and keep this directory offline for diagnosis. Verify or repair \
+         the node's source trie/hashed state and storage layout, then restart with a new, empty \
+         --proofs-history.storage-path. Repairing the source and restarting at this same path \
+         does not replace the retained copy; copying the same source again cannot repair it"
     ))
 }
 
@@ -196,6 +245,22 @@ pub(super) enum BackfillStep {
     Wait,
 }
 
+/// Independent resource bounds for one pinned backward chunk and its journal writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkLimits {
+    /// Maximum reconstructed blocks before releasing the node read transaction.
+    max_blocks: u64,
+    /// Maximum height/hash entries per journal write transaction.
+    journal_batch: usize,
+}
+
+impl Default for ChunkLimits {
+    /// Retains the established 10,000-block pin and 1,000-entry journal limits.
+    fn default() -> Self {
+        Self { max_blocks: 10_000, journal_batch: 1000 }
+    }
+}
+
 /// Advances backward by at most 10,000 blocks, then releases the pinned node read transaction.
 /// Preparation revalidates canonical bounds before the next chunk. Upstream commits atomic
 /// batches and checks cancellation at their boundaries; tiny fresh ranges avoid a second copy.
@@ -218,18 +283,17 @@ where
         + Send
         + Sync,
 {
-    backfill_proof_history_chunk(provider, storage, target, 10_000, 1000)
+    backfill_proof_history_chunk(provider, storage, target, ChunkLimits::default())
 }
 
 /// Runs one bounded backward chunk from a fresh, canonically validated node read transaction.
-/// `max_blocks` bounds source-reader lifetime by blocks; `journal_batch` bounds each hash write.
+/// Named limits distinguish the block bound from the journal write size.
 /// Zero limits are clamped to one to ensure progress.
 fn backfill_proof_history_chunk<Provider>(
     provider: &Provider,
     storage: Arc<ProofHistoryDatabase>,
     target: u64,
-    max_blocks: u64,
-    journal_batch: usize,
+    limits: ChunkLimits,
 ) -> eyre::Result<BackfillStep>
 where
     Provider: DatabaseProviderFactory + HeaderProvider + BlockHashReader + Sync,
@@ -254,7 +318,7 @@ where
         warn!(target: "reth::taiko::proof_history", ?window, "canonical backfill bounds changed; waiting for reconciliation");
         return Ok(BackfillStep::Reconcile);
     }
-    let next = earliest.saturating_sub(max_blocks.max(1)).max(target);
+    let next = earliest.saturating_sub(limits.max_blocks.max(1)).max(target);
     let Some(snapshot) = auxiliary_snapshot_status(&storage, window.earliest)? else {
         return Ok(BackfillStep::Progressed);
     };
@@ -264,65 +328,67 @@ where
     if use_snapshot && !matches!(snapshot, SnapshotInitStatus::Completed) {
         // The high-level provider uses short header reads. The following full proof-state copy
         // must finish before a pinned backward chunk starts, and has its own upstream progress.
-        let started = Instant::now();
         info!(target: "reth::taiko::proof_history", earliest, target, status = ?snapshot,
             "building or resuming full auxiliary snapshot before backward chunks");
         let outcome = match SnapshotInitJob::new(provider, storage.clone()).run(earliest) {
             Ok(outcome) => outcome,
             Err(error) => {
                 return backfill_result(Err(error.into()), || {
-                    let retained = storage.provider_ro()?.get_proof_window()?;
-                    if auxiliary_snapshot_status(&storage, retained.earliest)?.is_none() {
+                    // Snapshot initialization changes only auxiliary tables, so this window is
+                    // unchanged; the backward-job probe below must re-read its advancing window.
+                    if auxiliary_snapshot_status(&storage, window.earliest)?.is_none() {
                         return Ok(false);
                     }
-                    source_matches_window(provider, retained)
+                    source_matches_window(provider, window)
                 })
                 .wrap_err("failed to build or resume the auxiliary proof snapshot");
             }
         };
-        if outcome.block != window.earliest {
-            warn!(target: "reth::taiko::proof_history", expected = ?window.earliest,
-                actual = ?outcome.block, "discarding auxiliary snapshot built at a stale anchor");
-            let rw = storage.snapshot_initialization_provider()?;
-            rw.clear_snapshot()?;
-            OpProofsBackfillProvider::commit(rw)?;
+        if !accept_auxiliary_snapshot(&storage, window.earliest, outcome.block)? {
             return Ok(BackfillStep::Reconcile);
         }
-        info!(target: "reth::taiko::proof_history", earliest,
-            elapsed_seconds = started.elapsed().as_secs(), "auxiliary snapshot ready for backward chunks");
+        info!(target: "reth::taiko::proof_history", earliest, target,
+            "auxiliary snapshot ready for backward chunks");
     }
     // Open the long-lived source only after auxiliary snapshot initialization/resumption.
     let db = provider.database_provider_ro()?.disable_long_read_transaction_safety();
-    if !source_matches_window(provider, window)? {
-        return Ok(BackfillStep::Reconcile);
-    }
-    if !source_matches_window(&db, window)? {
-        warn!(target: "reth::taiko::proof_history", ?window, "waiting for persisted backfill source to match canonical bounds");
-        return Ok(BackfillStep::Wait);
-    }
-    // Journal failures and missing hashes are actionable errors, even during a concurrent reorg.
-    // Write only below committed earliest; a crash leaves harmless extra rows for this chunk.
-    let journal_batch = journal_batch.max(1);
-    for start in (next..earliest).step_by(journal_batch) {
-        storage.check_bootstrap_cancelled()?;
-        let end = start.saturating_add(journal_batch as u64).min(earliest);
-        let hashes = db.canonical_hashes_range(start, end)?;
-        if hashes.len() as u64 != end - start {
-            return Err(eyre!("missing canonical hashes for proof-history backfill {start}..{end}"));
+    with_pinned_read("backfill", earliest, || {
+        if !source_matches_window(provider, window)? {
+            warn!(target: "reth::taiko::proof_history", ?window,
+            "canonical bounds changed after auxiliary preparation; requesting reconciliation");
+            return Ok(BackfillStep::Reconcile);
         }
-        storage.record_hashes((start..end).zip(hashes))?;
-    }
-    let job = BackfillJob::new(db, Arc::clone(&storage));
-    let result = if use_snapshot { job.run_with_snapshot(next) } else { job.run(next) };
-    let progressed = backfill_result(result, || {
-        source_matches_window(provider, storage.provider_ro()?.get_proof_window()?)
-    })
-    .wrap_err("failed to reconstruct backward proof history")?;
-    if progressed == BackfillStep::Progressed {
-        info!(target: "reth::taiko::proof_history", earliest = next, target,
+        if !source_matches_window(&db, window)? {
+            warn!(target: "reth::taiko::proof_history", ?window, "waiting for persisted backfill source to match canonical bounds");
+            return Ok(BackfillStep::Wait);
+        }
+        // Journal failures and missing hashes are actionable errors, even during a concurrent
+        // reorg. Write only below committed earliest; a crash leaves harmless extra rows
+        // for this chunk.
+        let journal_batch = limits.journal_batch.max(1);
+        for start in (next..earliest).step_by(journal_batch) {
+            storage.check_bootstrap_cancelled()?;
+            let end = start.saturating_add(journal_batch as u64).min(earliest);
+            let hashes = db.canonical_hashes_range(start, end)?;
+            if hashes.len() as u64 != end - start {
+                return Err(eyre!(
+                    "missing canonical hashes for proof-history backfill {start}..{end}"
+                ));
+            }
+            storage.record_hashes((start..end).zip(hashes))?;
+        }
+        let job = BackfillJob::new(db, Arc::clone(&storage));
+        let result = if use_snapshot { job.run_with_snapshot(next) } else { job.run(next) };
+        let progressed = backfill_result(result, || {
+            source_matches_window(provider, storage.provider_ro()?.get_proof_window()?)
+        })
+        .wrap_err("failed to reconstruct backward proof history")?;
+        if progressed == BackfillStep::Progressed {
+            info!(target: "reth::taiko::proof_history", earliest = next, target,
             remaining = next - target, "proof-history backfill checkpoint");
-    }
-    Ok(progressed)
+        }
+        Ok(progressed)
+    })
 }
 
 /// Checks derived snapshot identity before resume and after upstream's separate header/hash reads.
@@ -334,14 +400,38 @@ fn auxiliary_snapshot_status(
 ) -> eyre::Result<Option<SnapshotInitStatus>> {
     let rw = storage.snapshot_initialization_provider()?;
     let snapshot = rw.snapshot_init_anchor()?;
-    if snapshot.block.is_some_and(|anchor| anchor != earliest) {
-        warn!(target: "reth::taiko::proof_history", expected = ?earliest, actual = ?snapshot.block,
-            "discarding stale auxiliary snapshot; retained proof history is unchanged");
-        rw.clear_snapshot()?;
-        OpProofsBackfillProvider::commit(rw)?;
+    if let Some(actual) = snapshot.block.filter(|anchor| *anchor != earliest) {
+        clear_auxiliary_snapshot(rw, earliest, actual)?;
         return Ok(None);
     }
     Ok(Some(snapshot.status))
+}
+
+/// Commits removal of stale auxiliary data while leaving retained proofs and their journal intact.
+fn clear_auxiliary_snapshot(
+    rw: impl OpProofsBackfillProvider,
+    expected: BlockNumHash,
+    actual: BlockNumHash,
+) -> eyre::Result<()> {
+    warn!(target: "reth::taiko::proof_history", ?expected, ?actual,
+        "discarding stale auxiliary snapshot; retained proof history is unchanged");
+    rw.clear_snapshot()?;
+    OpProofsBackfillProvider::commit(rw)?;
+    Ok(())
+}
+
+/// Accepts the completed job's anchor or clears its cache before requesting reconciliation.
+/// The matching fast path opens no status-read writer.
+fn accept_auxiliary_snapshot(
+    storage: &ProofHistoryDatabase,
+    expected: BlockNumHash,
+    actual: BlockNumHash,
+) -> eyre::Result<bool> {
+    if actual != expected {
+        clear_auxiliary_snapshot(storage.snapshot_initialization_provider()?, expected, actual)?;
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Checks both retained anchors in a canonical or persisted provider view.
@@ -352,9 +442,9 @@ fn source_matches_window(
     Ok(is_canonical(provider, window.earliest)? && is_canonical(provider, window.latest)?)
 }
 
-/// Recovers only header/root races proven by changed canonical or auxiliary anchors, logging the
-/// cause. Pruning, journal and storage failures remain actionable even if a reorg happened
-/// concurrently.
+/// Maps success to Progressed and proven eligible identity changes to Reconcile; the caller
+/// separately selects Wait for a lagging persisted source. Other failures remain Err. A failed
+/// recovery probe logs both errors and returns the original cause with probe context attached.
 fn backfill_result(
     result: Result<(), BackfillError>,
     still_canonical: impl FnOnce() -> eyre::Result<bool>,
@@ -587,7 +677,13 @@ mod tests {
         )
         .run(2)
         .unwrap();
-        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap();
+        backfill_proof_history_chunk(
+            &factory,
+            storage.clone(),
+            0,
+            ChunkLimits { max_blocks: 1, ..Default::default() },
+        )
+        .unwrap();
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 1);
         assert_eq!(
             storage
@@ -602,7 +698,13 @@ mod tests {
         );
         drop(storage);
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
-        backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap();
+        backfill_proof_history_chunk(
+            &factory,
+            storage.clone(),
+            0,
+            ChunkLimits { max_blocks: 1, ..Default::default() },
+        )
+        .unwrap();
         assert_eq!(
             storage
                 .snapshot_initialization_provider()
@@ -839,7 +941,13 @@ mod tests {
         assert!(initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
         SnapshotInitJob::new(&factory, storage.clone()).run(9).unwrap();
         assert_eq!(
-            backfill_proof_history_chunk(&factory, storage.clone(), 0, 7, 3).unwrap(),
+            backfill_proof_history_chunk(
+                &factory,
+                storage.clone(),
+                0,
+                ChunkLimits { max_blocks: 7, journal_batch: 3 }
+            )
+            .unwrap(),
             BackfillStep::Progressed
         );
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap(), hashes[2]);
@@ -850,7 +958,13 @@ mod tests {
         drop(storage);
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
         assert_eq!(
-            backfill_proof_history_chunk(&factory, storage.clone(), 0, 7, 3).unwrap(),
+            backfill_proof_history_chunk(
+                &factory,
+                storage.clone(),
+                0,
+                ChunkLimits { max_blocks: 7, journal_batch: 3 }
+            )
+            .unwrap(),
             BackfillStep::Progressed
         );
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap(), hashes[0]);
@@ -867,7 +981,13 @@ mod tests {
             let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
             assert!(initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
             assert_eq!(
-                backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap(),
+                backfill_proof_history_chunk(
+                    &factory,
+                    storage.clone(),
+                    0,
+                    ChunkLimits { max_blocks: 1, ..Default::default() }
+                )
+                .unwrap(),
                 BackfillStep::Progressed
             );
             let status = storage
@@ -906,7 +1026,13 @@ mod tests {
             }
             OpProofsSnapshotInitProvider::commit(snapshot).unwrap();
             assert_eq!(
-                backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap(),
+                backfill_proof_history_chunk(
+                    &factory,
+                    storage.clone(),
+                    0,
+                    ChunkLimits { max_blocks: 1, ..Default::default() }
+                )
+                .unwrap(),
                 BackfillStep::Progressed,
                 "a committed stale-cache clear should allow immediate progress: completed={completed}"
             );
@@ -925,7 +1051,13 @@ mod tests {
                 SnapshotInitStatus::NotStarted
             ));
             assert_eq!(
-                backfill_proof_history_chunk(&factory, storage.clone(), 0, 1, 1000).unwrap(),
+                backfill_proof_history_chunk(
+                    &factory,
+                    storage.clone(),
+                    0,
+                    ChunkLimits { max_blocks: 1, ..Default::default() }
+                )
+                .unwrap(),
                 BackfillStep::Progressed
             );
             assert_eq!(
@@ -1008,5 +1140,96 @@ mod tests {
         assert!(!initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
         assert!(storage.provider_ro().unwrap().get_latest_block().is_err());
         assert_eq!(storage.indexed_hash(1).unwrap(), None);
+    }
+    #[test]
+    fn pin_instrumentation_is_cleared_when_copying_panics() {
+        use super::super::test_utils::TestMetrics;
+        for phase in ["initial_copy", "backfill"] {
+            let capture = TestMetrics::default();
+            metrics::with_local_recorder(&capture, || {
+                assert_eq!(
+                    with_pinned_read(phase, 7, || {
+                        assert_eq!(
+                            capture.value("taiko_proof_history_pin_active", &[("phase", phase)]),
+                            Some(1.0)
+                        );
+                        42
+                    }),
+                    42
+                );
+                assert_eq!(
+                    capture.value("taiko_proof_history_pin_active", &[("phase", phase)]),
+                    Some(0.0)
+                );
+                let result = std::panic::catch_unwind(|| {
+                    with_pinned_read(phase, 7, || {
+                        panic!("simulated copy failure");
+                    })
+                });
+                assert!(result.is_err());
+                assert_eq!(
+                    capture.value("taiko_proof_history_pin_active", &[("phase", phase)]),
+                    Some(0.0)
+                );
+                assert!(
+                    capture
+                        .value("taiko_proof_history_pin_elapsed_seconds", &[("phase", phase)])
+                        .is_some()
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn production_chunk_limits_keep_distinct_block_and_journal_budgets() {
+        assert_eq!(ChunkLimits::default(), ChunkLimits { max_blocks: 10_000, journal_batch: 1000 });
+    }
+
+    #[test]
+    fn zero_chunk_and_journal_limits_still_make_one_block_of_progress() {
+        let (factory, hashes) = empty_chain_factory(2);
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        initialize_proof_history_storage(&factory, storage.clone(), None).unwrap();
+        assert_eq!(
+            backfill_proof_history_chunk(
+                &factory,
+                storage.clone(),
+                0,
+                ChunkLimits { max_blocks: 0, journal_batch: 0 }
+            )
+            .unwrap(),
+            BackfillStep::Progressed
+        );
+        assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap(), hashes[1]);
+        assert_eq!(storage.indexed_hash(1).unwrap(), Some(hashes[1].hash));
+        assert_eq!(storage.indexed_hash(0).unwrap(), None);
+    }
+
+    #[test]
+    fn completed_snapshot_with_a_stale_outcome_is_discarded_without_losing_history() {
+        let (factory, hashes) = empty_chain_factory(2);
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        initialize_proof_history_storage(&factory, storage.clone(), None).unwrap();
+        SnapshotInitJob::new(&factory, storage.clone()).run(2).unwrap();
+        let window = storage.provider_ro().unwrap().get_proof_window().unwrap();
+        // Model a completed job whose unpinned header lookup planted another fork's anchor.
+        let actual = BlockNumHash::new(2, B256::repeat_byte(0xff));
+        let snapshot = storage.snapshot_initialization_provider().unwrap();
+        snapshot.update_snapshot(actual, &Default::default()).unwrap();
+        OpProofsBackfillProvider::commit(snapshot).unwrap();
+        assert!(!accept_auxiliary_snapshot(&storage, window.earliest, actual).unwrap());
+        assert_eq!(storage.provider_ro().unwrap().get_proof_window().unwrap(), window);
+        assert_eq!(storage.indexed_hash(2).unwrap(), Some(hashes[2].hash));
+        assert!(matches!(
+            storage
+                .snapshot_initialization_provider()
+                .unwrap()
+                .snapshot_init_anchor()
+                .unwrap()
+                .status,
+            SnapshotInitStatus::NotStarted
+        ));
     }
 }

@@ -4,6 +4,8 @@ mod config;
 mod sidecar;
 mod storage_init;
 mod store;
+#[cfg(test)]
+mod test_utils;
 pub use store::ProofHistoryDatabase;
 
 pub use config::{

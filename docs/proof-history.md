@@ -2,140 +2,126 @@
 
 Enable the optional history database with `--proofs-history` and
 `--proofs-history.storage-path <path>`. It supplies retained historical state to
-`eth_getProof` and the debug execution-witness RPCs, including witnesses for
-arbitrary transaction lists.
+`eth_getProof` and the debug execution-witness RPCs, including arbitrary
+transaction lists.
 
 ## Initialization and retention
 
-An empty database copies the node's persisted state after execution, hashing and
-Merkle stages agree with the Finish checkpoint and no partial Merkle work
-remains. In normal reth unwinds, `commit_unwind` commits MDBX, waits for older
-readers, then commits static-file truncation. The copy's pinned reader therefore
-protects its visible header prefix as well as its state snapshot. Disabling the
-long-read timeout does not remove this synchronization.
-
-The copied root is checked after the initial job releases its reader. A stable
-mismatch or failed fresh-header probe preserves the copy and journal for diagnosis
-and fails with the anchor and computed/expected roots. A header changed or missing
-at that later probe permits discarding the copy and retrying; this is a defensive
-post-copy check, not evidence that a normal unwind can tear headers under the pin.
-Missing Finish headers are logged while initialization waits. Without
-`--proofs-history.backfill-window-only`, indexing starts at the snapshot and
-history grows as the node advances.
+An empty database copies persisted state after execution, hashing and Merkle
+stages agree with Finish and no partial Merkle work remains. Missing Finish
+headers cause a logged retry. Without `--proofs-history.backfill-window-only`,
+indexing starts at this snapshot and history grows as the node advances.
 
 With `--proofs-history.backfill-window-only`, initialization waits until finality
-is known and local execution reaches `finalized - window`. It then copies the
-current state and reconstructs older state from changesets using the upstream V2
-backfill job. The initial target is `max(executed, finalized) - window`, bounded
-at genesis and the snapshot height. This avoids requesting an extra window while
-the node is still syncing, or building history that retention would immediately
-remove. Required account and storage changesets must remain unpruned during
-backfill; missing history fails initialization.
+is known and execution reaches `finalized - window`. The initial backward target
+is `max(executed, finalized) - window`, bounded at genesis and the snapshot
+height. Account and storage changesets needed for reconstruction must remain
+available. The `backfill-target` file pins unfinished work across restarts;
+committed batches resume from the retained earliest block.
 
-The `backfill-target` file beside the database pins an unfinished bootstrap's
-target across restarts. Committed backward batches resume from the stored earliest
-block. An interrupted initial snapshot copy restarts because its original source
-transaction no longer exists. Both bounds of a pending bootstrap are checked
-against canonical hashes. A non-canonical earliest anchor requires an atomic
-reset and new copy. A divergent latest anchor unwinds to the journal's last common
-block, preserving already-backfilled history when the earliest anchor still
-matches. Reorg notifications do not cancel a pinned initial copy; its anchor is
-rechecked before publishing readiness.
+The first snapshot-assisted step copies the account trie, storage trie, hashed
+accounts and hashed storages into auxiliary tables before reconstructing older
+blocks. Its node-header lookups are short; the auxiliary copy itself can be
+substantial and keeps readiness false. Upstream reports copy progress. A fresh
+range of at most one upstream backfill batch uses plain backfill instead. An
+existing auxiliary snapshot stays synchronized through the final chunk and
+restart. Stale auxiliary anchors clear only that cache and retry immediately.
 
-Backward jobs run in chunks of at most 10,000 blocks, releasing the node reader
-and rechecking canonical bounds between chunks. A pinned reader prevents page
-reuse and can delay a persisted-block unwind: reth's persistence thread waits
-for older readers before completing static-file truncation. In-memory blocks can
-accumulate while persistence waits. Chunking bounds the blocks processed per pin,
-not its wall-clock duration. The initial full-state copy still holds one reader;
-a warning is emitted every 60 seconds while it runs. A bounded, resumable initial
-copy remains a follow-up; production copy duration and memory growth are unmeasured.
+Backward reconstruction processes at most 10,000 blocks per source transaction
+and writes journal hashes in batches of at most 1,000 entries. Each chunk reports
+progress/ETA and the retained height, target and remaining blocks. Changed
+canonical evidence requests reconciliation; a lagging persisted view waits.
+Pruning, journal and storage errors remain fatal, with the original cause and
+any failed recovery probe preserved. Auxiliary-copy errors have their own context.
 
-The first snapshot-assisted chunk builds a second full-state copy: the auxiliary
-job drains the account trie, storage trie, hashed accounts and hashed storages in
-write batches before backward reconstruction starts. Its two node-header lookups
-are short; it does not pin the node database throughout this copy. The sidecar
-logs the auxiliary phase's start and completion, and upstream reports its copy
-progress. Readiness remains false until bootstrap completes. A stale auxiliary
-anchor clears only that cache and schedules immediate progress.
+## Pinned reads and shutdown
 
-Progress/ETA is reported per backward chunk, with retained height, target and
-remaining blocks at each checkpoint. A fresh range of at most one upstream
-backfill batch uses plain backfill to avoid duplicating state. Larger ranges use
-an auxiliary snapshot; an existing snapshot stays active through the final chunk
-and restart. These are conservative limits, not benchmarked crossover points.
-After completion, the auxiliary snapshot and target file are removed before
-indexing and historical reads start.
+Normal reth unwinds commit MDBX, wait for older readers, then commit static-file
+truncation. A pinned reader protects its visible header prefix and state; disabling
+the long-read timeout does not remove that barrier. Such readers prevent page
+reuse and can delay persisted unwind completion, allowing in-memory blocks to
+accumulate. Chunking bounds work per backward pin, not its wall-clock duration.
+The initial copy still holds one reader throughout; making that copy bounded and
+resumable remains a follow-up. Production duration and memory use are unbenchmarked.
 
-Changed canonical bounds request immediate reconciliation; a lagging persisted
-view uses a delayed retry. Eligible header/root/anchor errors with changed
-canonical or auxiliary identity are logged and reconciled. Normal pinned unwinds
-protect the chunk's visible header prefix; auxiliary lookups and probes after a
-reader is released remain separate observations. Pruning, journal and storage
-failures remain fatal. Probe failures retain and log the original error, and
-auxiliary-copy errors receive snapshot-specific context rather than pruning advice.
+Both initial copies and backward chunks expose
+`taiko_proof_history_pin_active` and `taiko_proof_history_pin_elapsed_seconds`,
+with `phase="initial_copy"` or `phase="backfill"`. Elapsed time updates once per
+minute while active and at completion. Start/end messages use INFO; long phases
+report again every ten minutes at INFO. Upstream retains detailed per-table and
+per-chunk progress. Failure to start periodic reporting does not abort indexing; unwind/panic
+cleanup releases the guard and its resources.
 
-Shutdown or a closed notification source cancels new work at batch boundaries.
-Accepted writes remain atomic and the sidecar waits for workers to join. The
-outer reth CLI has a default five-second graceful-shutdown timeout, so process
-shutdown can outlast that graceful phase without all sidecar work having joined;
-restart resumes from the last committed batch.
+Shutdown or a closed notification source cancels new work at batch boundaries;
+accepted transactions finish atomically. The outer reth CLI has a default
+five-second graceful phase, which does not guarantee completion of all work or
+total process exit within five seconds. Restart uses the last committed batch.
 
-Live commits use precomputed trie updates. Missing updates and periodic
-verification blocks are executed through the upstream engine's synchronous API.
-Execution and root errors stop the sidecar and revoke readiness; temporarily
-unavailable parent state is retried. Each submission is confirmed durable before
-advancing, preserving per-block persistence and RPC freshness. Write-ahead hashes
-are recorded once per replay batch or notification suffix. Submissions remain
-serialized because upstream can return success without accepting an unavailable
-parent; later blocks must not trigger implicit gap replay. Throughput and memory
-have not been benchmarked. Idle polling also catches up to the canonical
-in-memory tail without new notifications. Pruning
-runs in the engine's persistence transaction;
-`--proofs-history.prune-interval` controls idle maintenance polling and must be
-greater than zero.
-`--proofs-history.max-startup-prune-blocks` still limits automatic pruning after a
-retention configuration change.
+## Canonical reconciliation and live indexing
 
-Canonical reconciliation gates historical reads during startup and reorg
-recovery. A durable height-to-block-hash journal identifies the last retained
-common block, so shallow reorgs preserve the canonical prefix even when their
-notifications are stale or missing. Older V2 stores without journal entries
-conservatively fall back to the earliest retained anchor. The journal now uses
-`IndexedBlockHashes`. A shorter canonical chain reconciles immediately when the
-journal proves divergence at its tip; a matching prefix waits for catch-up.
-A missing canonical hash at or below the observed head is labeled separately.
-Six consecutive identical observations (same retained tip and observed best)
-stop the sidecar with diagnostic guidance; changed observations or other startup
-outcomes reset that count. Ordinary catch-up above the canonical head is not
-subject to this escalation. Reorgs replacing the retained earliest anchor rebuild the snapshot with historical reads paused. Shutdown
-joins the indexing threads; accepted blocks not yet persisted are recovered from
-the node on restart.
+Historical reads wait for canonical validation. The `IndexedBlockHashes` journal
+finds the last retained common block after shallow reorgs, missed notifications
+or restart. Older windows without journal coverage use the earliest-anchor
+fallback. A non-canonical earliest anchor requires rebuilding; divergence above
+it preserves the canonical prefix. A shorter chain reconciles immediately when
+the journal proves divergence; ordinary catch-up otherwise waits.
 
-## Replay failures
+A missing hash at or below the observed head is a separate condition. The sixth
+observation of the same retained tip raises one ERROR and sets
+`taiko_proof_history_missing_canonical_hash` to 1. With the five-second retry
+interval, that is five retry delays (about 25 seconds after the first observation,
+plus work time). Advancing `canonical_best` does not reset this identity. The
+sidecar keeps waiting with historical readiness false; it does not panic the
+execution client. This condition can occur during resynchronization, so check
+sync and canonical headers first. A resolved condition or different retained tip
+clears/restarts the episode and resets the gauge. Normal catch-up above the
+canonical head is excluded. Waiting for an unavailable earliest anchor is logged
+at INFO.
 
-Live catch-up and verification still need reth to resolve parent-state providers,
-block bodies, bytecode and block hashes. Although account/storage reads and trie
-roots come from the proof database, node pruning can make those prerequisites
-unavailable after downtime. Keep the required node history available for both
-backfill and replay; `--full` pruning may prevent recovery across an old gap.
+Live notifications normally supply precomputed trie updates. Verification and
+catch-up execute synchronously and confirm each submission is durable. Hashes
+are journaled once per bounded replay batch or notification suffix. Submissions
+remain serialized because upstream can report success without accepting an
+unavailable parent. Idle polling recovers an in-memory tail without another
+notification. Pruning runs with engine persistence; `--proofs-history.prune-interval`
+controls idle polling and must be positive. `--proofs-history.max-startup-prune-blocks`
+limits automatic pruning after a retention change.
 
-Execution/root failures revoke readiness and stop the sidecar. The error identifies
-the failed block and recovery path. Check pruning, source-state integrity and EVM
-configuration first; preserve the failing proof database for diagnosis. Restore
-missing node history or repair the underlying cause, then use a new empty
-`--proofs-history.storage-path` when a rebuild is needed. Repeatedly restarting
-against the same deterministic error cannot repair it, and automatic rebuilding
-would hide an execution or proof divergence.
+## Failures and recovery
+
+Root validation follows the initial job's release of its reader. A later header
+change can permit discarding a failed copy and retrying; this does not imply a
+header tear under the earlier pin. A stable mismatch or failed header probe keeps
+the copy, journal, anchor and root diagnostics. **Repairing the source and
+restarting at that same path does not replace the failed copy.** Stop the node,
+keep the failed directory offline for diagnosis, repair the cause, and restart
+with a **new, empty** `--proofs-history.storage-path`. Evidence is retained at
+failure; running normal reorg recovery against the old path can still reset a
+non-canonical anchor.
+
+A failed backward chunk keeps its pending target and resumes the same work on
+restart. After investigating its original error, either rebuild at a new empty
+path or, for an otherwise healthy retained window, stop the node and remove only
+`<storage-path>/backfill-target`. Restarting then abandons the requested older
+coverage and continues live indexing from the shorter retained window. Startup
+clears auxiliary snapshot tables even when the marker is absent, while preserving
+retained proofs and their journal. This escape does not bypass canonical/root
+validation or repair a corrupt initial copy or unavailable forward-replay data.
+
+Replay needs retained bodies, bytecode, block hashes and a resolvable parent-state
+provider. Account/storage reads and trie roots come from proof history, but node
+pruning can still make those prerequisites unavailable after downtime. Restore
+missing history or repair source/EVM inconsistencies before rebuilding. Stable
+execution/root errors stop the critical sidecar and therefore the node; their
+messages include the failed block, original cause and recovery guidance.
 
 ## Upgrading a V1 proof database
 
-V1 data is rejected with an explicit rebuild message. It is neither interpreted
-as V2 nor deleted. Point the upgraded node at a **new, empty**
-`--proofs-history.storage-path` and add `--proofs-history.backfill-window-only` to
-rebuild retained history from the node's unpruned changesets. Keep the old V1
-directory if rollback is required. Do not point an older binary at the V2 path.
+V1 data is rejected without migration or deletion. Select a **new, empty**
+`--proofs-history.storage-path` and use `--proofs-history.backfill-window-only`
+with the required node changesets retained. Keep the V1 directory for rollback;
+do not point an older binary at the V2 path.
 
-Until initialization and canonical reconciliation finish, historical requests
-within 1,024 blocks of the tip can use canonical fallback. Deeper uncovered
-requests return an error rather than constructing an unbounded revert overlay.
+Until initialization and reconciliation finish, requests within 1,024 blocks of
+the tip can use canonical fallback. Deeper uncovered requests fail rather than
+constructing an unbounded revert overlay.

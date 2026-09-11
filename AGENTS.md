@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Workspace root uses Cargo with `bin/` for the executable, `crates/` for libraries (`node`, `block`, `chainspec`, `cli`, `consensus`, `db`, `evm`, `network`, `payload`, `primitives`, `rpc`).
+- Workspace root uses Cargo with `bin/` for the executable, `crates/` for libraries (`node`, `block`, `chainspec`, `cli`, `consensus`, `db`, `evm`, `payload`, `primitives`, `rpc`, `rpc-types`).
 - Tests live beside implementation modules; `just test` runs nextest and workspace doctests.
 - Docker assets and CI scripts share the root; build artifacts land in `target/`.
 

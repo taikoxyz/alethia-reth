@@ -21,6 +21,8 @@ use crate::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
 };
+#[cfg(feature = "execution-observer")]
+use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, SharedExecutionObserver};
 
 /// Execution artifacts produced by prover-mode derived block execution.
 #[derive(Debug)]
@@ -96,6 +98,70 @@ where
     })
 }
 
+/// Executes a candidate derived block through the feature-gated observer EVM path.
+///
+/// The observer is infallible and cannot influence receipt, state, or zk gas results. Normal
+/// callers continue to use [`execute_derived_block`], whose construction path remains observer-free.
+#[cfg(feature = "execution-observer")]
+pub fn execute_derived_block_with_observer<DB>(
+    evm_config: &TaikoEvmConfig,
+    parent_header: &SealedHeader,
+    derived_block: &RecoveredBlock<Block>,
+    db: DB,
+    observer: SharedExecutionObserver,
+) -> Result<DerivedBlockExecutionOutcome, BlockExecutionError>
+where
+    DB: Database + std::fmt::Debug,
+{
+    let mut state = State::builder().with_database(db).with_bundle_update().build();
+    let attributes = attributes_from_derived_block(derived_block)?;
+    let evm_env =
+        evm_config.next_evm_env(parent_header, &attributes).map_err(BlockExecutionError::other)?;
+    let zk_gas_schedule = alethia_reth_evm::zk_gas::schedule::schedule_for(evm_env.cfg_env.spec);
+    let evm = evm_config.evm_factory().create_evm_with_execution_observer(
+        &mut state,
+        evm_env,
+        observer.clone(),
+    );
+    let execution_ctx = evm_config
+        .context_for_next_block(parent_header, attributes)
+        .map_err(BlockExecutionError::other)?;
+    observer.on_event(ExecutionEvent::BlockStart {
+        block_index: 0,
+        block_number: derived_block.header().number,
+        expected_difficulty: execution_ctx
+            .expected_difficulty()
+            .map(|difficulty| difficulty.to_be_bytes::<32>()),
+        block_limit: zk_gas_schedule.map_or(0, |schedule| schedule.block_limit),
+        recovered_tx_count: u64::try_from(derived_block.body().transactions().count())
+            .expect("transaction count must fit u64"),
+    });
+    let finalized_zk_gas = execution_ctx.finalized_block_zk_gas.clone();
+    let executor = TaikoBlockExecutor::new_with_execution_observer(
+        evm,
+        execution_ctx,
+        evm_config.executor_factory.spec().clone(),
+        evm_config.executor_factory.receipt_builder(),
+        observer.clone(),
+    );
+
+    let execution_outcome = executor
+        .execute_block_with_committed_transactions(derived_block.transactions_recovered())?;
+    state.merge_transitions(BundleRetention::Reverts);
+
+    let bundle_state = state.take_bundle();
+    let hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
+    let finalized_block_zk_gas = finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed);
+    observer.on_event(ExecutionEvent::BlockEnd { finalized_current_zkgas: finalized_block_zk_gas });
+
+    Ok(DerivedBlockExecutionOutcome {
+        committed_transactions: execution_outcome.committed_transactions,
+        execution_result: execution_outcome.execution_result,
+        hashed_state,
+        finalized_block_zk_gas,
+    })
+}
+
 /// Assembles the filtered block produced by derived block execution.
 pub fn assemble_filtered_block(
     evm_config: &TaikoEvmConfig,
@@ -138,28 +204,35 @@ pub fn assemble_filtered_block(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_ethereum_primitives::{Block, BlockBody};
+    #[cfg(feature = "execution-observer")]
+    use reth_revm::state::{Bytecode, bytecode::opcode};
 
     use super::*;
     use crate::{
         config::TaikoEvmConfig,
-        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts},
+        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts, unzen_chain_spec},
     };
-    use alethia_reth_chainspec::spec::TaikoChainSpec;
+    #[cfg(feature = "execution-observer")]
+    use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, ExecutionObserver};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
 
-    fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
+    fn test_transaction_to(
+        chain_id: u64,
+        nonce: u64,
+        target: Address,
+    ) -> Recovered<TransactionSigned> {
         let tx = TxLegacy {
             chain_id: Some(ChainId::from(chain_id)),
             nonce,
             gas_price: 1,
             gas_limit: 5_000_000,
-            to: TxKind::Call(BENCH_SUCCESS_TARGET),
+            to: TxKind::Call(target),
             value: U256::ZERO,
             input: Bytes::default(),
         };
@@ -171,9 +244,13 @@ mod tests {
         )
     }
 
+    fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
+        test_transaction_to(chain_id, nonce, BENCH_SUCCESS_TARGET)
+    }
+
     #[test]
     fn execute_derived_block_skips_invalid_nonce_transaction_and_records_committed_txs() {
-        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new(chain_spec);
         let parent_header = SealedHeader::seal_slow(Header::default());
@@ -227,5 +304,223 @@ mod tests {
         .expect("filtered block should assemble");
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
+    }
+
+    /// Records observer events so the test can assert the public derived-block tracing contract.
+    #[cfg(feature = "execution-observer")]
+    #[derive(Default)]
+    struct RecordingObserver {
+        events: Mutex<Vec<ExecutionEvent>>,
+    }
+
+    #[cfg(feature = "execution-observer")]
+    impl ExecutionObserver for RecordingObserver {
+        fn on_event(&self, event: ExecutionEvent) {
+            self.events.lock().expect("observer lock should not be poisoned").push(event);
+        }
+    }
+
+    #[cfg(feature = "execution-observer")]
+    #[test]
+    fn observer_execution_matches_normal_derived_block_execution() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = SealedHeader::seal_slow(Header::default());
+        let anchor_transaction = test_transaction(chain_id, 0);
+        let valid_transaction = test_transaction(chain_id, 1);
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: vec![
+                        anchor_transaction.clone_inner(),
+                        valid_transaction.clone_inner(),
+                    ],
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            vec![anchor_transaction.signer(), valid_transaction.signer()],
+        );
+
+        let normal = execute_derived_block(
+            &config,
+            &parent_header,
+            &derived_block,
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+        )
+        .expect("normal derived execution should succeed");
+        let observer = Arc::new(RecordingObserver::default());
+        let observed = execute_derived_block_with_observer(
+            &config,
+            &parent_header,
+            &derived_block,
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+            observer.clone(),
+        )
+        .expect("observed derived execution should succeed");
+
+        assert_eq!(observed.committed_transactions, normal.committed_transactions);
+        assert_eq!(observed.execution_result, normal.execution_result);
+        assert_eq!(observed.hashed_state, normal.hashed_state);
+        assert_eq!(observed.finalized_block_zk_gas, normal.finalized_block_zk_gas);
+
+        let events = observer.events.lock().expect("observer lock should not be poisoned");
+        assert!(matches!(events.first(), Some(ExecutionEvent::BlockStart { .. })));
+        assert!(matches!(events.last(), Some(ExecutionEvent::BlockEnd { .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::PhaseStart {
+                phase: alethia_reth_evm::zk_gas::observer::ExecutionPhase::Transactions
+            }
+        )));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ExecutionEvent::TransactionStart { .. }))
+                .count(),
+            2,
+            "each recovered transaction must open exactly one transaction buffer"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::ChargeAttempt { operation_id: None, .. }
+        )));
+    }
+
+    #[cfg(feature = "execution-observer")]
+    #[test]
+    fn observer_marks_first_unattempted_tail_after_zk_gas_truncation() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = SealedHeader::seal_slow(Header::default());
+        let transactions = vec![
+            test_transaction(chain_id, 0),
+            test_transaction_to(chain_id, 1, crate::testutil::BENCH_LIMIT_TARGET),
+            test_transaction(chain_id, 2),
+        ];
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: transactions.iter().map(Recovered::clone_inner).collect(),
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            transactions.iter().map(Recovered::signer).collect(),
+        );
+        let observer = Arc::new(RecordingObserver::default());
+        execute_derived_block_with_observer(
+            &config,
+            &parent_header,
+            &derived_block,
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+            observer.clone(),
+        )
+        .expect("truncating candidate should remain a successful filtered block");
+        let events = observer.events.lock().expect("observer lock should not be poisoned");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::BlockStop {
+                reason: alethia_reth_evm::zk_gas::observer::BlockStopReason::ZkGasTruncated,
+                first_unattempted_tx_index: Some(2)
+            }
+        )));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ExecutionEvent::TransactionStart { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(feature = "execution-observer")]
+    #[test]
+    fn observer_marks_committed_revert_transaction_end() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = SealedHeader::seal_slow(Header::default());
+        let reverting_target = Address::with_last_byte(0x24);
+        let transactions =
+            vec![test_transaction(chain_id, 0), test_transaction_to(chain_id, 1, reverting_target)];
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: transactions.iter().map(Recovered::clone_inner).collect(),
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            transactions.iter().map(Recovered::signer).collect(),
+        );
+        let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
+        crate::testutil::insert_contract(
+            &mut db,
+            reverting_target,
+            Bytecode::new_raw(Bytes::from(vec![
+                opcode::PUSH1,
+                0x00,
+                opcode::PUSH1,
+                0x00,
+                opcode::REVERT,
+            ])),
+        );
+        let observer = Arc::new(RecordingObserver::default());
+        let outcome = execute_derived_block_with_observer(
+            &config,
+            &parent_header,
+            &derived_block,
+            db,
+            observer.clone(),
+        )
+        .expect("reverted transactions must remain committed derived-block transactions");
+
+        assert_eq!(outcome.committed_transactions.len(), 2);
+        let events = observer.events.lock().expect("observer lock should not be poisoned");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::TransactionStart {
+                tx_index: 1,
+                execution_class:
+                    alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::ContractCall,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::TransactionEnd {
+                tx_index: 1,
+                disposition:
+                    alethia_reth_evm::zk_gas::observer::TransactionDisposition::CommittedRevert,
+                ..
+            }
+        )));
     }
 }

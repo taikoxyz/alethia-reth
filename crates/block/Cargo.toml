@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["net"]
+execution-observer = ["alethia-reth-evm/execution-observer"]
 prover = ["dep:alethia-reth-primitives", "dep:reth-storage-api", "dep:reth-trie-common"]
 test-utils = ["dep:reth-storage-api", "dep:reth-trie-common"]
 net = [

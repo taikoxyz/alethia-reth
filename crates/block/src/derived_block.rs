@@ -329,6 +329,79 @@ mod tests {
         test_transaction_to(chain_id, nonce, BENCH_SUCCESS_TARGET)
     }
 
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_finalizes_cold_eoa_value_transfer_classification() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let anchor = test_transaction(chain_id, 0);
+        let eoa = TxLegacy {
+            chain_id: Some(ChainId::from(chain_id)),
+            nonce: 1,
+            gas_price: 1,
+            gas_limit: 100_000,
+            to: TxKind::Call(Address::with_last_byte(0x77)),
+            value: U256::from(1),
+            input: Bytes::new(),
+        };
+        let eoa: Recovered<TransactionSigned> = Recovered::new_unchecked(
+            Signed::new_unchecked(
+                eoa,
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::with_last_byte(TEST_CALLER.as_slice()[19]),
+            )
+            .into(),
+            TEST_CALLER,
+        );
+        let invalid = test_transaction(chain_id, 99);
+        let zero_signer = Recovered::new_unchecked(eoa.clone_inner(), Address::ZERO);
+        let block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: vec![
+                        anchor.clone_inner(),
+                        eoa.clone_inner(),
+                        invalid.clone_inner(),
+                        zero_signer.clone_inner(),
+                    ],
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            vec![anchor.signer(), eoa.signer(), invalid.signer(), zero_signer.signer()],
+        );
+        let observer = Arc::new(RecordingObserver::default());
+        execute_derived_block_with_observer(
+            &config,
+            &SealedHeader::seal_slow(Header::default()),
+            &block,
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+            0,
+            observer.clone(),
+        )
+        .expect("EOA transfer should commit");
+        let events = observer.events.lock().expect("observer lock should not be poisoned");
+        assert!(events.iter().any(|event| matches!(event, ExecutionEvent::TransactionEnd { tx_index: 1, disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::CommittedSuccess, execution_class: alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::NativeValueTransfer, .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::TransactionEnd {
+                disposition:
+                    alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredInvalid,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(event, ExecutionEvent::TransactionEnd { disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredZeroSigner, observed_current_zkgas: 0, committed_current_zkgas, .. } if *committed_current_zkgas > 0)), "zero-signer filtering must retain its exact cause and zero attempted snapshot");
+    }
+
     #[test]
     fn execute_derived_block_skips_invalid_nonce_transaction_and_records_committed_txs() {
         let chain_spec = Arc::new(unzen_chain_spec());
@@ -464,6 +537,45 @@ mod tests {
                 phase: alethia_reth_evm::zk_gas::observer::ExecutionPhase::Transactions
             }
         )));
+        let pre_start = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ExecutionEvent::PhaseStart {
+                        phase:
+                            alethia_reth_evm::zk_gas::observer::ExecutionPhase::PreExecutionSystem
+                    }
+                )
+            })
+            .expect("system phase must start");
+        let pre_end = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ExecutionEvent::PhaseEnd {
+                        phase:
+                            alethia_reth_evm::zk_gas::observer::ExecutionPhase::PreExecutionSystem
+                    }
+                )
+            })
+            .expect("system phase must end");
+        let transaction_start = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ExecutionEvent::PhaseStart {
+                        phase: alethia_reth_evm::zk_gas::observer::ExecutionPhase::Transactions
+                    }
+                )
+            })
+            .expect("transaction phase must start");
+        assert!(
+            pre_start < pre_end && pre_end < transaction_start,
+            "system work must remain outside transaction attribution"
+        );
         assert_eq!(
             events
                 .iter()
@@ -811,5 +923,17 @@ mod tests {
             precompile_charges[0].1,
             ExecutionEvent::ChargeAttempt { operation_id: Some(id), .. } if *id == precompile_operation_id
         ));
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ExecutionEvent::TransactionEnd {
+                    tx_index: 1,
+                    execution_class:
+                        alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::ContractCall,
+                    ..
+                }
+            )),
+            "the authoritative end class must preserve top-level precompile execution"
+        );
     }
 }

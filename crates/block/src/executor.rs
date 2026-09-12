@@ -275,6 +275,12 @@ where
     where
         Evm: TaikoZkGasEvm,
     {
+        // Active precompiles and already-loaded contracts are authoritatively known at the
+        // executor boundary. In particular, a precompile's normal frame has no account bytecode,
+        // so the adapter's code-hash observation must not downgrade it to a no-code call.
+        if self.observer_execution_class == Some(TransactionExecutionClass::ContractCall) {
+            return;
+        }
         let Some(execution_class) = self.evm.observed_transaction_execution_class() else {
             return;
         };
@@ -916,6 +922,8 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use std::sync::Mutex;
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use alloy_consensus::SignableTransaction;
@@ -959,6 +967,17 @@ mod test {
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
     impl ExecutionObserver for NoopExecutionObserver {
         fn on_event(&self, _event: ExecutionEvent) {}
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[derive(Default)]
+    struct RecordingExecutionObserver(Mutex<Vec<ExecutionEvent>>);
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    impl ExecutionObserver for RecordingExecutionObserver {
+        fn on_event(&self, event: ExecutionEvent) {
+            self.0.lock().expect("observer lock should not be poisoned").push(event);
+        }
     }
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
@@ -1243,6 +1262,71 @@ mod test {
         };
         assert!(is_zk_gas_difficulty_mismatch(&err));
         assert!(err.to_string().contains("difficulty"));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_emits_one_fatal_terminal_after_difficulty_mismatch() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
+            .with_bundle_update()
+            .build();
+        let observer = Arc::new(RecordingExecutionObserver::default());
+        let evm = TaikoEvmFactory.create_evm_with_execution_observer(
+            &mut state,
+            unzen_evm_env(),
+            observer.clone(),
+        );
+        let mut ctx = unzen_execution_ctx();
+        ctx.expected_difficulty = Some(U256::ZERO);
+        let executor = TaikoBlockExecutor::new_with_execution_observer(
+            evm,
+            ctx,
+            chain_spec,
+            RethReceiptBuilder::default(),
+            observer.clone(),
+        );
+        let transactions = vec![recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1)];
+        assert!(
+            executor
+                .execute_block_with_committed_transactions(
+                    transactions.iter().map(|tx| Recovered::new_unchecked(tx.inner(), tx.signer()))
+                )
+                .is_err()
+        );
+        let events = observer.0.lock().expect("observer lock should not be poisoned");
+        let phase_end = events
+            .iter()
+            .position(|event| {
+                matches!(event, ExecutionEvent::PhaseEnd { phase: ExecutionPhase::Transactions })
+            })
+            .expect("transactions phase must end before terminal validation");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    ExecutionEvent::BlockStop { reason: BlockStopReason::Fatal, .. }
+                ))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            events.last(),
+            Some(ExecutionEvent::BlockStop {
+                reason: BlockStopReason::Fatal,
+                first_unattempted_tx_index: None,
+            })
+        ));
+        assert!(phase_end < events.len() - 1);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::BlockStop {
+                reason: BlockStopReason::Complete | BlockStopReason::ZkGasTruncated,
+                ..
+            }
+        )));
     }
 
     #[test]

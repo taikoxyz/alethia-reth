@@ -768,12 +768,72 @@ fn parent_step_depth(depth: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "execution-observer")]
+    use std::sync::{Arc, Mutex};
+
     use crate::{
         spec::TaikoSpecId,
-        zk_gas::{schedule::schedule_for, unzen::UNZEN_ZK_GAS_SCHEDULE},
+        zk_gas::{meter::ZkGasOutcome, schedule::schedule_for, unzen::UNZEN_ZK_GAS_SCHEDULE},
     };
 
     use super::{FinishedStep, ZkGasMeteringState};
+    #[cfg(feature = "execution-observer")]
+    use crate::zk_gas::observer::{ChargeOutcome, ExecutionEvent, ExecutionObserver};
+
+    #[cfg(feature = "execution-observer")]
+    #[derive(Default)]
+    struct RecordingObserver(Mutex<Vec<ExecutionEvent>>);
+
+    #[cfg(feature = "execution-observer")]
+    impl ExecutionObserver for RecordingObserver {
+        fn on_event(&self, event: ExecutionEvent) {
+            self.0.lock().expect("observer lock should not be poisoned").push(event);
+        }
+    }
+
+    #[cfg(feature = "execution-observer")]
+    #[test]
+    fn observer_distinguishes_arithmetic_overflow_from_budget_limit() {
+        let observer = Arc::new(RecordingObserver::default());
+        let mut metering =
+            ZkGasMeteringState::new_with_observer(&UNZEN_ZK_GAS_SCHEDULE, observer.clone());
+        let opcode = UNZEN_ZK_GAS_SCHEDULE
+            .opcode_multipliers
+            .iter()
+            .position(|multiplier| *multiplier > 1)
+            .expect("Unzen schedule has a multiplied opcode") as u8;
+        let overflow_id = metering.emit_opcode_execution(opcode, u64::MAX);
+        let overflow = metering.charge_finished_step(FinishedStep {
+            opcode,
+            step_gas: u64::MAX,
+            spawned: false,
+            operation_id: overflow_id,
+        });
+        let budget_id =
+            metering.emit_opcode_execution(opcode, UNZEN_ZK_GAS_SCHEDULE.block_limit + 1);
+        let budget = metering.charge_finished_step(FinishedStep {
+            opcode,
+            step_gas: UNZEN_ZK_GAS_SCHEDULE.block_limit + 1,
+            spawned: false,
+            operation_id: budget_id,
+        });
+
+        // The meter's consensus-facing normalization is LimitExceeded in both cases.
+        assert_eq!(overflow, Err(ZkGasOutcome::LimitExceeded));
+        assert_eq!(budget, Err(ZkGasOutcome::LimitExceeded));
+
+        let events = observer.0.lock().expect("observer lock should not be poisoned");
+        assert!(matches!(
+            events[1],
+            ExecutionEvent::ChargeAttempt { operation_id: Some(id), outcome: ChargeOutcome::ArithmeticOverflow, .. }
+                if Some(id) == overflow_id
+        ));
+        assert!(matches!(
+            events[3],
+            ExecutionEvent::ChargeAttempt { operation_id: Some(id), outcome: ChargeOutcome::LimitExceeded, .. }
+                if Some(id) == budget_id
+        ));
+    }
 
     #[test]
     fn flush_deferred_steps_returns_immediately_when_empty() {

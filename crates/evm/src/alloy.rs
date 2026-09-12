@@ -185,11 +185,13 @@ pub trait TaikoZkGasEvm {
     ///
     /// Implementations without an installed observer treat this as an observational no-op.
     #[cfg(feature = "execution-observer")]
-    fn set_execution_observer_context(&mut self, phase: ExecutionPhase, tx_index: Option<u64>);
+    fn set_execution_observer_context(&mut self, _phase: ExecutionPhase, _tx_index: Option<u64>) {}
 
     /// Returns the active fixed transaction intrinsic zk gas charge, when metering is enabled.
     #[cfg(feature = "execution-observer")]
-    fn tx_intrinsic_zk_gas(&self) -> Option<u64>;
+    fn tx_intrinsic_zk_gas(&self) -> Option<u64> {
+        None
+    }
 
     /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
     ///

@@ -50,7 +50,7 @@ pub enum ExecutionEvent {
         tx_hash: [u8; 32],
         /// Whether this is the mandatory anchor transaction.
         is_anchor: bool,
-        /// Structured class determined at the executor boundary.
+        /// Provisional class determined without an observer-only database read.
         execution_class: TransactionExecutionClass,
     },
     /// Records work that completed before its zk gas charge result is known.

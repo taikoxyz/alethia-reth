@@ -241,18 +241,24 @@ where
                 // Precompile dispatch is also treated as spawned child work for CALL-family steps.
                 metering.mark_call_spawn(context.journal().depth());
             }
+            let precompile = was_precompile_called.then(|| {
+                // The precompile body has already completed when `call_end` runs. Preserve that
+                // execution fact before charging the deferred CALL wrapper, whose budget failure
+                // must not erase completed child work.
+                let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
+                let operation_id =
+                    metering.emit_precompile_execution(inputs.bytecode_address, gas_used);
+                (gas_used, operation_id)
+            });
             // At this point the call outcome is known, so any deferred CALL-family opcode can be
             // charged using the correct raw-gas source.
             if metering.flush_deferred_steps().is_err() {
                 set_custom_error(context);
                 return;
             }
-            if was_precompile_called {
+            if let Some((gas_used, operation_id)) = precompile {
                 // Precompile usage is charged separately from the CALL opcode itself, keyed by the
                 // full precompile address.
-                let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
-                let operation_id =
-                    metering.emit_precompile_execution(inputs.bytecode_address, gas_used);
                 if metering
                     .charge_precompile(&inputs.bytecode_address, gas_used, operation_id)
                     .is_err()

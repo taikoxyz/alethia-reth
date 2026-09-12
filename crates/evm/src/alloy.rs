@@ -213,6 +213,12 @@ pub trait TaikoZkGasEvm {
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
+    /// Returns the in-flight zk gas for the current transaction before a reset or commit boundary.
+    fn transaction_zk_gas_used(&self) -> Option<u64>;
+
+    /// Returns whether `address` is an active precompile for this EVM instance.
+    fn is_active_precompile(&self, address: &Address) -> bool;
+
     /// Reserves finalized block zk gas without executing a transaction.
     ///
     /// Returns the new finalized block total, or `None` when no meter is installed.
@@ -276,6 +282,16 @@ where
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64> {
         self.meter().map(|m| m.block_zk_gas_used())
+    }
+
+    /// Returns the in-flight zk gas accumulated by the current transaction.
+    fn transaction_zk_gas_used(&self) -> Option<u64> {
+        self.meter().map(|m| m.tx_zk_gas_used())
+    }
+
+    /// Checks the configured precompile provider rather than relying on database account state.
+    fn is_active_precompile(&self, address: &Address) -> bool {
+        self.precompiles().contains(address)
     }
 
     /// Reserves finalized block zk gas through the active meter.

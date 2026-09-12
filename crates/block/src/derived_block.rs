@@ -21,7 +21,7 @@ use crate::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
 };
-#[cfg(feature = "execution-observer")]
+#[cfg(all(feature = "execution-observer", feature = "prover"))]
 use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, SharedExecutionObserver};
 
 /// Execution artifacts produced by prover-mode derived block execution.
@@ -102,12 +102,13 @@ where
 ///
 /// The observer is infallible and cannot influence receipt, state, or zk gas results. Normal
 /// callers continue to use [`execute_derived_block`], whose construction path remains observer-free.
-#[cfg(feature = "execution-observer")]
+#[cfg(all(feature = "execution-observer", feature = "prover"))]
 pub fn execute_derived_block_with_observer<DB>(
     evm_config: &TaikoEvmConfig,
     parent_header: &SealedHeader,
     derived_block: &RecoveredBlock<Block>,
     db: DB,
+    block_index: u64,
     observer: SharedExecutionObserver,
 ) -> Result<DerivedBlockExecutionOutcome, BlockExecutionError>
 where
@@ -127,7 +128,7 @@ where
         .context_for_next_block(parent_header, attributes)
         .map_err(BlockExecutionError::other)?;
     observer.on_event(ExecutionEvent::BlockStart {
-        block_index: 0,
+        block_index,
         block_number: derived_block.header().number,
         expected_difficulty: execution_ctx
             .expected_difficulty()
@@ -209,7 +210,7 @@ mod tests {
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_ethereum_primitives::{Block, BlockBody};
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use reth_revm::state::{Bytecode, bytecode::opcode};
 
     use super::*;
@@ -217,7 +218,7 @@ mod tests {
         config::TaikoEvmConfig,
         testutil::{BENCH_SUCCESS_TARGET, db_with_contracts, unzen_chain_spec},
     };
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, ExecutionObserver};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
@@ -307,20 +308,20 @@ mod tests {
     }
 
     /// Records observer events so the test can assert the public derived-block tracing contract.
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     #[derive(Default)]
     struct RecordingObserver {
         events: Mutex<Vec<ExecutionEvent>>,
     }
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     impl ExecutionObserver for RecordingObserver {
         fn on_event(&self, event: ExecutionEvent) {
             self.events.lock().expect("observer lock should not be poisoned").push(event);
         }
     }
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     #[test]
     fn observer_execution_matches_normal_derived_block_execution() {
         let chain_spec = Arc::new(unzen_chain_spec());
@@ -364,6 +365,7 @@ mod tests {
             &parent_header,
             &derived_block,
             db_with_contracts(&[(TEST_CALLER, 0)]),
+            7,
             observer.clone(),
         )
         .expect("observed derived execution should succeed");
@@ -374,7 +376,7 @@ mod tests {
         assert_eq!(observed.finalized_block_zk_gas, normal.finalized_block_zk_gas);
 
         let events = observer.events.lock().expect("observer lock should not be poisoned");
-        assert!(matches!(events.first(), Some(ExecutionEvent::BlockStart { .. })));
+        assert!(matches!(events.first(), Some(ExecutionEvent::BlockStart { block_index: 7, .. })));
         assert!(matches!(events.last(), Some(ExecutionEvent::BlockEnd { .. })));
         assert!(events.iter().any(|event| matches!(
             event,
@@ -396,7 +398,7 @@ mod tests {
         )));
     }
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     #[test]
     fn observer_marks_first_unattempted_tail_after_zk_gas_truncation() {
         let chain_spec = Arc::new(unzen_chain_spec());
@@ -432,6 +434,7 @@ mod tests {
             &parent_header,
             &derived_block,
             db_with_contracts(&[(TEST_CALLER, 0)]),
+            0,
             observer.clone(),
         )
         .expect("truncating candidate should remain a successful filtered block");
@@ -452,7 +455,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     #[test]
     fn observer_marks_committed_revert_transaction_end() {
         let chain_spec = Arc::new(unzen_chain_spec());
@@ -498,6 +501,7 @@ mod tests {
             &parent_header,
             &derived_block,
             db,
+            0,
             observer.clone(),
         )
         .expect("reverted transactions must remain committed derived-block transactions");
@@ -522,5 +526,81 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_records_each_precompile_body_once_before_its_linked_charge() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = SealedHeader::seal_slow(Header::default());
+        let transactions = vec![
+            test_transaction(chain_id, 0),
+            test_transaction_to(chain_id, 1, Address::with_last_byte(0x04)),
+        ];
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: transactions.iter().map(Recovered::clone_inner).collect(),
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            transactions.iter().map(Recovered::signer).collect(),
+        );
+        let observer = Arc::new(RecordingObserver::default());
+        execute_derived_block_with_observer(
+            &config,
+            &parent_header,
+            &derived_block,
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+            0,
+            observer.clone(),
+        )
+        .expect("precompile candidate should execute");
+
+        let events = observer.events.lock().expect("observer lock should not be poisoned");
+        let precompile_operation = events
+            .iter()
+            .position(|event| matches!(
+                event,
+                ExecutionEvent::OperationExecuted {
+                    component: alethia_reth_evm::zk_gas::observer::OperationComponent::Precompile {
+                        address,
+                        ..
+                    },
+                    ..
+                } if *address == Address::with_last_byte(0x04).into_array()
+            ))
+            .expect("precompile body must be recorded");
+        let precompile_charges: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| {
+                matches!(
+                    event,
+                    ExecutionEvent::ChargeAttempt {
+                        component: alethia_reth_evm::zk_gas::observer::ChargeComponent::Precompile {
+                            address,
+                        },
+                        ..
+                    } if *address == Address::with_last_byte(0x04).into_array()
+                )
+            })
+            .collect();
+        assert_eq!(precompile_charges.len(), 1, "precompile body must not be double-charged");
+        assert!(
+            precompile_operation < precompile_charges[0].0,
+            "completed precompile work precedes its linked charge attempt"
+        );
     }
 }

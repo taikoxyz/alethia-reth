@@ -8,6 +8,8 @@ use alloy_evm::{
     block::GasOutput,
     eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
+#[cfg(all(feature = "execution-observer", feature = "prover"))]
+use alloy_primitives::KECCAK256_EMPTY;
 use alloy_primitives::{Address, Bytes, Log, U256, Uint};
 use reth_evm::{
     Evm,
@@ -23,10 +25,14 @@ use revm_database_interface::{Database, DatabaseCommit};
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
+#[cfg(all(feature = "execution-observer", feature = "prover"))]
+use alethia_reth_evm::zk_gas::observer::{
+    BlockStopReason, TransactionDisposition, TransactionExecutionClass,
+};
 #[cfg(feature = "execution-observer")]
 use alethia_reth_evm::zk_gas::observer::{
-    BlockStopReason, ChargeComponent, ChargeOutcome, ExecutionEvent, ExecutionPhase, RawGasSource,
-    SharedExecutionObserver, TransactionDisposition, TransactionExecutionClass,
+    ChargeComponent, ChargeOutcome, ExecutionEvent, ExecutionPhase, RawGasSource,
+    SharedExecutionObserver,
 };
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoAnchorEvm, TaikoZkGasEvm},
@@ -102,14 +108,36 @@ pub fn is_zk_gas_difficulty_mismatch(error: &BlockExecutionError) -> bool {
 /// recoverable variant is added. Callers remain responsible for never applying it to the anchor
 /// transaction, which must always be fatal.
 pub fn is_recoverable_non_anchor_tx_error(error: &BlockExecutionError) -> bool {
-    is_zk_gas_limit_exceeded(error)
-        || matches!(
-            error,
-            BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. }
-                    | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
-            )
-        )
+    recoverable_non_anchor_tx_error(error).is_some()
+}
+
+/// Recoverable filter reasons owned by the prover executor's existing transaction filter.
+#[derive(Clone, Copy)]
+enum RecoverableNonAnchorTxError {
+    /// The active zk gas budget stopped further candidate execution.
+    ZkGasLimit,
+    /// Transaction validation rejected the candidate before EVM execution.
+    Invalid,
+    /// Transaction gas limit exceeds the remaining block gas.
+    BlockGasLimit,
+}
+
+/// Maps the one authoritative recoverable-error set to its structured reason.
+fn recoverable_non_anchor_tx_error(
+    error: &BlockExecutionError,
+) -> Option<RecoverableNonAnchorTxError> {
+    if is_zk_gas_limit_exceeded(error) {
+        return Some(RecoverableNonAnchorTxError::ZkGasLimit);
+    }
+    match error {
+        BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) => {
+            Some(RecoverableNonAnchorTxError::Invalid)
+        }
+        BlockExecutionError::Validation(
+            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+        ) => Some(RecoverableNonAnchorTxError::BlockGasLimit),
+        _ => None,
+    }
 }
 
 /// Block executor for Taiko network.
@@ -144,6 +172,9 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     /// Whether the current successfully committed EVM transaction returned a revert result.
     #[cfg(feature = "execution-observer")]
     last_transaction_reverted: Option<bool>,
+    /// In-flight meter total captured before the current transaction resets or commits.
+    #[cfg(feature = "execution-observer")]
+    observer_observed_current_zkgas: Option<u64>,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -185,6 +216,8 @@ where
             observer_tx_index: None,
             #[cfg(feature = "execution-observer")]
             last_transaction_reverted: None,
+            #[cfg(feature = "execution-observer")]
+            observer_observed_current_zkgas: None,
         }
     }
 
@@ -214,13 +247,22 @@ where
     }
 
     /// Aligns adapter-side operation events with the executor-owned transaction boundary.
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     fn set_observer_context(&mut self, phase: ExecutionPhase, tx_index: Option<u64>)
     where
         Evm: TaikoZkGasEvm,
     {
         self.observer_tx_index = tx_index;
         self.evm.set_execution_observer_context(phase, tx_index);
+    }
+
+    /// Captures attempted current zk gas before the executor crosses a reset or commit boundary.
+    #[cfg(feature = "execution-observer")]
+    fn capture_observed_current_zkgas(&mut self)
+    where
+        Evm: TaikoZkGasEvm,
+    {
+        self.observer_observed_current_zkgas = self.evm.transaction_zk_gas_used();
     }
 
     /// Returns the dedicated truncation error used when zk gas exhausts the block.
@@ -344,13 +386,19 @@ where
             self.observe(ExecutionEvent::PhaseStart { phase: ExecutionPhase::Transactions });
         }
 
+        let recovered_transactions: Vec<_> = transactions.into_iter().collect();
+        #[cfg(all(feature = "execution-observer", feature = "prover"))]
+        let recovered_tx_count = recovered_transactions.len();
+        #[cfg(all(feature = "execution-observer", feature = "prover"))]
+        let mut truncation_first_unattempted = None;
         let mut committed_transactions = Vec::new();
-        for (idx, tx) in transactions.into_iter().enumerate() {
+        for (idx, tx) in recovered_transactions.into_iter().enumerate() {
             let is_anchor_transaction = idx == 0;
             #[cfg(feature = "execution-observer")]
             {
                 let tx_index = u64::try_from(idx).expect("transaction index must fit u64");
                 self.set_observer_context(ExecutionPhase::Transactions, Some(tx_index));
+                self.observer_observed_current_zkgas = None;
                 let execution_class = self.classify_transaction(tx.inner())?;
                 self.observe(ExecutionEvent::TransactionStart {
                     tx_index,
@@ -367,7 +415,7 @@ where
 
             let committed_tx = Recovered::new_unchecked((*tx.inner()).clone(), tx.signer());
             match self.try_execute_filtered(tx, is_anchor_transaction) {
-                Ok(true) => {
+                Ok(None) => {
                     committed_transactions.push(committed_tx);
                     #[cfg(feature = "execution-observer")]
                     self.observe_transaction_end(
@@ -379,9 +427,24 @@ where
                         },
                     );
                 }
-                Ok(false) => {
+                Ok(Some(reason)) => {
                     #[cfg(feature = "execution-observer")]
-                    self.observe_transaction_end(idx, TransactionDisposition::FilteredInvalid);
+                    self.observe_transaction_end(
+                        idx,
+                        match reason {
+                            RecoverableNonAnchorTxError::ZkGasLimit => {
+                                TransactionDisposition::FilteredZkGasLimit
+                            }
+                            RecoverableNonAnchorTxError::Invalid => {
+                                TransactionDisposition::FilteredInvalid
+                            }
+                            RecoverableNonAnchorTxError::BlockGasLimit => {
+                                TransactionDisposition::FilteredBlockGasLimit
+                            }
+                        },
+                    );
+                    #[cfg(not(feature = "execution-observer"))]
+                    let _ = reason;
                 }
                 Err(error) => {
                     #[cfg(feature = "execution-observer")]
@@ -396,11 +459,11 @@ where
                 }
             }
             if self.zk_gas_exhausted {
-                #[cfg(feature = "execution-observer")]
-                self.observe(ExecutionEvent::BlockStop {
-                    reason: BlockStopReason::ZkGasTruncated,
-                    first_unattempted_tx_index: u64::try_from(idx + 1).ok(),
-                });
+                #[cfg(all(feature = "execution-observer", feature = "prover"))]
+                {
+                    truncation_first_unattempted = (idx + 1 < recovered_tx_count)
+                        .then(|| u64::try_from(idx + 1).expect("transaction index must fit u64"));
+                }
                 break;
             }
         }
@@ -408,13 +471,36 @@ where
         #[cfg(feature = "execution-observer")]
         self.observe(ExecutionEvent::PhaseEnd { phase: ExecutionPhase::Transactions });
         #[cfg(feature = "execution-observer")]
-        if !self.zk_gas_exhausted {
-            self.observe(ExecutionEvent::BlockStop {
-                reason: BlockStopReason::Complete,
-                first_unattempted_tx_index: None,
+        let terminal_observer = self.observer.clone();
+        #[cfg(feature = "execution-observer")]
+        let terminal_stop = if self.zk_gas_exhausted {
+            BlockStopReason::ZkGasTruncated
+        } else {
+            BlockStopReason::Complete
+        };
+        let execution_result = match self.apply_post_execution_changes() {
+            Ok(execution_result) => execution_result,
+            Err(error) => {
+                #[cfg(feature = "execution-observer")]
+                if let Some(observer) = terminal_observer {
+                    observer.on_event(ExecutionEvent::BlockStop {
+                        reason: BlockStopReason::Fatal,
+                        first_unattempted_tx_index: None,
+                    });
+                }
+                return Err(error);
+            }
+        };
+        #[cfg(feature = "execution-observer")]
+        if let Some(observer) = terminal_observer {
+            observer.on_event(ExecutionEvent::BlockStop {
+                reason: terminal_stop,
+                first_unattempted_tx_index: match terminal_stop {
+                    BlockStopReason::ZkGasTruncated => truncation_first_unattempted,
+                    BlockStopReason::Complete | BlockStopReason::Fatal => None,
+                },
             });
         }
-        let execution_result = self.apply_post_execution_changes()?;
         Ok(CommittedBlockExecutionOutcome { execution_result, committed_transactions })
     }
 
@@ -423,10 +509,11 @@ where
     fn observe_transaction_end(&self, index: usize, disposition: TransactionDisposition) {
         let tx_index = u64::try_from(index).expect("transaction index must fit u64");
         let committed = self.ctx.finalized_block_zk_gas();
+        let observed = self.observer_observed_current_zkgas.unwrap_or(committed);
         self.observe(ExecutionEvent::TransactionEnd {
             tx_index,
             disposition,
-            observed_current_zkgas: committed,
+            observed_current_zkgas: observed,
             committed_current_zkgas: committed,
         });
     }
@@ -449,25 +536,29 @@ where
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
-    /// Executes `tx` and returns `Ok(true)` if it committed, `Ok(false)` if it was filtered as a
-    /// recoverable non-anchor failure, or `Err` for fatal / anchor errors.
+    /// Executes `tx` and returns `Ok(None)` if it committed, the exact recoverable non-anchor
+    /// filter reason when it was skipped, or `Err` for fatal / anchor errors.
     fn try_execute_filtered(
         &mut self,
         tx: impl ExecutableTx<Self>,
         is_anchor_transaction: bool,
-    ) -> Result<bool, BlockExecutionError> {
+    ) -> Result<Option<RecoverableNonAnchorTxError>, BlockExecutionError> {
         match self.execute_transaction(tx) {
-            Ok(_) => Ok(true),
+            Ok(_) => Ok(None),
             // We don't allow the anchor transaction to be discarded even if it would otherwise be a
             // recoverable failure; this should never happen in practice.
-            Err(err) if !is_anchor_transaction && is_recoverable_non_anchor_tx_error(&err) => {
-                Ok(false)
+            Err(err) if !is_anchor_transaction => {
+                if let Some(reason) = recoverable_non_anchor_tx_error(&err) {
+                    Ok(Some(reason))
+                } else {
+                    Err(err)
+                }
             }
             Err(err) => Err(err),
         }
     }
 
-    /// Classifies a transaction from its structured envelope and current recipient code state.
+    /// Classifies a transaction from its structured envelope and current executable recipient facts.
     #[cfg(feature = "execution-observer")]
     fn classify_transaction(
         &mut self,
@@ -479,10 +570,20 @@ where
         let Some(recipient) = tx.to() else {
             return Ok(TransactionExecutionClass::Other);
         };
-        let account = self.evm.db_mut().basic(recipient).map_err(|error| {
-            BlockExecutionError::Internal(InternalBlockExecutionError::Other(error.into()))
-        })?;
-        let has_executable_code = account.is_some_and(|account| account.code.is_some());
+        // Active precompiles execute at this call boundary even though no account code needs to be
+        // present in the database. For ordinary accounts, `code_hash` is authoritative: databases
+        // commonly omit the bytecode cache and let REVM load it only when execution needs it.
+        let has_executable_code = self.evm.is_active_precompile(&recipient)
+            || self
+                .evm
+                .db_mut()
+                .basic(recipient)
+                // This lookup is observer-only. A database error must never turn an otherwise
+                // valid candidate (including zero-signer and block-gas filters) into a fatal
+                // execution failure, so conservatively degrade its classification.
+                .ok()
+                .flatten()
+                .is_some_and(|account| account.code_hash != KECCAK256_EMPTY);
         if has_executable_code {
             Ok(TransactionExecutionClass::ContractCall)
         } else if tx.value().is_zero() {
@@ -566,6 +667,8 @@ where
         let output = self.execute_transaction_without_commit(tx)?;
 
         if !f(&output).should_commit() {
+            #[cfg(feature = "execution-observer")]
+            self.capture_observed_current_zkgas();
             self.reset_current_transaction_zk_gas();
             return Ok(None);
         }
@@ -630,6 +733,8 @@ where
         }
         if intrinsic_charge.is_err() {
             self.zk_gas_exhausted = true;
+            #[cfg(feature = "execution-observer")]
+            self.capture_observed_current_zkgas();
             self.reset_current_transaction_zk_gas();
             return Err(Self::zk_gas_limit_error());
         }
@@ -638,10 +743,14 @@ where
             Ok(result) => result,
             Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
                 self.zk_gas_exhausted = true;
+                #[cfg(feature = "execution-observer")]
+                self.capture_observed_current_zkgas();
                 self.reset_current_transaction_zk_gas();
                 return Err(Self::zk_gas_limit_error());
             }
             Err(err) => {
+                #[cfg(feature = "execution-observer")]
+                self.capture_observed_current_zkgas();
                 self.reset_current_transaction_zk_gas();
                 return Err(BlockExecutionError::evm(err, tx.tx().trie_hash()));
             }
@@ -656,6 +765,8 @@ where
         // total is final at this point — nothing meters between execution and commit.
         if self.evm.transaction_zk_gas_commit_would_exceed() {
             self.zk_gas_exhausted = true;
+            #[cfg(feature = "execution-observer")]
+            self.capture_observed_current_zkgas();
             self.reset_current_transaction_zk_gas();
             return Err(Self::zk_gas_limit_error());
         }
@@ -681,6 +792,8 @@ where
         let EthTxResult { result: ResultAndState { result, state }, tx_type, .. } = output;
 
         let gas_used = result.tx_gas_used();
+        #[cfg(feature = "execution-observer")]
+        self.capture_observed_current_zkgas();
         self.commit_current_transaction_zk_gas();
 
         // append gas used
@@ -784,7 +897,9 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use alloy_consensus::{SignableTransaction, Signed, TxLegacy};
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use alloy_consensus::SignableTransaction;
+    use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::EvmFactory;
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
     use reth_ethereum_primitives::TransactionSigned;
@@ -797,7 +912,7 @@ mod test {
         state::AccountInfo,
     };
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, ExecutionObserver};
     use alethia_reth_evm::{
         alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
@@ -816,15 +931,15 @@ mod test {
     const BENCH_CALLER: Address = Address::with_last_byte(0x30);
 
     /// No-op sink used to construct the observer EVM path for classification tests.
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     struct NoopExecutionObserver;
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     impl ExecutionObserver for NoopExecutionObserver {
         fn on_event(&self, _event: ExecutionEvent) {}
     }
 
-    #[cfg(feature = "execution-observer")]
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
     #[test]
     fn observer_classifies_structured_transaction_shapes() {
         let chain_spec = Arc::new(unzen_chain_spec());
@@ -865,26 +980,46 @@ mod test {
                     TxKind::Call(Address::with_last_byte(0x41)),
                     U256::from(1)
                 ))
-                .expect("classification should read no-code account"),
+                .expect("classification should remain observational"),
             TransactionExecutionClass::NativeValueTransfer
         );
         assert_eq!(
             executor
                 .classify_transaction(&tx(TxKind::Call(Address::with_last_byte(0x42)), U256::ZERO))
-                .expect("classification should read no-code account"),
+                .expect("classification should remain observational"),
             TransactionExecutionClass::NoCodeNoValue
         );
         assert_eq!(
             executor
                 .classify_transaction(&tx(TxKind::Call(BENCH_SUCCESS_TARGET), U256::ZERO))
-                .expect("classification should read contract code"),
+                .expect("classification should remain observational"),
             TransactionExecutionClass::ContractCall
         );
         assert_eq!(
             executor
                 .classify_transaction(&tx(TxKind::Create, U256::ZERO))
-                .expect("create has no recipient lookup"),
+                .expect("classification should remain observational"),
             TransactionExecutionClass::ContractCreate
+        );
+
+        let persisted_code_target = Address::with_last_byte(0x43);
+        executor.evm_mut().db_mut().database.insert_account_info(
+            persisted_code_target,
+            AccountInfo { code_hash: B256::with_last_byte(0x01), code: None, ..Default::default() },
+        );
+        assert_eq!(
+            executor
+                .classify_transaction(&tx(TxKind::Call(persisted_code_target), U256::ZERO))
+                .expect("classification should remain observational"),
+            TransactionExecutionClass::ContractCall,
+            "a non-empty persisted code hash is executable even when bytecode is not cached"
+        );
+        assert_eq!(
+            executor
+                .classify_transaction(&tx(TxKind::Call(Address::with_last_byte(0x04)), U256::ZERO))
+                .expect("classification should remain observational"),
+            TransactionExecutionClass::ContractCall,
+            "active precompile destinations execute code without a database account"
         );
     }
 

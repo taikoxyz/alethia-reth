@@ -420,31 +420,35 @@ fn disabled_per_transact_reset_preserves_executor_accumulation_semantics() {
 }
 
 #[test]
-fn reset_clears_deferred_charges_left_by_a_limit_exceeded_nested_call() {
-    // A zk gas limit hit inside a nested call aborts execution while CALL-family steps are
-    // still deferred (`flush_deferred_steps` deliberately keeps later entries on error). The
-    // per-transact reset must drop that bookkeeping too, or the next transaction on the same
-    // EVM starts by flushing the previous transaction's charges into its fresh meter.
+fn reset_clears_step_bookkeeping_after_a_limit_exceeded_nested_call() {
+    // A zk gas limit hit inside a nested call aborts execution with per-frame step snapshots still
+    // populated. The per-transact reset must drop that bookkeeping so the next transaction starts
+    // from a clean metering state.
     let cheap_target = Address::with_last_byte(0xEE);
 
-    assert_no_deferred_leak_across_transacts(limit_exceeding_keccak_bytecode(), cheap_target);
+    assert_no_step_bookkeeping_leak_across_transacts(
+        limit_exceeding_keccak_bytecode(),
+        cheap_target,
+    );
 }
 
 #[test]
-fn reset_clears_deferred_charges_when_the_flush_itself_is_over_budget() {
-    // Variant where the budget is ground down by ~250k-zk keccak iterations, so the remaining
-    // budget at failure time is below one CALL spawn estimate and the unwind-time flush of the
-    // deferred CALL charges errors instead of draining them.
-    assert_no_deferred_leak_across_transacts(
+fn reset_clears_step_bookkeeping_after_repeated_near_spawn_sized_charges() {
+    // Variant where ~250k-zk KECCAK256 iterations exhaust the remaining budget inside a nested
+    // frame, exercising the same transaction reset after many charges close to one CALL estimate.
+    assert_no_step_bookkeeping_leak_across_transacts(
         quarter_million_keccak_loop_bytecode(),
         Address::with_last_byte(0xEF),
     );
 }
 
-/// Runs the shared deferred-leak scenario: a nested call chain to `buster_bytecode` busts the
-/// zk gas limit on a reused EVM, then a cheap unrelated transaction must meter exactly like a
-/// fresh EVM would — any difference is leftover bookkeeping leaking across transacts.
-fn assert_no_deferred_leak_across_transacts(buster_bytecode: Bytecode, cheap_target: Address) {
+/// Runs the shared bookkeeping-leak scenario: a nested call chain to `buster_bytecode` busts the
+/// zk gas limit on a reused EVM, then a cheap unrelated transaction must meter exactly like a fresh
+/// EVM would.
+fn assert_no_step_bookkeeping_leak_across_transacts(
+    buster_bytecode: Bytecode,
+    cheap_target: Address,
+) {
     let mut evm = TaikoEvmFactory.create_evm_with_inspector(
         nested_limit_db(cheap_target, buster_bytecode.clone()),
         evm_env(TaikoSpecId::UNZEN),
@@ -466,7 +470,7 @@ fn assert_no_deferred_leak_across_transacts(buster_bytecode: Bytecode, cheap_tar
 
     assert_eq!(
         reused, fresh,
-        "deferred steps left by a failed transaction must not leak into the next one"
+        "step bookkeeping left by a failed transaction must not leak into the next one"
     );
 }
 
@@ -757,9 +761,8 @@ fn call_into_bytecode(target: Address, gas: u32) -> Bytecode {
     Bytecode::new_raw(Bytes::from(code))
 }
 
-/// `BENCH_TARGET` -> middle -> buster call chain, so two CALL-family steps are still deferred
-/// when the deepest frame busts the block zk gas limit; `cheap_target` holds an unrelated
-/// cheap contract for the follow-up transaction.
+/// `BENCH_TARGET` -> middle -> buster call chain that reaches the zk gas limit in the deepest
+/// frame; `cheap_target` holds an unrelated cheap contract for the follow-up transaction.
 fn nested_limit_db(cheap_target: Address, buster_bytecode: Bytecode) -> InMemoryDB {
     let middle = Address::with_last_byte(0xCA);
     let buster = Address::with_last_byte(0xDB);
@@ -771,9 +774,7 @@ fn nested_limit_db(cheap_target: Address, buster_bytecode: Bytecode) -> InMemory
 }
 
 /// Loops `KECCAK256` over a fixed ~42 KiB span so every iteration charges just under 250k zk
-/// gas. When the budget dies, the remaining zk gas is below one CALL spawn estimate (250k), so
-/// the deferred CALL charges cannot be flushed during the failure unwind. The zk budget is
-/// exhausted long before the forwarded EVM gas.
+/// gas. The zk budget is exhausted long before the forwarded EVM gas.
 fn quarter_million_keccak_loop_bytecode() -> Bytecode {
     Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH2,

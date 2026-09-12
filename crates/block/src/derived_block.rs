@@ -101,7 +101,8 @@ where
 /// Executes a candidate derived block through the feature-gated observer EVM path.
 ///
 /// The observer is infallible and cannot influence receipt, state, or zk gas results. Normal
-/// callers continue to use [`execute_derived_block`], whose construction path remains observer-free.
+/// callers continue to use [`execute_derived_block`], whose construction path remains
+/// observer-free.
 #[cfg(all(feature = "execution-observer", feature = "prover"))]
 pub fn execute_derived_block_with_observer<DB>(
     evm_config: &TaikoEvmConfig,
@@ -211,6 +212,8 @@ mod tests {
     };
 
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use alloy_eips::eip4788::BEACON_ROOTS_ADDRESS;
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_ethereum_primitives::{Block, BlockBody};
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
@@ -227,6 +230,8 @@ mod tests {
     };
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, ExecutionObserver};
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use alethia_reth_evm::zk_gas::unzen::TX_INTRINSIC_ZK_GAS;
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
 
@@ -356,6 +361,24 @@ mod tests {
         );
         let invalid = test_transaction(chain_id, 99);
         let zero_signer = Recovered::new_unchecked(eoa.clone_inner(), Address::ZERO);
+        let block_gas = TxLegacy {
+            chain_id: Some(ChainId::from(chain_id)),
+            nonce: 2,
+            gas_price: 1,
+            gas_limit: 30_000_000,
+            to: TxKind::Call(Address::with_last_byte(0x78)),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let block_gas: Recovered<TransactionSigned> = Recovered::new_unchecked(
+            Signed::new_unchecked(
+                block_gas,
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::with_last_byte(TEST_CALLER.as_slice()[19]),
+            )
+            .into(),
+            TEST_CALLER,
+        );
         let block = RecoveredBlock::new_unhashed(
             Block {
                 header: Header {
@@ -372,12 +395,19 @@ mod tests {
                         eoa.clone_inner(),
                         invalid.clone_inner(),
                         zero_signer.clone_inner(),
+                        block_gas.clone_inner(),
                     ],
                     ommers: Default::default(),
                     withdrawals: None,
                 },
             },
-            vec![anchor.signer(), eoa.signer(), invalid.signer(), zero_signer.signer()],
+            vec![
+                anchor.signer(),
+                eoa.signer(),
+                invalid.signer(),
+                zero_signer.signer(),
+                block_gas.signer(),
+            ],
         );
         let observer = Arc::new(RecordingObserver::default());
         execute_derived_block_with_observer(
@@ -391,15 +421,32 @@ mod tests {
         .expect("EOA transfer should commit");
         let events = observer.events.lock().expect("observer lock should not be poisoned");
         assert!(events.iter().any(|event| matches!(event, ExecutionEvent::TransactionEnd { tx_index: 1, disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::CommittedSuccess, execution_class: alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::NativeValueTransfer, .. })));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ExecutionEvent::TransactionEnd {
-                disposition:
-                    alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredInvalid,
-                ..
-            }
-        )));
-        assert!(events.iter().any(|event| matches!(event, ExecutionEvent::TransactionEnd { disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredZeroSigner, observed_current_zkgas: 0, committed_current_zkgas, .. } if *committed_current_zkgas > 0)), "zero-signer filtering must retain its exact cause and zero attempted snapshot");
+        let committed_after_transfer = events
+            .iter()
+            .find_map(|event| match event {
+                ExecutionEvent::TransactionEnd { tx_index: 1, committed_current_zkgas, .. } => {
+                    Some(*committed_current_zkgas)
+                }
+                _ => None,
+            })
+            .expect("the transfer must expose its committed snapshot");
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ExecutionEvent::TransactionEnd {
+                    tx_index: 2,
+                    disposition:
+                        alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredInvalid,
+                    observed_current_zkgas,
+                    committed_current_zkgas,
+                    ..
+                } if *observed_current_zkgas == TX_INTRINSIC_ZK_GAS
+                    && *committed_current_zkgas == committed_after_transfer
+            )),
+            "an invalid transaction retains its attempted intrinsic charge and the prior committed snapshot"
+        );
+        assert!(events.iter().any(|event| matches!(event, ExecutionEvent::TransactionEnd { disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredZeroSigner, observed_current_zkgas: 0, committed_current_zkgas, .. } if *committed_current_zkgas == committed_after_transfer)), "zero-signer filtering must retain its exact cause and zero attempted snapshot");
+        assert!(events.iter().any(|event| matches!(event, ExecutionEvent::TransactionEnd { disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredBlockGasLimit, observed_current_zkgas: 0, committed_current_zkgas, .. } if *committed_current_zkgas == committed_after_transfer)), "block-gas filtering must retain its exact cause and zero attempted snapshot");
     }
 
     #[test]
@@ -505,19 +552,23 @@ mod tests {
             vec![anchor_transaction.signer(), valid_transaction.signer()],
         );
 
-        let normal = execute_derived_block(
-            &config,
-            &parent_header,
-            &derived_block,
-            db_with_contracts(&[(TEST_CALLER, 0)]),
-        )
-        .expect("normal derived execution should succeed");
+        let make_db = || {
+            let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
+            crate::testutil::insert_contract(
+                &mut db,
+                BEACON_ROOTS_ADDRESS,
+                crate::testutil::arithmetic_bytecode(),
+            );
+            db
+        };
+        let normal = execute_derived_block(&config, &parent_header, &derived_block, make_db())
+            .expect("normal derived execution should succeed");
         let observer = Arc::new(RecordingObserver::default());
         let observed = execute_derived_block_with_observer(
             &config,
             &parent_header,
             &derived_block,
-            db_with_contracts(&[(TEST_CALLER, 0)]),
+            make_db(),
             7,
             observer.clone(),
         )
@@ -576,6 +627,35 @@ mod tests {
             pre_start < pre_end && pre_end < transaction_start,
             "system work must remain outside transaction attribution"
         );
+        let (system_operation_position, system_operation_id) = events
+            .iter()
+            .enumerate()
+            .find_map(|(position, event)| match event {
+                ExecutionEvent::OperationExecuted {
+                    operation_id,
+                    phase: alethia_reth_evm::zk_gas::observer::ExecutionPhase::PreExecutionSystem,
+                    tx_index: None,
+                    ..
+                } => Some((position, *operation_id)),
+                _ => None,
+            })
+            .expect("the installed beacon-root contract must execute observed system work");
+        let system_charge_position = events
+            .iter()
+            .enumerate()
+            .find_map(|(position, event)| match event {
+                ExecutionEvent::ChargeAttempt {
+                    operation_id: Some(operation_id),
+                    phase: alethia_reth_evm::zk_gas::observer::ExecutionPhase::PreExecutionSystem,
+                    tx_index: None,
+                    ..
+                } if *operation_id == system_operation_id => Some(position),
+                _ => None,
+            })
+            .expect("system operation must have one linked charge");
+        assert!(pre_start < system_operation_position);
+        assert!(system_operation_position < system_charge_position);
+        assert!(system_charge_position < pre_end);
         assert_eq!(
             events
                 .iter()
@@ -588,6 +668,295 @@ mod tests {
             event,
             ExecutionEvent::ChargeAttempt { operation_id: None, .. }
         )));
+        let operation_ids: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ExecutionEvent::OperationExecuted { operation_id, .. } => Some(*operation_id),
+                _ => None,
+            })
+            .collect();
+        assert!(operation_ids.windows(2).all(|pair| pair[0] < pair[1]));
+        for (charge_position, charge) in events.iter().enumerate() {
+            let ExecutionEvent::ChargeAttempt { operation_id: Some(operation_id), .. } = charge
+            else {
+                continue;
+            };
+            assert!(events[..charge_position].iter().any(|event| matches!(
+                event,
+                ExecutionEvent::OperationExecuted { operation_id: executed_id, .. }
+                    if executed_id == operation_id
+            )));
+        }
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::OperationExecuted {
+                component: alethia_reth_evm::zk_gas::observer::OperationComponent::Opcode {
+                    opcode: opcode::ADD,
+                    ..
+                },
+                ..
+            }
+        )));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_charges_nonspawn_call_and_create_from_interpreter_delta() {
+        for (case_index, opcode_byte) in [opcode::CALL, opcode::CREATE].into_iter().enumerate() {
+            let chain_spec = Arc::new(unzen_chain_spec());
+            let chain_id = chain_spec.inner.chain().id();
+            let config = TaikoEvmConfig::new(chain_spec);
+            let target = Address::with_last_byte(0x80 + u8::try_from(case_index).unwrap());
+            let anchor = test_transaction(chain_id, 0);
+            let failing_spawn = test_transaction_to(chain_id, 1, target);
+            let block = RecoveredBlock::new_unhashed(
+                Block {
+                    header: Header {
+                        number: 1,
+                        timestamp: 1,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        parent_beacon_block_root: Some(B256::ZERO),
+                        ..Default::default()
+                    },
+                    body: BlockBody {
+                        transactions: vec![anchor.clone_inner(), failing_spawn.clone_inner()],
+                        ommers: Default::default(),
+                        withdrawals: None,
+                    },
+                },
+                vec![anchor.signer(), failing_spawn.signer()],
+            );
+            let make_db = || {
+                let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
+                crate::testutil::insert_contract(
+                    &mut db,
+                    target,
+                    Bytecode::new_raw(Bytes::from(vec![opcode_byte])),
+                );
+                db
+            };
+
+            let normal = execute_derived_block(
+                &config,
+                &SealedHeader::seal_slow(Header::default()),
+                &block,
+                make_db(),
+            )
+            .expect("normal failed-spawn execution should remain a committed EVM halt");
+            let observer = Arc::new(RecordingObserver::default());
+            let observed = execute_derived_block_with_observer(
+                &config,
+                &SealedHeader::seal_slow(Header::default()),
+                &block,
+                make_db(),
+                u64::try_from(case_index).unwrap(),
+                observer.clone(),
+            )
+            .expect("observed failed-spawn execution should remain a committed EVM halt");
+
+            assert_eq!(observed.committed_transactions, normal.committed_transactions);
+            assert_eq!(observed.execution_result, normal.execution_result);
+            assert_eq!(observed.hashed_state, normal.hashed_state);
+            assert_eq!(observed.finalized_block_zk_gas, normal.finalized_block_zk_gas);
+
+            let events = observer.events.lock().expect("observer lock should not be poisoned");
+            let (operation_position, operation_id, interpreter_raw_gas) = events
+                .iter()
+                .enumerate()
+                .find_map(|(position, event)| match event {
+                    ExecutionEvent::OperationExecuted {
+                        operation_id,
+                        tx_index: Some(1),
+                        component:
+                            alethia_reth_evm::zk_gas::observer::OperationComponent::Opcode {
+                                opcode,
+                                interpreter_raw_gas,
+                            },
+                        ..
+                    } if *opcode == opcode_byte => {
+                        Some((position, *operation_id, *interpreter_raw_gas))
+                    }
+                    _ => None,
+                })
+                .expect("failed CALL/CREATE must retain its execution event");
+            let (charge_position, charge_raw_gas) = events
+                .iter()
+                .enumerate()
+                .find_map(|(position, event)| match event {
+                    ExecutionEvent::ChargeAttempt {
+                        operation_id: Some(charge_id),
+                        tx_index: Some(1),
+                        component:
+                            alethia_reth_evm::zk_gas::observer::ChargeComponent::Opcode {
+                                opcode,
+                                spawned: false,
+                            },
+                        charge_raw_gas: Some(raw_gas),
+                        raw_gas_source:
+                            alethia_reth_evm::zk_gas::observer::RawGasSource::InterpreterDelta,
+                        ..
+                    } if *charge_id == operation_id && *opcode == opcode_byte => {
+                        Some((position, *raw_gas))
+                    }
+                    _ => None,
+                })
+                .expect("failed CALL/CREATE must receive one linked non-spawn charge");
+            assert!(operation_position < charge_position);
+            assert_eq!(charge_raw_gas, interpreter_raw_gas);
+        }
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_charges_successful_call_and_create_from_spawn_estimates() {
+        let cases = [
+            (
+                opcode::CALL,
+                vec![
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    BENCH_SUCCESS_TARGET.as_slice()[19],
+                    opcode::PUSH2,
+                    0xff,
+                    0xff,
+                    opcode::CALL,
+                    opcode::STOP,
+                ],
+            ),
+            (
+                opcode::CREATE,
+                vec![
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::PUSH1,
+                    0x00,
+                    opcode::CREATE,
+                    opcode::STOP,
+                ],
+            ),
+        ];
+        for (case_index, (opcode_byte, wrapper_code)) in cases.into_iter().enumerate() {
+            let chain_spec = Arc::new(unzen_chain_spec());
+            let chain_id = chain_spec.inner.chain().id();
+            let config = TaikoEvmConfig::new(chain_spec);
+            let wrapper = Address::with_last_byte(0x88 + u8::try_from(case_index).unwrap());
+            let transactions =
+                [test_transaction(chain_id, 0), test_transaction_to(chain_id, 1, wrapper)];
+            let derived_block = RecoveredBlock::new_unhashed(
+                Block {
+                    header: Header {
+                        number: 1,
+                        timestamp: 1,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        parent_beacon_block_root: Some(B256::ZERO),
+                        ..Default::default()
+                    },
+                    body: BlockBody {
+                        transactions: transactions.iter().map(Recovered::clone_inner).collect(),
+                        ommers: Default::default(),
+                        withdrawals: None,
+                    },
+                },
+                transactions.iter().map(Recovered::signer).collect(),
+            );
+            let make_db = || {
+                let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
+                crate::testutil::insert_contract(
+                    &mut db,
+                    wrapper,
+                    Bytecode::new_raw(Bytes::from(wrapper_code.clone())),
+                );
+                db
+            };
+            let normal = execute_derived_block(
+                &config,
+                &SealedHeader::seal_slow(Header::default()),
+                &derived_block,
+                make_db(),
+            )
+            .expect("normal spawn execution should succeed");
+            let observer = Arc::new(RecordingObserver::default());
+            let observed = execute_derived_block_with_observer(
+                &config,
+                &SealedHeader::seal_slow(Header::default()),
+                &derived_block,
+                make_db(),
+                u64::try_from(case_index).unwrap(),
+                observer.clone(),
+            )
+            .expect("observed spawn execution should succeed");
+            assert_eq!(observed.committed_transactions, normal.committed_transactions);
+            assert_eq!(observed.execution_result, normal.execution_result);
+            assert_eq!(observed.hashed_state, normal.hashed_state);
+            assert_eq!(observed.finalized_block_zk_gas, normal.finalized_block_zk_gas);
+
+            let events = observer.events.lock().expect("observer lock should not be poisoned");
+            let (operation_position, operation_id, interpreter_raw_gas) = events
+                .iter()
+                .enumerate()
+                .find_map(|(position, event)| match event {
+                    ExecutionEvent::OperationExecuted {
+                        operation_id,
+                        tx_index: Some(1),
+                        component:
+                            alethia_reth_evm::zk_gas::observer::OperationComponent::Opcode {
+                                opcode,
+                                interpreter_raw_gas,
+                            },
+                        ..
+                    } if *opcode == opcode_byte => {
+                        Some((position, *operation_id, *interpreter_raw_gas))
+                    }
+                    _ => None,
+                })
+                .expect("spawn opcode execution must be recorded");
+            let (charge_position, charge_raw_gas) = events
+                .iter()
+                .enumerate()
+                .find_map(|(position, event)| match event {
+                    ExecutionEvent::ChargeAttempt {
+                        operation_id: Some(charge_id),
+                        tx_index: Some(1),
+                        component:
+                            alethia_reth_evm::zk_gas::observer::ChargeComponent::Opcode {
+                                opcode,
+                                spawned: true,
+                            },
+                        charge_raw_gas: Some(raw_gas),
+                        raw_gas_source:
+                            alethia_reth_evm::zk_gas::observer::RawGasSource::SpawnEstimate,
+                        ..
+                    } if *charge_id == operation_id && *opcode == opcode_byte => {
+                        Some((position, *raw_gas))
+                    }
+                    _ => None,
+                })
+                .expect("spawn opcode must receive one linked spawn-estimate charge");
+            assert!(operation_position < charge_position);
+            assert_ne!(charge_raw_gas, interpreter_raw_gas);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                ExecutionEvent::TransactionEnd {
+                    tx_index: 1,
+                    execution_class:
+                        alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::ContractCall,
+                    ..
+                }
+            )));
+        }
     }
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
@@ -667,7 +1036,7 @@ mod tests {
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new(chain_spec);
         let parent_header = SealedHeader::seal_slow(Header::default());
-        let transactions = vec![
+        let transactions = [
             test_transaction(chain_id, 0),
             test_transaction_to(chain_id, 1, crate::testutil::BENCH_LIMIT_TARGET),
             test_transaction(chain_id, 2),
@@ -715,6 +1084,62 @@ mod tests {
                 .count(),
             2
         );
+        let committed_before_limit = events
+            .iter()
+            .find_map(|event| match event {
+                ExecutionEvent::TransactionEnd { tx_index: 0, committed_current_zkgas, .. } => {
+                    Some(*committed_current_zkgas)
+                }
+                _ => None,
+            })
+            .expect("the anchor transaction must commit before the limit candidate");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::TransactionEnd {
+                tx_index: 1,
+                disposition: alethia_reth_evm::zk_gas::observer::TransactionDisposition::FilteredZkGasLimit,
+                observed_current_zkgas,
+                committed_current_zkgas,
+                ..
+            } if *observed_current_zkgas > 0 && *committed_current_zkgas == committed_before_limit
+        )), "zk-gas filtering must retain attempted work while leaving the committed snapshot unchanged");
+        let (keccak_operation_position, keccak_operation_id) = events
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(position, event)| match event {
+                ExecutionEvent::OperationExecuted {
+                    operation_id,
+                    tx_index: Some(1),
+                    component:
+                        alethia_reth_evm::zk_gas::observer::OperationComponent::Opcode {
+                            opcode: opcode::KECCAK256,
+                            ..
+                        },
+                    ..
+                } => Some((position, *operation_id)),
+                _ => None,
+            })
+            .expect("the limit candidate must record its final executed KECCAK256");
+        let limit_charge_position = events
+            .iter()
+            .enumerate()
+            .find_map(|(position, event)| match event {
+                ExecutionEvent::ChargeAttempt {
+                    operation_id: Some(operation_id),
+                    tx_index: Some(1),
+                    component:
+                        alethia_reth_evm::zk_gas::observer::ChargeComponent::Opcode {
+                            opcode: opcode::KECCAK256,
+                            ..
+                        },
+                    outcome: alethia_reth_evm::zk_gas::observer::ChargeOutcome::LimitExceeded,
+                    ..
+                } if *operation_id == keccak_operation_id => Some(position),
+                _ => None,
+            })
+            .expect("the final executed KECCAK256 must link to the limit charge");
+        assert!(keccak_operation_position < limit_charge_position);
     }
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
@@ -723,7 +1148,7 @@ mod tests {
         let chain_spec = Arc::new(unzen_chain_spec());
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new(chain_spec);
-        let transactions = vec![
+        let transactions = [
             test_transaction(chain_id, 0),
             test_transaction_to(chain_id, 1, crate::testutil::BENCH_LIMIT_TARGET),
         ];
@@ -775,7 +1200,7 @@ mod tests {
         let parent_header = SealedHeader::seal_slow(Header::default());
         let reverting_target = Address::with_last_byte(0x24);
         let transactions =
-            vec![test_transaction(chain_id, 0), test_transaction_to(chain_id, 1, reverting_target)];
+            [test_transaction(chain_id, 0), test_transaction_to(chain_id, 1, reverting_target)];
         let derived_block = RecoveredBlock::new_unhashed(
             Block {
                 header: Header {
@@ -847,7 +1272,7 @@ mod tests {
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new(chain_spec);
         let parent_header = SealedHeader::seal_slow(Header::default());
-        let transactions = vec![
+        let transactions = [
             test_transaction(chain_id, 0),
             test_transaction_to(chain_id, 1, Address::with_last_byte(0x04)),
         ];

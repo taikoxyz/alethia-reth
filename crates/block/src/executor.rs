@@ -600,11 +600,10 @@ where
         // present in the database. Ordinary account facts come only from the existing journal:
         // querying `basic` here would insert an observer-only, fallible database access before
         // zero-signer and block-gas filtering.
-        let has_executable_code = self.evm.is_active_precompile(&recipient)
-            || self
-                .evm
-                .loaded_account_code_hash(&recipient)
-                .is_some_and(|code_hash| code_hash != B256::ZERO && code_hash != KECCAK256_EMPTY);
+        let has_executable_code = self.evm.is_active_precompile(&recipient) ||
+            self.evm.loaded_account_code_hash(&recipient).is_some_and(|code_hash| {
+                code_hash != B256::ZERO && code_hash != KECCAK256_EMPTY
+            });
         if has_executable_code {
             TransactionExecutionClass::ContractCall
         } else if tx.value().is_zero() {
@@ -936,6 +935,8 @@ mod test {
     use reth_primitives_traits::SignedTransaction;
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use reth_revm::context::{ContextTr, JournalTr};
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use reth_revm::state::{Bytecode, bytecode::opcode};
     use reth_revm::{
         State,
         db::{CacheDB, EmptyDB},
@@ -944,12 +945,16 @@ mod test {
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
     use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, ExecutionObserver};
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use alethia_reth_evm::zk_gas::unzen::UNZEN_ZK_GAS_SCHEDULE;
     use alethia_reth_evm::{
         alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
         zk_gas::unzen::TX_INTRINSIC_ZK_GAS,
     };
 
     use super::*;
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use crate::testutil::insert_contract;
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
@@ -1287,7 +1292,7 @@ mod test {
             RethReceiptBuilder::default(),
             observer.clone(),
         );
-        let transactions = vec![recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1)];
+        let transactions = [recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1)];
         assert!(
             executor
                 .execute_block_with_committed_transactions(
@@ -1324,6 +1329,306 @@ mod test {
             event,
             ExecutionEvent::BlockStop {
                 reason: BlockStopReason::Complete | BlockStopReason::ZkGasTruncated,
+                ..
+            }
+        )));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_emits_fatal_transaction_end_for_anchor_validation_error() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
+            .with_bundle_update()
+            .build();
+        let observer = Arc::new(RecordingExecutionObserver::default());
+        let evm = TaikoEvmFactory.create_evm_with_execution_observer(
+            &mut state,
+            unzen_evm_env(),
+            observer.clone(),
+        );
+        let ctx = unzen_execution_ctx();
+        let executor = TaikoBlockExecutor::new_with_execution_observer(
+            evm,
+            ctx,
+            chain_spec,
+            RethReceiptBuilder::default(),
+            observer.clone(),
+        );
+        let transactions = [recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 99, 1)];
+        assert!(
+            executor
+                .execute_block_with_committed_transactions(
+                    transactions.iter().map(|tx| Recovered::new_unchecked(tx.inner(), tx.signer()))
+                )
+                .is_err(),
+            "an invalid anchor transaction must remain fatal"
+        );
+
+        let events = observer.0.lock().expect("observer lock should not be poisoned");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::TransactionEnd {
+                tx_index: 0,
+                disposition: TransactionDisposition::Fatal,
+                observed_current_zkgas,
+                committed_current_zkgas: 0,
+                ..
+            } if *observed_current_zkgas == TX_INTRINSIC_ZK_GAS
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ExecutionEvent::BlockStop {
+                reason: BlockStopReason::Fatal,
+                first_unattempted_tx_index: None,
+            })
+        ));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_rejects_call_wrapper_before_dispatching_precompile() {
+        let caller = BENCH_CALLER;
+        let target = Address::with_last_byte(0x81);
+        let bytecode = Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x04,
+            opcode::PUSH2,
+            0xff,
+            0xff,
+            opcode::CALL,
+            opcode::STOP,
+        ]));
+        let make_db = || {
+            let mut db = db_with_contracts(&[(caller, 0)]);
+            insert_contract(&mut db, target, bytecode.clone());
+            db
+        };
+        let call_charge = UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.call *
+            u64::from(UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[usize::from(opcode::CALL)]);
+        let remaining = TX_INTRINSIC_ZK_GAS + call_charge - 1;
+        let reserved = UNZEN_ZK_GAS_SCHEDULE.block_limit - remaining;
+
+        let normal_chain_spec = Arc::new(unzen_chain_spec());
+        let mut normal_state =
+            State::builder().with_database(make_db()).with_bundle_update().build();
+        let normal_evm = TaikoEvmFactory.create_evm(&mut normal_state, unzen_evm_env());
+        let normal_ctx = unzen_execution_ctx();
+        let mut normal = TaikoBlockExecutor::new(
+            normal_evm,
+            normal_ctx.clone(),
+            normal_chain_spec,
+            RethReceiptBuilder::default(),
+        );
+        normal.reserve_block_zk_gas(reserved).expect("normal reserve must fit");
+        let normal_error = normal
+            .execute_transaction(recovered_tx(caller, target, 0, 1))
+            .expect_err("the production wrapper charge must exhaust the remaining budget");
+        assert!(is_zk_gas_limit_exceeded(&normal_error));
+
+        let observed_chain_spec = Arc::new(unzen_chain_spec());
+        let mut observed_state =
+            State::builder().with_database(make_db()).with_bundle_update().build();
+        let observer = Arc::new(RecordingExecutionObserver::default());
+        let observed_evm = TaikoEvmFactory.create_evm_with_execution_observer(
+            &mut observed_state,
+            unzen_evm_env(),
+            observer.clone(),
+        );
+        let observed_ctx = unzen_execution_ctx();
+        let mut observed = TaikoBlockExecutor::new_with_execution_observer(
+            observed_evm,
+            observed_ctx.clone(),
+            observed_chain_spec,
+            RethReceiptBuilder::default(),
+            observer.clone(),
+        );
+        observed.set_observer_context(ExecutionPhase::Transactions, Some(0));
+        observed.reserve_block_zk_gas(reserved).expect("observer reserve must fit");
+        let observed_error = observed
+            .execute_transaction(recovered_tx(caller, target, 0, 1))
+            .expect_err("the observer wrapper charge must exhaust the remaining budget");
+        assert!(is_zk_gas_limit_exceeded(&observed_error));
+        assert_eq!(observed_ctx.finalized_block_zk_gas(), normal_ctx.finalized_block_zk_gas());
+
+        let events = observer.0.lock().expect("observer lock should not be poisoned");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::ChargeAttempt {
+                component: alethia_reth_evm::zk_gas::observer::ChargeComponent::Opcode {
+                    opcode: opcode::CALL,
+                    spawned: true,
+                },
+                raw_gas_source: alethia_reth_evm::zk_gas::observer::RawGasSource::SpawnEstimate,
+                outcome: alethia_reth_evm::zk_gas::observer::ChargeOutcome::LimitExceeded,
+                ..
+            }
+        )));
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                ExecutionEvent::OperationExecuted {
+                    component:
+                        alethia_reth_evm::zk_gas::observer::OperationComponent::Precompile {
+                            address,
+                            ..
+                        },
+                    ..
+                } if *address == Address::with_last_byte(0x04).into_array()
+            )),
+            "a rejected wrapper must stop before the precompile body executes"
+        );
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_records_precompile_work_before_native_charge_limit() {
+        let caller = BENCH_CALLER;
+        let wrapper = Address::with_last_byte(0x82);
+        let wrapper_code = Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x00,
+            opcode::PUSH1,
+            0x04,
+            opcode::PUSH2,
+            0xff,
+            0xff,
+            opcode::CALL,
+            opcode::STOP,
+        ]));
+        let make_db = || {
+            let mut db = db_with_contracts(&[(caller, 0)]);
+            insert_contract(&mut db, wrapper, wrapper_code.clone());
+            db
+        };
+        let multiplier =
+            |opcode: u8| u64::from(UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[usize::from(opcode)]);
+        let arithmetic_tx_charge =
+            TX_INTRINSIC_ZK_GAS + 2 * 3 * multiplier(opcode::PUSH1) + 3 * multiplier(opcode::ADD);
+        let wrapper_before_precompile = TX_INTRINSIC_ZK_GAS +
+            6 * 3 * multiplier(opcode::PUSH1) +
+            3 * multiplier(opcode::PUSH2) +
+            UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.call * multiplier(opcode::CALL);
+        let precompile_charge = 15 *
+            u64::from(
+                UNZEN_ZK_GAS_SCHEDULE.precompile_multiplier(&Address::with_last_byte(0x04)),
+            );
+        let remaining = arithmetic_tx_charge + wrapper_before_precompile + precompile_charge - 1;
+        let reserved = UNZEN_ZK_GAS_SCHEDULE.block_limit - remaining;
+        let transactions =
+            [recovered_tx(caller, BENCH_SUCCESS_TARGET, 0, 1), recovered_tx(caller, wrapper, 1, 1)];
+
+        let normal_chain_spec = Arc::new(unzen_chain_spec());
+        let mut normal_state =
+            State::builder().with_database(make_db()).with_bundle_update().build();
+        let normal_evm = TaikoEvmFactory.create_evm(&mut normal_state, unzen_evm_env());
+        let normal_ctx = unzen_execution_ctx();
+        let mut normal = TaikoBlockExecutor::new(
+            normal_evm,
+            normal_ctx.clone(),
+            normal_chain_spec,
+            RethReceiptBuilder::default(),
+        );
+        normal.reserve_block_zk_gas(reserved).expect("normal reserve must fit");
+        let normal_outcome = normal
+            .execute_block_with_committed_transactions(
+                transactions.iter().map(|tx| Recovered::new_unchecked(tx.inner(), tx.signer())),
+            )
+            .expect("normal prover execution should truncate at the precompile charge");
+
+        let observed_chain_spec = Arc::new(unzen_chain_spec());
+        let mut observed_state =
+            State::builder().with_database(make_db()).with_bundle_update().build();
+        let observer = Arc::new(RecordingExecutionObserver::default());
+        let observed_evm = TaikoEvmFactory.create_evm_with_execution_observer(
+            &mut observed_state,
+            unzen_evm_env(),
+            observer.clone(),
+        );
+        let observed_ctx = unzen_execution_ctx();
+        let mut observed = TaikoBlockExecutor::new_with_execution_observer(
+            observed_evm,
+            observed_ctx.clone(),
+            observed_chain_spec,
+            RethReceiptBuilder::default(),
+            observer.clone(),
+        );
+        observed.reserve_block_zk_gas(reserved).expect("observer reserve must fit");
+        let observed_outcome = observed
+            .execute_block_with_committed_transactions(
+                transactions.iter().map(|tx| Recovered::new_unchecked(tx.inner(), tx.signer())),
+            )
+            .expect("observer prover execution should truncate at the precompile charge");
+
+        assert_eq!(observed_outcome.committed_transactions, normal_outcome.committed_transactions);
+        assert_eq!(observed_outcome.execution_result, normal_outcome.execution_result);
+        assert_eq!(observed_ctx.finalized_block_zk_gas(), normal_ctx.finalized_block_zk_gas());
+        assert_eq!(observed_outcome.committed_transactions.len(), 1);
+
+        let events = observer.0.lock().expect("observer lock should not be poisoned");
+        let (operation_position, operation_id) = events
+            .iter()
+            .enumerate()
+            .find_map(|(position, event)| match event {
+                ExecutionEvent::OperationExecuted {
+                    operation_id,
+                    tx_index: Some(1),
+                    component:
+                        alethia_reth_evm::zk_gas::observer::OperationComponent::Precompile {
+                            address,
+                            ..
+                        },
+                    ..
+                } if *address == Address::with_last_byte(0x04).into_array() => {
+                    Some((position, *operation_id))
+                }
+                _ => None,
+            })
+            .expect("the identity precompile must execute before its native charge fails");
+        let charge_position = events
+            .iter()
+            .enumerate()
+            .find_map(|(position, event)| match event {
+                ExecutionEvent::ChargeAttempt {
+                    operation_id: Some(charge_id),
+                    tx_index: Some(1),
+                    component:
+                        alethia_reth_evm::zk_gas::observer::ChargeComponent::Precompile { address },
+                    outcome: alethia_reth_evm::zk_gas::observer::ChargeOutcome::LimitExceeded,
+                    ..
+                } if *charge_id == operation_id &&
+                    *address == Address::with_last_byte(0x04).into_array() =>
+                {
+                    Some(position)
+                }
+                _ => None,
+            })
+            .expect("the completed precompile must link to its native limit charge");
+        assert!(operation_position < charge_position);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ExecutionEvent::TransactionEnd {
+                tx_index: 1,
+                disposition: TransactionDisposition::FilteredZkGasLimit,
                 ..
             }
         )));

@@ -205,13 +205,20 @@ pub fn assemble_filtered_block(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_ethereum_primitives::{Block, BlockBody};
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
-    use reth_revm::state::{Bytecode, bytecode::opcode};
+    use reth_revm::{
+        Database,
+        db::InMemoryDB,
+        state::{AccountInfo, Bytecode, bytecode::opcode},
+    };
 
     use super::*;
     use crate::{
@@ -222,6 +229,79 @@ mod tests {
     use alethia_reth_evm::zk_gas::observer::{ExecutionEvent, ExecutionObserver};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
+
+    /// Counts normal database account reads so the observer A/B test can prove it adds none.
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[derive(Debug)]
+    struct CountingDb {
+        inner: InMemoryDB,
+        basic_calls: Arc<AtomicUsize>,
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    impl CountingDb {
+        fn new(inner: InMemoryDB, basic_calls: Arc<AtomicUsize>) -> Self {
+            Self { inner, basic_calls }
+        }
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    impl Database for CountingDb {
+        type Error = core::convert::Infallible;
+
+        fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            self.basic_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.basic(address)
+        }
+
+        fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+            self.inner.code_by_hash(code_hash)
+        }
+
+        fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+            self.inner.storage(address, index)
+        }
+
+        fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+            self.inner.block_hash(number)
+        }
+    }
+
+    /// Fails on the first account read beyond the normal execution's observed budget.
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[derive(Debug)]
+    struct FailAfterBasicDb {
+        inner: InMemoryDB,
+        allowed_basic_reads: usize,
+        basic_reads: usize,
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    impl Database for FailAfterBasicDb {
+        type Error = revm_database_interface::ErasedError;
+
+        fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            if self.basic_reads == self.allowed_basic_reads {
+                return Err(revm_database_interface::ErasedError::new(std::io::Error::other(
+                    "unexpected observer database read",
+                )));
+            }
+            self.basic_reads += 1;
+            Ok(self.inner.basic(address).expect("in-memory database is infallible"))
+        }
+
+        fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(self.inner.code_by_hash(code_hash).expect("in-memory database is infallible"))
+        }
+
+        fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+            Ok(self.inner.storage(address, index).expect("in-memory database is infallible"))
+        }
+
+        fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+            Ok(self.inner.block_hash(number).expect("in-memory database is infallible"))
+        }
+    }
 
     fn test_transaction_to(
         chain_id: u64,
@@ -396,6 +476,76 @@ mod tests {
             event,
             ExecutionEvent::ChargeAttempt { operation_id: None, .. }
         )));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
+    fn observer_classification_adds_no_database_basic_reads() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let anchor = test_transaction(chain_id, 0);
+        let call = test_transaction(chain_id, 1);
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: vec![anchor.clone_inner(), call.clone_inner()],
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            vec![anchor.signer(), call.signer()],
+        );
+        let parent_header = SealedHeader::seal_slow(Header::default());
+        let normal_calls = Arc::new(AtomicUsize::new(0));
+        let normal = execute_derived_block(
+            &config,
+            &parent_header,
+            &derived_block,
+            CountingDb::new(db_with_contracts(&[(TEST_CALLER, 0)]), normal_calls.clone()),
+        )
+        .expect("normal execution should succeed");
+        let observed_calls = Arc::new(AtomicUsize::new(0));
+        let observed = execute_derived_block_with_observer(
+            &config,
+            &parent_header,
+            &derived_block,
+            CountingDb::new(db_with_contracts(&[(TEST_CALLER, 0)]), observed_calls.clone()),
+            0,
+            Arc::new(RecordingObserver::default()),
+        )
+        .expect("observer execution should succeed");
+
+        assert_eq!(observed.committed_transactions, normal.committed_transactions);
+        assert_eq!(observed.execution_result, normal.execution_result);
+        assert_eq!(
+            observed_calls.load(Ordering::Relaxed),
+            normal_calls.load(Ordering::Relaxed),
+            "observer classification must not add a database basic read"
+        );
+
+        let observer = Arc::new(RecordingObserver::default());
+        execute_derived_block_with_observer(
+            &config,
+            &parent_header,
+            &derived_block,
+            FailAfterBasicDb {
+                inner: db_with_contracts(&[(TEST_CALLER, 0)]),
+                allowed_basic_reads: normal_calls.load(Ordering::Relaxed),
+                basic_reads: 0,
+            },
+            1,
+            observer,
+        )
+        .expect("the observer must not consume a one-shot database error before normal execution");
     }
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]

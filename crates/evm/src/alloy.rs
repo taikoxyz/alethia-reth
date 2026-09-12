@@ -2,6 +2,8 @@
 use std::ops::{Deref, DerefMut};
 
 use alloy_evm::{Database, Evm, EvmEnv};
+#[cfg(feature = "execution-observer")]
+use alloy_primitives::B256;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 // Re-export from primitives so downstream consumers can use the lighter crate.
 pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
@@ -21,7 +23,7 @@ use reth_revm::{
 use tracing::debug;
 
 #[cfg(feature = "execution-observer")]
-use crate::zk_gas::observer::ExecutionPhase;
+use crate::zk_gas::observer::{ExecutionPhase, TransactionExecutionClass};
 use crate::{
     evm::{TaikoEvm, TaikoEvmExtraExecutionCtx},
     handler::{TaikoEvmHandler, get_treasury_address},
@@ -214,10 +216,32 @@ pub trait TaikoZkGasEvm {
     fn block_zk_gas_used(&self) -> Option<u64>;
 
     /// Returns the in-flight zk gas for the current transaction before a reset or commit boundary.
-    fn transaction_zk_gas_used(&self) -> Option<u64>;
+    #[cfg(feature = "execution-observer")]
+    fn transaction_zk_gas_used(&self) -> Option<u64> {
+        None
+    }
 
     /// Returns whether `address` is an active precompile for this EVM instance.
-    fn is_active_precompile(&self, address: &Address) -> bool;
+    #[cfg(feature = "execution-observer")]
+    fn is_active_precompile(&self, _address: &Address) -> bool {
+        false
+    }
+
+    /// Returns a recipient code hash already loaded by normal EVM execution, if available.
+    ///
+    /// This deliberately never reads the database: observer classification must not introduce an
+    /// additional fallible lookup or change execution's database-access sequence.
+    #[cfg(feature = "execution-observer")]
+    fn loaded_account_code_hash(&self, _address: &Address) -> Option<B256> {
+        None
+    }
+
+    /// Returns the class captured at normal top-level frame initialization for the current
+    /// observed transaction, if it reached that execution boundary.
+    #[cfg(feature = "execution-observer")]
+    fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
+        None
+    }
 
     /// Reserves finalized block zk gas without executing a transaction.
     ///
@@ -285,13 +309,25 @@ where
     }
 
     /// Returns the in-flight zk gas accumulated by the current transaction.
+    #[cfg(feature = "execution-observer")]
     fn transaction_zk_gas_used(&self) -> Option<u64> {
         self.meter().map(|m| m.tx_zk_gas_used())
     }
 
     /// Checks the configured precompile provider rather than relying on database account state.
+    #[cfg(feature = "execution-observer")]
     fn is_active_precompile(&self, address: &Address) -> bool {
         self.precompiles().contains(address)
+    }
+
+    #[cfg(feature = "execution-observer")]
+    fn loaded_account_code_hash(&self, address: &Address) -> Option<B256> {
+        self.ctx().journal().state.get(address).map(|account| account.info.code_hash)
+    }
+
+    #[cfg(feature = "execution-observer")]
+    fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
+        self.base_evm().inner.inspector.observed_transaction_execution_class()
     }
 
     /// Reserves finalized block zk gas through the active meter.

@@ -457,6 +457,55 @@ mod tests {
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
     #[test]
+    fn observer_omits_tail_index_when_the_final_transaction_truncates() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let transactions = vec![
+            test_transaction(chain_id, 0),
+            test_transaction_to(chain_id, 1, crate::testutil::BENCH_LIMIT_TARGET),
+        ];
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: transactions.iter().map(Recovered::clone_inner).collect(),
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            transactions.iter().map(Recovered::signer).collect(),
+        );
+        let observer = Arc::new(RecordingObserver::default());
+        execute_derived_block_with_observer(
+            &config,
+            &SealedHeader::seal_slow(Header::default()),
+            &derived_block,
+            db_with_contracts(&[(TEST_CALLER, 0)]),
+            0,
+            observer.clone(),
+        )
+        .expect("final truncating candidate should remain a successful filtered block");
+        assert!(observer.events.lock().expect("observer lock should not be poisoned").iter().any(
+            |event| matches!(
+                event,
+                ExecutionEvent::BlockStop {
+                    reason: alethia_reth_evm::zk_gas::observer::BlockStopReason::ZkGasTruncated,
+                    first_unattempted_tx_index: None,
+                }
+            ),
+        ));
+    }
+
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    #[test]
     fn observer_marks_committed_revert_transaction_end() {
         let chain_spec = Arc::new(unzen_chain_spec());
         let chain_id = chain_spec.inner.chain().id();
@@ -508,24 +557,25 @@ mod tests {
 
         assert_eq!(outcome.committed_transactions.len(), 2);
         let events = observer.events.lock().expect("observer lock should not be poisoned");
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ExecutionEvent::TransactionStart {
-                tx_index: 1,
-                execution_class:
-                    alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::ContractCall,
-                ..
-            }
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ExecutionEvent::TransactionEnd {
-                tx_index: 1,
-                disposition:
-                    alethia_reth_evm::zk_gas::observer::TransactionDisposition::CommittedRevert,
-                ..
-            }
-        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ExecutionEvent::TransactionStart { tx_index: 1, .. }))
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ExecutionEvent::TransactionEnd {
+                    tx_index: 1,
+                    disposition:
+                        alethia_reth_evm::zk_gas::observer::TransactionDisposition::CommittedRevert,
+                    execution_class:
+                        alethia_reth_evm::zk_gas::observer::TransactionExecutionClass::ContractCall,
+                    ..
+                }
+            )),
+            "the normal top-level frame repairs the cold contract's provisional start class"
+        );
     }
 
     #[cfg(all(feature = "execution-observer", feature = "prover"))]
@@ -569,18 +619,23 @@ mod tests {
         .expect("precompile candidate should execute");
 
         let events = observer.events.lock().expect("observer lock should not be poisoned");
-        let precompile_operation = events
+        let (precompile_operation, precompile_operation_id) = events
             .iter()
-            .position(|event| matches!(
-                event,
+            .enumerate()
+            .find_map(|(index, event)| match event {
                 ExecutionEvent::OperationExecuted {
-                    component: alethia_reth_evm::zk_gas::observer::OperationComponent::Precompile {
-                        address,
-                        ..
-                    },
+                    operation_id,
+                    component:
+                        alethia_reth_evm::zk_gas::observer::OperationComponent::Precompile {
+                            address,
+                            ..
+                        },
                     ..
-                } if *address == Address::with_last_byte(0x04).into_array()
-            ))
+                } if *address == Address::with_last_byte(0x04).into_array() => {
+                    Some((index, *operation_id))
+                }
+                _ => None,
+            })
             .expect("precompile body must be recorded");
         let precompile_charges: Vec<_> = events
             .iter()
@@ -602,5 +657,9 @@ mod tests {
             precompile_operation < precompile_charges[0].0,
             "completed precompile work precedes its linked charge attempt"
         );
+        assert!(matches!(
+            precompile_charges[0].1,
+            ExecutionEvent::ChargeAttempt { operation_id: Some(id), .. } if *id == precompile_operation_id
+        ));
     }
 }

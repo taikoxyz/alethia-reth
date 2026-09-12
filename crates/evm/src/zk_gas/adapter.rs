@@ -7,6 +7,8 @@
 //!    a spawn opcode actually opened child work.
 
 use alloy_primitives::{Address, Log, U256};
+#[cfg(feature = "execution-observer")]
+use alloy_primitives::{B256, TxKind};
 use reth_revm::{
     Inspector,
     context::{ContextTr, JournalTr},
@@ -21,7 +23,10 @@ use crate::alloy::TaikoEvmContext;
 
 use super::observer::{ChargeComponent, OperationComponent, RawGasSource};
 #[cfg(feature = "execution-observer")]
-use super::observer::{ChargeOutcome, ExecutionEvent, ExecutionPhase, SharedExecutionObserver};
+use super::observer::{
+    ChargeOutcome, ExecutionEvent, ExecutionPhase, SharedExecutionObserver,
+    TransactionExecutionClass,
+};
 use super::{
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
     runtime::set_custom_error,
@@ -111,6 +116,12 @@ impl<I> ZkGasInspector<I> {
         if let Some(metering) = &mut self.metering {
             metering.set_execution_observer_context(phase, tx_index);
         }
+    }
+
+    /// Returns the class captured at the normal top-level frame boundary.
+    #[cfg(feature = "execution-observer")]
+    pub(crate) fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
+        self.metering.as_ref().and_then(ZkGasMeteringState::observed_transaction_execution_class)
     }
 }
 
@@ -205,6 +216,13 @@ where
         context: &mut TaikoEvmContext<DB>,
         frame_input: &mut FrameInput,
     ) -> Option<FrameResult> {
+        #[cfg(feature = "execution-observer")]
+        if let Some(metering) = &mut self.metering {
+            // The first frame belongs to the transaction recipient. At this point REVM has
+            // already performed its ordinary account/code load, so capture that fact without an
+            // observer-specific database access. Nested CALL/CREATE frames must not overwrite it.
+            metering.capture_top_level_recipient_code_hash(context);
+        }
         self.inner.frame_start(context, frame_input)
     }
 
@@ -335,6 +353,9 @@ struct ZkGasMeteringState {
     /// Optional host-only event sink and its executor-owned context.
     #[cfg(feature = "execution-observer")]
     observer: Option<ObserverState>,
+    /// Class observed when normal execution opened the top-level recipient frame.
+    #[cfg(feature = "execution-observer")]
+    observed_transaction_execution_class: Option<TransactionExecutionClass>,
 }
 
 /// Complete observer-facing facts selected for one zk gas charge attempt.
@@ -362,6 +383,8 @@ impl ZkGasMeteringState {
             max_active_depth: 0,
             #[cfg(feature = "execution-observer")]
             observer: None,
+            #[cfg(feature = "execution-observer")]
+            observed_transaction_execution_class: None,
         }
     }
 
@@ -390,6 +413,43 @@ impl ZkGasMeteringState {
         }
     }
 
+    /// Captures only the first transaction frame; inner calls intentionally cannot alter the
+    /// executor's top-level transaction classification.
+    #[cfg(feature = "execution-observer")]
+    fn capture_top_level_recipient_code_hash<DB: reth_revm::Database>(
+        &mut self,
+        context: &TaikoEvmContext<DB>,
+    ) {
+        if self.observed_transaction_execution_class.is_some()
+            || !self.observer.as_ref().is_some_and(|observer| {
+                observer.phase == ExecutionPhase::Transactions && observer.tx_index.is_some()
+            })
+        {
+            return;
+        }
+        if let TxKind::Call(recipient) = context.tx().kind {
+            let code_hash =
+                context.journal().state.get(&recipient).map(|account| account.info.code_hash);
+            self.observed_transaction_execution_class = Some(
+                if code_hash.is_some_and(|hash| {
+                    hash != B256::ZERO && hash != alloy_primitives::KECCAK256_EMPTY
+                }) {
+                    TransactionExecutionClass::ContractCall
+                } else if context.tx().value.is_zero() {
+                    TransactionExecutionClass::NoCodeNoValue
+                } else {
+                    TransactionExecutionClass::NativeValueTransfer
+                },
+            );
+        }
+    }
+
+    #[cfg(feature = "execution-observer")]
+    /// Returns the first top-level frame classification captured for the active transaction.
+    fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
+        self.observed_transaction_execution_class
+    }
+
     /// Discards the in-flight transaction zk gas together with all per-frame step bookkeeping.
     ///
     /// The unwind of a failed transaction drains deferred steps through `call_end`/`create_end`
@@ -403,6 +463,10 @@ impl ZkGasMeteringState {
         }
         self.has_deferred_steps = false;
         self.max_active_depth = 0;
+        #[cfg(feature = "execution-observer")]
+        {
+            self.observed_transaction_execution_class = None;
+        }
     }
 
     /// Records the opcode and gas snapshot for the current frame depth.

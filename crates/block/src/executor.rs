@@ -8,9 +8,9 @@ use alloy_evm::{
     block::GasOutput,
     eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
-#[cfg(all(feature = "execution-observer", feature = "prover"))]
-use alloy_primitives::KECCAK256_EMPTY;
 use alloy_primitives::{Address, Bytes, Log, U256, Uint};
+#[cfg(all(feature = "execution-observer", feature = "prover"))]
+use alloy_primitives::{B256, KECCAK256_EMPTY};
 use reth_evm::{
     Evm,
     block::{
@@ -26,13 +26,11 @@ use revm_database_interface::{Database, DatabaseCommit};
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 #[cfg(all(feature = "execution-observer", feature = "prover"))]
-use alethia_reth_evm::zk_gas::observer::{
-    BlockStopReason, TransactionDisposition, TransactionExecutionClass,
-};
+use alethia_reth_evm::zk_gas::observer::{BlockStopReason, TransactionDisposition};
 #[cfg(feature = "execution-observer")]
 use alethia_reth_evm::zk_gas::observer::{
     ChargeComponent, ChargeOutcome, ExecutionEvent, ExecutionPhase, RawGasSource,
-    SharedExecutionObserver,
+    SharedExecutionObserver, TransactionExecutionClass,
 };
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoAnchorEvm, TaikoZkGasEvm},
@@ -175,6 +173,9 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     /// In-flight meter total captured before the current transaction resets or commits.
     #[cfg(feature = "execution-observer")]
     observer_observed_current_zkgas: Option<u64>,
+    /// Provisional start class, replaced after normal top-level frame initialization when present.
+    #[cfg(feature = "execution-observer")]
+    observer_execution_class: Option<TransactionExecutionClass>,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -218,6 +219,8 @@ where
             last_transaction_reverted: None,
             #[cfg(feature = "execution-observer")]
             observer_observed_current_zkgas: None,
+            #[cfg(feature = "execution-observer")]
+            observer_execution_class: None,
         }
     }
 
@@ -263,6 +266,19 @@ where
         Evm: TaikoZkGasEvm,
     {
         self.observer_observed_current_zkgas = self.evm.transaction_zk_gas_used();
+    }
+
+    /// Repairs the provisional start class from the code hash captured at the normal top-level
+    /// execution frame. No database access is performed here.
+    #[cfg(feature = "execution-observer")]
+    fn update_observer_execution_class_from_execution(&mut self)
+    where
+        Evm: TaikoZkGasEvm,
+    {
+        let Some(execution_class) = self.evm.observed_transaction_execution_class() else {
+            return;
+        };
+        self.observer_execution_class = Some(execution_class);
     }
 
     /// Returns the dedicated truncation error used when zk gas exhausts the block.
@@ -398,8 +414,12 @@ where
             {
                 let tx_index = u64::try_from(idx).expect("transaction index must fit u64");
                 self.set_observer_context(ExecutionPhase::Transactions, Some(tx_index));
-                self.observer_observed_current_zkgas = None;
-                let execution_class = self.classify_transaction(tx.inner())?;
+                // Every attempted transaction starts with an explicit zero snapshot. This keeps
+                // pre-execution filters from inheriting the preceding transaction's committed
+                // total when they never cross the reset/commit bracket.
+                self.observer_observed_current_zkgas = Some(0);
+                let execution_class = self.classify_transaction(tx.inner());
+                self.observer_execution_class = Some(execution_class);
                 self.observe(ExecutionEvent::TransactionStart {
                     tx_index,
                     tx_hash: *tx.inner().trie_hash().as_ref(),
@@ -513,6 +533,9 @@ where
         self.observe(ExecutionEvent::TransactionEnd {
             tx_index,
             disposition,
+            execution_class: self
+                .observer_execution_class
+                .unwrap_or(TransactionExecutionClass::Other),
             observed_current_zkgas: observed,
             committed_current_zkgas: committed,
         });
@@ -558,38 +581,30 @@ where
         }
     }
 
-    /// Classifies a transaction from its structured envelope and current executable recipient facts.
+    /// Classifies a transaction from structured envelope data and already-loaded execution facts.
     #[cfg(feature = "execution-observer")]
-    fn classify_transaction(
-        &mut self,
-        tx: &R::Transaction,
-    ) -> Result<TransactionExecutionClass, BlockExecutionError> {
+    fn classify_transaction(&mut self, tx: &R::Transaction) -> TransactionExecutionClass {
         if tx.is_create() {
-            return Ok(TransactionExecutionClass::ContractCreate);
+            return TransactionExecutionClass::ContractCreate;
         }
         let Some(recipient) = tx.to() else {
-            return Ok(TransactionExecutionClass::Other);
+            return TransactionExecutionClass::Other;
         };
         // Active precompiles execute at this call boundary even though no account code needs to be
-        // present in the database. For ordinary accounts, `code_hash` is authoritative: databases
-        // commonly omit the bytecode cache and let REVM load it only when execution needs it.
+        // present in the database. Ordinary account facts come only from the existing journal:
+        // querying `basic` here would insert an observer-only, fallible database access before
+        // zero-signer and block-gas filtering.
         let has_executable_code = self.evm.is_active_precompile(&recipient)
             || self
                 .evm
-                .db_mut()
-                .basic(recipient)
-                // This lookup is observer-only. A database error must never turn an otherwise
-                // valid candidate (including zero-signer and block-gas filters) into a fatal
-                // execution failure, so conservatively degrade its classification.
-                .ok()
-                .flatten()
-                .is_some_and(|account| account.code_hash != KECCAK256_EMPTY);
+                .loaded_account_code_hash(&recipient)
+                .is_some_and(|code_hash| code_hash != B256::ZERO && code_hash != KECCAK256_EMPTY);
         if has_executable_code {
-            Ok(TransactionExecutionClass::ContractCall)
+            TransactionExecutionClass::ContractCall
         } else if tx.value().is_zero() {
-            Ok(TransactionExecutionClass::NoCodeNoValue)
+            TransactionExecutionClass::NoCodeNoValue
         } else {
-            Ok(TransactionExecutionClass::NativeValueTransfer)
+            TransactionExecutionClass::NativeValueTransfer
         }
     }
 }
@@ -742,6 +757,8 @@ where
         let result = match self.evm.transact(tx_env) {
             Ok(result) => result,
             Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
+                #[cfg(feature = "execution-observer")]
+                self.update_observer_execution_class_from_execution();
                 self.zk_gas_exhausted = true;
                 #[cfg(feature = "execution-observer")]
                 self.capture_observed_current_zkgas();
@@ -750,6 +767,8 @@ where
             }
             Err(err) => {
                 #[cfg(feature = "execution-observer")]
+                self.update_observer_execution_class_from_execution();
+                #[cfg(feature = "execution-observer")]
                 self.capture_observed_current_zkgas();
                 self.reset_current_transaction_zk_gas();
                 return Err(BlockExecutionError::evm(err, tx.tx().trie_hash()));
@@ -757,6 +776,7 @@ where
         };
         #[cfg(feature = "execution-observer")]
         {
+            self.update_observer_execution_class_from_execution();
             self.last_transaction_reverted = Some(!result.result.is_success());
         }
 
@@ -906,6 +926,8 @@ mod test {
     use reth_evm::{ConfigureEvm, block::BlockExecutor};
     use reth_evm_ethereum::RethReceiptBuilder;
     use reth_primitives_traits::SignedTransaction;
+    #[cfg(all(feature = "execution-observer", feature = "prover"))]
+    use reth_revm::context::{ContextTr, JournalTr};
     use reth_revm::{
         State,
         db::{CacheDB, EmptyDB},
@@ -975,30 +997,31 @@ mod test {
         };
 
         assert_eq!(
-            executor
-                .classify_transaction(&tx(
-                    TxKind::Call(Address::with_last_byte(0x41)),
-                    U256::from(1)
-                ))
-                .expect("classification should remain observational"),
+            executor.classify_transaction(&tx(
+                TxKind::Call(Address::with_last_byte(0x41)),
+                U256::from(1)
+            )),
             TransactionExecutionClass::NativeValueTransfer
         );
         assert_eq!(
-            executor
-                .classify_transaction(&tx(TxKind::Call(Address::with_last_byte(0x42)), U256::ZERO))
-                .expect("classification should remain observational"),
+            executor.classify_transaction(&tx(
+                TxKind::Call(Address::with_last_byte(0x42),),
+                U256::ZERO
+            )),
             TransactionExecutionClass::NoCodeNoValue
         );
+        executor
+            .evm_mut()
+            .ctx_mut()
+            .journal_mut()
+            .load_account(BENCH_SUCCESS_TARGET)
+            .expect("normal execution lookup should populate the journal");
         assert_eq!(
-            executor
-                .classify_transaction(&tx(TxKind::Call(BENCH_SUCCESS_TARGET), U256::ZERO))
-                .expect("classification should remain observational"),
+            executor.classify_transaction(&tx(TxKind::Call(BENCH_SUCCESS_TARGET), U256::ZERO)),
             TransactionExecutionClass::ContractCall
         );
         assert_eq!(
-            executor
-                .classify_transaction(&tx(TxKind::Create, U256::ZERO))
-                .expect("classification should remain observational"),
+            executor.classify_transaction(&tx(TxKind::Create, U256::ZERO)),
             TransactionExecutionClass::ContractCreate
         );
 
@@ -1007,20 +1030,48 @@ mod test {
             persisted_code_target,
             AccountInfo { code_hash: B256::with_last_byte(0x01), code: None, ..Default::default() },
         );
+        executor
+            .evm_mut()
+            .ctx_mut()
+            .journal_mut()
+            .load_account(persisted_code_target)
+            .expect("normal execution lookup should populate the journal");
         assert_eq!(
-            executor
-                .classify_transaction(&tx(TxKind::Call(persisted_code_target), U256::ZERO))
-                .expect("classification should remain observational"),
+            executor.classify_transaction(&tx(TxKind::Call(persisted_code_target), U256::ZERO)),
             TransactionExecutionClass::ContractCall,
             "a non-empty persisted code hash is executable even when bytecode is not cached"
         );
         assert_eq!(
             executor
-                .classify_transaction(&tx(TxKind::Call(Address::with_last_byte(0x04)), U256::ZERO))
-                .expect("classification should remain observational"),
+                .classify_transaction(&tx(TxKind::Call(Address::with_last_byte(0x04)), U256::ZERO)),
             TransactionExecutionClass::ContractCall,
             "active precompile destinations execute code without a database account"
         );
+
+        for (address, code_hash, value) in [
+            (Address::with_last_byte(0x44), B256::ZERO, U256::ZERO),
+            (Address::with_last_byte(0x45), KECCAK256_EMPTY, U256::from(1)),
+        ] {
+            executor.evm_mut().db_mut().database.insert_account_info(
+                address,
+                AccountInfo { code_hash, code: None, ..Default::default() },
+            );
+            executor
+                .evm_mut()
+                .ctx_mut()
+                .journal_mut()
+                .load_account(address)
+                .expect("normal execution lookup should populate the journal");
+            assert_eq!(
+                executor.classify_transaction(&tx(TxKind::Call(address), value)),
+                if value.is_zero() {
+                    TransactionExecutionClass::NoCodeNoValue
+                } else {
+                    TransactionExecutionClass::NativeValueTransfer
+                },
+                "both empty-code hash encodings must remain non-contract calls"
+            );
+        }
     }
 
     #[test]

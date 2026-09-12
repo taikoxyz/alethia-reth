@@ -91,6 +91,10 @@ pub enum ExecutionEvent {
         tx_index: u64,
         /// Commit or filter outcome owned by the executor.
         disposition: TransactionDisposition,
+        /// Authoritative class resolved at the normal execution boundary. Consumers selecting
+        /// committed transfer features must use this field rather than the provisional start
+        /// classification, which intentionally avoids an observer-only database read.
+        execution_class: TransactionExecutionClass,
         /// Meter total visible while finishing this transaction.
         observed_current_zkgas: u64,
         /// Meter total finalized by committed transactions.

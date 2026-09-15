@@ -23,7 +23,8 @@ The first snapshot-assisted step copies the account trie, storage trie, hashed
 accounts and hashed storages into auxiliary tables before reconstructing older
 blocks. Its node-header lookups are short; the auxiliary copy itself can be
 substantial and keeps readiness false. Upstream reports copy progress. A fresh
-range of at most one upstream backfill batch uses plain backfill instead. An
+range of at most 25 blocks uses plain backfill instead; that cutoff is a
+conservative Taiko constant, independent of upstream's write batch size. An
 existing auxiliary snapshot stays synchronized through the final chunk and
 restart. Stale auxiliary anchors clear only that cache and retry immediately.
 
@@ -47,10 +48,14 @@ resumable remains a follow-up. Production duration and memory use are unbenchmar
 Both initial copies and backward chunks expose
 `taiko_proof_history_pin_active` and `taiko_proof_history_pin_elapsed_seconds`,
 with `phase="initial_copy"` or `phase="backfill"`. Elapsed time updates once per
-minute while active and at completion. Start/end messages use INFO; long phases
-report again every ten minutes at INFO. Upstream retains detailed per-table and
-per-chunk progress. Failure to start periodic reporting does not abort indexing; unwind/panic
-cleanup releases the guard and its resources.
+minute while active and at completion, and the gauge keeps the last completed
+duration afterwards, so alerts on it must also require `pin_active == 1`.
+Waiting for a lagging persisted source or changed canonical bounds happens
+before the phase starts and is not counted or logged as a pin. Start/end
+messages use INFO; long phases report again every ten minutes at INFO. Upstream
+retains detailed per-table and per-chunk progress. Failure to start periodic
+reporting does not abort indexing; unwind/panic cleanup releases the guard and
+its resources.
 
 Shutdown or a closed notification source cancels new work at batch boundaries;
 accepted transactions finish atomically. The outer reth CLI has a default
@@ -66,17 +71,28 @@ fallback. A non-canonical earliest anchor requires rebuilding; divergence above
 it preserves the canonical prefix. A shorter chain reconciles immediately when
 the journal proves divergence; ordinary catch-up otherwise waits.
 
-A missing hash at or below the observed head is a separate condition. The sixth
-observation of the same retained tip raises one ERROR and sets
+Reconciliation reads the canonical height and every hash it compares from one
+consistent snapshot, bounded by the executed head, so reth's two-step in-memory
+update (chain first, head tracker second) classifies as ordinary catch-up rather
+than a missing hash.
+
+A missing hash at or below that consistent head is a separate condition. The
+sixth observation of the same retained tip raises an ERROR and sets
 `taiko_proof_history_missing_canonical_hash` to 1. With the five-second retry
 interval, that is five retry delays (about 25 seconds after the first observation,
-plus work time). Advancing `canonical_best` does not reset this identity. The
-sidecar keeps waiting with historical readiness false; it does not panic the
-execution client. This condition can occur during resynchronization, so check
-sync and canonical headers first. A resolved condition or different retained tip
+plus work time); the ERROR repeats about every ten minutes while the condition
+persists. Advancing `canonical_best` does not reset this identity. The sidecar
+keeps waiting with historical readiness false; it does not panic the execution
+client. This condition can occur during resynchronization, so check sync and
+canonical headers first. A resolved condition or different retained tip
 clears/restarts the episode and resets the gauge. Normal catch-up above the
-canonical head is excluded. Waiting for an unavailable earliest anchor is logged
-at INFO.
+canonical head is excluded.
+
+Every startup wait logs once when it begins and again about every ten minutes:
+waiting for the canonical chain to reach the retained anchor or the backfill
+window at INFO, and waiting for the canonical head to reach the retained tip at
+WARN. `taiko_proof_history_ready` is 1 only while historical reads are served,
+independent of the reason they are not, and is the gauge to alert on.
 
 Live notifications normally supply precomputed trie updates. Verification and
 catch-up execute synchronously and confirm each submission is durable. Hashes
@@ -97,7 +113,8 @@ restarting at that same path does not replace the failed copy.** Stop the node,
 keep the failed directory offline for diagnosis, repair the cause, and restart
 with a **new, empty** `--proofs-history.storage-path`. Evidence is retained at
 failure; running normal reorg recovery against the old path can still reset a
-non-canonical anchor.
+non-canonical anchor, and a retained earliest anchor that stops being canonical
+is discarded with a WARN naming the anchor before the window is rebuilt.
 
 A failed backward chunk keeps its pending target and resumes the same work on
 restart. After investigating its original error, either rebuild at a new empty
@@ -114,6 +131,16 @@ pruning can still make those prerequisites unavailable after downtime. Restore
 missing history or repair source/EVM inconsistencies before rebuilding. Stable
 execution/root errors stop the critical sidecar and therefore the node; their
 messages include the failed block, original cause and recovery guidance.
+
+Failures are classified explicitly. A state-root mismatch in the retained window
+or in a completed initial copy is an integrity failure and stops the sidecar at
+once. Any other preparation error (a provider or database read, a corrupt
+`backfill-target` file, a backfill or pruning error, the startup pruning limit)
+is logged at ERROR and retried on the five-second interval; the sixth consecutive
+failure stops the sidecar with the original cause. A stalled or disconnected
+engine persistence thread is not an error in the proof data: the sidecar drops
+the engine, reconciles and starts a fresh one. A terminated engine thread stops
+the sidecar with a message naming the thread failure rather than a rebuild.
 
 ## Upgrading a V1 proof database
 

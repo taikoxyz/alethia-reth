@@ -1,6 +1,6 @@
 //! V2 proof-history snapshot initialization and cancellable backward backfill.
 
-use super::{is_canonical, store::ProofHistoryDatabase};
+use super::{REBUILD_AT_NEW_PATH, fatal_integrity, is_canonical, store::ProofHistoryDatabase};
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
 use alloy_primitives::B256;
@@ -9,8 +9,8 @@ use reth_db::Database;
 use reth_optimism_trie::{
     BackfillError, BackfillJob, InitializationJob, OpProofsBackfillProvider, OpProofsBackfillStore,
     OpProofsProviderRO, OpProofsSnapshotInitProvider, OpProofsStore, ProofWindowRange,
-    RethTrieStorageLayout, SnapshotInitJob, SnapshotInitStatus,
-    backfill::DEFAULT_BACKFILL_BATCH_SIZE, proof::DatabaseStateRoot, snapshot::SnapshotError,
+    RethTrieStorageLayout, SnapshotInitJob, SnapshotInitOutcome, SnapshotInitStatus,
+    proof::DatabaseStateRoot, snapshot::SnapshotError,
 };
 use reth_provider::{
     BlockHashReader, BlockNumReader, ChainStateBlockReader, ChangeSetReader, DBProvider,
@@ -110,7 +110,8 @@ struct PinnedReadMetrics {
     number: u64,
     /// Monotonic start used for elapsed seconds.
     started: Instant,
-    /// One while this phase owns its reader, zero after it ends.
+    /// One while the instrumented work holds its reader, zero after it ends. The initial copy's
+    /// short checkpoint and header reads precede the bracket on the same transaction.
     active: metrics::Gauge,
     /// Current or last completed pin duration in seconds.
     elapsed: metrics::Gauge,
@@ -144,19 +145,18 @@ fn with_pinned_read<T>(phase: &'static str, number: u64, work: impl FnOnce() -> 
         "pinned read phase started; persisted unwinds may wait for its reader");
     std::thread::scope(|scope| {
         let (finished, waiting) = mpsc::channel::<()>();
-        let elapsed = guard.elapsed.clone();
-        let started = guard.started;
+        let pinned = &guard;
         if let Err(error) = std::thread::Builder::new()
             .name(format!("proof-history-pin-{phase}"))
             .spawn_scoped(scope, move || {
-                let mut updates = 0;
+                let mut minutes = 0u32;
                 while matches!(waiting.recv_timeout(Duration::from_secs(60)),
                     Err(mpsc::RecvTimeoutError::Timeout))
                 {
-                    let elapsed_seconds = started.elapsed().as_secs_f64();
-                    elapsed.set(elapsed_seconds);
-                    updates = (updates + 1) % 10;
-                    if updates == 0 {
+                    let elapsed_seconds = pinned.started.elapsed().as_secs_f64();
+                    pinned.elapsed.set(elapsed_seconds);
+                    minutes += 1;
+                    if minutes.is_multiple_of(10) {
                         info!(target: "reth::taiko::proof_history", phase, number, elapsed_seconds,
                             "read phase remains pinned; persisted unwind completion may be waiting");
                     }
@@ -187,9 +187,9 @@ fn reject_initial_snapshot(
     );
     warn!(target: "reth::taiko::proof_history", block = anchor.number, hash = ?anchor.hash,
         actual = ?computed, ?expected, "initial copy root mismatch detected; checking its post-copy header");
-    let fresh = fresh_hash().wrap_err_with(|| format!(
-        "{mismatch}; failed to probe the post-copy header. Stop the node and keep this directory offline for diagnosis; after repairing the cause, restart with a new, empty --proofs-history.storage-path"
-    ))?;
+    let fresh = fresh_hash().wrap_err_with(|| {
+        format!("{mismatch}; failed to probe the post-copy header; {REBUILD_AT_NEW_PATH}")
+    })?;
     if fresh != Some(anchor.hash) {
         storage.reset_bootstrap().wrap_err_with(|| {
             format!(
@@ -200,12 +200,11 @@ fn reject_initial_snapshot(
             ?expected, "post-copy header changed; discarded the invalid copy and waiting to retry");
         return Ok(false);
     }
-    Err(eyre!(
-        "{mismatch}; stop the node and keep this directory offline for diagnosis. Verify or repair \
-         the node's source trie/hashed state and storage layout, then restart with a new, empty \
-         --proofs-history.storage-path. Repairing the source and restarting at this same path \
-         does not replace the retained copy; copying the same source again cannot repair it"
-    ))
+    Err(fatal_integrity(format!(
+        "{mismatch}; {REBUILD_AT_NEW_PATH}. Verify or repair the node's source trie/hashed state \
+         and storage layout first: repairing the source and restarting at this same path does not \
+         replace the retained copy, and copying the same source again cannot repair it"
+    )))
 }
 
 /// Reads the pending backward-bootstrap target. Absence means bootstrap is complete or disabled.
@@ -260,6 +259,12 @@ impl Default for ChunkLimits {
         Self { max_blocks: 10_000, journal_batch: 1000 }
     }
 }
+
+/// Backward ranges longer than this build the auxiliary state snapshot before reconstructing;
+/// shorter fresh ranges use plain backfill so a tiny bootstrap never copies the whole trie. This
+/// is a conservative Taiko cutoff rather than a benchmarked crossover, and it is deliberately
+/// independent of upstream's per-transaction write batch size.
+const SNAPSHOT_BACKFILL_DEPTH_CUTOFF: u64 = 25;
 
 /// Advances backward by at most 10,000 blocks, then releases the pinned node read transaction.
 /// Preparation revalidates canonical bounds before the next chunk. Upstream commits atomic
@@ -324,7 +329,7 @@ where
     };
     // Use the total remaining distance. An existing snapshot stays active through the last chunk.
     let use_snapshot = !matches!(snapshot, SnapshotInitStatus::NotStarted) ||
-        earliest - target > DEFAULT_BACKFILL_BATCH_SIZE as u64;
+        earliest - target > SNAPSHOT_BACKFILL_DEPTH_CUTOFF;
     if use_snapshot && !matches!(snapshot, SnapshotInitStatus::Completed) {
         // The high-level provider uses short header reads. The following full proof-state copy
         // must finish before a pinned backward chunk starts, and has its own upstream progress.
@@ -344,24 +349,27 @@ where
                 .wrap_err("failed to build or resume the auxiliary proof snapshot");
             }
         };
-        if !accept_auxiliary_snapshot(&storage, window.earliest, outcome.block)? {
+        if !accept_auxiliary_snapshot(&storage, window.earliest, &outcome)? {
             return Ok(BackfillStep::Reconcile);
         }
         info!(target: "reth::taiko::proof_history", earliest, target,
             "auxiliary snapshot ready for backward chunks");
     }
-    // Open the long-lived source only after auxiliary snapshot initialization/resumption.
+    // Open the long-lived source only after auxiliary snapshot initialization/resumption. The
+    // canonical and persisted bound checks precede the instrumented phase: a lagging persisted
+    // source retries every few seconds and must not count as a pinned read phase.
     let db = provider.database_provider_ro()?.disable_long_read_transaction_safety();
-    with_pinned_read("backfill", earliest, || {
-        if !source_matches_window(provider, window)? {
-            warn!(target: "reth::taiko::proof_history", ?window,
+    if !source_matches_window(provider, window)? {
+        warn!(target: "reth::taiko::proof_history", ?window,
             "canonical bounds changed after auxiliary preparation; requesting reconciliation");
-            return Ok(BackfillStep::Reconcile);
-        }
-        if !source_matches_window(&db, window)? {
-            warn!(target: "reth::taiko::proof_history", ?window, "waiting for persisted backfill source to match canonical bounds");
-            return Ok(BackfillStep::Wait);
-        }
+        return Ok(BackfillStep::Reconcile);
+    }
+    if !source_matches_window(&db, window)? {
+        warn!(target: "reth::taiko::proof_history", ?window,
+            "waiting for persisted backfill source to match canonical bounds");
+        return Ok(BackfillStep::Wait);
+    }
+    with_pinned_read("backfill", earliest, || {
         // Journal failures and missing hashes are actionable errors, even during a concurrent
         // reorg. Write only below committed earliest; a crash leaves harmless extra rows
         // for this chunk.
@@ -420,15 +428,20 @@ fn clear_auxiliary_snapshot(
     Ok(())
 }
 
-/// Accepts the completed job's anchor or clears its cache before requesting reconciliation.
-/// The matching fast path opens no status-read writer.
+/// Accepts the completed job's own anchor or clears its cache before requesting reconciliation.
+/// Taking the whole outcome keeps a caller from comparing the retained anchor against anything but
+/// the block the job actually copied; the matching fast path opens no status-read writer.
 fn accept_auxiliary_snapshot(
     storage: &ProofHistoryDatabase,
     expected: BlockNumHash,
-    actual: BlockNumHash,
+    outcome: &SnapshotInitOutcome,
 ) -> eyre::Result<bool> {
-    if actual != expected {
-        clear_auxiliary_snapshot(storage.snapshot_initialization_provider()?, expected, actual)?;
+    if outcome.block != expected {
+        clear_auxiliary_snapshot(
+            storage.snapshot_initialization_provider()?,
+            expected,
+            outcome.block,
+        )?;
         return Ok(false);
     }
     Ok(true)
@@ -974,8 +987,8 @@ mod tests {
     }
 
     #[test]
-    fn fresh_backfill_uses_snapshot_only_above_one_upstream_batch() {
-        for count in [DEFAULT_BACKFILL_BATCH_SIZE as u64, DEFAULT_BACKFILL_BATCH_SIZE as u64 + 1] {
+    fn fresh_backfill_uses_snapshot_only_above_the_depth_cutoff() {
+        for count in [SNAPSHOT_BACKFILL_DEPTH_CUTOFF, SNAPSHOT_BACKFILL_DEPTH_CUTOFF + 1] {
             let (factory, _) = empty_chain_factory(count);
             let dir = tempfile::tempdir().unwrap();
             let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
@@ -998,7 +1011,7 @@ mod tests {
                 .status;
             assert_eq!(
                 matches!(status, SnapshotInitStatus::Completed),
-                count > DEFAULT_BACKFILL_BATCH_SIZE as u64
+                count > SNAPSHOT_BACKFILL_DEPTH_CUTOFF
             );
             assert_eq!(
                 storage.provider_ro().unwrap().get_earliest_block().unwrap().number,
@@ -1009,7 +1022,7 @@ mod tests {
     #[test]
     fn stale_auxiliary_snapshots_are_rebuilt_without_resetting_retained_history() {
         for completed in [false, true] {
-            let (factory, hashes) = empty_chain_factory(DEFAULT_BACKFILL_BATCH_SIZE as u64 + 1);
+            let (factory, hashes) = empty_chain_factory(SNAPSHOT_BACKFILL_DEPTH_CUTOFF + 1);
             let dir = tempfile::tempdir().unwrap();
             let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
             assert!(initialize_proof_history_storage(&factory, storage.clone(), None).unwrap());
@@ -1163,6 +1176,7 @@ mod tests {
                 );
                 let result = std::panic::catch_unwind(|| {
                     with_pinned_read(phase, 7, || {
+                        std::thread::sleep(Duration::from_millis(10));
                         panic!("simulated copy failure");
                     })
                 });
@@ -1171,10 +1185,11 @@ mod tests {
                     capture.value("taiko_proof_history_pin_active", &[("phase", phase)]),
                     Some(0.0)
                 );
+                // The guard must read the clock on unwind, not merely register the gauge.
                 assert!(
                     capture
                         .value("taiko_proof_history_pin_elapsed_seconds", &[("phase", phase)])
-                        .is_some()
+                        .is_some_and(|elapsed| elapsed >= 0.01)
                 );
             });
         }
@@ -1212,14 +1227,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
         initialize_proof_history_storage(&factory, storage.clone(), None).unwrap();
-        SnapshotInitJob::new(&factory, storage.clone()).run(2).unwrap();
+        let mut outcome = SnapshotInitJob::new(&factory, storage.clone()).run(2).unwrap();
         let window = storage.provider_ro().unwrap().get_proof_window().unwrap();
         // Model a completed job whose unpinned header lookup planted another fork's anchor.
         let actual = BlockNumHash::new(2, B256::repeat_byte(0xff));
+        outcome.block = actual;
         let snapshot = storage.snapshot_initialization_provider().unwrap();
         snapshot.update_snapshot(actual, &Default::default()).unwrap();
         OpProofsBackfillProvider::commit(snapshot).unwrap();
-        assert!(!accept_auxiliary_snapshot(&storage, window.earliest, actual).unwrap());
+        assert!(!accept_auxiliary_snapshot(&storage, window.earliest, &outcome).unwrap());
         assert_eq!(storage.provider_ro().unwrap().get_proof_window().unwrap(), window);
         assert_eq!(storage.indexed_hash(2).unwrap(), Some(hashes[2].hash));
         assert!(matches!(
@@ -1231,5 +1247,34 @@ mod tests {
                 .status,
             SnapshotInitStatus::NotStarted
         ));
+    }
+
+    #[test]
+    fn a_real_backward_chunk_reports_its_pinned_phase() {
+        use super::super::test_utils::TestMetrics;
+        let (factory, _hashes) = empty_chain_factory(2);
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(ProofHistoryDatabase::open(dir.path()).unwrap());
+        initialize_proof_history_storage(&factory, storage.clone(), None).unwrap();
+        let recorder = TestMetrics::default();
+        let step = metrics::with_local_recorder(&recorder, || {
+            backfill_proof_history_chunk(
+                &factory,
+                storage.clone(),
+                0,
+                ChunkLimits { max_blocks: 1, ..Default::default() },
+            )
+        })
+        .unwrap();
+        assert_eq!(step, BackfillStep::Progressed);
+        assert_eq!(
+            recorder.value("taiko_proof_history_pin_active", &[("phase", "backfill")]),
+            Some(0.0)
+        );
+        assert!(
+            recorder
+                .value("taiko_proof_history_pin_elapsed_seconds", &[("phase", "backfill")])
+                .is_some_and(|elapsed| elapsed > 0.0)
+        );
     }
 }

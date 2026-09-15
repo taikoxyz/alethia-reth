@@ -54,6 +54,70 @@ fn is_canonical(
     Ok(provider.block_hash(block.number)? == Some(block.hash))
 }
 
+/// Literal CLI flag naming the proof-history database directory; the single definition every
+/// recovery message and constant is built from.
+macro_rules! storage_path_flag {
+    () => {
+        "--proofs-history.storage-path"
+    };
+}
+
+/// CLI flag naming the proof-history database directory, for interpolation into messages.
+pub(crate) const STORAGE_PATH_FLAG: &str = storage_path_flag!();
+
+/// Operator remedy shared by every unrecoverable proof-history failure: the existing directory is
+/// kept as evidence and the rebuild starts from an empty one.
+pub(crate) const REBUILD_AT_NEW_PATH: &str = concat!(
+    "stop the node, preserve the old proof-history directory offline for diagnosis, repair the \
+     cause, then restart with a new, empty ",
+    storage_path_flag!()
+);
+
+/// Marks an error proving that retained proof history or the node's source state is inconsistent;
+/// retrying preparation cannot repair it, so the sidecar stops on the first occurrence.
+#[derive(Debug)]
+pub(crate) struct FatalIntegrityError(String);
+
+impl std::fmt::Display for FatalIntegrityError {
+    /// Renders the diagnostic exactly as composed at the failure site.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for FatalIntegrityError {}
+
+/// Builds a fatal integrity report from a composed diagnostic.
+pub(crate) fn fatal_integrity(message: String) -> eyre::Report {
+    eyre::Report::new(FatalIntegrityError(message))
+}
+
+/// Whether any cause in the report's chain is a fatal integrity failure.
+pub(crate) fn is_fatal_integrity(error: &eyre::Report) -> bool {
+    error.chain().any(|cause| cause.is::<FatalIntegrityError>())
+}
+
+/// One canonical view shared by a batch of related reads, so a height and the hashes compared
+/// against it cannot straddle an in-memory chain update.
+pub trait CanonicalSnapshotProvider {
+    /// Consistent view over the in-memory chain and the database, taken at construction.
+    type Snapshot: BlockHashReader + BlockNumReader;
+
+    /// Takes the snapshot; callers drop it as soon as their related reads complete.
+    fn canonical_snapshot(&self) -> reth_provider::ProviderResult<Self::Snapshot>;
+}
+
+impl<N: reth_provider::providers::ProviderNodeTypes> CanonicalSnapshotProvider
+    for reth_provider::providers::BlockchainProvider<N>
+{
+    type Snapshot = reth_provider::providers::ConsistentProvider<N>;
+
+    /// Snapshots the in-memory head before opening the database read transaction.
+    fn canonical_snapshot(&self) -> reth_provider::ProviderResult<Self::Snapshot> {
+        self.consistent_provider()
+    }
+}
+
 /// Shared storage type used by proof-history indexing and debug RPC overrides.
 pub type ProofHistoryStorage = OpProofsStorage<Arc<ProofHistoryDatabase>>;
 
@@ -93,6 +157,7 @@ where
         + BlockNumReader
         + BlockReader
         + CanonStateSubscriptions
+        + CanonicalSnapshotProvider
         + DatabaseProviderFactory,
     <T::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
         + ChainStateBlockReader

@@ -1,5 +1,6 @@
 //! Shared V2 database ownership for bootstrap recovery and upstream proof providers.
 
+use super::STORAGE_PATH_FLAG;
 use alloy_primitives::B256;
 use eyre::eyre;
 use reth_db::{
@@ -39,7 +40,7 @@ use journal::IndexedBlockHashes;
 #[derive(Debug)]
 pub struct ProofHistoryDatabase {
     /// The single environment shared by RPC readers, indexing and bootstrap recovery.
-    env: DatabaseEnv,
+    pub(super) env: DatabaseEnv,
     /// Stops new bootstrap and replay work; accepted write transactions still finish atomically.
     bootstrap_cancelled: AtomicBool,
 }
@@ -72,8 +73,8 @@ impl ProofHistoryDatabase {
         {
             return Err(eyre!(
                 "V1 proof-history storage at {path:?} requires rebuilding into a new, empty \
-                 --proofs-history.storage-path; use --proofs-history.backfill-window-only to \
-                 rebuild retained history from unpruned node changesets; the V1 data is unchanged"
+                 {STORAGE_PATH_FLAG}; use --proofs-history.backfill-window-only to rebuild \
+                 retained history from unpruned node changesets; the V1 data is unchanged"
             ));
         }
         if tx.get::<V2ProofWindow>(ProofWindowKey::EarliestBlock)?.is_none() {
@@ -323,28 +324,7 @@ mod tests {
 
     #[test]
     fn metrics_use_upstream_names_labels_and_table_values() {
-        use metrics::{
-            Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
-        };
-        use std::sync::Mutex;
-        #[derive(Default)]
-        struct Capture(Mutex<Vec<(Key, Arc<metrics::atomics::AtomicU64>)>>);
-        impl Recorder for Capture {
-            fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
-            fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
-            fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
-            fn register_counter(&self, _: &Key, _: &Metadata<'_>) -> Counter {
-                Counter::noop()
-            }
-            fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
-                Histogram::noop()
-            }
-            fn register_gauge(&self, key: &Key, _: &Metadata<'_>) -> Gauge {
-                let value = Arc::new(metrics::atomics::AtomicU64::new(0));
-                self.0.lock().unwrap().push((key.clone(), value.clone()));
-                Gauge::from_arc(value)
-            }
-        }
+        use super::super::test_utils::TestMetrics;
         let dir = tempfile::tempdir().unwrap();
         let storage = ProofHistoryDatabase::open(dir.path()).unwrap();
         let init = storage.initialization_provider().unwrap();
@@ -352,38 +332,30 @@ mod tests {
         init.commit_initial_state().unwrap();
         OpProofsInitProvider::commit(init).unwrap();
         storage.record_hashes([(7, B256::repeat_byte(7))]).unwrap();
-        let capture = Capture::default();
+        let capture = TestMetrics::default();
         metrics::with_local_recorder(&capture, || storage.report_metrics()).unwrap();
-        let gauges = capture.0.lock().unwrap();
-        let value = |name: &str, labels: Vec<(&str, &str)>| {
-            let key = Key::from_parts(
-                name.to_owned(),
-                labels
-                    .into_iter()
-                    .map(|(k, v)| metrics::Label::new(k.to_owned(), v.to_owned()))
-                    .collect::<Vec<_>>(),
-            );
-            f64::from_bits(
-                gauges.iter().find(|(k, _)| *k == key).unwrap().1.load(Ordering::Relaxed),
-            )
+        let value = |name: &str, labels: &[(&str, &str)]| {
+            capture
+                .value(name, labels)
+                .unwrap_or_else(|| panic!("gauge {name} {labels:?} was never set"))
         };
         let entries =
             storage.env.tx().unwrap().entries::<reth_optimism_trie::db::V2ProofWindow>().unwrap();
         assert!(entries > 0);
         assert_eq!(
-            value("optimism_proof_storage.table_entries", vec![("table", "V2ProofWindow")]),
+            value("optimism_proof_storage.table_entries", &[("table", "V2ProofWindow")]),
             entries as f64
         );
         assert_eq!(
-            value("optimism_proof_storage.table_entries", vec![("table", "IndexedBlockHashes")]),
+            value("optimism_proof_storage.table_entries", &[("table", "IndexedBlockHashes")]),
             1.0
         );
-        assert!(value("optimism_proof_storage.page_size", vec![]) > 0.0);
+        assert!(value("optimism_proof_storage.page_size", &[]) > 0.0);
         value(
             "optimism_proof_storage.table_pages",
-            vec![("table", "V2ProofWindow"), ("type", "leaf")],
+            &[("table", "V2ProofWindow"), ("type", "leaf")],
         );
-        value("optimism_proof_storage.freelist", vec![]);
-        value("optimism_proof_storage.timed_out_not_aborted_transactions", vec![]);
+        value("optimism_proof_storage.freelist", &[]);
+        value("optimism_proof_storage.timed_out_not_aborted_transactions", &[]);
     }
 }

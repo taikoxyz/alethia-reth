@@ -173,7 +173,7 @@ pub(crate) fn is_spawn_opcode(opcode: u8) -> bool {
 
 /// Returns the fixed raw-gas estimate used when a spawn opcode opens child work.
 #[inline(always)]
-pub(crate) fn spawn_estimate(schedule: &ZkGasSchedule, opcode: u8) -> u64 {
+fn spawn_estimate(schedule: &ZkGasSchedule, opcode: u8) -> u64 {
     match opcode {
         0xf1 => schedule.spawn_estimates.call,
         0xf2 => schedule.spawn_estimates.callcode,

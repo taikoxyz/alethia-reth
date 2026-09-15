@@ -7,8 +7,6 @@
 //!    other result uses the measured interpreter delta, matching the production plain loop.
 
 use alloy_primitives::{Address, Log, U256};
-#[cfg(feature = "execution-observer")]
-use alloy_primitives::{B256, TxKind};
 use reth_revm::{
     Inspector,
     context::{ContextTr, JournalTr},
@@ -23,14 +21,8 @@ use reth_revm::{
 
 use crate::alloy::TaikoEvmContext;
 
-#[cfg(feature = "execution-observer")]
-use super::observer::{
-    ChargeOutcome, ExecutionEvent, ExecutionPhase, SharedExecutionObserver,
-    TransactionExecutionClass,
-};
 use super::{
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
-    observer::{ChargeComponent, OperationComponent, RawGasSource},
     runtime::{halt_for_zk_gas_limit, set_custom_error},
     schedule::ZkGasSchedule,
 };
@@ -59,18 +51,6 @@ impl<I> ZkGasInspector<I> {
     /// Creates a new composite inspector around `inner` and the optional zk gas schedule.
     pub fn new(inner: I, schedule: Option<&'static ZkGasSchedule>) -> Self {
         let metering = schedule.map(ZkGasMeteringState::new);
-        Self { inner, metering }
-    }
-
-    /// Creates a metering inspector that publishes owned events to `observer` when scheduled.
-    #[cfg(feature = "execution-observer")]
-    pub fn new_with_execution_observer(
-        inner: I,
-        schedule: Option<&'static ZkGasSchedule>,
-        observer: SharedExecutionObserver,
-    ) -> Self {
-        let metering =
-            schedule.map(|schedule| ZkGasMeteringState::new_with_observer(schedule, observer));
         Self { inner, metering }
     }
 
@@ -106,24 +86,6 @@ impl<I> ZkGasInspector<I> {
         if let Some(metering) = &mut self.metering {
             metering.reset_transaction();
         }
-    }
-
-    /// Sets the executor-owned phase and optional transaction index for later adapter events.
-    #[cfg(feature = "execution-observer")]
-    pub(crate) fn set_execution_observer_context(
-        &mut self,
-        phase: ExecutionPhase,
-        tx_index: Option<u64>,
-    ) {
-        if let Some(metering) = &mut self.metering {
-            metering.set_execution_observer_context(phase, tx_index);
-        }
-    }
-
-    /// Returns the class captured at the normal top-level frame boundary.
-    #[cfg(feature = "execution-observer")]
-    pub(crate) fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
-        self.metering.as_ref().and_then(ZkGasMeteringState::observed_transaction_execution_class)
     }
 }
 
@@ -174,7 +136,6 @@ where
         let mut step = metering.finish_step(depth, interp.gas.remaining());
         step.spawned = is_spawn_opcode(step.opcode) &&
             matches!(interp.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
-        step.operation_id = metering.emit_opcode_execution(step.opcode, step.step_gas);
 
         // NewFrame has been selected but not dispatched yet, so a failed wrapper charge can still
         // replace the action before any child contract or precompile executes.
@@ -204,13 +165,6 @@ where
         context: &mut TaikoEvmContext<DB>,
         frame_input: &mut FrameInput,
     ) -> Option<FrameResult> {
-        #[cfg(feature = "execution-observer")]
-        if let Some(metering) = &mut self.metering {
-            // The first frame belongs to the transaction recipient. At this point REVM has
-            // already performed its ordinary account/code load, so capture that fact without an
-            // observer-specific database access. Nested CALL/CREATE frames must not overwrite it.
-            metering.capture_top_level_recipient_code_hash(context);
-        }
         self.inner.frame_start(context, frame_input)
     }
 
@@ -223,7 +177,7 @@ where
         self.inner.call(context, inputs)
     }
 
-    /// Records a completed precompile body and its own native-gas charge.
+    /// Charges completed precompile work separately from its already-metered CALL wrapper.
     fn call_end(
         &mut self,
         context: &mut TaikoEvmContext<DB>,
@@ -233,24 +187,16 @@ where
         let was_precompile_called = outcome.was_precompile_called;
         self.inner.call_end(context, inputs, outcome);
 
-        if let Some(metering) = &mut self.metering {
-            let precompile = was_precompile_called.then(|| {
-                // The CALL wrapper was already charged at step_end, before dispatch. The
-                // precompile body has now completed, so publish it before its own native charge.
-                let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
-                let operation_id =
-                    metering.emit_precompile_execution(inputs.bytecode_address, gas_used);
-                (gas_used, operation_id)
-            });
-            if let Some((gas_used, operation_id)) = precompile {
-                // Precompile usage is charged separately from the CALL opcode itself, keyed by the
-                // full precompile address.
-                if metering
-                    .charge_precompile(&inputs.bytecode_address, gas_used, operation_id)
-                    .is_err()
-                {
-                    set_custom_error(context);
-                }
+        if let Some(metering) = &mut self.metering &&
+            was_precompile_called
+        {
+            // Precompile usage is charged separately from the CALL opcode itself, keyed by the
+            // full precompile address.
+            let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
+            if let Err(ZkGasOutcome::LimitExceeded) =
+                metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
+            {
+                set_custom_error(context);
             }
         }
     }
@@ -299,26 +245,6 @@ struct ZkGasMeteringState {
     /// Highest journal depth ever observed in this state's lifetime.
     /// Bounds transaction reset work to the actual call depth reached.
     max_active_depth: usize,
-    /// Optional host-only event sink and its executor-owned context.
-    #[cfg(feature = "execution-observer")]
-    observer: Option<ObserverState>,
-    /// Class observed when normal execution opened the top-level recipient frame.
-    #[cfg(feature = "execution-observer")]
-    observed_transaction_execution_class: Option<TransactionExecutionClass>,
-}
-
-/// Complete observer-facing facts selected for one zk gas charge attempt.
-struct ChargeAttemptDetails {
-    /// Component being charged.
-    component: ChargeComponent,
-    /// Raw gas selected by the active schedule.
-    charge_raw_gas: Option<u64>,
-    /// Origin of the selected raw gas amount.
-    raw_gas_source: RawGasSource,
-    /// Active schedule multiplier.
-    multiplier: Option<u64>,
-    /// Checked requested zk gas before applying the meter.
-    requested_current_zkgas: Option<u64>,
 }
 
 impl ZkGasMeteringState {
@@ -328,73 +254,7 @@ impl ZkGasMeteringState {
             meter: ZkGasMeter::new(schedule),
             pending_steps: [PendingStep::EMPTY; MAX_CALL_DEPTH],
             max_active_depth: 0,
-            #[cfg(feature = "execution-observer")]
-            observer: None,
-            #[cfg(feature = "execution-observer")]
-            observed_transaction_execution_class: None,
         }
-    }
-
-    /// Creates metering state that emits events to an observational host sink.
-    #[cfg(feature = "execution-observer")]
-    fn new_with_observer(
-        schedule: &'static ZkGasSchedule,
-        observer: SharedExecutionObserver,
-    ) -> Self {
-        let mut state = Self::new(schedule);
-        state.observer = Some(ObserverState {
-            observer,
-            phase: ExecutionPhase::PreExecutionSystem,
-            tx_index: None,
-            next_operation_id: 0,
-        });
-        state
-    }
-
-    /// Updates executor-owned context used by subsequent operation and charge events.
-    #[cfg(feature = "execution-observer")]
-    fn set_execution_observer_context(&mut self, phase: ExecutionPhase, tx_index: Option<u64>) {
-        if let Some(observer) = &mut self.observer {
-            observer.phase = phase;
-            observer.tx_index = tx_index;
-        }
-    }
-
-    /// Captures only the first transaction frame; inner calls intentionally cannot alter the
-    /// executor's top-level transaction classification.
-    #[cfg(feature = "execution-observer")]
-    fn capture_top_level_recipient_code_hash<DB: reth_revm::Database>(
-        &mut self,
-        context: &TaikoEvmContext<DB>,
-    ) {
-        if self.observed_transaction_execution_class.is_some() ||
-            !self.observer.as_ref().is_some_and(|observer| {
-                observer.phase == ExecutionPhase::Transactions && observer.tx_index.is_some()
-            })
-        {
-            return;
-        }
-        if let TxKind::Call(recipient) = context.tx().kind {
-            let code_hash =
-                context.journal().state.get(&recipient).map(|account| account.info.code_hash);
-            self.observed_transaction_execution_class = Some(
-                if code_hash.is_some_and(|hash| {
-                    hash != B256::ZERO && hash != alloy_primitives::KECCAK256_EMPTY
-                }) {
-                    TransactionExecutionClass::ContractCall
-                } else if context.tx().value.is_zero() {
-                    TransactionExecutionClass::NoCodeNoValue
-                } else {
-                    TransactionExecutionClass::NativeValueTransfer
-                },
-            );
-        }
-    }
-
-    #[cfg(feature = "execution-observer")]
-    /// Returns the first top-level frame classification captured for the active transaction.
-    fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
-        self.observed_transaction_execution_class
     }
 
     /// Discards the in-flight transaction zk gas together with all per-frame step bookkeeping.
@@ -407,10 +267,6 @@ impl ZkGasMeteringState {
             self.pending_steps[index] = PendingStep::EMPTY;
         }
         self.max_active_depth = 0;
-        #[cfg(feature = "execution-observer")]
-        {
-            self.observed_transaction_execution_class = None;
-        }
     }
 
     /// Records the opcode and gas snapshot for the current frame depth.
@@ -431,161 +287,25 @@ impl ZkGasMeteringState {
             opcode: pending.opcode,
             step_gas: pending.gas_remaining.saturating_sub(gas_remaining),
             spawned: false,
-            operation_id: None,
         }
     }
 
     /// Charges a completed opcode step against the active meter.
     #[inline(always)]
     fn charge_finished_step(&mut self, step: FinishedStep) -> Result<(), ZkGasOutcome> {
-        // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
-        // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
-        let (raw_gas, raw_gas_source) = if step.spawned {
-            (
-                super::meter::spawn_estimate(self.meter.schedule(), step.opcode),
-                RawGasSource::SpawnEstimate,
-            )
-        } else {
-            (step.step_gas, RawGasSource::InterpreterDelta)
-        };
-        let multiplier =
-            u64::from(self.meter.schedule().opcode_multipliers[usize::from(step.opcode)]);
-        let requested_current_zkgas = raw_gas.checked_mul(multiplier);
-        let result = if step.spawned {
+        // Spawn opcodes use the fixed consensus estimate only when they selected a child frame.
+        // Otherwise we charge the measured interpreter gas delta from this opcode step.
+        if step.spawned {
             self.meter.charge_spawn_opcode(step.opcode)
         } else {
             self.charge_opcode(step.opcode, step.step_gas)
-        };
-        self.emit_charge_attempt(
-            step.operation_id,
-            ChargeAttemptDetails {
-                component: ChargeComponent::Opcode { opcode: step.opcode, spawned: step.spawned },
-                charge_raw_gas: Some(raw_gas),
-                raw_gas_source,
-                multiplier: Some(multiplier),
-                requested_current_zkgas,
-            },
-            result,
-        );
-        result
+        }
     }
 
     /// Charges a measured opcode against the active meter.
     #[inline(always)]
     fn charge_opcode(&mut self, opcode: u8, raw_gas: u64) -> Result<(), ZkGasOutcome> {
         self.meter.charge_opcode(opcode, raw_gas)
-    }
-
-    /// Charges one precompile and publishes the charge selection and checked outcome.
-    fn charge_precompile(
-        &mut self,
-        address: &Address,
-        native_gas: u64,
-        operation_id: Option<u64>,
-    ) -> Result<(), ZkGasOutcome> {
-        let multiplier = u64::from(self.meter.schedule().precompile_multiplier(address));
-        let requested_current_zkgas = native_gas.checked_mul(multiplier);
-        let result = self.meter.charge_precompile(address, native_gas);
-        self.emit_charge_attempt(
-            operation_id,
-            ChargeAttemptDetails {
-                component: ChargeComponent::Precompile { address: address.into_array() },
-                charge_raw_gas: Some(native_gas),
-                raw_gas_source: RawGasSource::PrecompileNative,
-                multiplier: Some(multiplier),
-                requested_current_zkgas,
-            },
-            result,
-        );
-        result
-    }
-
-    /// Emits an operation record immediately after an opcode body completed.
-    fn emit_opcode_execution(&mut self, opcode: u8, interpreter_raw_gas: u64) -> Option<u64> {
-        self.emit_operation(OperationComponent::Opcode { opcode, interpreter_raw_gas })
-    }
-
-    /// Emits an operation record immediately after a precompile body completed.
-    fn emit_precompile_execution(&mut self, address: Address, native_gas: u64) -> Option<u64> {
-        self.emit_operation(OperationComponent::Precompile {
-            address: address.into_array(),
-            native_gas,
-        })
-    }
-
-    /// Emits an operation only when the feature-gated host observer is installed.
-    fn emit_operation(&mut self, component: OperationComponent) -> Option<u64> {
-        #[cfg(feature = "execution-observer")]
-        {
-            let (observer, operation_id, phase, tx_index) = {
-                let state = self.observer.as_mut()?;
-                let operation_id = state.next_operation_id;
-                state.next_operation_id =
-                    state.next_operation_id.checked_add(1).expect("operation id overflow");
-                (state.observer.clone(), operation_id, state.phase, state.tx_index)
-            };
-            observer.on_event(ExecutionEvent::OperationExecuted {
-                operation_id,
-                phase,
-                tx_index,
-                component,
-            });
-            Some(operation_id)
-        }
-        #[cfg(not(feature = "execution-observer"))]
-        {
-            let _ = component;
-            None
-        }
-    }
-
-    /// Emits the selected current-schedule charge and its checked meter outcome.
-    fn emit_charge_attempt(
-        &self,
-        operation_id: Option<u64>,
-        details: ChargeAttemptDetails,
-        result: Result<(), ZkGasOutcome>,
-    ) {
-        #[cfg(feature = "execution-observer")]
-        if let Some(state) = &self.observer {
-            let outcome = match result {
-                Ok(()) => ChargeOutcome::Applied,
-                Err(ZkGasOutcome::LimitExceeded) if details.requested_current_zkgas.is_none() => {
-                    ChargeOutcome::ArithmeticOverflow
-                }
-                Err(ZkGasOutcome::LimitExceeded) => ChargeOutcome::LimitExceeded,
-            };
-            state.observer.on_event(ExecutionEvent::ChargeAttempt {
-                operation_id,
-                phase: state.phase,
-                tx_index: state.tx_index,
-                component: details.component,
-                charge_raw_gas: details.charge_raw_gas,
-                raw_gas_source: details.raw_gas_source,
-                multiplier: details.multiplier,
-                requested_current_zkgas: details.requested_current_zkgas,
-                outcome,
-            });
-        }
-        #[cfg(not(feature = "execution-observer"))]
-        #[allow(irrefutable_let_patterns)]
-        let ChargeAttemptDetails {
-            component,
-            charge_raw_gas,
-            raw_gas_source,
-            multiplier,
-            requested_current_zkgas,
-        } = details;
-        #[cfg(not(feature = "execution-observer"))]
-        let _ = (
-            operation_id,
-            component,
-            charge_raw_gas,
-            raw_gas_source,
-            multiplier,
-            requested_current_zkgas,
-            result,
-        );
     }
 }
 
@@ -610,90 +330,15 @@ struct FinishedStep {
     opcode: u8,
     /// Raw EVM gas spent by the opcode step on the interpreter path.
     step_gas: u64,
-    /// Whether the opcode dispatched child work and should use the fixed spawn estimate.
+    /// Whether the opcode selected `NewFrame` and should use the fixed spawn estimate.
     spawned: bool,
-    /// Feature-gated operation identifier allocated after the opcode body completed.
-    operation_id: Option<u64>,
-}
-
-/// Host observer state retained by one inspector across a block execution.
-#[cfg(feature = "execution-observer")]
-struct ObserverState {
-    /// Event sink that must not influence execution.
-    observer: SharedExecutionObserver,
-    /// Executor-owned phase for the current callback sequence.
-    phase: ExecutionPhase,
-    /// Executor-owned transaction index for the current callback sequence.
-    tx_index: Option<u64>,
-    /// Next block-unique operation identifier.
-    next_operation_id: u64,
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "execution-observer")]
-    use std::sync::{Arc, Mutex};
-
-    use crate::zk_gas::{meter::ZkGasOutcome, unzen::UNZEN_ZK_GAS_SCHEDULE};
+    use crate::zk_gas::unzen::UNZEN_ZK_GAS_SCHEDULE;
 
     use super::{FinishedStep, ZkGasMeteringState};
-    #[cfg(feature = "execution-observer")]
-    use crate::zk_gas::observer::{ChargeOutcome, ExecutionEvent, ExecutionObserver};
-
-    #[cfg(feature = "execution-observer")]
-    #[derive(Default)]
-    struct RecordingObserver(Mutex<Vec<ExecutionEvent>>);
-
-    #[cfg(feature = "execution-observer")]
-    impl ExecutionObserver for RecordingObserver {
-        fn on_event(&self, event: ExecutionEvent) {
-            self.0.lock().expect("observer lock should not be poisoned").push(event);
-        }
-    }
-
-    #[cfg(feature = "execution-observer")]
-    #[test]
-    fn observer_distinguishes_arithmetic_overflow_from_budget_limit() {
-        let observer = Arc::new(RecordingObserver::default());
-        let mut metering =
-            ZkGasMeteringState::new_with_observer(&UNZEN_ZK_GAS_SCHEDULE, observer.clone());
-        let opcode = UNZEN_ZK_GAS_SCHEDULE
-            .opcode_multipliers
-            .iter()
-            .position(|multiplier| *multiplier > 1)
-            .expect("Unzen schedule has a multiplied opcode") as u8;
-        let overflow_id = metering.emit_opcode_execution(opcode, u64::MAX);
-        let overflow = metering.charge_finished_step(FinishedStep {
-            opcode,
-            step_gas: u64::MAX,
-            spawned: false,
-            operation_id: overflow_id,
-        });
-        let budget_id =
-            metering.emit_opcode_execution(opcode, UNZEN_ZK_GAS_SCHEDULE.block_limit + 1);
-        let budget = metering.charge_finished_step(FinishedStep {
-            opcode,
-            step_gas: UNZEN_ZK_GAS_SCHEDULE.block_limit + 1,
-            spawned: false,
-            operation_id: budget_id,
-        });
-
-        // The meter's consensus-facing normalization is LimitExceeded in both cases.
-        assert_eq!(overflow, Err(ZkGasOutcome::LimitExceeded));
-        assert_eq!(budget, Err(ZkGasOutcome::LimitExceeded));
-
-        let events = observer.0.lock().expect("observer lock should not be poisoned");
-        assert!(matches!(
-            events[1],
-            ExecutionEvent::ChargeAttempt { operation_id: Some(id), outcome: ChargeOutcome::ArithmeticOverflow, .. }
-                if Some(id) == overflow_id
-        ));
-        assert!(matches!(
-            events[3],
-            ExecutionEvent::ChargeAttempt { operation_id: Some(id), outcome: ChargeOutcome::LimitExceeded, .. }
-                if Some(id) == budget_id
-        ));
-    }
 
     #[test]
     fn reset_transaction_clears_meter_and_step_bookkeeping() {
@@ -714,12 +359,7 @@ mod tests {
         let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
 
         metering
-            .charge_finished_step(FinishedStep {
-                opcode: 0xf0,
-                step_gas: 1,
-                spawned: true,
-                operation_id: None,
-            })
+            .charge_finished_step(FinishedStep { opcode: 0xf0, step_gas: 1, spawned: true })
             .expect("spawn estimate should fit");
 
         assert_eq!(

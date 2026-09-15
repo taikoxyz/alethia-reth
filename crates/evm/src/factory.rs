@@ -11,8 +11,6 @@ use reth_revm::{
     precompile::{PrecompileSpecId, Precompiles},
 };
 
-#[cfg(feature = "execution-observer")]
-use crate::zk_gas::observer::SharedExecutionObserver;
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
@@ -23,37 +21,6 @@ use crate::{
 /// A factory type for creating instances of the Taiko EVM given a certain input.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct TaikoEvmFactory;
-
-impl TaikoEvmFactory {
-    /// Creates an inspector-backed EVM that publishes host-only execution events.
-    ///
-    /// This constructor is feature-gated so ordinary consensus and guest construction keeps the
-    /// existing production meter path and never allocates an observer.
-    #[cfg(feature = "execution-observer")]
-    pub fn create_evm_with_execution_observer<DB: Database>(
-        &self,
-        db: DB,
-        input: EvmEnv<TaikoSpecId, BlockEnv>,
-        observer: SharedExecutionObserver,
-    ) -> TaikoEvmWrapper<DB, NoOpInspector, PrecompilesMap> {
-        let spec_id = input.cfg_env.spec;
-        let schedule = schedule_for(spec_id);
-        let evm = Context::mainnet()
-            .with_cfg(input.cfg_env)
-            .with_block(input.block_env)
-            .with_db(db)
-            .build_mainnet_with_inspector(ZkGasInspector::new_with_execution_observer(
-                NoOpInspector {},
-                schedule,
-                observer,
-            ))
-            .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
-                PrecompileSpecId::from_spec_id(spec_id.into()),
-            )));
-
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
-    }
-}
 
 impl EvmFactory for TaikoEvmFactory {
     /// The EVM type that this factory creates.

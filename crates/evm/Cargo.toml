@@ -10,7 +10,6 @@ path = "src/lib.rs"
 
 [features]
 default = ["std"]
-execution-observer = ["dep:serde", "serde/derive"]
 serde = ["dep:serde"]
 std = [
     "alethia-reth-chainspec/std",

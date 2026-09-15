@@ -2,8 +2,6 @@
 use std::ops::{Deref, DerefMut};
 
 use alloy_evm::{Database, Evm, EvmEnv};
-#[cfg(feature = "execution-observer")]
-use alloy_primitives::B256;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 // Re-export from primitives so downstream consumers can use the lighter crate.
 pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
@@ -22,8 +20,6 @@ use reth_revm::{
 };
 use tracing::debug;
 
-#[cfg(feature = "execution-observer")]
-use crate::zk_gas::observer::{ExecutionPhase, TransactionExecutionClass};
 use crate::{
     evm::{TaikoEvm, TaikoEvmExtraExecutionCtx},
     handler::{TaikoEvmHandler, get_treasury_address},
@@ -143,8 +139,8 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
             return Ok(());
         }
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
-        if tx.caller != golden_touch
-            || tx.kind != TxKind::Call(get_treasury_address(self.ctx().cfg.chain_id))
+        if tx.caller != golden_touch ||
+            tx.kind != TxKind::Call(get_treasury_address(self.ctx().cfg.chain_id))
         {
             return Ok(());
         }
@@ -181,18 +177,6 @@ impl<DB: Database, I, P> TaikoAnchorEvm for TaikoEvmWrapper<DB, I, P> {
 
 /// EVM extension trait for reading and mutating the zk gas meter state.
 pub trait TaikoZkGasEvm {
-    /// Sets executor-owned context for later feature-gated observer events.
-    ///
-    /// Implementations without an installed observer treat this as an observational no-op.
-    #[cfg(feature = "execution-observer")]
-    fn set_execution_observer_context(&mut self, _phase: ExecutionPhase, _tx_index: Option<u64>) {}
-
-    /// Returns the active fixed transaction intrinsic zk gas charge, when metering is enabled.
-    #[cfg(feature = "execution-observer")]
-    fn tx_intrinsic_zk_gas(&self) -> Option<u64> {
-        None
-    }
-
     /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
     ///
     /// Enabled by default: RPC-style consumers reuse one EVM across transacts
@@ -217,34 +201,6 @@ pub trait TaikoZkGasEvm {
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
-    /// Returns the in-flight zk gas for the current transaction before a reset or commit boundary.
-    #[cfg(feature = "execution-observer")]
-    fn transaction_zk_gas_used(&self) -> Option<u64> {
-        None
-    }
-
-    /// Returns whether `address` is an active precompile for this EVM instance.
-    #[cfg(feature = "execution-observer")]
-    fn is_active_precompile(&self, _address: &Address) -> bool {
-        false
-    }
-
-    /// Returns a recipient code hash already loaded by normal EVM execution, if available.
-    ///
-    /// This deliberately never reads the database: observer classification must not introduce an
-    /// additional fallible lookup or change execution's database-access sequence.
-    #[cfg(feature = "execution-observer")]
-    fn loaded_account_code_hash(&self, _address: &Address) -> Option<B256> {
-        None
-    }
-
-    /// Returns the class captured at normal top-level frame initialization for the current
-    /// observed transaction, if it reached that execution boundary.
-    #[cfg(feature = "execution-observer")]
-    fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
-        None
-    }
-
     /// Reserves finalized block zk gas without executing a transaction.
     ///
     /// Returns the new finalized block total, or `None` when no meter is installed.
@@ -262,18 +218,6 @@ where
     I: Inspector<TaikoEvmContext<DB>>,
     P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
 {
-    /// Forwards executor-owned observer context into the encapsulated zk gas inspector.
-    #[cfg(feature = "execution-observer")]
-    fn set_execution_observer_context(&mut self, phase: ExecutionPhase, tx_index: Option<u64>) {
-        self.base_evm_mut().inner.inspector.set_execution_observer_context(phase, tx_index);
-    }
-
-    /// Returns the active schedule's fixed intrinsic charge without mutating meter state.
-    #[cfg(feature = "execution-observer")]
-    fn tx_intrinsic_zk_gas(&self) -> Option<u64> {
-        self.meter().map(|meter| meter.schedule().tx_intrinsic_zk_gas)
-    }
-
     /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool) {
         self.reset_zk_gas_per_transact = enabled;
@@ -308,28 +252,6 @@ where
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64> {
         self.meter().map(|m| m.block_zk_gas_used())
-    }
-
-    /// Returns the in-flight zk gas accumulated by the current transaction.
-    #[cfg(feature = "execution-observer")]
-    fn transaction_zk_gas_used(&self) -> Option<u64> {
-        self.meter().map(|m| m.tx_zk_gas_used())
-    }
-
-    /// Checks the configured precompile provider rather than relying on database account state.
-    #[cfg(feature = "execution-observer")]
-    fn is_active_precompile(&self, address: &Address) -> bool {
-        self.precompiles().contains(address)
-    }
-
-    #[cfg(feature = "execution-observer")]
-    fn loaded_account_code_hash(&self, address: &Address) -> Option<B256> {
-        self.ctx().journal().state.get(address).map(|account| account.info.code_hash)
-    }
-
-    #[cfg(feature = "execution-observer")]
-    fn observed_transaction_execution_class(&self) -> Option<TransactionExecutionClass> {
-        self.base_evm().inner.inspector.observed_transaction_execution_class()
     }
 
     /// Reserves finalized block zk gas through the active meter.
@@ -487,8 +409,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
-            && contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+            contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;

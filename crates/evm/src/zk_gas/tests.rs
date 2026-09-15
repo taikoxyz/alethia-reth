@@ -11,7 +11,9 @@ use reth_revm::{
     db::InMemoryDB,
     inspector::NoOpInspector,
     interpreter::{
-        CallInputs, CallOutcome, Interpreter, interpreter::EthInterpreter, interpreter_types::Jumps,
+        CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterAction,
+        interpreter::EthInterpreter,
+        interpreter_types::{Jumps, LoopControl},
     },
     primitives::{Bytes, TxKind},
     state::{AccountInfo, Bytecode, bytecode::opcode},
@@ -19,12 +21,13 @@ use reth_revm::{
 use revm_database_interface::{
     BENCH_CALLER, BENCH_CALLER_BALANCE, BENCH_TARGET, BENCH_TARGET_BALANCE,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{alloy::TaikoZkGasEvm, factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
-    meter::{ZkGasMeter, ZkGasOutcome},
+    meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
     schedule::{FAILSAFE_MULTIPLIER, ZkGasSchedule, schedule_for},
     unzen::{TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE},
 };
@@ -242,10 +245,19 @@ fn meter_exposes_its_schedule() {
     assert!(std::ptr::eq(meter.schedule(), schedule));
 }
 
+#[derive(Clone, Copy, Debug)]
+struct StepProbe {
+    opcode: u8,
+    raw_gas: u64,
+    selected_new_frame: bool,
+}
+
 #[derive(Default, Debug)]
 struct StepGasProbeInspector {
     gas_remaining: u64,
-    step_costs: Vec<(u8, u64)>,
+    steps: Vec<StepProbe>,
+    call_targets: Vec<Address>,
+    create_count: usize,
     precompile_gas_used: Option<u64>,
 }
 
@@ -256,14 +268,25 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
 
     fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, _context: &mut CTX) {
         self.gas_remaining = interp.gas.remaining();
-        self.step_costs.push((interp.bytecode.opcode(), 0));
+        self.steps.push(StepProbe {
+            opcode: interp.bytecode.opcode(),
+            raw_gas: 0,
+            selected_new_frame: false,
+        });
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<EthInterpreter>, _context: &mut CTX) {
         let remaining = interp.gas.remaining();
-        let last = self.step_costs.last_mut().expect("step recorded");
-        last.1 = self.gas_remaining.saturating_sub(remaining);
+        let last = self.steps.last_mut().expect("step recorded");
+        last.raw_gas = self.gas_remaining.saturating_sub(remaining);
+        last.selected_new_frame =
+            matches!(interp.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
         self.gas_remaining = remaining;
+    }
+
+    fn call(&mut self, _context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        self.call_targets.push(inputs.bytecode_address);
+        None
     }
 
     fn call_end(&mut self, _context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
@@ -271,6 +294,11 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
             self.precompile_gas_used =
                 Some(inputs.gas_limit.saturating_sub(outcome.result.gas.remaining()));
         }
+    }
+
+    fn create(&mut self, _context: &mut CTX, _inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+        self.create_count += 1;
+        None
     }
 }
 
@@ -289,26 +317,33 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let probe = evm.inspector();
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
-    let expected = probe.step_costs.iter().fold(
+    let expected = probe.steps.iter().fold(
         u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
             precompile_gas_used,
-        |acc, (opcode, step_gas)| {
-            let raw_gas = if *opcode == opcode::STATICCALL {
+        |acc, step| {
+            let raw_gas = if step.opcode == opcode::STATICCALL {
                 schedule.spawn_estimates.staticcall
             } else {
-                *step_gas
+                step.raw_gas
             };
-            acc + raw_gas * u64::from(schedule.opcode_multipliers[*opcode as usize])
+            acc + raw_gas * u64::from(schedule.opcode_multipliers[step.opcode as usize])
         },
     );
-    let naive_expected = probe.step_costs.iter().fold(
+    let naive_expected = probe.steps.iter().fold(
         u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
             precompile_gas_used,
-        |acc, (opcode, step_gas)| {
-            acc + (*step_gas * u64::from(schedule.opcode_multipliers[*opcode as usize]))
+        |acc, step| {
+            acc + (step.raw_gas * u64::from(schedule.opcode_multipliers[step.opcode as usize]))
         },
     );
 
+    assert!(
+        probe
+            .steps
+            .iter()
+            .any(|step| { step.opcode == opcode::STATICCALL && step.selected_new_frame })
+    );
+    assert!(probe.call_targets.contains(&Address::with_last_byte(0x04)));
     assert_eq!(meter.tx_zk_gas_used(), expected);
     assert_ne!(meter.tx_zk_gas_used(), naive_expected);
 }
@@ -352,6 +387,334 @@ fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
 
     assert_eq!(production_zk_gas, inspector_zk_gas);
 }
+
+#[derive(Clone, Copy, Debug)]
+enum SpawnFamily {
+    Call,
+    CallCode,
+    DelegateCall,
+    StaticCall,
+    Create,
+    Create2,
+}
+
+impl SpawnFamily {
+    const ALL: [Self; 6] = [
+        Self::Call,
+        Self::CallCode,
+        Self::DelegateCall,
+        Self::StaticCall,
+        Self::Create,
+        Self::Create2,
+    ];
+
+    const fn opcode(self) -> u8 {
+        match self {
+            Self::Call => opcode::CALL,
+            Self::CallCode => opcode::CALLCODE,
+            Self::DelegateCall => opcode::DELEGATECALL,
+            Self::StaticCall => opcode::STATICCALL,
+            Self::Create => opcode::CREATE,
+            Self::Create2 => opcode::CREATE2,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Call => "CALL",
+            Self::CallCode => "CALLCODE",
+            Self::DelegateCall => "DELEGATECALL",
+            Self::StaticCall => "STATICCALL",
+            Self::Create => "CREATE",
+            Self::Create2 => "CREATE2",
+        }
+    }
+
+    fn spawned_bytecode(self, child: Address) -> Bytecode {
+        let mut code = match self {
+            Self::Call | Self::CallCode => vec![
+                opcode::PUSH1,
+                0x00, // return size
+                opcode::PUSH1,
+                0x00, // return offset
+                opcode::PUSH1,
+                0x00, // input size
+                opcode::PUSH1,
+                0x00, // input offset
+                opcode::PUSH1,
+                0x00, // value
+                opcode::PUSH20,
+            ],
+            Self::DelegateCall | Self::StaticCall => vec![
+                opcode::PUSH1,
+                0x00, // return size
+                opcode::PUSH1,
+                0x00, // return offset
+                opcode::PUSH1,
+                0x00, // input size
+                opcode::PUSH1,
+                0x00, // input offset
+                opcode::PUSH20,
+            ],
+            Self::Create => {
+                return Bytecode::new_raw(Bytes::from(vec![
+                    opcode::PUSH1,
+                    0x00, // init-code size
+                    opcode::PUSH1,
+                    0x00, // init-code offset
+                    opcode::PUSH1,
+                    0x00, // value
+                    opcode::CREATE,
+                    opcode::STOP,
+                ]));
+            }
+            Self::Create2 => {
+                return Bytecode::new_raw(Bytes::from(vec![
+                    opcode::PUSH1,
+                    0x00, // salt
+                    opcode::PUSH1,
+                    0x00, // init-code size
+                    opcode::PUSH1,
+                    0x00, // init-code offset
+                    opcode::PUSH1,
+                    0x00, // value
+                    opcode::CREATE2,
+                    opcode::STOP,
+                ]));
+            }
+        };
+        code.extend_from_slice(child.as_slice());
+        code.extend_from_slice(&[opcode::PUSH2, 0xff, 0xff, self.opcode(), opcode::STOP]);
+        Bytecode::new_raw(Bytes::from(code))
+    }
+
+    fn prefix_zk_gas(self, schedule: &ZkGasSchedule) -> u64 {
+        let charge = |opcode: u8| 3 * u64::from(schedule.opcode_multipliers[usize::from(opcode)]);
+        match self {
+            Self::Call | Self::CallCode => {
+                5 * charge(opcode::PUSH1) + charge(opcode::PUSH20) + charge(opcode::PUSH2)
+            }
+            Self::DelegateCall | Self::StaticCall => {
+                4 * charge(opcode::PUSH1) + charge(opcode::PUSH20) + charge(opcode::PUSH2)
+            }
+            Self::Create => 3 * charge(opcode::PUSH1),
+            Self::Create2 => 4 * charge(opcode::PUSH1),
+        }
+    }
+
+    const fn spawn_raw_gas(self, schedule: &ZkGasSchedule) -> u64 {
+        match self {
+            Self::Call => schedule.spawn_estimates.call,
+            Self::CallCode => schedule.spawn_estimates.callcode,
+            Self::DelegateCall => schedule.spawn_estimates.delegatecall,
+            Self::StaticCall => schedule.spawn_estimates.staticcall,
+            Self::Create => schedule.spawn_estimates.create,
+            Self::Create2 => schedule.spawn_estimates.create2,
+        }
+    }
+
+    fn was_dispatched(self, probe: &StepGasProbeInspector, child: Address) -> bool {
+        match self {
+            Self::Call | Self::CallCode | Self::DelegateCall | Self::StaticCall => {
+                probe.call_targets.contains(&child)
+            }
+            Self::Create | Self::Create2 => probe.create_count != 0,
+        }
+    }
+}
+
+fn spawn_case_db(family: SpawnFamily, child: Address) -> InMemoryDB {
+    let mut db = db_with_contract(family.spawned_bytecode(child));
+    insert_contract(&mut db, child, simple_arithmetic_bytecode());
+    db
+}
+
+fn expected_probe_zk_gas(probe: &StepGasProbeInspector, schedule: &ZkGasSchedule) -> u64 {
+    let opcode_total = probe.steps.iter().fold(0_u64, |total, step| {
+        let raw_gas = if step.selected_new_frame && is_spawn_opcode(step.opcode) {
+            SpawnFamily::ALL
+                .into_iter()
+                .find(|family| family.opcode() == step.opcode)
+                .expect("spawn opcode belongs to a family")
+                .spawn_raw_gas(schedule)
+        } else {
+            step.raw_gas
+        };
+        total + raw_gas * u64::from(schedule.opcode_multipliers[usize::from(step.opcode)])
+    });
+    let precompile_total = probe.precompile_gas_used.map_or(0, |native_gas| {
+        native_gas * u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04)))
+    });
+    opcode_total + precompile_total
+}
+
+#[test]
+fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
+    let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+    let child = Address::with_last_byte(0xD1);
+
+    for family in SpawnFamily::ALL {
+        let mut plain =
+            TaikoEvmFactory.create_evm(spawn_case_db(family, child), evm_env(TaikoSpecId::UNZEN));
+        let plain_result = plain
+            .transact(tx_env(500_000))
+            .unwrap_or_else(|err| panic!("{} plain spawn failed: {err}", family.name()));
+        let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
+
+        let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+            spawn_case_db(family, child),
+            evm_env(TaikoSpecId::UNZEN),
+            StepGasProbeInspector::default(),
+        );
+        let inspected_result = inspected
+            .transact(tx_env(500_000))
+            .unwrap_or_else(|err| panic!("{} inspected spawn failed: {err}", family.name()));
+        let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
+        let probe = inspected.inspector();
+        let spawn_step = probe
+            .steps
+            .iter()
+            .find(|step| step.opcode == family.opcode())
+            .unwrap_or_else(|| panic!("{} step was not observed", family.name()));
+
+        assert!(plain_result.result.is_success(), "{} plain result", family.name());
+        assert!(inspected_result.result.is_success(), "{} inspected result", family.name());
+        assert!(spawn_step.selected_new_frame, "{} must select NewFrame", family.name());
+        assert_ne!(
+            spawn_step.raw_gas,
+            family.spawn_raw_gas(schedule),
+            "{} test must distinguish interpreter delta from spawn estimate",
+            family.name()
+        );
+        assert!(family.was_dispatched(probe, child), "{} child must dispatch", family.name());
+        assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, schedule), "{}", family.name());
+        assert_eq!(plain_zk_gas, inspected_zk_gas, "{} spawn parity", family.name());
+
+        let failing = Bytecode::new_raw(Bytes::from(vec![family.opcode()]));
+        let mut plain = TaikoEvmFactory
+            .create_evm(db_with_contract(failing.clone()), evm_env(TaikoSpecId::UNZEN));
+        let plain_result = plain
+            .transact(tx_env(100_000))
+            .unwrap_or_else(|err| panic!("{} plain nonspawn errored: {err}", family.name()));
+        let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
+
+        let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+            db_with_contract(failing),
+            evm_env(TaikoSpecId::UNZEN),
+            StepGasProbeInspector::default(),
+        );
+        let inspected_result = inspected
+            .transact(tx_env(100_000))
+            .unwrap_or_else(|err| panic!("{} inspected nonspawn errored: {err}", family.name()));
+        let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
+        let probe = inspected.inspector();
+        let failed_step = probe.steps.first().expect("failing opcode step");
+
+        assert!(matches!(plain_result.result, ExecutionResult::Halt { .. }));
+        assert!(matches!(inspected_result.result, ExecutionResult::Halt { .. }));
+        assert!(!failed_step.selected_new_frame, "{} must not spawn", family.name());
+        assert_ne!(
+            failed_step.raw_gas,
+            family.spawn_raw_gas(schedule),
+            "{} nonspawn test must distinguish raw-gas sources",
+            family.name()
+        );
+        assert!(!family.was_dispatched(probe, child), "{} must not dispatch", family.name());
+        assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, schedule), "{}", family.name());
+        assert_eq!(plain_zk_gas, inspected_zk_gas, "{} nonspawn parity", family.name());
+    }
+}
+
+#[test]
+fn metered_paths_match_for_dynamic_opcode_and_custom_inspector_composition() {
+    let dynamic = Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH2,
+        0x01,
+        0x00,
+        opcode::PUSH1,
+        0x00,
+        opcode::KECCAK256,
+        opcode::STOP,
+    ]));
+    let mut plain =
+        TaikoEvmFactory.create_evm(db_with_contract(dynamic.clone()), evm_env(TaikoSpecId::UNZEN));
+    plain.transact(tx_env(100_000)).expect("plain dynamic opcode execution");
+    let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
+
+    let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(dynamic),
+        evm_env(TaikoSpecId::UNZEN),
+        StepGasProbeInspector::default(),
+    );
+    inspected.transact(tx_env(100_000)).expect("inspected dynamic opcode execution");
+    let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
+    let probe = inspected.inspector();
+    let keccak = probe
+        .steps
+        .iter()
+        .find(|step| step.opcode == opcode::KECCAK256)
+        .expect("custom inspector observes KECCAK256");
+
+    assert!(keccak.raw_gas > 30, "memory expansion must contribute dynamic gas");
+    assert!(!keccak.selected_new_frame);
+    assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, &UNZEN_ZK_GAS_SCHEDULE));
+    assert_eq!(plain_zk_gas, inspected_zk_gas);
+}
+
+fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
+    let schedule = &UNZEN_ZK_GAS_SCHEDULE;
+    let child = Address::with_last_byte(0xD2);
+    let spawn_charge = family.spawn_raw_gas(schedule) *
+        u64::from(schedule.opcode_multipliers[usize::from(family.opcode())]);
+    let admitted = family.prefix_zk_gas(schedule) + spawn_charge - 1;
+    let reserved = schedule.block_limit - admitted;
+
+    let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+        spawn_case_db(family, child),
+        evm_env(TaikoSpecId::UNZEN),
+        StepGasProbeInspector::default(),
+    );
+    inspected.reserve_block_zk_gas(reserved).expect("inspected reserve fits");
+    let inspected_result = inspected.transact(tx_env(500_000));
+    let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
+    let dispatched = family.was_dispatched(inspected.inspector(), child);
+
+    let mut plain =
+        TaikoEvmFactory.create_evm(spawn_case_db(family, child), evm_env(TaikoSpecId::UNZEN));
+    plain.reserve_block_zk_gas(reserved).expect("plain reserve fits");
+    let plain_run = catch_unwind(AssertUnwindSafe(|| plain.transact(tx_env(500_000))));
+    assert!(
+        plain_run.is_ok(),
+        "{} plain path must replace its pending NewFrame without a debug assertion",
+        family.name()
+    );
+    let plain_result = plain_run.expect("panic checked above");
+    let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
+
+    let inspected_error = inspected_result.expect_err("inspected wrapper charge must be fatal");
+    let plain_error = plain_result.expect_err("plain wrapper charge must be fatal");
+    assert_eq!(inspected_error.to_string(), ZK_GAS_LIMIT_ERR, "{}", family.name());
+    assert_eq!(plain_error.to_string(), ZK_GAS_LIMIT_ERR, "{}", family.name());
+    assert!(!dispatched, "{} must not dispatch child work", family.name());
+    assert_eq!(inspected_zk_gas, family.prefix_zk_gas(schedule), "{}", family.name());
+    assert_eq!(plain_zk_gas, inspected_zk_gas, "{} fatal parity", family.name());
+}
+
+macro_rules! spawn_limit_test {
+    ($name:ident, $family:expr) => {
+        #[test]
+        fn $name() {
+            assert_spawn_limit_rejected_before_dispatch($family);
+        }
+    };
+}
+
+spawn_limit_test!(call_limit_rejection_prevents_child_dispatch, SpawnFamily::Call);
+spawn_limit_test!(callcode_limit_rejection_prevents_child_dispatch, SpawnFamily::CallCode);
+spawn_limit_test!(delegatecall_limit_rejection_prevents_child_dispatch, SpawnFamily::DelegateCall);
+spawn_limit_test!(staticcall_limit_rejection_prevents_child_dispatch, SpawnFamily::StaticCall);
+spawn_limit_test!(create_limit_rejection_prevents_child_dispatch, SpawnFamily::Create);
+spawn_limit_test!(create2_limit_rejection_prevents_child_dispatch, SpawnFamily::Create2);
 
 #[test]
 fn transact_meters_each_run_from_zero_on_a_reused_evm() {

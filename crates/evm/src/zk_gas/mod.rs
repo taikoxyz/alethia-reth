@@ -4,8 +4,6 @@
 pub mod adapter;
 /// Checked zk gas accounting for a single Unzen block execution.
 pub mod meter;
-/// Execution ledger event definitions for the feature-gated host tracing path.
-pub mod observer;
 /// Production interpreter-side zk gas metering.
 pub mod runtime;
 /// Shared schedule types and fork selection helpers.

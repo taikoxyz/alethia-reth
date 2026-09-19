@@ -14,7 +14,7 @@ use reth_revm::{
     db::states::{BundleState, bundle_state::BundleRetention},
 };
 use reth_storage_api::noop::NoopProvider;
-use reth_trie_common::{HashedPostState, KeccakKeyHasher};
+use reth_trie_common::{HashedPostState, KeccakKeyHasher, KeyHasher};
 
 use crate::{
     config::{MissingBaseFee, TaikoEvmConfig, TaikoNextBlockEnvAttributes},
@@ -86,7 +86,7 @@ where
     state.merge_transitions(BundleRetention::Reverts);
 
     let bundle_state = state.take_bundle();
-    let hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
+    let hashed_state = hashed_post_state(&bundle_state);
 
     Ok(DerivedBlockExecutionOutcome {
         committed_transactions: execution_outcome.committed_transactions,
@@ -94,6 +94,27 @@ where
         hashed_state,
         finalized_block_zk_gas: finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed),
     })
+}
+
+/// Hashes the execution bundle into a [`HashedPostState`], marking every destroyed account's
+/// storage as wiped.
+///
+/// Since reth v2.5, [`HashedPostState::from_bundle_state`] no longer derives `wiped` from the
+/// account status: reth's state providers instead expand a destroyed account's parent slots into
+/// explicit zeroes, which needs parent-state access this helper does not have. The prover's
+/// stateless trie clears a storage trie only when `wiped` is set, so the flag is restored here;
+/// otherwise an account destroyed under pre-Unzen (pre-EIP-6780) SELFDESTRUCT semantics and
+/// re-created in the same block would keep its pre-block slots.
+fn hashed_post_state(bundle_state: &BundleState) -> HashedPostState {
+    let mut hashed_state =
+        HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
+    for (address, account) in bundle_state.state() {
+        if account.status.was_destroyed() {
+            hashed_state.storages.entry(KeccakKeyHasher::hash_key(address)).or_default().wiped =
+                true;
+        }
+    }
+    hashed_state
 }
 
 /// Assembles the filtered block produced by derived block execution.
@@ -141,17 +162,23 @@ mod tests {
     use std::sync::Arc;
 
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
     use reth_ethereum_primitives::{Block, BlockBody};
+    use reth_revm::state::{Bytecode, bytecode::opcode};
 
     use super::*;
     use crate::{
         config::TaikoEvmConfig,
-        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts},
+        testutil::{
+            BENCH_SUCCESS_TARGET, db_with_contracts, insert_contract, recovered_tx_with_chain_id,
+        },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
+
+    /// Pre-existing contract with storage whose code is `CALLER SELFDESTRUCT`.
+    const SELF_DESTRUCT_TARGET: Address = Address::with_last_byte(0x40);
 
     fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
         let tx = TxLegacy {
@@ -227,5 +254,67 @@ mod tests {
         .expect("filtered block should assemble");
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
+    }
+
+    #[test]
+    fn execute_derived_block_marks_self_destructed_storage_as_wiped() {
+        // No Taiko fork is scheduled, so the block executes with SHANGHAI semantics (every
+        // pre-Unzen fork does), where SELFDESTRUCT deletes a pre-existing contract together
+        // with its storage. The prover's stateless trie clears a storage trie only when the
+        // hashed storage is marked `wiped`, so the outcome must carry that flag.
+        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = SealedHeader::seal_slow(Header::default());
+
+        let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
+        insert_contract(
+            &mut db,
+            SELF_DESTRUCT_TARGET,
+            Bytecode::new_raw(Bytes::from(vec![opcode::CALLER, opcode::SELFDESTRUCT])),
+        );
+        db.insert_account_storage(SELF_DESTRUCT_TARGET, U256::from(1_u64), U256::from(42_u64))
+            .expect("in-memory storage insert cannot fail");
+
+        let anchor_transaction = test_transaction(chain_id, 0);
+        let destruct_transaction =
+            recovered_tx_with_chain_id(TEST_CALLER, SELF_DESTRUCT_TARGET, 1, 1, chain_id);
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: vec![
+                        anchor_transaction.clone_inner(),
+                        destruct_transaction.clone_inner(),
+                    ],
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            vec![anchor_transaction.signer(), destruct_transaction.signer()],
+        );
+
+        let outcome = execute_derived_block(&config, &parent_header, &derived_block, db)
+            .expect("derived block execution should succeed");
+
+        assert_eq!(outcome.committed_transactions.len(), 2);
+        let hashed_address = keccak256(SELF_DESTRUCT_TARGET);
+        assert_eq!(
+            outcome.hashed_state.accounts.get(&hashed_address),
+            Some(&None),
+            "the self-destructed contract must be removed from state"
+        );
+        let storage = outcome
+            .hashed_state
+            .storages
+            .get(&hashed_address)
+            .expect("a destroyed account must carry a hashed storage entry");
+        assert!(storage.wiped, "a destroyed account's storage must be marked as wiped");
     }
 }

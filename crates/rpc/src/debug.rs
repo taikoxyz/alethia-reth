@@ -204,17 +204,23 @@ where
                 .map_err(EthApiError::from)?;
             let db = StateProviderDatabase::new(&*state_provider);
             let block_executor = evm_config.executor(db);
-            let mut witness_record = ExecutionWitnessRecord::default();
+            // The record borrows the post-execution `State`, so the witness is assembled inside
+            // the closure while that state is still alive.
+            let mut witness = None;
 
             block_executor
                 .execute_with_state_closure(&*block, |statedb: &State<_>| {
-                    witness_record.record_executed_state(statedb, mode);
+                    witness = Some(ExecutionWitnessRecord::new(statedb).into_execution_witness(
+                        &*state_provider,
+                        &header_provider,
+                        block_number,
+                        mode,
+                    ));
                 })
                 .map_err(EthApiError::from)?;
 
-            witness_record
-                .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
-                .map_err(EthApiError::from)
+            // The closure runs whenever execution succeeds, so `None` is unreachable here.
+            witness.ok_or(EthApiError::InternalEthError)?.map_err(EthApiError::from)
         })
         .await;
 
@@ -265,7 +271,6 @@ where
                 .map_err(EthApiError::from)?;
             let db = StateProviderDatabase::new(&*state_provider);
             let mut state = State::builder().with_database(db).with_bundle_update().build();
-            let mut witness_record = ExecutionWitnessRecord::default();
 
             {
                 let mut block_executor = evm_config
@@ -310,9 +315,8 @@ where
             }
 
             state.merge_transitions(BundleRetention::Reverts);
-            witness_record.record_executed_state(&state, mode);
 
-            witness_record
+            ExecutionWitnessRecord::new(&state)
                 .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
                 .map_err(EthApiError::from)
         })

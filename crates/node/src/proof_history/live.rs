@@ -102,7 +102,9 @@ where
 
         operation_durations.execution_duration_seconds = start.elapsed();
 
-        let hashed_state = state_provider.hashed_post_state(&execution_result.state);
+        // Fallible since reth v2.5: destroyed accounts' storage is materialized as explicit zero
+        // slots read from the proof-history parent state instead of a `wiped` flag.
+        let hashed_state = state_provider.hashed_post_state(&execution_result.state)?;
         let (state_root, trie_updates) =
             state_provider.state_root_with_updates(hashed_state.clone())?;
 

@@ -24,6 +24,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      # The Docker image builds with `cargo build --locked`, which only runs after merge.
+      # Catch a stale Cargo.lock here instead. On release-please PRs, the lock bump comes
+      # from the Cargo.lock entries in release-please-config.json.
+      - name: Verify Cargo.lock is up to date
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - uses: taiki-e/install-action@nextest
       - uses: extractions/setup-just@v2
         with:

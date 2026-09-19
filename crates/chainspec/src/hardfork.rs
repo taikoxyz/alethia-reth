@@ -8,21 +8,21 @@ use reth_ethereum_forks::{ChainHardforks, EthereumHardforks};
 use crate::spec::TaikoChainSpec;
 
 hardfork!(
-  /// The name of a Taiko hardfork.
-  ///
-  /// When building a list of hardforks for a chain, it's still expected to zip with
-  /// [`EthereumHardfork`].
-  #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-  TaikoHardfork {
-      /// Ontake protocol upgrade.
-      Ontake,
-      /// Pacaya protocol upgrade.
-      Pacaya,
-      /// Shasta protocol upgrade.
-      Shasta,
-      /// Unzen protocol upgrade.
-      Unzen,
-  }
+    /// The name of a Taiko hardfork.
+    ///
+    /// When building a list of hardforks for a chain, it's still expected to zip with
+    /// [`EthereumHardfork`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    TaikoHardfork {
+        /// Ontake protocol upgrade.
+        Ontake,
+        /// Pacaya protocol upgrade.
+        Pacaya,
+        /// Shasta protocol upgrade.
+        Shasta,
+        /// Unzen protocol upgrade.
+        Unzen,
+    }
 );
 
 /// Extends [`EthereumHardforks`] with Taiko network helper methods.

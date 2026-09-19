@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/taikoxyz/alethia-reth/compare/v1.4.0...v1.4.1) (2026-09-19)
+
+
+### Chores
+
+* **repo:** sync Cargo.lock to 1.4.0 and have release-please bump it ([#242](https://github.com/taikoxyz/alethia-reth/issues/242)) ([83a6aa6](https://github.com/taikoxyz/alethia-reth/commit/83a6aa63e60086d52bc4a157b6f8d875a7ad0944))
+
 ## [1.4.0](https://github.com/taikoxyz/alethia-reth/compare/v1.3.0...v1.4.0) (2026-08-28)
 
 

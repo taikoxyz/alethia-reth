@@ -70,72 +70,62 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-bin\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-bin\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-block\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-block\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-chainspec\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-chainspec\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-cli\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-cli\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-consensus\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-consensus\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-db\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-db\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-evm\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-evm\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-network\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-node\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-node\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-payload\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-node-builder\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-primitives\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-payload\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-rpc\" && !@.source)].version"
         },
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-primitives\" && !@.source)].version"
-        },
-        {
-          "type": "toml",
-          "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-rpc\" && !@.source)].version"
-        },
-        {
-          "type": "toml",
-          "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name == \"alethia-reth-rpc-types\" && !@.source)].version"
+          "jsonpath": "$.package[?(@.name.value == \"alethia-reth-rpc-types\" && !@.source)].version"
         }
       ]
     }

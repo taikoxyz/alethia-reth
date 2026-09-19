@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.4.0](https://github.com/taikoxyz/alethia-reth/compare/v1.3.0...v1.4.0) (2026-08-28)
+
+
+### Features
+
+* **chainspec:** remove `Masaya` network support ([#237](https://github.com/taikoxyz/alethia-reth/issues/237)) ([4992a91](https://github.com/taikoxyz/alethia-reth/commit/4992a91cfb54014a0de7f2c7e8e5f8c1eb2d1aad))
+* **rpc:** reserve anchor zk gas during tx selection ([#233](https://github.com/taikoxyz/alethia-reth/issues/233)) ([02a51ba](https://github.com/taikoxyz/alethia-reth/commit/02a51ba28f758ba34928dc102680af177bbd3fe0))
+
+
+### Bug Fixes
+
+* **docker:** harden apt.llvm.org bootstrap ([#235](https://github.com/taikoxyz/alethia-reth/issues/235)) ([298b37c](https://github.com/taikoxyz/alethia-reth/commit/298b37cbd0b06df6090da987b9705006af61b529))
+* **evm:** derive anchor context for replay-style RPC execution ([#231](https://github.com/taikoxyz/alethia-reth/issues/231)) ([c0bf140](https://github.com/taikoxyz/alethia-reth/commit/c0bf14085962d90e74a6e3ecc889bb4ad4d9cb18))
+* **evm:** meter each RPC transact against a fresh zk gas budget ([#232](https://github.com/taikoxyz/alethia-reth/issues/232)) ([f4727ce](https://github.com/taikoxyz/alethia-reth/commit/f4727ce7840a864e9c009b3dfad6d1242f5a442f))
+
+
+### Chores
+
+* **deps:** bump `reth` to the `v2.4.1` ([#225](https://github.com/taikoxyz/alethia-reth/issues/225)) ([479fe5b](https://github.com/taikoxyz/alethia-reth/commit/479fe5b692331a65b54918df2e5c5e0e9b67a8ca))
+* **docker:** bound and retry the apt.llvm.org installer fetch ([#229](https://github.com/taikoxyz/alethia-reth/issues/229)) ([11973e7](https://github.com/taikoxyz/alethia-reth/commit/11973e70335247d104eec634d96db772b20976c8))
+* **docker:** retry the apt.llvm.org installer on transient failures ([#234](https://github.com/taikoxyz/alethia-reth/issues/234)) ([50820d8](https://github.com/taikoxyz/alethia-reth/commit/50820d8ac9c67d7bbb8b23ef09a7c0ed57dc808c))
+
+
+### Reverted Commits
+
+* **evm:** remove the revmc JIT integration ([#227](https://github.com/taikoxyz/alethia-reth/issues/227)) ([#236](https://github.com/taikoxyz/alethia-reth/issues/236)) ([54e9abb](https://github.com/taikoxyz/alethia-reth/commit/54e9abbbc827dc8f6625813d131f20aa8f40636f))
+
 ## [1.3.0](https://github.com/taikoxyz/alethia-reth/compare/v1.2.0...v1.3.0) (2026-07-14)
 
 

@@ -11,8 +11,7 @@ use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ExecutionPayloadV1, PayloadError};
 use alloy_rpc_types_eth::Withdrawals;
-use reth::{chainspec::EthChainSpec, primitives::RecoveredBlock};
-use reth_chain_state::StateTrieOverlayManager;
+use reth::primitives::RecoveredBlock;
 use reth_engine_primitives::EngineApiValidator;
 use reth_engine_tree::tree::{TreeConfig, payload_validator::BasicEngineValidator};
 use reth_ethereum::{Block, EthPrimitives};
@@ -20,15 +19,15 @@ use reth_evm::ConfigureEngineEvm;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, NewPayloadError, NodeTypes, PayloadTypes, PayloadValidator,
 };
-use reth_node_builder::{
-    invalid_block_hook::InvalidBlockHookExt,
-    rpc::{ChangesetCache, EngineValidatorBuilder, PayloadValidatorBuilder},
+use reth_node_builder::rpc::{
+    BasicEngineValidatorBuilder, EngineValidatorBuilder, PayloadValidatorBuilder,
 };
 use reth_payload_primitives::{
     EngineApiMessageVersion, EngineObjectValidationError, InvalidPayloadAttributesError,
     PayloadAttributes, PayloadOrAttributes, VersionSpecificValidationError,
 };
 use reth_primitives_traits::{Block as BlockTrait, SealedBlock};
+use reth_storage_overlay::OverlayManager;
 use std::sync::Arc;
 
 /// Taiko-specific payload validation errors that do not map to an upstream Ethereum fork rule.
@@ -93,27 +92,20 @@ where
     type EngineValidator = BasicEngineValidator<N::Provider, N::Evm, TaikoEngineValidator>;
 
     /// Builds the tree validator for the consensus engine.
+    ///
+    /// Delegates to upstream's [`BasicEngineValidatorBuilder`] so the tree validator is wired
+    /// exactly like reth's (invalid-block hook, overlay manager, and the `txpool_prewarming`
+    /// option, whose adapter is private to `reth-node-builder`), with Taiko's payload validator
+    /// plugged in through this builder's [`PayloadValidatorBuilder`] impl.
     async fn build_tree_validator(
         self,
         ctx: &AddOnsContext<'_, N>,
         tree_config: TreeConfig,
-        changeset_cache: ChangesetCache,
-        state_trie_overlays: StateTrieOverlayManager<<N::Types as NodeTypes>::Primitives>,
+        overlay_manager: OverlayManager<<N::Types as NodeTypes>::Primitives>,
     ) -> eyre::Result<Self::EngineValidator> {
-        let validator = <Self as PayloadValidatorBuilder<N>>::build(self, ctx).await?;
-        let data_dir = ctx.config.datadir.clone().resolve_datadir(ctx.config.chain.chain());
-        let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
-        Ok(BasicEngineValidator::new(
-            ctx.node.provider().clone(),
-            Arc::new(ctx.node.consensus().clone()),
-            ctx.node.evm_config().clone(),
-            validator,
-            tree_config,
-            invalid_block_hook,
-            changeset_cache,
-            state_trie_overlays,
-            ctx.node.task_executor().clone(),
-        ))
+        BasicEngineValidatorBuilder::new(self)
+            .build_tree_validator(ctx, tree_config, overlay_manager)
+            .await
     }
 }
 

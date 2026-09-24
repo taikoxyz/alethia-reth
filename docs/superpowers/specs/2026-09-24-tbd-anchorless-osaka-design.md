@@ -1,6 +1,6 @@
 # TBD fork: anchorless execution and Osaka Engine API
 
-Status: design for user review; implementation has not started.
+Status: user-approved design; implementation has not started.
 
 ## Intent and agreed decisions
 

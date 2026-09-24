@@ -6,7 +6,7 @@
 //! therefore lives on here as first-party code, written against the crate's public storage API
 //! (`get_proof_window`).
 
-use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
+use alloy_eips::{NumHash, eip1898::BlockWithParent};
 use derive_more::Constructor;
 use reth_evm::{ConfigureEvm, execute::Executor};
 use reth_optimism_trie::{
@@ -21,7 +21,7 @@ use reth_provider::{
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 use tracing::info;
 
 /// Live trie collector for external proofs storage.
@@ -171,88 +171,6 @@ where
         Ok(())
     }
 
-    /// Handles chain reorganizations by replacing block updates after a common ancestor.
-    ///
-    /// This method removes all block updates after the latest common ancestor (the block before
-    /// the first block in `new_blocks`) and replaces them with the updates from the provided new
-    /// chain. A common ancestor at the retained earliest block is supported as long as the new
-    /// chain descends from the stored anchor: `replace_updates` refuses that boundary, so the
-    /// window is rebuilt by unwinding to the anchor and appending the new chain in one
-    /// transaction.
-    ///
-    /// # Arguments
-    ///
-    /// * `new_blocks` - A vector of references to `RecoveredBlock` instances representing the new
-    ///   blocks to be added to the trie storage.
-    pub fn unwind_and_store_block_updates(
-        &self,
-        block_updates: Vec<(BlockWithParent, Arc<TrieUpdatesSorted>, Arc<HashedPostStateSorted>)>,
-    ) -> Result<(), OpProofsStorageError> {
-        if block_updates.is_empty() {
-            return Ok(());
-        }
-
-        let start = Instant::now();
-        let mut operation_durations = OperationDurations::default();
-        let first = &block_updates[0].0;
-        let latest_common_block =
-            BlockNumHash::new(first.block.number.saturating_sub(1), first.parent);
-        let mut block_trie_updates: Vec<(BlockWithParent, BlockStateDiff)> =
-            Vec::with_capacity(block_updates.len());
-
-        for (block, trie_updates, hashed_state) in &block_updates {
-            block_trie_updates.push((
-                *block,
-                BlockStateDiff {
-                    sorted_trie_updates: (**trie_updates).clone(),
-                    sorted_post_state: (**hashed_state).clone(),
-                },
-            ));
-        }
-
-        let earliest = self.storage.provider_ro()?.get_proof_window()?.earliest;
-        let provider_rw = self.storage.provider_rw()?;
-        if latest_common_block.number == earliest.number {
-            // `replace_updates` refuses a common ancestor at the window's earliest block, but
-            // that is exactly where an ordinary reorg lands right after initialization (or an
-            // unwind) collapsed the window onto its anchor: the anchor itself stays, only the
-            // blocks above it are replaced. The new chain must descend from the stored anchor.
-            if latest_common_block.hash != earliest.hash {
-                return Err(OpProofsStorageError::OutOfOrder {
-                    block_number: first.block.number,
-                    parent_block_hash: first.parent,
-                    latest_block_hash: earliest.hash,
-                });
-            }
-            block_trie_updates.sort_unstable_by_key(|(block, _)| block.block.number);
-            // `unwind_history` only reads the unwind number and the parent that becomes the new
-            // latest block; the replaced block's hash is not tracked here, so label the unwind
-            // with the replacement block at that height.
-            let unwind_to = BlockWithParent::new(
-                earliest.hash,
-                NumHash::new(earliest.number.saturating_add(1), first.block.hash),
-            );
-            provider_rw.unwind_history(unwind_to)?;
-            for (block, diff) in block_trie_updates {
-                provider_rw.store_trie_updates(block, diff)?;
-            }
-        } else {
-            provider_rw.replace_updates(latest_common_block, block_trie_updates)?;
-        }
-        provider_rw.commit()?;
-        let write_duration = start.elapsed();
-        operation_durations.total_duration_seconds = write_duration;
-        operation_durations.write_duration_seconds = write_duration;
-
-        info!(
-            start_block_number = block_updates.first().map(|(b, _, _)| b.block.number),
-            end_block_number = block_updates.last().map(|(b, _, _)| b.block.number),
-            ?operation_durations,
-            "Trie updates rewound and stored successfully",
-        );
-        Ok(())
-    }
-
     /// Remove account, storage and trie updates from historical storage for all blocks from
     /// the specified block (inclusive).
     pub fn unwind_history(&self, to: BlockWithParent) -> Result<(), OpProofsStorageError> {
@@ -281,6 +199,7 @@ mod tests {
         providers::BlockchainProvider,
         test_utils::{MockNodeTypesWithDB, create_test_provider_factory_with_chain_spec},
     };
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     /// Paris-activated chain spec on the mainnet genesis; empty blocks keep the genesis root.
@@ -403,7 +322,7 @@ mod tests {
 
         // Window [0, 1]: a block whose parent is the interior genesis block is a reorg of the
         // stored tip. The append-only storage would reject it at write time, so execution must
-        // be refused up front (reorgs go through `unwind_and_store_block_updates`).
+        // be refused up front (reorgs unwind the old branch first and then append).
         let stored =
             BlockWithParent::new(chain_spec.genesis_hash(), NumHash::new(1, B256::repeat_byte(1)));
         collector
@@ -456,14 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn collector_replaces_blocks_after_the_common_ancestor() {
+    fn collector_reorgs_by_unwinding_then_appending() {
         let chain_spec = test_chain_spec();
         let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 
-        // Grow the window to [0, 2] and reorg block 2 on top of block 1: a common ancestor
-        // strictly above the earliest block takes the `replace_updates` path.
+        // Window [0, 2]. Reorg block 2 onto block 1 the way the sidecar applies every reorg:
+        // unwind from the first replaced block, then append the new chain block by block.
         let block_one =
             BlockWithParent::new(chain_spec.genesis_hash(), NumHash::new(1, B256::repeat_byte(1)));
         let original =
@@ -478,32 +397,31 @@ mod tests {
                 .expect("canonical block stores cleanly");
         }
 
+        collector.unwind_history(original).expect("old branch unwinds");
+        assert_eq!(stored_latest(&storage), block_one.block);
+
         let replacement =
             BlockWithParent::new(block_one.block.hash, NumHash::new(2, B256::repeat_byte(3)));
         collector
-            .unwind_and_store_block_updates(vec![(
+            .store_block_updates(
                 replacement,
-                Arc::new(TrieUpdatesSorted::default()),
-                Arc::new(HashedPostStateSorted::default()),
-            )])
-            .expect("reorg replacement stores cleanly");
-        assert_eq!(stored_latest(&storage), replacement.block);
-
-        // An empty update set is a no-op.
-        collector.unwind_and_store_block_updates(vec![]).expect("empty replacement is a no-op");
+                TrieUpdatesSorted::default(),
+                HashedPostStateSorted::default(),
+            )
+            .expect("replacement block appends onto the unwound tip");
         assert_eq!(stored_latest(&storage), replacement.block);
     }
 
     #[test]
-    fn collector_replaces_blocks_at_the_earliest_window_boundary() {
+    fn collector_reorgs_the_first_block_above_the_retained_anchor() {
         let chain_spec = test_chain_spec();
         let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
             LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), provider, &storage);
 
-        // Window [0, 1]: the genesis anchor plus one stored block. Reorging block 1 makes the
-        // common ancestor exactly the retained earliest block — the state right after
-        // initialization, when any reorg of the first collected block lands on the anchor.
+        // Window [0, 1]: the genesis anchor plus one stored block, the state right after
+        // initialization (or an unwind) collapsed the window onto its anchor. Reorging block 1
+        // lands on the anchor itself; unwinding to it and appending needs no special case.
         let original =
             BlockWithParent::new(chain_spec.genesis_hash(), NumHash::new(1, B256::repeat_byte(2)));
         collector
@@ -513,30 +431,28 @@ mod tests {
                 HashedPostStateSorted::default(),
             )
             .expect("canonical block stores cleanly");
+
+        collector.unwind_history(original).expect("unwinding to the anchor is allowed");
+        assert_eq!(stored_latest(&storage), NumHash::new(0, chain_spec.genesis_hash()));
 
         let replacement_one =
             BlockWithParent::new(chain_spec.genesis_hash(), NumHash::new(1, B256::repeat_byte(3)));
         let replacement_two =
             BlockWithParent::new(replacement_one.block.hash, NumHash::new(2, B256::repeat_byte(4)));
-        collector
-            .unwind_and_store_block_updates(vec![
-                (
-                    replacement_one,
-                    Arc::new(TrieUpdatesSorted::default()),
-                    Arc::new(HashedPostStateSorted::default()),
-                ),
-                (
-                    replacement_two,
-                    Arc::new(TrieUpdatesSorted::default()),
-                    Arc::new(HashedPostStateSorted::default()),
-                ),
-            ])
-            .expect("boundary reorg replaces blocks above the retained anchor");
+        for block in [replacement_one, replacement_two] {
+            collector
+                .store_block_updates(
+                    block,
+                    TrieUpdatesSorted::default(),
+                    HashedPostStateSorted::default(),
+                )
+                .expect("replacement chain appends onto the anchor");
+        }
         assert_eq!(stored_latest(&storage), replacement_two.block);
     }
 
     #[test]
-    fn collector_rejects_a_boundary_reorg_not_descending_from_the_anchor() {
+    fn collector_rejects_a_replacement_not_descending_from_the_unwound_tip() {
         let chain_spec = test_chain_spec();
         let (provider, storage) = genesis_fixture(&chain_spec);
         let collector =
@@ -551,17 +467,18 @@ mod tests {
                 HashedPostStateSorted::default(),
             )
             .expect("canonical block stores cleanly");
+        collector.unwind_history(original).expect("old branch unwinds");
 
-        // The replacement claims a common ancestor at the earliest height but with a different
-        // hash than the retained anchor: the new chain does not descend from stored state.
+        // The replacement claims a parent other than the anchor the unwind exposed: the new
+        // chain does not descend from stored state, and the append-only store refuses it.
         let replacement =
             BlockWithParent::new(B256::repeat_byte(0xEE), NumHash::new(1, B256::repeat_byte(3)));
         let err = collector
-            .unwind_and_store_block_updates(vec![(
+            .store_block_updates(
                 replacement,
-                Arc::new(TrieUpdatesSorted::default()),
-                Arc::new(HashedPostStateSorted::default()),
-            )])
+                TrieUpdatesSorted::default(),
+                HashedPostStateSorted::default(),
+            )
             .unwrap_err();
         assert!(matches!(err, OpProofsStorageError::OutOfOrder { .. }), "got {err:?}");
     }

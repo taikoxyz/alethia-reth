@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.4.2](https://github.com/taikoxyz/alethia-reth/compare/v1.4.1...v1.4.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **ci:** restrict [@claude](https://github.com/claude) workflow to members and same-repo PRs ([ed4a25d](https://github.com/taikoxyz/alethia-reth/commit/ed4a25dc4044c611ab7626f829d2e8f13a9a8216))
+* **repo:** check [@claude](https://github.com/claude) PRs for forks in a read-only job before the secret-bearing job ([322a020](https://github.com/taikoxyz/alethia-reth/commit/322a0202f6af344a4d1b3f9e57e918a4f328d920))
+* **repo:** restrict [@claude](https://github.com/claude) workflow to members and same-repo PRs ([#244](https://github.com/taikoxyz/alethia-reth/issues/244)) ([ed4a25d](https://github.com/taikoxyz/alethia-reth/commit/ed4a25dc4044c611ab7626f829d2e8f13a9a8216))
+
+
+### Chores
+
+* **repo:** run PR hygiene jobs on GitHub-hosted runners ([#245](https://github.com/taikoxyz/alethia-reth/issues/245)) ([0f4d628](https://github.com/taikoxyz/alethia-reth/commit/0f4d628380d03a5dc53445e4582ddebbc41a7cc6))
+
+
+### Workflow
+
+* **repo:** check [@claude](https://github.com/claude) PRs for forks in a read-only job ([#247](https://github.com/taikoxyz/alethia-reth/issues/247)) ([322a020](https://github.com/taikoxyz/alethia-reth/commit/322a0202f6af344a4d1b3f9e57e918a4f328d920))
+
 ## [1.4.1](https://github.com/taikoxyz/alethia-reth/compare/v1.4.0...v1.4.1) (2026-09-19)
 
 

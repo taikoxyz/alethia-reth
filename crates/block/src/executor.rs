@@ -76,6 +76,9 @@ impl std::error::Error for ZkGasDifficultyMismatch {}
 pub fn is_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
     match error {
         BlockExecutionError::Internal(err) => err.is_other::<ZkGasLimitExceeded>(),
+        BlockExecutionError::Validation(BlockValidationError::Other(err)) => {
+            err.is::<ZkGasLimitExceeded>()
+        }
         _ => false,
     }
 }
@@ -84,6 +87,9 @@ pub fn is_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
 pub fn is_zk_gas_difficulty_mismatch(error: &BlockExecutionError) -> bool {
     match error {
         BlockExecutionError::Internal(err) => err.is_other::<ZkGasDifficultyMismatch>(),
+        BlockExecutionError::Validation(BlockValidationError::Other(err)) => {
+            err.is::<ZkGasDifficultyMismatch>()
+        }
         _ => false,
     }
 }
@@ -166,9 +172,18 @@ where
         }
     }
 
-    /// Returns the dedicated truncation error used when zk gas exhausts the block.
-    fn zk_gas_limit_error() -> BlockExecutionError {
-        BlockExecutionError::other(ZkGasLimitExceeded)
+    /// Returns the dedicated truncation error, classified as a TBD validation failure for
+    /// Engine INVALID responses while preserving the historical pre-TBD error mapping.
+    fn zk_gas_limit_error(&self) -> BlockExecutionError
+    where
+        Spec: TaikoExecutorSpec,
+        Evm: reth_evm::Evm,
+    {
+        if self.spec.is_tbd_active(self.evm.block().timestamp().to()) {
+            BlockValidationError::other(ZkGasLimitExceeded).into()
+        } else {
+            BlockExecutionError::other(ZkGasLimitExceeded)
+        }
     }
 
     /// Synchronizes the finalized zk gas total from the EVM meter into the execution
@@ -193,7 +208,9 @@ where
         match self.evm.reserve_block_zk_gas(amount) {
             Ok(Some(zk_gas)) => self.ctx.set_finalized_block_zk_gas(zk_gas),
             Ok(None) => {}
-            Err(ZkGasOutcome::LimitExceeded) => return Err(Self::zk_gas_limit_error()),
+            Err(ZkGasOutcome::LimitExceeded) => {
+                return Err(BlockExecutionError::other(ZkGasLimitExceeded));
+            }
         }
         Ok(())
     }
@@ -231,15 +248,25 @@ where
     }
 
     /// Validates the imported header difficulty, when present, against the finalized block
-    /// zk gas recomputed by execution.
-    fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError> {
+    /// zk gas recomputed by execution. TBD mismatches are consensus validation failures so
+    /// the Engine tree returns INVALID; earlier forks retain their historical error mapping.
+    fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError>
+    where
+        Spec: TaikoExecutorSpec,
+        Evm: reth_evm::Evm,
+    {
         let Some(expected) = self.ctx.expected_difficulty() else { return Ok(()) };
         let got = U256::from(self.ctx.finalized_block_zk_gas());
         if got == expected {
             return Ok(());
         }
 
-        Err(BlockExecutionError::other(ZkGasDifficultyMismatch { expected, got }))
+        let mismatch = ZkGasDifficultyMismatch { expected, got };
+        if self.spec.is_tbd_active(self.evm.block().timestamp().to()) {
+            Err(BlockValidationError::other(mismatch).into())
+        } else {
+            Err(BlockExecutionError::other(mismatch))
+        }
     }
 }
 
@@ -436,7 +463,7 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         if self.zk_gas_exhausted {
-            return Err(Self::zk_gas_limit_error());
+            return Err(self.zk_gas_limit_error());
         }
 
         let (tx_env, tx) = tx.into_parts();
@@ -464,7 +491,7 @@ where
         if let Err(ZkGasOutcome::LimitExceeded) = self.evm.charge_tx_intrinsic_zk_gas() {
             self.zk_gas_exhausted = true;
             self.reset_current_transaction_zk_gas();
-            return Err(Self::zk_gas_limit_error());
+            return Err(self.zk_gas_limit_error());
         }
 
         let result = match self.evm.transact(tx_env) {
@@ -472,7 +499,7 @@ where
             Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
                 self.zk_gas_exhausted = true;
                 self.reset_current_transaction_zk_gas();
-                return Err(Self::zk_gas_limit_error());
+                return Err(self.zk_gas_limit_error());
             }
             Err(err) => {
                 self.reset_current_transaction_zk_gas();
@@ -486,7 +513,7 @@ where
         if self.evm.transaction_zk_gas_commit_would_exceed() {
             self.zk_gas_exhausted = true;
             self.reset_current_transaction_zk_gas();
-            return Err(Self::zk_gas_limit_error());
+            return Err(self.zk_gas_limit_error());
         }
 
         Ok(EthTxResult {
@@ -962,6 +989,47 @@ mod test {
         };
         assert!(is_zk_gas_difficulty_mismatch(&err));
         assert!(err.to_string().contains("difficulty"));
+    }
+
+    #[test]
+    fn tbd_zk_exhaustion_is_validation_and_remains_recoverable_for_derivation() {
+        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+        let mut state =
+            State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+        let ctx = tbd_execution_ctx(alloy_primitives::B256::with_last_byte(1));
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(tbd_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().unwrap();
+        let err = executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 0, 1))
+            .unwrap_err();
+        assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
+        assert!(is_zk_gas_limit_exceeded(&err));
+        assert!(is_recoverable_non_anchor_tx_error(&err));
+    }
+
+    #[test]
+    fn tbd_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
+        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+        let mut state = State::builder().with_database(db_with_contracts(&[])).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+        let mut ctx = tbd_execution_ctx(alloy_primitives::B256::with_last_byte(1));
+        ctx.expected_difficulty = Some(U256::from(1));
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(tbd_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        let err = executor.validate_expected_zk_gas_difficulty().unwrap_err();
+        assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
+        assert!(is_zk_gas_difficulty_mismatch(&err));
+        assert!(!is_recoverable_non_anchor_tx_error(&err));
     }
 
     #[test]

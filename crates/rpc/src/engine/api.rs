@@ -203,6 +203,12 @@ where
             _ => self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?,
         };
 
+        // Non-VALID forkchoice outcomes do not start a build and therefore carry no ID.
+        // Preserve the upstream status without publishing origin/proposal metadata.
+        if !status.payload_status.status.is_valid() {
+            return Ok(status);
+        }
+
         if let Some(mut stored_l1_origin) = stored_l1_origin {
             let payload_id = status
                 .payload_id
@@ -587,6 +593,18 @@ mod tests {
                         let status = PayloadStatus::from_status(PayloadStatusEnum::Valid);
                         let response = if state.head_block_hash.is_zero() {
                             OnForkChoiceUpdated::invalid_state()
+                        } else if state.head_block_hash == B256::with_last_byte(200) {
+                            OnForkChoiceUpdated::valid(PayloadStatus::from_status(
+                                PayloadStatusEnum::Syncing,
+                            ))
+                        } else if state.head_block_hash == B256::with_last_byte(201) {
+                            OnForkChoiceUpdated::valid(PayloadStatus::from_status(
+                                PayloadStatusEnum::Invalid {
+                                    validation_error: "invalid ancestor".into(),
+                                },
+                            ))
+                        } else if state.head_block_hash == B256::with_last_byte(202) {
+                            OnForkChoiceUpdated::valid(status)
                         } else if let Some(attrs) = payload_attrs {
                             jobs_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let (id_tx, id_rx) = tokio::sync::oneshot::channel();
@@ -815,6 +833,40 @@ mod tests {
                         (valid && !preconf).then_some(timestamp)
                     );
                 }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nonvalid_fcu_statuses_do_not_require_payload_ids_or_write_origins() {
+        for (method, timestamp) in
+            [("engine_forkchoiceUpdatedV2", 99), ("engine_forkchoiceUpdatedV3", 100)]
+        {
+            for (head, expected) in [(200, "SYNCING"), (201, "INVALID"), (202, "VALID")] {
+                let (module, provider, jobs) = rpc_fixture();
+                let response = rpc_call(
+                    &module,
+                    method,
+                    serde_json::json!([fcu_state(head), fcu_attributes(timestamp, false)]),
+                )
+                .await;
+                if expected == "VALID" {
+                    assert_eq!(response["error"]["code"], -32603, "{response}");
+                } else {
+                    assert_eq!(
+                        response["result"]["payloadStatus"]["status"], expected,
+                        "{response}"
+                    );
+                    assert!(response["result"]["payloadId"].is_null());
+                }
+                assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+                let db = provider.provider().unwrap();
+                assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(timestamp).unwrap(), None);
+                assert_eq!(
+                    db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
+                    None
+                );
+                assert_eq!(db.tx_ref().get::<BatchToLastBlock>(9).unwrap(), None);
             }
         }
     }

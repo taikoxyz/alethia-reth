@@ -587,6 +587,7 @@ mod tests {
                     taiko_block: Some(true),
                     block_access_list: None,
                     slot_number: None,
+                    osaka: None,
                 },
             }
         }

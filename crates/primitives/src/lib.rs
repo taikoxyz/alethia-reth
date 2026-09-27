@@ -10,6 +10,8 @@ pub mod engine;
 pub mod extra_data;
 /// Payload-attribute and builder primitive types.
 pub mod payload;
+/// TBD fork invariants shared by payload construction and validation.
+pub mod tbd;
 /// Shared transaction-type validation helpers.
 pub mod transaction;
 

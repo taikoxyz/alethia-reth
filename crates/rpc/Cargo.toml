@@ -71,4 +71,3 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
-reth-trie = { workspace = true, features = ["test-utils"] }

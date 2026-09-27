@@ -379,7 +379,6 @@ dependencies = [
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
  "reth-storage-overlay",
- "reth-trie",
  "reth-trie-common",
  "serde",
  "serde_json",

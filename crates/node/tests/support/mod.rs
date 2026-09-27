@@ -286,12 +286,12 @@ pub async fn build(
             serde_json::to_value(alloy_consensus::proofs::ordered_trie_root_encoded(&txs))?;
         payload["withdrawalsHash"] = serde_json::to_value(alloy_consensus::EMPTY_ROOT_HASH)?;
         use alethia_reth_chainspec::hardfork::TaikoHardforks;
-        payload["headerDifficulty"] =
-            serde_json::to_value(if spec.is_unzen_active(attrs.payload_attributes.timestamp) {
-                envelope.block_value
-            } else {
-                U256::ZERO
-            })?;
+        let difficulty = if spec.is_unzen_active(attrs.payload_attributes.timestamp) {
+            u64::try_from(envelope.block_value)?
+        } else {
+            0
+        };
+        payload["headerDifficulty"] = difficulty.into();
         payload["taikoBlock"] = true.into();
         let data: TaikoExecutionData = serde_json::from_value(payload.clone())?;
         (payload, data, response)

@@ -697,49 +697,77 @@ mod tests {
     }
 
     #[test]
-    fn tbd_pool_zk_gas_exhaustion_preserves_the_completed_prefix() {
-        let caller = Address::with_last_byte(0x44);
-        let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
-        let spec = Arc::new(tbd_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(caller, 0)]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-        let executor = TaikoBlockExecutor::new(
-            evm,
-            tbd_execution_ctx(B256::with_last_byte(1)),
-            spec.clone(),
-            RethReceiptBuilder::default(),
-        );
-        let mut builder = FirstTxZkGasErrorBuilder {
-            inner: ExecutorBackedBuilder { executor },
-            fail_next_execution: true,
-        };
-        let pool = testing_pool();
-        block_on_ready(pool.add_consensus_transaction(ordinary, TransactionOrigin::External))
-            .expect("ordinary transaction should enter the pool");
-
-        let outcome = execute_pool_transactions(
-            &mut builder,
-            &pool,
-            &test_client((*spec).clone()),
-            &PoolExecutionContext {
-                anchor_tx: None,
-                parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
-                block_timestamp: 1,
-                payload_id: "tbd-zk-limit".to_string(),
-                base_fee: 0,
-                gas_limit: 30_000_000,
-            },
-            &CancelOnDrop::default(),
-        )
-        .expect("ordinary zk exhaustion should stop selection cleanly");
-
-        let ExecutionOutcome::Completed(fees) = outcome else {
-            panic!("zk exhaustion should not report cancellation")
-        };
-        assert_eq!(fees, U256::ZERO);
-        assert!(builder.inner.executor.receipts().is_empty());
+    fn tbd_pool_zk_gas_exhaustion_preserves_empty_and_completed_prefixes() {
+        for prefix_len in [0, 1] {
+            let caller = Address::with_last_byte(0x44);
+            let spec = Arc::new(tbd_chain_spec());
+            let mut state = State::builder()
+                .with_database(db_with_contracts(&[(caller, 0)]))
+                .with_bundle_update()
+                .build();
+            let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+            let ctx = tbd_execution_ctx(B256::with_last_byte(1));
+            let executor = TaikoBlockExecutor::new(
+                evm,
+                ctx.clone(),
+                spec.clone(),
+                RethReceiptBuilder::default(),
+            );
+            let mut builder = ExecutorBackedBuilder { executor };
+            builder.apply_pre_execution_changes().unwrap();
+            let pool = testing_pool();
+            // A single nonce chain fixes ordering: optional success, real zk exhaustion, then
+            // a transaction that must remain unexecuted. The real executor emits TBD Validation.
+            for nonce in 0..prefix_len + 2 {
+                let target =
+                    if nonce == prefix_len { BENCH_LIMIT_TARGET } else { BENCH_SUCCESS_TARGET };
+                let tx = Recovered::new_unchecked(
+                    Signed::new_unhashed(
+                        TxLegacy {
+                            chain_id: Some(167),
+                            nonce,
+                            gas_price: 10,
+                            gas_limit: 5_000_000,
+                            to: target.into(),
+                            ..Default::default()
+                        },
+                        Signature::new(U256::from(1), U256::from(2), false),
+                    )
+                    .into(),
+                    caller,
+                );
+                block_on_ready(pool.add_consensus_transaction(tx, TransactionOrigin::External))
+                    .expect("transaction should enter the pool");
+            }
+            let outcome = execute_pool_transactions(
+                &mut builder,
+                &pool,
+                &test_client((*spec).clone()),
+                &PoolExecutionContext {
+                    anchor_tx: None,
+                    parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
+                    block_timestamp: 1,
+                    payload_id: format!("tbd-zk-limit-{prefix_len}"),
+                    base_fee: 0,
+                    gas_limit: 30_000_000,
+                },
+                &CancelOnDrop::default(),
+            )
+            .expect("ordinary zk exhaustion should stop selection cleanly");
+            let ExecutionOutcome::Completed(fees) = outcome else {
+                panic!("zk exhaustion should not report cancellation")
+            };
+            assert_eq!(builder.executor.receipts().len(), prefix_len as usize);
+            assert_eq!(fees, U256::from(prefix_len * 21_009 * 10));
+            assert_eq!(ctx.finalized_block_zk_gas(), prefix_len * 243_111);
+            drop(builder);
+            use reth_revm::Database;
+            let account = state.basic(caller).unwrap().unwrap();
+            assert_eq!(
+                account.nonce, prefix_len,
+                "failed/later transactions must not advance nonce"
+            );
+            assert_eq!(account.balance, U256::from(10_000_000_000_u64) - fees);
+        }
     }
 }

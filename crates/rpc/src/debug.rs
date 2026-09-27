@@ -316,6 +316,8 @@ where
 
             state.merge_transitions(BundleRetention::Reverts);
 
+            // The record borrows this state, and reads its merged bundle to expand destroyed
+            // accounts' slots, so the merge above has to come first.
             ExecutionWitnessRecord::new(&state)
                 .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
                 .map_err(EthApiError::from)

@@ -180,6 +180,45 @@ mod tests {
     /// Pre-existing contract with storage whose code is `CALLER SELFDESTRUCT`.
     const SELF_DESTRUCT_TARGET: Address = Address::with_last_byte(0x40);
 
+    /// Contract that re-creates [`CREATE2_INIT_CODE`] at a fixed address.
+    const CREATE2_FACTORY: Address = Address::with_last_byte(0x41);
+
+    /// Init code deploying an empty contract: `PUSH1 0x00 PUSH1 0x00 RETURN`.
+    const CREATE2_INIT_CODE: [u8; 5] = [opcode::PUSH1, 0x00, opcode::PUSH1, 0x00, opcode::RETURN];
+
+    /// Code of a pre-existing contract that destroys itself: `CALLER SELFDESTRUCT`.
+    fn self_destruct_bytecode() -> Bytecode {
+        Bytecode::new_raw(Bytes::from(vec![opcode::CALLER, opcode::SELFDESTRUCT]))
+    }
+
+    /// Code that `CREATE2`-deploys [`CREATE2_INIT_CODE`] under a zero salt.
+    fn create2_factory_bytecode() -> Bytecode {
+        Bytecode::new_raw(Bytes::from(vec![
+            // Write the init code into the first memory word, so it ends at offset 32.
+            opcode::PUSH5,
+            CREATE2_INIT_CODE[0],
+            CREATE2_INIT_CODE[1],
+            CREATE2_INIT_CODE[2],
+            CREATE2_INIT_CODE[3],
+            CREATE2_INIT_CODE[4],
+            opcode::PUSH1,
+            0x00,
+            opcode::MSTORE,
+            // CREATE2 pops value, offset, size then salt, so push them in reverse.
+            opcode::PUSH1,
+            0x00, // salt
+            opcode::PUSH1,
+            CREATE2_INIT_CODE.len() as u8, // size
+            opcode::PUSH1,
+            32 - CREATE2_INIT_CODE.len() as u8, // offset of the init code inside the word
+            opcode::PUSH1,
+            0x00, // value
+            opcode::CREATE2,
+            opcode::POP,
+            opcode::STOP,
+        ]))
+    }
+
     fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
         let tx = TxLegacy {
             chain_id: Some(ChainId::from(chain_id)),
@@ -268,11 +307,7 @@ mod tests {
         let parent_header = SealedHeader::seal_slow(Header::default());
 
         let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
-        insert_contract(
-            &mut db,
-            SELF_DESTRUCT_TARGET,
-            Bytecode::new_raw(Bytes::from(vec![opcode::CALLER, opcode::SELFDESTRUCT])),
-        );
+        insert_contract(&mut db, SELF_DESTRUCT_TARGET, self_destruct_bytecode());
         db.insert_account_storage(SELF_DESTRUCT_TARGET, U256::from(1_u64), U256::from(42_u64))
             .expect("in-memory storage insert cannot fail");
 
@@ -316,5 +351,76 @@ mod tests {
             .get(&hashed_address)
             .expect("a destroyed account must carry a hashed storage entry");
         assert!(storage.wiped, "a destroyed account's storage must be marked as wiped");
+    }
+
+    #[test]
+    fn execute_derived_block_wipes_storage_of_an_account_recreated_in_the_same_block() {
+        // The case the `wiped` flag exists for: pre-Unzen SELFDESTRUCT deletes a contract and its
+        // storage, and a CREATE2 in a later transaction of the same block puts an account back at
+        // that address. The account then survives in the post state, so the prover's stateless
+        // trie keeps its storage trie — and without `wiped` it would keep the destroyed
+        // contract's slots along with it.
+        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let chain_id = chain_spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(chain_spec);
+        let parent_header = SealedHeader::seal_slow(Header::default());
+
+        // The contract that destroys itself has to sit exactly where the factory re-creates.
+        let recreated_address = CREATE2_FACTORY.create2_from_code(B256::ZERO, CREATE2_INIT_CODE);
+        let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
+        insert_contract(&mut db, CREATE2_FACTORY, create2_factory_bytecode());
+        insert_contract(&mut db, recreated_address, self_destruct_bytecode());
+        db.insert_account_storage(recreated_address, U256::from(1_u64), U256::from(42_u64))
+            .expect("in-memory storage insert cannot fail");
+
+        let anchor_transaction = test_transaction(chain_id, 0);
+        let destroy_transaction =
+            recovered_tx_with_chain_id(TEST_CALLER, recreated_address, 1, 1, chain_id);
+        let recreate_transaction =
+            recovered_tx_with_chain_id(TEST_CALLER, CREATE2_FACTORY, 2, 1, chain_id);
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: vec![
+                        anchor_transaction.clone_inner(),
+                        destroy_transaction.clone_inner(),
+                        recreate_transaction.clone_inner(),
+                    ],
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            vec![
+                anchor_transaction.signer(),
+                destroy_transaction.signer(),
+                recreate_transaction.signer(),
+            ],
+        );
+
+        let outcome = execute_derived_block(&config, &parent_header, &derived_block, db)
+            .expect("derived block execution should succeed");
+
+        assert_eq!(outcome.committed_transactions.len(), 3);
+        let hashed_address = keccak256(recreated_address);
+        assert!(
+            outcome.hashed_state.accounts.get(&hashed_address).is_some_and(Option::is_some),
+            "the re-created account must be present in the post state, not deleted"
+        );
+        let storage = outcome
+            .hashed_state
+            .storages
+            .get(&hashed_address)
+            .expect("a re-created account must carry a hashed storage entry");
+        assert!(
+            storage.wiped,
+            "storage of an account destroyed and re-created in one block must be wiped"
+        );
     }
 }

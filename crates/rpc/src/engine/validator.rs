@@ -94,9 +94,9 @@ where
     /// Builds the tree validator for the consensus engine.
     ///
     /// Delegates to upstream's [`BasicEngineValidatorBuilder`] so the tree validator is wired
-    /// exactly like reth's (invalid-block hook, overlay manager, and the `txpool_prewarming`
-    /// option, whose adapter is private to `reth-node-builder`), with Taiko's payload validator
-    /// plugged in through this builder's [`PayloadValidatorBuilder`] impl.
+    /// exactly like reth's (invalid-block hook, overlay manager, and `--engine.txpool-prewarming`,
+    /// whose transaction-pool adapter is private to `reth-node-builder`), with Taiko's payload
+    /// validator plugged in through this builder's [`PayloadValidatorBuilder`] impl.
     async fn build_tree_validator(
         self,
         ctx: &AddOnsContext<'_, N>,

@@ -66,8 +66,10 @@ pub use types::{
 /// transactions. Revisit this value if the anchor implementation changes substantially.
 const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 
-/// Resolves the target values used by tx-pool simulation while preserving the legacy omission
-/// behavior before TBD activation.
+/// Resolves and validates explicit target values before tx-pool simulation reaches the EVM.
+///
+/// Legacy omission preserves parent-context behavior. Explicit TBD targets require their root and
+/// seven-byte fee metadata; pre-Shasta metadata must fit the legacy decoder's 256-bit input.
 fn resolve_tx_pool_block_context(
     chain_spec: &TaikoChainSpec,
     parent: &Header,
@@ -97,6 +99,26 @@ fn resolve_tx_pool_block_context(
             "target block timestamp {} must follow parent timestamp {}",
             context.timestamp,
             parent.timestamp()
+        )))
+    }
+
+    if chain_spec.is_tbd_active(context.timestamp) {
+        if context.parent_beacon_block_root.is_zero() {
+            return Err(EthApiError::InvalidParams(
+                "`blockContext.parentBeaconBlockRoot` must be non-zero for a TBD target"
+                    .to_string(),
+            ))
+        }
+        if context.extra_data.len() != 7 {
+            return Err(EthApiError::InvalidParams(format!(
+                "`blockContext.extraData` must contain exactly 7 bytes for a TBD target, got {}",
+                context.extra_data.len()
+            )))
+        }
+    } else if !chain_spec.is_shasta_active(context.timestamp) && context.extra_data.len() > 32 {
+        return Err(EthApiError::InvalidParams(format!(
+            "`blockContext.extraData` must contain at most 32 bytes before Shasta, got {}",
+            context.extra_data.len()
         )))
     }
 

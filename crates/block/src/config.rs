@@ -408,7 +408,9 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Unzen).active_at_timestamp(timestamp) {
+    if chain_spec.fork(TaikoHardfork::TBD).active_at_timestamp(timestamp) {
+        TaikoSpecId::TBD
+    } else if chain_spec.fork(TaikoHardfork::Unzen).active_at_timestamp(timestamp) {
         TaikoSpecId::UNZEN
     } else if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) {
         // London is on from genesis for Taiko, so Shasta reduces to the timestamp activation.
@@ -471,6 +473,16 @@ mod tests {
 
         let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
         assert_eq!(selected, TaikoSpecId::UNZEN);
+    }
+
+    #[test]
+    fn tbd_takes_precedence_over_unzen() {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(10));
+
+        assert_eq!(taiko_spec_by_timestamp_and_block_number(&chain_spec, 9, 1), TaikoSpecId::UNZEN);
+        assert_eq!(taiko_spec_by_timestamp_and_block_number(&chain_spec, 10, 1), TaikoSpecId::TBD);
     }
 
     #[test]

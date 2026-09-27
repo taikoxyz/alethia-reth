@@ -19,6 +19,8 @@ pub enum TaikoSpecId {
     SHASTA,
     /// Unzen hard fork for the Taiko network
     UNZEN,
+    /// Temporary identifier for the anchorless Osaka hard fork.
+    TBD,
 }
 
 impl TaikoSpecId {
@@ -26,7 +28,7 @@ impl TaikoSpecId {
     pub const fn into_eth_spec(self) -> SpecId {
         match self {
             Self::GENESIS | Self::ONTAKE | Self::PACAYA | Self::SHASTA => SpecId::SHANGHAI,
-            Self::UNZEN => SpecId::OSAKA,
+            Self::UNZEN | Self::TBD => SpecId::OSAKA,
         }
     }
 
@@ -53,6 +55,7 @@ impl FromStr for TaikoSpecId {
             name::PACAYA => Ok(TaikoSpecId::PACAYA),
             name::SHASTA => Ok(TaikoSpecId::SHASTA),
             name::UNZEN => Ok(TaikoSpecId::UNZEN),
+            name::TBD => Ok(TaikoSpecId::TBD),
             _ => Err(UnknownHardfork),
         }
     }
@@ -67,6 +70,7 @@ impl From<TaikoSpecId> for &'static str {
             TaikoSpecId::PACAYA => name::PACAYA,
             TaikoSpecId::SHASTA => name::SHASTA,
             TaikoSpecId::UNZEN => name::UNZEN,
+            TaikoSpecId::TBD => name::TBD,
         }
     }
 }
@@ -83,6 +87,8 @@ pub mod name {
     pub const SHASTA: &str = "Shasta";
     /// String name for `TaikoSpecId::UNZEN`.
     pub const UNZEN: &str = "Unzen";
+    /// String name for `TaikoSpecId::TBD`.
+    pub const TBD: &str = "TBD";
 }
 
 #[cfg(test)]
@@ -142,5 +148,12 @@ mod tests {
         assert_eq!(TaikoSpecId::from_str(name::UNZEN).unwrap(), TaikoSpecId::UNZEN);
         assert_eq!(<&str>::from(TaikoSpecId::UNZEN), name::UNZEN);
         assert_eq!(SpecId::from(TaikoSpecId::UNZEN), SpecId::OSAKA);
+    }
+
+    #[test]
+    fn test_tbd_spec_id_mappings() {
+        assert_eq!(TaikoSpecId::from_str(name::TBD).unwrap(), TaikoSpecId::TBD);
+        assert_eq!(<&str>::from(TaikoSpecId::TBD), name::TBD);
+        assert_eq!(SpecId::from(TaikoSpecId::TBD), SpecId::OSAKA);
     }
 }

@@ -18,6 +18,9 @@ pub trait TaikoNodeExtArgs {
     /// Returns the configured devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64;
 
+    /// Returns the optional devnet TBD activation timestamp override.
+    fn devnet_tbd_timestamp(&self) -> Option<u64>;
+
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
 }
@@ -26,6 +29,11 @@ impl TaikoNodeExtArgs for NoArgs {
     /// Returns the default devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64 {
         0
+    }
+
+    /// Leaves TBD disabled for commands without Taiko options.
+    fn devnet_tbd_timestamp(&self) -> Option<u64> {
+        None
     }
 
     /// Returns a disabled proof-history configuration for commands without Taiko options.
@@ -38,6 +46,11 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
     /// Returns the configured devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64 {
         self.devnet_unzen_timestamp
+    }
+
+    /// Returns the optional devnet TBD activation timestamp override.
+    fn devnet_tbd_timestamp(&self) -> Option<u64> {
+        self.devnet_tbd_timestamp
     }
 
     /// Returns proof-history configuration derived from parsed Taiko CLI flags.
@@ -145,11 +158,12 @@ where
             jit,
         };
 
-        // Apply Taiko-specific devnet Unzen timestamp override if specified.
-        if let Some(overridden_chain) = node_config
-            .chain
-            .as_ref()
-            .clone_with_devnet_unzen_timestamp(ext.devnet_unzen_timestamp())
+        // Apply Taiko-specific devnet fork timestamp overrides and validate custom fork order.
+        if let Some(overridden_chain) =
+            node_config.chain.as_ref().clone_with_devnet_fork_timestamps(
+                ext.devnet_unzen_timestamp(),
+                ext.devnet_tbd_timestamp(),
+            )?
         {
             node_config.chain = Arc::new(overridden_chain);
         }

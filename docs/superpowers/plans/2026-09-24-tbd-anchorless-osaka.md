@@ -464,7 +464,7 @@ assert!(status.status.is_valid());
 
 **Interfaces:** No new production interfaces. The document is the handoff contract for drivers and release coordinators.
 
-- [ ] Document the six-method fork matrix, target timestamp routing, null FCU handling, required root provenance, decimal `headerDifficulty`, hex `blockValue`, four positional newPayload arguments, empty arrays, and retained per-job root. Show the checked normalization algorithm, including explicit zero:
+- [x] Document the six-method fork matrix, target timestamp routing, null FCU handling, required root provenance, decimal `headerDifficulty`, hex `blockValue`, four positional newPayload arguments, empty arrays, and retained per-job root. Show the checked normalization algorithm, including explicit zero:
 
 ```text
 root := the original root associated with this FCU payload ID
@@ -475,11 +475,11 @@ payload.headerDifficulty := zkGas as a decimal JSON number, including 0
 newPayloadV4(payload, [], root, [])
 ```
 
-- [ ] Document `--devnet-tbd-timestamp` / `ALETHIA_RETH_DEVNET_TBD_TIMESTAMP`, omitted versus zero behavior, the Unzen ordering requirement, and both taikoAuth trailing contexts. State explicitly that generic Ethereum clients expect revenue in blockValue and cannot assume this Taiko endpoint has Ethereum semantics. Internal builder ranking remains fee-based.
-- [ ] Include an unchecked activation checklist covering geth EIP-4788 parity, deployed 2935/4788 contracts, disabling privileged Anchor writes by the first new block, both drivers' normalization/context support, guest verification of L1 hash and legacy parent inheritance, permissionless reveal consumers, and successful consumption of Task 8 cross-client vectors. Keep all network activation conditions at Never. Existing-chain genesis must not be rewritten.
-- [ ] Run `just fmt`. Inspect the diff for unrelated formatting; retain only necessary changes. Run `just clippy` (mandatory documentation gate) and `just test` (workspace/all features). Address failures and rerun affected checks before broadening again. Report infrastructure failures accurately if tools/dependencies cannot be obtained; never substitute an unrun command with a passing claim.
-- [ ] Run `git diff --check` and review all modified production symbols for purpose/contract docs, including trait implementation methods. Check the final diff for accidental Amsterdam support, changed legacy fixture hashes, activation timestamps, or dependency upgrades.
-- [ ] Commit documentation and any gate fixes with focused Conventional Commits, including `docs(engine): document the TBD driver wire contract`. Request whole-branch review using the execution method selected by the user; do not schedule activation or modify external repositories.
+- [x] Document `--devnet-tbd-timestamp` / `ALETHIA_RETH_DEVNET_TBD_TIMESTAMP`, omitted versus zero behavior, the Unzen ordering requirement, and both taikoAuth trailing contexts. State explicitly that generic Ethereum clients expect revenue in blockValue and cannot assume this Taiko endpoint has Ethereum semantics. Internal builder ranking remains fee-based.
+- [x] Include an unchecked activation checklist covering geth EIP-4788 parity, deployed 2935/4788 contracts, disabling privileged Anchor writes by the first new block, both drivers' normalization/context support, guest verification of L1 hash and legacy parent inheritance, permissionless reveal consumers, and successful consumption of Task 8 cross-client vectors. Keep all network activation conditions at Never. Existing-chain genesis must not be rewritten.
+- [x] Run `just fmt`. Inspect the diff for unrelated formatting; retain only necessary changes. Run `just clippy` (mandatory documentation gate) and `just test` (workspace/all features). Address failures and rerun affected checks before broadening again. Report infrastructure failures accurately if tools/dependencies cannot be obtained; never substitute an unrun command with a passing claim.
+- [x] Run `git diff --check` and review all modified production symbols for purpose/contract docs, including trait implementation methods. Check the final diff for accidental Amsterdam support, changed legacy fixture hashes, activation timestamps, or dependency upgrades.
+- [x] Commit documentation and any gate fixes with focused Conventional Commits, including `docs(engine): document the TBD driver wire contract`. Request whole-branch review using the execution method selected by the user; do not schedule activation or modify external repositories.
 
 ## Coverage and completion record
 

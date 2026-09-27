@@ -1,6 +1,7 @@
 # TBD fork: anchorless execution and Osaka Engine API
 
-Status: user-approved design; implementation has not started.
+Status: implemented in alethia-reth; network activation remains unscheduled pending the external
+release checklist and final whole-branch review.
 
 ## Intent and agreed decisions
 

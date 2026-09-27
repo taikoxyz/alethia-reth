@@ -4,6 +4,21 @@ This guide defines the alethia-reth wire contract for the temporary `TBD` fork. 
 Osaka execution rules after Unzen. It is a driver and release-coordination handoff, not a network
 activation notice: every built-in network still configures TBD as `ForkCondition::Never`.
 
+This implements alethia-reth's portion of
+[taiko-mono issue 22147](https://github.com/taikoxyz/taiko-mono/issues/22147). The required protocol
+meaning of `parentBeaconBlockRoot` is the derived L1 execution block hash. Drivers must derive it
+from the anchor block number, and prover guests must authenticate it against L1 headers; these
+external integrations remain unconfirmed activation prerequisites. An ordinary EL checks the
+header invariant and executes EIP-4788 without independently fetching L1 data. The L1 inclusion
+hash in `l1Origin.l1BlockHash` is a different value and must not be substituted for it.
+
+TBD retains Osaka execution, the Unzen zk-gas schedule, fee sharing, EIP-4396 base fees, and strict
+post-Shasta timestamp ordering. EIP-2935 and EIP-4788 run even in empty blocks, and their writes
+must enter the state root and witness. No transaction position is reserved for an anchor, no
+synthetic transaction or receipt is inserted, and golden-touch transactions receive ordinary
+balance, fee, and refund treatment. Canonical imports must execute the complete committed body;
+derivation filtering is not permission to silently discard transactions from an imported block.
+
 ## Engine API method matrix
 
 Drivers must choose the method family from the target payload timestamp, compared with the TBD
@@ -27,6 +42,12 @@ Both FCU versions accept `null` payload attributes. A null-attributes FCU perfor
 forkchoice validation and head update without starting a build; it therefore has no target
 timestamp to route and returns no payload ID. Non-`VALID` FCU results are returned without
 publishing L1-origin or proposal metadata.
+
+Both method families use the existing JWT-authenticated endpoint. The advertised Engine
+capabilities are the six methods above. Historical consensus rules and V2 payload IDs are
+preserved, but two operational V2 responses have changed: a non-`VALID` FCU result with attributes
+now returns that status, and an unknown payload ID returns `-38001`; both previously surfaced as
+`-32603`. Drivers must distinguish payload status from JSON-RPC errors.
 
 TBD block construction uses the nonzero `parentBeaconBlockRoot` from the FCU payload attributes.
 The driver must associate that original root with the returned payload ID and use the same root
@@ -53,6 +74,21 @@ payload.headerDifficulty := zkGas as a decimal JSON number, including 0
 newPayloadV4(payload, [], root, [])
 ```
 
+The first argument allows exactly these 18 properties, with standard V3 encodings except for the
+decimal `headerDifficulty` extension:
+
+```text
+parentHash, feeRecipient, stateRoot, receiptsRoot, logsBloom, prevRandao,
+blockNumber, gasLimit, gasUsed, timestamp, extraData, baseFeePerGas,
+blockHash, transactions, withdrawals, blobGasUsed, excessBlobGas,
+headerDifficulty
+```
+
+Construct this object explicitly. A serialized legacy Taiko payload is not a V4 request:
+`txHash`, `withdrawalsHash`, `taikoBlock`, `TaikoBlock`, `slotNumber`, and every other additional
+property are rejected, including properties set to `null` or zero. Transaction and withdrawals
+roots are derived from the actual body; legacy root overrides are not supported on this route.
+
 The second argument is the empty expected-blob-versioned-hashes array. The fourth is the empty
 execution-requests array. TBD does not accept blob transactions, withdrawals, nonempty execution
 requests, Amsterdam block-access-list data, or a slot-number extension.
@@ -62,12 +98,53 @@ this Taiko endpoint has Ethereum `blockValue` semantics: both the Unzen V2 respo
 response carry hash-relevant zk-gas there. Alethia-reth changes only the response envelope;
 internal payload ranking remains based on actual transaction fees.
 
-### FCU metadata encoding
+The V5 envelope also returns empty `blobsBundle` commitments/proofs/blobs, empty
+`executionRequests`, and `shouldOverrideBuilder: false`. Its payload has `withdrawals: []` and
+zero `blobGasUsed` and `excessBlobGas`. The original root is absent from this standard envelope;
+receivers of externally built blocks must obtain it from the original header or transport.
+
+### Current error contract
+
+| Condition | Response |
+| --- | --- |
+| Known method used for the wrong target fork | JSON-RPC `-38005` |
+| Unknown or evicted payload ID | JSON-RPC `-38001` |
+| Malformed/missing V4 arguments, unsupported object properties | JSON-RPC `-32602` |
+| TBD body checks: zero root, nonempty withdrawals/hash/request arrays, nonzero blob gas | Currently JSON-RPC `-32602` on `engine_newPayloadV4` |
+| Invalid TBD FCUv3 attributes | Currently JSON-RPC `-32602` |
+| Block-hash mismatch, executed zk-gas/difficulty mismatch, zk-gas exhaustion | Payload status `INVALID` |
+
+The body and FCU rows describe the current implementation, not the intended final interoperability
+contract. Before activation, align block-content failures with `INVALID` (including a blob-hash
+mismatch with `latestValidHash: null`) and invalid FCU attributes with `-38003`, while preserving
+upstream forkchoice/status precedence and parameter errors for malformed requests. Direct
+`reth_newPayload` submissions run conversion checks too; an inconsistent legacy Osaka sidecar
+must fail conversion before it can poison the invalid-header cache.
+
+### FCU attributes, gas limits, and metadata
+
+For a TBD target, send no `anchorTransaction`, send `withdrawals: []`, and require
+`blockMetadata.timestamp == payloadAttributes.timestamp`. Supply a nonzero root and exactly seven
+bytes of `blockMetadata.extraData`. An explicit transaction list, including an empty list, is
+derived input; an absent list requests selection from the transaction pool. Null/omitted
+withdrawals currently pass normalization but are outside this driver contract; strict rejection
+is an activation compatibility item.
+
+For TBD targets, both `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` exclude the
+legacy **1,000,000 gas anchor reserve**. The builder uses the complete supplied limit for ordinary
+transactions. Drivers must fork-gate any code that adds the reserve when converting a manifest
+limit into a target block limit. Explicit TBD preselection also removes the legacy 2,000,000
+zk-gas anchor reserve; the final builder still enforces actual gas and zk-gas limits.
+
+EIP-4396 always uses the real parent header's `gasLimit` and `gasUsed`. At the boundary that parent
+can be legacy and include the anchor and its reserve. Do not subtract a reserve from the parent
+or reinterpret its gas fields using the child's rules.
 
 The existing FCU `blockMetadata.extraData` field keeps the
 `TaikoBlockMetadata` `serde_with::As<Base64>` representation. Do not send hex in that field. The
 new `taikoAuth` target context described below uses ordinary Alloy hex bytes instead. Both fields
-carry the same seven-byte Shasta layout, but they intentionally use different JSON encodings.
+carry the same seven-byte Shasta layout: one byte of `basefeeSharingPctg`, followed by a six-byte
+big-endian proposal ID. They intentionally use different JSON encodings.
 
 ## Devnet activation override
 
@@ -83,6 +160,14 @@ An enabled TBD fork must use timestamp activation and must be ordered at or afte
 Unzen and TBD timestamps are valid. Startup rejects a missing Unzen activation, a non-timestamp
 activation condition, or a TBD timestamp earlier than Unzen. Existing-chain genesis must not be
 rewritten to activate this fork.
+
+The override is a node-start option. Offline commands such as `stage run` and `re-execute` do not
+parse the Taiko extension and cannot reproduce an overridden TBD devnet schedule merely from
+`--chain devnet`. Offline TBD replay is unsupported until those commands can receive and verify
+the actual Taiko fork schedule; a generic genesis JSON is not a verified workaround. The override
+is ignored for non-devnet chain specs, matching the existing devnet-only override convention.
+Custom TBD schedules must also have Shasta active;
+the current startup ordering validator checks Unzen but does not yet enforce Shasta.
 
 ## `taikoAuth` target context
 
@@ -129,6 +214,71 @@ retains the legacy parent-context simulation only while the parent is before TBD
 is at or after TBD, `blockContext` is required. Drivers should supply it when simulating a target
 that crosses the activation boundary.
 
+Preselection is an estimate, not a block-validity decision. Explicit context must have a timestamp
+later than the selected parent from Shasta onward; earlier forks also allow equality. TBD context
+requires a nonzero root and exactly seven extra-data bytes. A pre-Shasta explicit context must fit
+its legacy 32-byte extra-data decoder. Invalid
+context is a parameter error, with the field-specific reason retained.
+
+## Other local activation work
+
+- Batch lookup's cache-miss fallback still stops on an empty block or a non-anchor transaction at
+  index zero. Make that stop condition fork-aware before using `lastBlockIDByBatchID` or
+  `lastL1OriginByBatchID` on anchorless history; cache hits are unaffected.
+- Agree the TBD payload-ID preimage with both drivers. It currently includes
+  `l1Origin.buildPayloadArgsId`, so a driver that computes an ID and then stamps that field cannot
+  reproduce the EL ID. The inspected Rust driver logs a mismatch and uses the returned EL ID;
+  this is not evidence of an immediate build rejection. V2 IDs must remain unchanged.
+- `eth_simulateV1` requires an explicit nonzero `blockOverrides.beaconRoot` for a TBD target.
+  Locally constructed full pending blocks are unavailable without a root. `eth_call` and
+  `eth_estimateGas` have their own pending simulation path and are covered separately. Decide and
+  test any simulation-only root inheritance policy before activation, including a legacy/genesis
+  parent with zero root; never relax the consensus root invariant to supply a wallet default.
+- Public `TaikoExecutionDataSidecar` literals need the new `osaka` field when downstream Rust
+  dependencies are upgraded. Driver-local preselection request types also need to serialize the
+  new optional context. Compile and exercise both drivers against the chosen release.
+
+## Geth port checklist
+
+The following sites were inspected at taiko-geth
+[`4e001283f48841068c28fd5335dd784d4ed96bca`](https://github.com/taikoxyz/taiko-geth/tree/4e001283f48841068c28fd5335dd784d4ed96bca).
+They identify port work; they do not establish that a later geth release has completed it.
+
+| Path at that revision | Rule to fork-gate and compare |
+| --- | --- |
+| `core/state_processor.go:115`, `miner/taiko_worker.go:273`, `eth/state_accessor.go:261`, and five `eth/tracers/api.go` sites | Index-zero `MarkAsAnchor` and its balance/fee exemptions must remain legacy-only, including replay and tracing. |
+| `miner/taiko_worker.go:225–227` and its transaction loop | Empty lists are valid; index-zero ordinary failures use normal filtering rather than anchor-fatal handling. |
+| `miner/taiko_worker.go:300`, `core/state_processor.go:144` | Remove the `i > 0` zk-gas exception for TBD; index zero can exhaust the budget. |
+| `consensus/taiko/consensus.go:357–362` | `FinalizeAndAssemble` must stop requiring an anchor at index zero. |
+| `consensus/taiko/consensus.go:265`, `miner/worker.go:319–322` | Legacy zero-root checks must become the TBD nonzero-root rule, with matching EIP-4788 execution. |
+| Pool/build, preselection, fee distribution, and body validation | Match the full target gas budget, zero anchor zk reserve, nonzero fee shares, empty bodies, blob rejection, and ordinary golden-touch transactions. |
+
+A first unfunded transaction is a useful discriminator: TBD derivation skips it as an ordinary
+failure; a port retaining `MarkAsAnchor` could include it fee-exempt. Cross-client tests must check
+committed transactions, receipts, state roots, balances, and zk-gas, not merely API acceptance.
+
+## Evidence and remaining replay work
+
+The checked-in corpus is [`tbd-cases.json`](../crates/node/tests/fixtures/tbd-cases.json), exercised
+by [`tbd_engine.rs`](../crates/node/tests/tbd_engine.rs) and
+[`tbd_history.rs`](../crates/node/tests/tbd_history.rs). The legacy reference capture helper is
+[`generate-legacy-reference.py`](../crates/node/tests/fixtures/generate-legacy-reference.py).
+Synthetic differential fixtures establish only the cases they execute. A checksum of their
+entries is an integrity check, not independent evidence that a reference client was run.
+
+Real-history differential replay remains required for selected Hoodi/mainnet Shasta and Unzen
+ranges, including known planted golden-touch transactions. It needs retained pre-state in an
+archive database (or authenticated equivalent witness data), exact chain/fork configuration,
+block ranges, and transaction hashes. An archive RPC URL alone is not input to `re-execute`.
+Compare the stable v1.4.1 baseline with this branch for headers/hashes, receipts, fee balances,
+nonces, state roots, and zk-gas. No real-chain replay or other-client agreement is claimed here.
+
+Before cross-client sign-off, export portable fork/genesis profiles and ordered FCU steps for reorg
+vectors, and preserve decimal V2 `headerDifficulty`. Include index-zero nonce/signature/
+type/gas filtering, blob rejection, zk truncation at index zero and after a prefix, nonzero fee
+sharing, and funded/unfunded golden-touch calls to the treasury. Existing Rust tests are not a
+substitute for another client and the prover consuming those cases.
+
 ## Known malformed-signature response limitation
 
 Invalid transaction signatures are rejected, but the pinned upstream Reth validator currently
@@ -145,16 +295,29 @@ These release prerequisites remain intentionally unchecked. Do not change any ne
 condition from `ForkCondition::Never` until every item is complete and the activation release is
 coordinated.
 
-- [ ] Confirm geth has matching EIP-4788 handling and state-transition results.
+- [ ] Roll out matching geth build/import EIP-4788 handling and verify state-transition parity
+      before deploying the beacon-roots contract on existing networks.
 - [ ] Deploy and verify the canonical EIP-2935 history-storage and EIP-4788 beacon-roots contracts.
-- [ ] Disable privileged Anchor writes before or with the first TBD block.
+- [ ] Disable privileged Anchor writes **strictly before the first TBD block**: deploy the
+      `anchorV4` timestamp gate and disable the L2 `_authorizedSyncer` path, as required by the
+      [accepted issue corrections](https://github.com/taikoxyz/taiko-mono/issues/22147#issuecomment-5756503026).
+      Preserve proxy storage and historical state. On devnet/Hoodi, construct a funded forged
+      `anchorV4` call in the first anchorless block and verify it reverts. A pool-only golden-touch
+      filter can be a separately agreed defense, but permissionless proposers can bypass it and
+      it cannot replace the contract cutover.
 - [ ] Confirm both drivers implement the six-method routing matrix, checked V5 normalization,
       retained per-job root, and trailing `taikoAuth` target contexts.
 - [ ] Confirm the prover guest verifies the L1 execution block hash and preserves legacy-parent
-      inheritance across the activation boundary.
+      inheritance across the activation boundary. Forced/default blocks must not depend on a
+      permissionless reveal having already occurred.
 - [ ] Confirm checkpoint/reveal consumers operate permissionlessly without Anchor privileges.
-- [ ] Successfully consume the Task 8 cross-client vectors in the other client and prover; the
-      checked-in vectors prove alethia-reth behavior only.
+      Reveals are ordinary transactions, not an EL block-validity condition or a synthetic
+      SignalService call. Keep the existing treasury available for fee distribution.
+- [ ] Complete the geth port and consume the expanded portable fixture corpus in the other client
+      and prover; the checked-in vectors prove alethia-reth behavior only.
+- [ ] Resolve the local activation items above, including Engine error classes, strict FCUv3
+      withdrawals, payload IDs, batch lookup, simulation policy, and custom fork ordering.
+- [ ] Record real-history differential results with reproducible inputs and both source revisions.
 - [ ] Resolve or explicitly accept the upstream malformed-signature response limitation for all
       driver retry and invalid-chain paths.
 - [ ] Keep existing-chain genesis unchanged and schedule activation only through a coordinated

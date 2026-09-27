@@ -1,4 +1,5 @@
 //! Engine payload validator implementation for Taiko execution payloads.
+use crate::engine::state_root::TaikoStateRootStrategy;
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::{
@@ -96,16 +97,20 @@ where
     /// Delegates to upstream's [`BasicEngineValidatorBuilder`] so the tree validator is wired
     /// exactly like reth's (invalid-block hook, overlay manager, and `--engine.txpool-prewarming`,
     /// whose transaction-pool adapter is private to `reth-node-builder`), with Taiko's payload
-    /// validator plugged in through this builder's [`PayloadValidatorBuilder`] impl.
+    /// validator plugged in through this builder's [`PayloadValidatorBuilder`] impl. The result
+    /// runs [`TaikoStateRootStrategy`], which keeps pre-Unzen SELFDESTRUCT storage deletions on
+    /// reth's synchronous state-root path.
     async fn build_tree_validator(
         self,
         ctx: &AddOnsContext<'_, N>,
         tree_config: TreeConfig,
         overlay_manager: OverlayManager<<N::Types as NodeTypes>::Primitives>,
     ) -> eyre::Result<Self::EngineValidator> {
-        BasicEngineValidatorBuilder::new(self)
+        let state_root_strategy = Arc::new(TaikoStateRootStrategy::new(&tree_config));
+        let validator = BasicEngineValidatorBuilder::new(self)
             .build_tree_validator(ctx, tree_config, overlay_manager)
-            .await
+            .await?;
+        Ok(validator.with_state_root_strategy(state_root_strategy))
     }
 }
 

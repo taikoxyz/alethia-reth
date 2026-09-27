@@ -5,6 +5,116 @@ use reth_tasks::Runtime;
 use support::*;
 
 #[test]
+fn legacy_osaka_sidecar_rejection_does_not_poison_an_honest_hash() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::engine::TaikoEngineTypes;
+        use alloy_primitives::U256;
+        use alloy_rpc_types_engine::PayloadStatus;
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        use reth_node_api::PayloadTypes;
+        use reth_storage_api::{StateProvider, StateProviderFactory};
+
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let a = launch_test_node(spec.clone(), Runtime::test()).await?;
+        let b = launch_test_node(spec.clone(), Runtime::test()).await?;
+        let ca = a.auth_server_handle().http_client();
+        let cb = b.auth_server_handle().http_client();
+        for client in [&ca, &cb] {
+            fcu(client, 2, genesis, genesis, None).await?;
+        }
+        let honest =
+            build(&ca, spec.clone(), spec.genesis_header(), 0, fixture_attributes(99)).await?;
+        let data = TaikoEngineTypes::block_to_payload(honest.block.clone(), None);
+        let mut tampered = data.clone();
+        tampered.taiko_sidecar.osaka.as_mut().unwrap().parent_beacon_block_root =
+            B256::with_last_byte(7);
+        let rejected: PayloadStatus =
+            cb.request("reth_newPayload", rpc_params![tampered, false, false]).await?;
+        assert!(rejected.status.is_invalid(), "{rejected:?}");
+        // B has never imported this hash: a late state-root failure would poison its cache.
+        let recovered: PayloadStatus =
+            cb.request("reth_newPayload", rpc_params![&data, false, false]).await?;
+        assert!(recovered.status.is_valid(), "honest hash was poisoned: {recovered:?}");
+        assert!(import(&ca, &honest).await?.status.is_valid());
+        assert!(import(&cb, &honest).await?.status.is_valid());
+        for client in [&ca, &cb] {
+            fcu(client, 2, genesis, honest.block.hash(), None).await?;
+        }
+        let state = b.inner.provider.latest()?;
+        assert_eq!(
+            state.storage(alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, B256::from(U256::from(99)))?,
+            Some(U256::from(99))
+        );
+        assert_eq!(
+            state
+                .storage(alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, B256::from(U256::from(8290)))?
+                .unwrap_or_default(),
+            U256::ZERO
+        );
+        drop(state);
+        // The same direct route must retain the nonzero root once TBD activates.
+        let tbd = build(&ca, spec, honest.block.header(), 0, fixture_attributes(100)).await?;
+        let tbd_data = TaikoEngineTypes::block_to_payload(tbd.block.clone(), None);
+        let status: PayloadStatus =
+            cb.request("reth_newPayload", rpc_params![tbd_data, false, false]).await?;
+        assert!(status.status.is_valid(), "{status:?}");
+        canonicalize(&cb, genesis, &tbd).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn legacy_osaka_sidecar_cannot_supply_state_missing_from_the_header() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_block::derived_block::execute_derived_block;
+        use alethia_reth_primitives::engine::TaikoEngineTypes;
+        use alloy_rpc_types_engine::PayloadStatus;
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        use reth_node_api::PayloadTypes;
+        use reth_primitives_traits::{SealedBlock, SealedHeader};
+        use reth_revm::database::StateProviderDatabase;
+        use reth_storage_api::{StateProviderFactory, StateRootProvider};
+
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone(), Runtime::test()).await?;
+        let client = node.auth_server_handle().http_client();
+        fcu(&client, 2, genesis, genesis, None).await?;
+        let honest =
+            build(&client, spec.clone(), spec.genesis_header(), 0, fixture_attributes(99)).await?;
+        let root = B256::with_last_byte(7);
+        let mut candidate = honest.block.clone().into_block();
+        candidate.header.parent_beacon_block_root = Some(root);
+        let candidate = SealedBlock::seal_slow(candidate).try_recover()?;
+        let state = node.inner.provider.history_by_block_hash(genesis)?;
+        let execution = execute_derived_block(
+            &node.inner.evm_config,
+            &SealedHeader::seal_slow(spec.genesis_header().clone()),
+            &candidate,
+            StateProviderDatabase::new(&*state),
+        )?;
+        let state_root = state.state_root(execution.hashed_state)?;
+        assert_ne!(state_root, honest.block.state_root);
+        drop(state);
+        // Commit the sidecar-dependent state while keeping the header's legacy zero root.
+        let mut crafted = honest.block.clone().into_block();
+        crafted.header.state_root = state_root;
+        let crafted = SealedBlock::seal_slow(crafted);
+        let mut data = TaikoEngineTypes::block_to_payload(crafted.clone(), None);
+        data.taiko_sidecar.osaka.as_mut().unwrap().parent_beacon_block_root = root;
+        let status: PayloadStatus =
+            client.request("reth_newPayload", rpc_params![data, false, false]).await?;
+        assert!(status.status.is_invalid(), "sidecar-dependent block accepted: {status:?}");
+        assert!(
+            !fcu(&client, 2, genesis, crafted.hash(), None).await?.payload_status.status.is_valid()
+        );
+        canonicalize(&client, genesis, &honest).await?;
+        Ok(())
+    })
+}
+
+#[test]
 fn nonvalid_fcu_with_attributes_preserves_upstream_status() -> eyre::Result<()> {
     run_live_test(async {
         let spec = fixture_chain_spec();

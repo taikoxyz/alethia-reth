@@ -49,12 +49,14 @@ enum TaikoPayloadValidationError {
     /// Taiko payload construction does not consume the post-Amsterdam target-gas-limit attribute.
     #[error("target gas limit is unsupported on Taiko")]
     TargetGasLimitUnsupported,
-    /// A non-zero root cannot survive the engine round-trip (`block_to_payload` emits a V1
-    /// payload plus a sidecar with no beacon-root field, and `convert_payload_to_block` rebuilds
-    /// Unzen headers with the zero root), so building from one would produce a block every
-    /// `newPayload` re-import rejects with a block-hash mismatch.
+    /// Before TBD, payload conversion rebuilds Unzen headers with the zero root, so a nonzero
+    /// build root would disagree with the reconstructed header commitment.
     #[error("non-zero parent beacon block roots are unsupported on Taiko")]
     NonZeroParentBeaconBlockRootUnsupported,
+    /// Legacy conversion discards Osaka fields, which must carry only empty bodies and zero
+    /// gas/root values to avoid executing data absent from the reconstructed header.
+    #[error("nonempty or nonzero Osaka fields are unsupported before TBD")]
+    LegacyOsakaFieldsUnsupported,
     /// Taiko schedules no Amsterdam fork, so EIP-7928 block access lists are never accepted.
     #[error("block access lists are unsupported on Taiko")]
     BlockAccessListUnsupported,
@@ -208,6 +210,20 @@ where
         let is_tbd_active = self.chain_spec.is_tbd_active(payload.execution_payload.timestamp);
         if is_tbd_active {
             self.validate_tbd_payload(&payload)?;
+        } else if payload.taiko_sidecar.osaka.as_ref().is_some_and(|osaka| {
+            !osaka.parent_beacon_block_root.is_zero() ||
+                !osaka.withdrawals.is_empty() ||
+                osaka.blob_gas_used != 0 ||
+                osaka.excess_blob_gas != 0 ||
+                !osaka.expected_blob_versioned_hashes.is_empty() ||
+                !osaka.execution_requests.is_empty()
+        }) {
+            // Reject before execution: a sidecar-induced state-root failure would cache an
+            // otherwise honest header as invalid. Honest legacy block_to_payload sidecars remain
+            // accepted, including those carrying only an empty withdrawals body before Unzen.
+            return Err(NewPayloadError::other(
+                TaikoPayloadValidationError::LegacyOsakaFieldsUnsupported,
+            ));
         }
         let TaikoExecutionData { execution_payload, taiko_sidecar } = payload;
 
@@ -457,6 +473,56 @@ mod tests {
 
     fn version_tbd(payload: &TaikoExecutionData) -> Result<(), EngineObjectValidationError> {
         <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::validate_version_specific_fields(&tbd_validator(), EngineApiMessageVersion::V4, PayloadOrAttributes::from_execution_payload(payload))
+    }
+
+    #[test]
+    fn legacy_osaka_sidecars_preserve_honest_blocks_and_reject_discarded_data() {
+        let mut spec = unzen_chain_spec();
+        spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
+        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+        let validator = TaikoEngineValidator::new(Arc::new(spec));
+        for timestamp in [49, 99] {
+            let mut block = convert_payload(sample_unzen_execution_data(
+                U256::ZERO,
+                Some(U256::ZERO),
+                Some(B256::ZERO),
+            ))
+            .unwrap()
+            .into_block();
+            block.header.timestamp = timestamp;
+            if timestamp == 49 {
+                block.header.parent_beacon_block_root = None;
+                block.header.blob_gas_used = None;
+                block.header.excess_blob_gas = None;
+                block.header.requests_hash = None;
+            }
+            let block = block.seal_slow();
+            let data = TaikoEngineTypes::block_to_payload(block.clone(), None);
+            // A pre-Unzen block has an Osaka sidecar solely to preserve withdrawals.
+            assert!(data.taiko_sidecar.osaka.is_some());
+            let convert = |data| {
+                <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
+                    &validator, data,
+                )
+            };
+            assert_eq!(convert(data.clone()).unwrap(), block);
+            let mut absent = data.clone();
+            absent.taiko_sidecar.osaka = None;
+            assert_eq!(convert(absent).unwrap(), block);
+            for case in 0..6 {
+                let mut invalid = data.clone();
+                let osaka = invalid.taiko_sidecar.osaka.as_mut().unwrap();
+                match case {
+                    0 => osaka.parent_beacon_block_root = B256::with_last_byte(7),
+                    1 => osaka.withdrawals.push(Default::default()),
+                    2 => osaka.blob_gas_used = 1,
+                    3 => osaka.excess_blob_gas = 1,
+                    4 => osaka.expected_blob_versioned_hashes.push(B256::with_last_byte(1)),
+                    _ => osaka.execution_requests.push(Bytes::from_static(&[0, 1])),
+                }
+                assert!(convert(invalid).is_err(), "timestamp {timestamp}, case {case}");
+            }
+        }
     }
 
     #[test]

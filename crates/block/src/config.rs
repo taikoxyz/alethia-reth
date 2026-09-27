@@ -386,6 +386,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         payload: &'a TaikoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let is_unzen_active = self.chain_spec().is_unzen_active(payload.timestamp());
+        let is_tbd_active = self.chain_spec().is_tbd_active(payload.timestamp());
         // Unzen commits the finalized block zk gas into the header difficulty, so payload
         // execution must validate it against the sidecar value the same way block re-execution
         // does. Requiring the sidecar value keeps `engine_newPayload` fail-closed instead of
@@ -401,9 +402,10 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
                 is_unzen_active,
-                self.chain_spec().is_tbd_active(payload.timestamp()),
+                is_tbd_active,
                 payload.block_number(),
-                payload.parent_beacon_block_root(),
+                // Legacy conversion commits the Unzen zero root, independently of sidecar data.
+                if is_tbd_active { payload.parent_beacon_block_root() } else { None },
             )
             .map_err(AnyError::new)?,
             ommers: &[],
@@ -929,6 +931,32 @@ mod tests {
                     slot_number: None,
                     osaka: None,
                 },
+            }
+        }
+
+        #[test]
+        fn payload_root_follows_tbd_activation_without_changing_legacy_execution() {
+            use alethia_reth_primitives::engine::types::TaikoOsakaPayloadFields;
+            let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+            spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
+            spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+            let config = TaikoEvmConfig::new(Arc::new(spec));
+            let root = B256::with_last_byte(7);
+            let mut payload = sample_payload(Some(U256::ZERO));
+            payload.taiko_sidecar.osaka = Some(TaikoOsakaPayloadFields {
+                parent_beacon_block_root: root,
+                withdrawals: vec![],
+                blob_gas_used: 0,
+                excess_blob_gas: 0,
+                expected_blob_versioned_hashes: vec![],
+                execution_requests: vec![],
+            });
+            for (timestamp, expected) in
+                [(49, None), (50, Some(B256::ZERO)), (99, Some(B256::ZERO)), (100, Some(root))]
+            {
+                payload.execution_payload.timestamp = timestamp;
+                let context = config.context_for_payload(&payload).unwrap();
+                assert_eq!(context.parent_beacon_block_root, expected, "timestamp {timestamp}");
             }
         }
 

@@ -41,9 +41,12 @@ use alethia_reth_chainspec::{
     spec::TaikoChainSpec,
 };
 use alethia_reth_evm::{env::TaikoBlockEnv, factory::TaikoEvmFactory, spec::TaikoSpecId};
-use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
+use alethia_reth_primitives::{
+    decode_shasta_basefee_sharing_pctg,
+    tbd::{MissingTbdBeaconRoot, validate_tbd_root},
+};
 
 /// Error when base fee is missing from a block header.
 #[derive(Debug)]
@@ -162,16 +165,20 @@ fn taiko_blob_excess_gas_and_price(spec: TaikoSpecId) -> Option<BlobExcessGasAnd
         .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 })
 }
 
-/// Normalizes the parent beacon block root for Unzen/Cancun execution contexts.
-///
-/// Unzen activates Cancun semantics, which require a parent beacon block root for block execution.
-/// Imported payloads can supply an explicit value, but local next-block building falls back to the
-/// zero root when Unzen is active.
+/// Validates TBD roots before applying the legacy Unzen zero-root fallback.
+/// Genesis remains exempt from the nonzero-root requirement.
 fn normalize_parent_beacon_block_root(
     is_unzen_active: bool,
+    is_tbd_active: bool,
+    block_number: u64,
     parent_beacon_block_root: Option<B256>,
-) -> Option<B256> {
-    if is_unzen_active { parent_beacon_block_root.or(Some(B256::ZERO)) } else { None }
+) -> Result<Option<B256>, MissingTbdBeaconRoot> {
+    validate_tbd_root(is_tbd_active, block_number, parent_beacon_block_root)?;
+    Ok(if is_unzen_active || is_tbd_active {
+        parent_beacon_block_root.or(Some(B256::ZERO))
+    } else {
+        None
+    })
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
@@ -282,6 +289,12 @@ impl ConfigureEvm for TaikoEvmConfig {
             .header()
             .base_fee_per_gas
             .ok_or_else(|| AnyError::new(MissingBaseFee { block_number: block.header().number }))?;
+        validate_tbd_root(
+            self.chain_spec().is_tbd_active(block.header().timestamp),
+            block.header().number,
+            block.header().parent_beacon_block_root,
+        )
+        .map_err(AnyError::new)?;
         Ok(TaikoBlockExecutionCtx {
             parent_hash: block.header().parent_hash,
             parent_beacon_block_root: block.header().parent_beacon_block_root,
@@ -307,8 +320,11 @@ impl ConfigureEvm for TaikoEvmConfig {
             parent_hash: parent.hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
                 is_unzen_active,
+                self.chain_spec().is_tbd_active(ctx.timestamp),
+                parent.number + 1,
                 ctx.parent_beacon_block_root,
-            ),
+            )
+            .map_err(AnyError::new)?,
             ommers: &[],
             withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
             basefee_per_gas: ctx.base_fee_per_gas,
@@ -385,8 +401,11 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
                 is_unzen_active,
+                self.chain_spec().is_tbd_active(payload.timestamp()),
+                payload.block_number(),
                 payload.parent_beacon_block_root(),
-            ),
+            )
+            .map_err(AnyError::new)?,
             ommers: &[],
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
             basefee_per_gas: payload.execution_payload.base_fee_per_gas.saturating_to(),
@@ -526,6 +545,43 @@ mod tests {
     }
 
     #[test]
+    fn tbd_block_and_next_context_require_nonzero_root() {
+        use reth_ethereum_primitives::{Block, BlockBody};
+        let config = config_with_tbd_at(0);
+        let parent = SealedHeader::seal_slow(tbd_header(0));
+        for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+            let mut header = tbd_header(0);
+            header.parent_beacon_block_root = root;
+            let block = SealedBlock::seal_slow(Block {
+                header: header.clone(),
+                body: BlockBody::default(),
+            });
+            let result = config.context_for_block(&block);
+            assert_eq!(result.is_ok(), root.is_some_and(|r| !r.is_zero()), "block root {root:?}");
+            if let Ok(ctx) = result {
+                assert_eq!(ctx.parent_beacon_block_root, root);
+            }
+            let attrs = TaikoNextBlockEnvAttributes {
+                timestamp: 2,
+                suggested_fee_recipient: Address::ZERO,
+                prev_randao: B256::ZERO,
+                gas_limit: 30_000_000,
+                extra_data: vec![0; 7].into(),
+                base_fee_per_gas: 1,
+                parent_beacon_block_root: root,
+            };
+            let result = config.context_for_next_block(&parent, attrs);
+            assert_eq!(result.is_ok(), root.is_some_and(|r| !r.is_zero()), "next root {root:?}");
+            if let Ok(ctx) = result {
+                assert_eq!(ctx.parent_beacon_block_root, root);
+            }
+            header.number = 0;
+            let genesis = SealedBlock::seal_slow(Block { header, body: BlockBody::default() });
+            assert!(config.context_for_block(&genesis).is_ok());
+        }
+    }
+
+    #[test]
     fn tbd_header_environment_validates_extra_data_and_preserves_genesis() {
         let config = config_with_tbd_at(0);
         let mut header = tbd_header(25);
@@ -637,6 +693,90 @@ mod tests {
     }
 
     #[test]
+    fn tbd_full_block_and_recreated_inspector_charge_golden_touch_and_refund_equally() {
+        use crate::{
+            executor::TaikoBlockExecutor,
+            testutil::{
+                db_with_system_contracts, insert_contract, recovered_tx_with_chain_id,
+                tbd_execution_ctx,
+            },
+        };
+        use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
+        use alloy_evm::{Evm, EvmFactory};
+        use reth_evm::block::BlockExecutor;
+        use reth_revm::{
+            State,
+            context::TxEnv,
+            inspector::NoOpInspector,
+            state::{AccountInfo, Bytecode},
+        };
+        let config = config_with_tbd_at(0);
+        let caller = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let target = Address::with_last_byte(0xC0);
+        let balance = U256::from(100_000_000_000_000u64);
+        for percentage in [25, 0] {
+            let mut header = tbd_header(percentage);
+            header.parent_beacon_block_root = Some(B256::with_last_byte(7));
+            let env = config.evm_env(&header).unwrap();
+            let treasury = get_treasury_address(env.cfg_env.chain_id);
+            let mut db = db_with_system_contracts(&[]);
+            db.insert_account_info(caller, AccountInfo { balance, ..Default::default() });
+            insert_contract(
+                &mut db,
+                target,
+                Bytecode::new_raw(Bytes::from_static(&[0x60, 0, 0x60, 0, 0x55, 0])),
+            );
+            db.insert_account_storage(target, U256::ZERO, U256::from(1)).unwrap();
+            let mut state = State::builder().with_database(db.clone()).build();
+            let evm = config.evm_with_env(&mut state, env.clone());
+            let mut ctx = tbd_execution_ctx(B256::with_last_byte(7));
+            ctx.extra_data = header.extra_data.clone();
+            let mut executor = TaikoBlockExecutor::new(
+                evm,
+                ctx,
+                config.chain_spec().clone(),
+                RethReceiptBuilder::default(),
+            );
+            executor.apply_pre_execution_changes().unwrap();
+            let tx =
+                recovered_tx_with_chain_id(caller, target, 0, 10_000_000, env.cfg_env.chain_id);
+            let full = executor.execute_transaction_without_commit(tx.clone()).unwrap();
+            let mut replay =
+                TaikoEvmFactory.create_evm_with_inspector(db, env.clone(), NoOpInspector {});
+            let replay_result = replay
+                .transact(
+                    TxEnv::builder()
+                        .caller(caller)
+                        .to(target)
+                        .gas_limit(5_000_000)
+                        .gas_price(10_000_000)
+                        .chain_id(Some(env.cfg_env.chain_id))
+                        .build()
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(full.result, replay_result);
+            assert_eq!(full.result.result.tx_gas_used(), 21_206);
+            assert_eq!(
+                full.result.state[&caller].info.balance,
+                balance - U256::from(212_060_000_000u64)
+            );
+            let (treasury_fee, beneficiary_fee) = if percentage == 25 {
+                (159_045_000_000u64, 53_015_000_000u64)
+            } else {
+                (212_060_000_000u64, 0)
+            };
+            assert_eq!(full.result.state[&treasury].info.balance, U256::from(treasury_fee));
+            assert_eq!(
+                full.result.state[&header.beneficiary].info.balance,
+                U256::from(beneficiary_fee)
+            );
+            executor.commit_transaction(full);
+            assert_eq!(executor.finish().unwrap().1.gas_used, 21_206);
+        }
+    }
+
+    #[test]
     fn unzen_takes_precedence_over_shasta() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
@@ -687,19 +827,48 @@ mod tests {
     }
 
     #[test]
+    fn tbd_normalization_checks_before_legacy_fallback_and_preserves_genesis() {
+        let root = B256::with_last_byte(7);
+        assert_eq!(
+            normalize_parent_beacon_block_root(true, false, 1, None).unwrap(),
+            Some(B256::ZERO)
+        );
+        assert_eq!(
+            normalize_parent_beacon_block_root(true, true, 1, Some(root)).unwrap(),
+            Some(root)
+        );
+        assert!(normalize_parent_beacon_block_root(true, true, 1, None).is_err());
+        assert!(normalize_parent_beacon_block_root(true, true, 1, Some(B256::ZERO)).is_err());
+        assert_eq!(
+            normalize_parent_beacon_block_root(true, true, 0, Some(B256::ZERO)).unwrap(),
+            Some(B256::ZERO)
+        );
+    }
+
+    #[test]
     fn pre_unzen_normalization_discards_supplied_parent_beacon_block_root() {
-        assert_eq!(normalize_parent_beacon_block_root(false, Some(B256::repeat_byte(0x11))), None);
+        assert_eq!(
+            normalize_parent_beacon_block_root(false, false, 1, Some(B256::repeat_byte(0x11)))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
     fn unzen_normalization_preserves_supplied_parent_beacon_block_root() {
         let root = B256::repeat_byte(0x22);
-        assert_eq!(normalize_parent_beacon_block_root(true, Some(root)), Some(root));
+        assert_eq!(
+            normalize_parent_beacon_block_root(true, false, 1, Some(root)).unwrap(),
+            Some(root)
+        );
     }
 
     #[test]
     fn unzen_normalization_falls_back_to_zero_root_when_missing() {
-        assert_eq!(normalize_parent_beacon_block_root(true, None), Some(B256::ZERO));
+        assert_eq!(
+            normalize_parent_beacon_block_root(true, false, 1, None).unwrap(),
+            Some(B256::ZERO)
+        );
     }
 
     #[cfg(feature = "net")]
@@ -760,6 +929,35 @@ mod tests {
                     slot_number: None,
                     osaka: None,
                 },
+            }
+        }
+
+        #[test]
+        fn tbd_payload_context_requires_nonzero_root() {
+            use alethia_reth_primitives::engine::types::TaikoOsakaPayloadFields;
+            let config = config_with_tbd_at(0);
+            for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+                let mut payload = sample_payload(Some(U256::ZERO));
+                payload.execution_payload.extra_data = vec![0; 7].into();
+                payload.taiko_sidecar.osaka = root.map(|root| TaikoOsakaPayloadFields {
+                    parent_beacon_block_root: root,
+                    withdrawals: vec![],
+                    blob_gas_used: 0,
+                    excess_blob_gas: 0,
+                    expected_blob_versioned_hashes: vec![],
+                    execution_requests: vec![],
+                });
+                let result = config.context_for_payload(&payload);
+                assert_eq!(
+                    result.is_ok(),
+                    root.is_some_and(|r| !r.is_zero()),
+                    "payload root {root:?}"
+                );
+                if let Ok(ctx) = result {
+                    assert_eq!(ctx.parent_beacon_block_root, root);
+                }
+                payload.execution_payload.block_number = 0;
+                assert!(config.context_for_payload(&payload).is_ok());
             }
         }
 

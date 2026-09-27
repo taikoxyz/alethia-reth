@@ -68,6 +68,46 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     }
 }
 
+/// Returns the Unzen test chain with TBD active from timestamp zero.
+pub fn tbd_chain_spec() -> TaikoChainSpec {
+    let mut spec = unzen_chain_spec();
+    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+    spec
+}
+
+/// Returns a TBD environment with authoritative zero base-fee sharing.
+pub fn tbd_evm_env() -> TaikoEvmEnv {
+    let mut env = unzen_evm_env();
+    env.cfg_env.spec = TaikoSpecId::TBD;
+    env.block_env.base_fee_share_pctg = Some(0);
+    env
+}
+
+/// Returns a TBD execution context with seven-byte extraData and the supplied beacon root.
+pub fn tbd_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
+    let mut ctx = unzen_execution_ctx();
+    ctx.extra_data = vec![0; 7].into();
+    ctx.parent_beacon_block_root = Some(root);
+    ctx
+}
+
+/// Creates a test database with the deployed standard beacon-root and history-storage contracts.
+pub fn db_with_system_contracts(accounts: &[(Address, u64)]) -> InMemoryDB {
+    use alloy_eips::{eip2935, eip4788};
+    let mut db = db_with_contracts(accounts);
+    insert_contract(
+        &mut db,
+        eip4788::BEACON_ROOTS_ADDRESS,
+        Bytecode::new_raw(eip4788::BEACON_ROOTS_CODE.clone()),
+    );
+    insert_contract(
+        &mut db,
+        eip2935::HISTORY_STORAGE_ADDRESS,
+        Bytecode::new_raw(eip2935::HISTORY_STORAGE_CODE.clone()),
+    );
+    db
+}
+
 /// Builds a recovered legacy transaction targeting `to` from `caller`, defaulting to the
 /// Devnet chain id (`167`).
 pub fn recovered_tx(

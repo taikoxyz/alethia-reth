@@ -418,3 +418,101 @@ fn unzen_chain_spec() -> TaikoChainSpec {
     chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
     chain_spec
 }
+
+#[test]
+fn tbd_header_requires_nonzero_root_and_ordinary_first_transaction() {
+    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+    let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
+    for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+        let header = Header {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1),
+            extra_data: vec![0; 7].into(),
+            parent_beacon_block_root: root,
+            ..Default::default()
+        };
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::seal_slow(header)).is_ok(),
+            root.is_some_and(|r| !r.is_zero())
+        );
+    }
+    let tx: TransactionSigned = Signed::new_unchecked(
+        TxLegacy::default(),
+        Signature::new(U256::from(1), U256::from(2), false),
+        B256::ZERO,
+    )
+    .into();
+    let block = RecoveredBlock::new_unhashed(
+        Block {
+            header: Header { number: 1, timestamp: 1, ..Default::default() },
+            body: reth_ethereum_primitives::BlockBody {
+                transactions: vec![tx],
+                ..Default::default()
+            },
+        },
+        vec![Address::ZERO],
+    );
+    assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
+}
+
+#[test]
+fn tbd_canonical_import_rejects_body_with_filtered_first_transaction() {
+    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+    let tx: TransactionSigned = Signed::new_unchecked(
+        TxLegacy::default(),
+        Signature::new(U256::from(1), U256::from(2), false),
+        B256::ZERO,
+    )
+    .into();
+    let block = RecoveredBlock::new_unhashed(
+        Block {
+            header: Header { number: 1, timestamp: 1, ..Default::default() },
+            body: reth_ethereum_primitives::BlockBody {
+                transactions: vec![tx.clone(), tx],
+                ..Default::default()
+            },
+        },
+        vec![Address::ZERO; 2],
+    );
+    // A filtered nonce, signature, type, or EVM-gas failure leaves one receipt;
+    // first-position zk-gas exhaustion leaves none. Neither is a valid imported body.
+    for committed in [0, 1] {
+        let receipts: Vec<Receipt> = vec![Receipt::default(); committed];
+        assert!(validate_zk_gas_post_execution(&block, &spec, &receipts).is_err());
+        assert_eq!(block.body().transactions.len(), 2);
+    }
+    assert!(
+        validate_zk_gas_post_execution::<_, Receipt>(
+            &block,
+            &spec,
+            &[Receipt::default(), Receipt::default()]
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn tbd_activation_preserves_legacy_empty_body_and_pre_fork_header_roots() {
+    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(10));
+    let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
+    for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+        let header = Header {
+            number: 1,
+            timestamp: 9,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1),
+            extra_data: vec![0; 7].into(),
+            parent_beacon_block_root: root,
+            ..Default::default()
+        };
+        assert!(consensus.validate_header(&SealedHeader::seal_slow(header.clone())).is_ok());
+        let block =
+            RecoveredBlock::new_unhashed(Block { header, body: Default::default() }, vec![]);
+        assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
+    }
+}

@@ -23,7 +23,9 @@ use crate::eip4396::{
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
-use alethia_reth_primitives::{SHASTA_EXTRA_DATA_LEN, transaction::is_allowed_tx_type};
+use alethia_reth_primitives::{
+    SHASTA_EXTRA_DATA_LEN, tbd::validate_tbd_root, transaction::is_allowed_tx_type,
+};
 
 /// Anchor transaction selectors, gas rules, and validation functions.
 mod anchor;
@@ -146,6 +148,12 @@ where
     /// This is called on standalone header to check if all hashes are correct.
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
+        validate_tbd_root(
+            self.chain_spec.is_tbd_active(header.timestamp()),
+            header.number(),
+            header.parent_beacon_block_root(),
+        )
+        .map_err(|err| ConsensusError::msg(err.to_string()))?;
 
         if !self.chain_spec.is_unzen_active(header.timestamp()) && !header.difficulty().is_zero() {
             return Err(ConsensusError::TheMergeDifficultyIsNotZero);

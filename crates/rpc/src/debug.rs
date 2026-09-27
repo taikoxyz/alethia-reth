@@ -9,6 +9,7 @@ use alethia_reth_block::{
     },
     tx_selection::zlib_compressed_len,
 };
+use alethia_reth_chainspec::hardfork::TaikoHardfork;
 use alethia_reth_primitives::{
     payload::builder::decode_recovered_transactions, transaction::is_allowed_tx_type,
 };
@@ -18,7 +19,7 @@ use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth_ethereum::{EthPrimitives, TransactionSigned};
+use reth_ethereum::{EthPrimitives, TransactionSigned, chainspec::Hardforks};
 use reth_ethereum_primitives::Block;
 use reth_evm::{
     ConfigureEvm,
@@ -26,7 +27,7 @@ use reth_evm::{
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::HeaderProvider;
+use reth_provider::{ChainSpecProvider, HeaderProvider};
 use reth_revm::{
     State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
     witness::ExecutionWitnessRecord,
@@ -245,6 +246,7 @@ where
             .map_err(EthApiError::from)?;
         let factory = self.state_provider_factory.clone();
         let evm_config = self.eth_api.evm_config().clone();
+        let chain_spec = self.eth_api.provider().chain_spec();
         let header_provider = self.provider.clone();
         // Owned permit moved into the closure; see `execution_witness_for_block`.
         let permit = self
@@ -265,52 +267,14 @@ where
                 .map_err(EthApiError::from)?;
             let db = StateProviderDatabase::new(&*state_provider);
             let mut state = State::builder().with_database(db).with_bundle_update().build();
-            let mut witness_record = ExecutionWitnessRecord::default();
-
-            {
-                let mut block_executor = evm_config
-                    .executor_for_block(&mut state, block.sealed_block())
-                    .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
-
-                block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
-
-                for (idx, tx) in block.transactions_recovered().enumerate() {
-                    let is_anchor_transaction = idx == 0;
-
-                    // Taiko blocks never contain blob transactions: the build paths skip
-                    // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
-                    // validation rejects any block that includes one. Keep the same filtering,
-                    // but never silently discard the mandatory anchor transaction.
-                    match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
-                        Ok(true) => {
-                            continue;
-                        }
-                        Ok(false) => {}
-                        Err(err) => return Err(err),
-                    }
-
-                    match block_executor.execute_transaction(tx) {
-                        Ok(_) => {}
-                        Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
-                            if is_zk_gas_limit_exceeded(&err) {
-                                break;
-                            }
-                        }
-                        Err(err) => return Err(EthApiError::from(err)),
-                    }
-                }
-
-                match block_executor.apply_post_execution_changes() {
-                    Ok(_) => {}
-                    Err(err)
-                        if options.skip_zk_gas_difficulty_check &&
-                            is_zk_gas_difficulty_mismatch(&err) => {}
-                    Err(err) => return Err(EthApiError::from(err)),
-                }
-            }
-
-            state.merge_transitions(BundleRetention::Reverts);
-            witness_record.record_executed_state(&state, mode);
+            let witness_record = record_tx_list_witness(
+                &evm_config,
+                &mut state,
+                &block,
+                chain_spec.as_ref(),
+                mode,
+                options,
+            )?;
 
             witness_record
                 .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
@@ -370,6 +334,72 @@ where
         .await
         .map_err(Into::into)
     }
+}
+
+/// Replays a candidate tx list and records exactly the committed state used to generate its
+/// witness. Difficulty skipping applies only after execution; configuration and pre-execution
+/// remain strict.
+fn record_tx_list_witness<E, DB>(
+    evm_config: &E,
+    state: &mut State<DB>,
+    block: &RecoveredBlock<Block>,
+    chain_spec: &impl Hardforks,
+    mode: ExecutionWitnessMode,
+    options: TxListWitnessOptions,
+) -> Result<ExecutionWitnessRecord, EthApiError>
+where
+    E: ConfigureEvm<Primitives = EthPrimitives>,
+    DB: reth_revm::Database + std::fmt::Debug,
+{
+    let mut witness_record = ExecutionWitnessRecord::default();
+    let requires_legacy_anchor =
+        !chain_spec.fork(TaikoHardfork::TBD).active_at_timestamp(block.timestamp());
+
+    {
+        let mut block_executor = evm_config
+            .executor_for_block(state, block.sealed_block())
+            .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
+
+        block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
+
+        for (idx, tx) in block.transactions_recovered().enumerate() {
+            let is_anchor_transaction = requires_legacy_anchor && idx == 0;
+
+            // Taiko blocks never contain blob transactions: the build paths skip
+            // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
+            // validation rejects any block that includes one. Keep the same filtering,
+            // but never silently discard the mandatory anchor transaction.
+            match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
+                Ok(true) => {
+                    continue;
+                }
+                Ok(false) => {}
+                Err(err) => return Err(err),
+            }
+
+            match block_executor.execute_transaction(tx) {
+                Ok(_) => {}
+                Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
+                    if is_zk_gas_limit_exceeded(&err) {
+                        break;
+                    }
+                }
+                Err(err) => return Err(EthApiError::from(err)),
+            }
+        }
+
+        match block_executor.apply_post_execution_changes() {
+            Ok(_) => {}
+            Err(err)
+                if options.skip_zk_gas_difficulty_check && is_zk_gas_difficulty_mismatch(&err) => {}
+            Err(err) => return Err(EthApiError::from(err)),
+        }
+    }
+
+    state.merge_transitions(BundleRetention::Reverts);
+    witness_record.record_executed_state(state, mode);
+
+    Ok(witness_record)
 }
 
 /// Decode an RLP transaction list and recover each transaction signer for EVM execution.
@@ -472,6 +502,136 @@ mod tests {
     use alloy_rlp::Encodable;
     use reth_evm::execute::BlockValidationError;
     use serde_json::json;
+
+    #[test]
+    fn tbd_witness_filters_first_position_and_enforces_root_when_difficulty_skipped() {
+        use alethia_reth_block::config::TaikoEvmConfig;
+        use alethia_reth_chainspec::TAIKO_DEVNET;
+        use alloy_consensus::Header;
+        use alloy_hardforks::ForkCondition;
+        use reth_primitives_traits::SignedTransaction;
+        use reth_revm::{
+            db::InMemoryDB,
+            state::{AccountInfo, Bytecode},
+        };
+        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+        let chain_id = spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(Arc::new(spec));
+        let target = Address::with_last_byte(0xBB);
+        let limit_target = Address::with_last_byte(0xCC);
+        let signed = |nonce, to, gas_limit| -> TransactionSigned {
+            Signed::new_unchecked(
+                TxLegacy {
+                    chain_id: Some(chain_id),
+                    nonce,
+                    gas_price: 1,
+                    gas_limit,
+                    to: TxKind::Call(to),
+                    ..Default::default()
+                },
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::ZERO,
+            )
+            .into()
+        };
+        let valid = signed(0, target, 21_000);
+        let sender = valid.try_recover().unwrap();
+        let invalid_signature: TransactionSigned = Signed::new_unchecked(
+            TxLegacy::default(),
+            Signature::new(U256::ZERO, U256::from(1), false),
+            B256::ZERO,
+        )
+        .into();
+        for (name, first, truncates) in [
+            ("valid", valid.clone(), false),
+            ("nonce", signed(99, target, 21_000), false),
+            ("signature", invalid_signature, false),
+            ("type", blob_transaction(), false),
+            ("gas", signed(0, target, 30_000_001), false),
+            ("zk", signed(0, limit_target, 5_000_000), true),
+        ] {
+            let mut encoded = vec![];
+            vec![first, valid.clone()].encode(&mut encoded);
+            let txs = decode_recovered_tx_list(encoded.into()).unwrap();
+            for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+                let block = RecoveredBlock::new_unhashed(
+                    Block {
+                        header: Header {
+                            number: 1,
+                            timestamp: 1,
+                            base_fee_per_gas: Some(0),
+                            gas_limit: 30_000_000,
+                            extra_data: vec![0; 7].into(),
+                            parent_beacon_block_root: root,
+                            ..Default::default()
+                        },
+                        body: reth_ethereum_primitives::BlockBody {
+                            transactions: txs.iter().map(|tx| tx.clone_inner()).collect(),
+                            ..Default::default()
+                        },
+                    },
+                    txs.iter().map(|tx| tx.signer()).collect(),
+                );
+                let mut db = InMemoryDB::default();
+                for tx in &txs {
+                    db.insert_account_info(
+                        tx.signer(),
+                        AccountInfo { balance: U256::from(100_000_000), ..Default::default() },
+                    );
+                }
+                // Repeated KECCAK256 of 64 KiB exhausts the unchanged Unzen zk budget.
+                let code = Bytecode::new_raw(Bytes::from_static(&[
+                    0x5b, 0x62, 1, 0, 0, 0x60, 0, 0x20, 0x50, 0x60, 0, 0x56,
+                ]));
+                db.insert_account_info(
+                    limit_target,
+                    AccountInfo {
+                        nonce: 1,
+                        code_hash: code.hash_slow(),
+                        code: Some(code),
+                        ..Default::default()
+                    },
+                );
+                let mut state = State::builder().with_database(db).with_bundle_update().build();
+                let result = record_tx_list_witness(
+                    &config,
+                    &mut state,
+                    &block,
+                    config.chain_spec().as_ref(),
+                    ExecutionWitnessMode::Canonical,
+                    TxListWitnessOptions { skip_zk_gas_difficulty_check: true },
+                );
+                if root.is_none_or(|r| r.is_zero()) {
+                    assert!(result.unwrap_err().to_string().contains("beacon"), "{name}");
+                } else {
+                    let record = result.unwrap_or_else(|e| panic!("{name}: {e}"));
+                    let nonce = record
+                        .hashed_state
+                        .accounts
+                        .get(&alloy_primitives::keccak256(sender))
+                        .and_then(|a| a.as_ref())
+                        .map_or(0, |a| a.nonce);
+                    assert_eq!(nonce, u64::from(!truncates), "{name}");
+                    let provider = reth_provider::test_utils::NoopProvider::default();
+                    let witness = record
+                        .into_execution_witness(
+                            &provider,
+                            &provider,
+                            1,
+                            ExecutionWitnessMode::Canonical,
+                        )
+                        .unwrap();
+                    if !truncates {
+                        assert!(
+                            witness.keys.contains(&Bytes::copy_from_slice(sender.as_slice())),
+                            "{name}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn decode_recovered_tx_list_accepts_empty_rlp_list() {

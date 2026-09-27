@@ -161,12 +161,10 @@ impl TaikoPayloadBuilderAttributes {
             }
         }
 
-        // A non-zero caller root cannot survive the engine round-trip: `block_to_payload` emits
-        // a V1 payload plus a sidecar with no beacon-root field, and `convert_payload_to_block`
-        // rebuilds Unzen headers with the zero root, so a block built from one would be rejected
-        // with a block-hash mismatch on every `newPayload` re-import. Engine validation already
-        // rejects it (`validate_version_specific_fields`); this re-check covers every other route
-        // into a payload job, since the committed header is what makes the invariant load-bearing.
+        // Legacy Engine conversion reconstructs the Unzen zero-root convention. Although
+        // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
+        // root here would build a header that legacy import rejects. Re-check at job creation
+        // so callers outside the Engine RPC validation path retain the same invariant.
         if !is_tbd_active &&
             attributes
                 .payload_attributes
@@ -562,29 +560,27 @@ mod test {
         let attributes = tbd_payload_attrs(None);
         let before = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_TBD);
 
-        let mutations: Vec<Box<dyn Fn(&mut TaikoPayloadAttributes)>> = vec![
-            Box::new(|a| a.payload_attributes.timestamp += 1),
-            Box::new(|a| a.payload_attributes.prev_randao = B256::repeat_byte(0x12)),
-            Box::new(|a| a.payload_attributes.suggested_fee_recipient = Address::repeat_byte(0x23)),
-            Box::new(|a| {
-                a.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(1))
-            }),
-            Box::new(|a| a.payload_attributes.withdrawals = None),
-            Box::new(|a| a.base_fee_per_gas ^= U256::from(1) << 200),
-            Box::new(|a| a.block_metadata.beneficiary = Address::repeat_byte(0x56)),
-            Box::new(|a| a.block_metadata.gas_limit += 1),
-            Box::new(|a| a.block_metadata.timestamp += U256::from(1)),
-            Box::new(|a| a.block_metadata.mix_hash = B256::repeat_byte(0x78)),
-            Box::new(|a| a.block_metadata.extra_data = Bytes::from_static(&[0x89; 7])),
-            Box::new(|a| a.block_metadata.tx_list = Some(Bytes::new())),
-            Box::new(|a| a.block_metadata.tx_list = Some(Bytes::from_static(&[0xc0]))),
-            Box::new(|a| a.l1_origin.block_id += U256::from(1)),
-            Box::new(|a| a.l1_origin.l2_block_hash = B256::repeat_byte(0xcd)),
-            Box::new(|a| a.l1_origin.l1_block_height = Some(U256::ZERO)),
-            Box::new(|a| a.l1_origin.l1_block_hash = Some(B256::ZERO)),
-            Box::new(|a| a.l1_origin.build_payload_args_id[0] ^= 1),
-            Box::new(|a| a.l1_origin.is_forced_inclusion = false),
-            Box::new(|a| a.l1_origin.signature[0] ^= 1),
+        let mutations: &[fn(&mut TaikoPayloadAttributes)] = &[
+            |a| a.payload_attributes.timestamp += 1,
+            |a| a.payload_attributes.prev_randao = B256::repeat_byte(0x12),
+            |a| a.payload_attributes.suggested_fee_recipient = Address::repeat_byte(0x23),
+            |a| a.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(1)),
+            |a| a.payload_attributes.withdrawals = None,
+            |a| a.base_fee_per_gas ^= U256::from(1) << 200,
+            |a| a.block_metadata.beneficiary = Address::repeat_byte(0x56),
+            |a| a.block_metadata.gas_limit += 1,
+            |a| a.block_metadata.timestamp += U256::from(1),
+            |a| a.block_metadata.mix_hash = B256::repeat_byte(0x78),
+            |a| a.block_metadata.extra_data = Bytes::from_static(&[0x89; 7]),
+            |a| a.block_metadata.tx_list = Some(Bytes::new()),
+            |a| a.block_metadata.tx_list = Some(Bytes::from_static(&[0xc0])),
+            |a| a.l1_origin.block_id += U256::from(1),
+            |a| a.l1_origin.l2_block_hash = B256::repeat_byte(0xcd),
+            |a| a.l1_origin.l1_block_height = Some(U256::ZERO),
+            |a| a.l1_origin.l1_block_hash = Some(B256::ZERO),
+            |a| a.l1_origin.build_payload_args_id[0] ^= 1,
+            |a| a.l1_origin.is_forced_inclusion = false,
+            |a| a.l1_origin.signature[0] ^= 1,
         ];
 
         for mutate in mutations {

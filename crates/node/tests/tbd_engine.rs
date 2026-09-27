@@ -1,3 +1,5 @@
+// This shared module also contains helpers used only by the auth and history test binaries.
+#[allow(dead_code)]
 mod support;
 use alloy_primitives::B256;
 use reth_chainspec::EthChainSpec;

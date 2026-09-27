@@ -62,7 +62,12 @@ pub struct TaikoCliExtArgs {
     pub devnet_unzen_timestamp: u64,
 
     /// Optionally activate the devnet TBD hardfork at this Unix timestamp.
-    #[arg(long, env = "ALETHIA_RETH_DEVNET_TBD_TIMESTAMP")]
+    #[arg(
+        long,
+        env = "ALETHIA_RETH_DEVNET_TBD_TIMESTAMP",
+        value_name = "TIMESTAMP",
+        help_heading = "Taiko"
+    )]
     pub devnet_tbd_timestamp: Option<u64>,
 }
 

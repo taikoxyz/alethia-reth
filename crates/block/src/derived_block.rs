@@ -239,9 +239,8 @@ mod tests {
         let valid = test_transaction(chain_id, 0);
         let invalid_nonce = test_transaction(chain_id, 99);
         let invalid_signature = Recovered::new_unchecked(valid.clone_inner(), Address::ZERO);
-        let mut excessive = TxLegacy::default();
-        excessive.chain_id = Some(chain_id);
-        excessive.gas_limit = 30_000_001;
+        let excessive =
+            TxLegacy { chain_id: Some(chain_id), gas_limit: 30_000_001, ..Default::default() };
         let excessive = Recovered::new_unchecked(
             Signed::new_unchecked(
                 excessive,

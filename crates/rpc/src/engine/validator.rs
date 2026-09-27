@@ -218,9 +218,9 @@ where
                 !osaka.expected_blob_versioned_hashes.is_empty() ||
                 !osaka.execution_requests.is_empty()
         }) {
-            // Reject before execution: a sidecar-induced state-root failure would cache an
-            // otherwise honest header as invalid. Honest legacy block_to_payload sidecars remain
-            // accepted, including those carrying only an empty withdrawals body before Unzen.
+            // Conversion errors avoid the invalid-header cache. Reth may execute concurrently,
+            // so the execution context also ignores legacy sidecar roots. Honest legacy
+            // block_to_payload sidecars remain accepted, including withdrawal-only sidecars.
             return Err(NewPayloadError::other(
                 TaikoPayloadValidationError::LegacyOsakaFieldsUnsupported,
             ));

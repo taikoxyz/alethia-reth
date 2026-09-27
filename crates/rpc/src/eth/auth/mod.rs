@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Header};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{B256, Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth::{
@@ -15,7 +15,9 @@ use reth::{
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
-    ConfigureEngineEvm, block::BlockExecutionError, eth::receipt_builder::ReceiptBuilder,
+    ConfigureEngineEvm,
+    block::{BlockExecutionError, BlockExecutor},
+    eth::receipt_builder::ReceiptBuilder,
     execute::BlockBuilder,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -39,7 +41,7 @@ use alethia_reth_block::{
         select_and_execute_pool_transactions,
     },
 };
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
@@ -53,7 +55,9 @@ mod lookup;
 /// `taikoAuth` request/response types for tx-pool simulation endpoints.
 mod types;
 
-pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipParams};
+pub use types::{
+    PreBuiltTxList, TxPoolBlockContext, TxPoolContentParams, TxPoolContentWithMinTipParams,
+};
 
 /// Conservative zk gas reserved for the mandatory anchor during tx-pool preselection.
 ///
@@ -61,6 +65,43 @@ pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipPara
 /// headroom for anchor execution changes while retaining 98% of the Unzen block budget for user
 /// transactions. Revisit this value if the anchor implementation changes substantially.
 const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
+
+/// Resolves the target values used by tx-pool simulation while preserving the legacy omission
+/// behavior before TBD activation.
+fn resolve_tx_pool_block_context(
+    chain_spec: &TaikoChainSpec,
+    parent: &Header,
+    supplied: Option<TxPoolBlockContext>,
+) -> Result<TxPoolBlockContext, EthApiError> {
+    let Some(context) = supplied else {
+        if chain_spec.is_tbd_active(parent.timestamp()) {
+            return Err(EthApiError::InvalidParams(
+                "`blockContext` is required when the parent is at or after TBD activation"
+                    .to_string(),
+            ))
+        }
+        return Ok(TxPoolBlockContext {
+            timestamp: parent.timestamp(),
+            parent_beacon_block_root: B256::ZERO,
+            extra_data: parent.extra_data().clone(),
+        })
+    };
+
+    let timestamp_is_invalid = if chain_spec.is_shasta_active(context.timestamp) {
+        context.timestamp <= parent.timestamp()
+    } else {
+        context.timestamp < parent.timestamp()
+    };
+    if timestamp_is_invalid {
+        return Err(EthApiError::InvalidParams(format!(
+            "target block timestamp {} must follow parent timestamp {}",
+            context.timestamp,
+            parent.timestamp()
+        )))
+    }
+
+    Ok(context)
+}
 
 /// Applies the anchor zk gas safety margin before tx-pool transaction simulation.
 fn reserve_anchor_zk_gas_for_tx_pool_selection<Evm, Spec, R>(
@@ -72,6 +113,28 @@ where
     R: ReceiptBuilder,
 {
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
+}
+
+/// Applies explicit target pre-execution and retains the legacy anchor budget only before TBD.
+fn prepare_tx_pool_executor<'a, Evm, Spec, R>(
+    executor: &mut TaikoBlockExecutor<'a, Evm, Spec, R>,
+    chain_spec: &TaikoChainSpec,
+    target_timestamp: u64,
+    explicit_context: bool,
+) -> Result<(), BlockExecutionError>
+where
+    Evm: TaikoZkGasEvm,
+    Spec: Clone,
+    R: ReceiptBuilder,
+    TaikoBlockExecutor<'a, Evm, Spec, R>: BlockExecutor,
+{
+    if explicit_context {
+        executor.apply_pre_execution_changes()?;
+    }
+    if !chain_spec.is_tbd_active(target_timestamp) {
+        reserve_anchor_zk_gas_for_tx_pool_selection(executor)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -134,6 +197,7 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
+        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 
     /// Returns candidate transaction lists without enforcing a tip threshold.
@@ -146,6 +210,7 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
         max_bytes_per_tx_list: u64,
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
+        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 }
 
@@ -304,6 +369,7 @@ where
         max_bytes_per_tx_list: u64,
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
+        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         self.tx_pool_content_with_min_tip(
             beneficiary,
@@ -313,6 +379,7 @@ where
             locals,
             max_transactions_lists,
             0,
+            block_context,
         )
         .await
     }
@@ -327,6 +394,7 @@ where
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
+        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         if max_transactions_lists == 0 {
             return Err(EthApiError::InvalidParams(
@@ -345,6 +413,9 @@ where
             .ok_or(EthApiError::HeaderNotFound(BlockId::Number(BlockNumberOrTag::Latest)))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
+        let explicit_context = block_context.is_some();
+        let chain_spec = self.evm_config.block_executor_factory().spec();
+        let context = resolve_tx_pool_block_context(chain_spec.as_ref(), parent, block_context)?;
 
         let state_provider = self.provider.state_by_block_hash(parent.hash()).map_err(|_| {
             EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
@@ -363,21 +434,27 @@ where
                 &mut db,
                 parent,
                 TaikoNextBlockEnvAttributes {
-                    timestamp: parent.timestamp(),
+                    timestamp: context.timestamp,
                     suggested_fee_recipient: beneficiary,
                     prev_randao: parent.mix_hash().unwrap_or_default(),
                     gas_limit: combined_gas_limit,
-                    extra_data: parent.extra_data().clone(),
+                    extra_data: context.extra_data,
                     base_fee_per_gas: base_fee,
-                    parent_beacon_block_root: None,
+                    parent_beacon_block_root: explicit_context
+                        .then_some(context.parent_beacon_block_root),
                 },
             )
             .map_err(|_| {
                 EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
             })?;
 
-        reserve_anchor_zk_gas_for_tx_pool_selection(builder.executor_mut())
-            .map_err(|err| EthApiError::Internal(err.into()))?;
+        prepare_tx_pool_executor(
+            builder.executor_mut(),
+            chain_spec.as_ref(),
+            context.timestamp,
+            explicit_context,
+        )
+        .map_err(|err| EthApiError::Internal(err.into()))?;
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 

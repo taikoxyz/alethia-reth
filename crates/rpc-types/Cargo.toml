@@ -10,4 +10,8 @@ path = "src/lib.rs"
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

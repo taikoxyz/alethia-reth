@@ -379,6 +379,7 @@ dependencies = [
  "reth-rpc-engine-api",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
+ "reth-transaction-pool",
  "reth-trie-common",
  "serde",
  "serde_json",
@@ -392,7 +393,9 @@ name = "alethia-reth-rpc-types"
 version = "1.4.1"
 dependencies = [
  "alloy-primitives",
+ "alloy-serde",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

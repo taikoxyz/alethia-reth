@@ -466,12 +466,74 @@ pub fn run_live_test(
     result
 }
 
+fn vector_capture_path(path: &std::path::Path) -> eyre::Result<PathBuf> {
+    // Resolve parents and existing outputs so symlinks/.. cannot escape the temporary tree.
+    let parent = path.parent().ok_or_else(|| eyre::eyre!("capture needs a parent directory"))?;
+    let resolved = parent
+        .canonicalize()?
+        .join(path.file_name().ok_or_else(|| eyre::eyre!("capture needs a file name"))?);
+    let resolved = match std::fs::symlink_metadata(&resolved) {
+        Ok(_) => resolved.canonicalize()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => resolved,
+        Err(error) => return Err(error.into()),
+    };
+    let temp = std::env::temp_dir().canonicalize()?;
+    let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
+    eyre::ensure!(
+        resolved.starts_with(temp),
+        "capture must stay in the platform temporary directory"
+    );
+    eyre::ensure!(!resolved.starts_with(checkout), "capture must not overwrite checkout files");
+    Ok(resolved)
+}
+
+#[test]
+fn vector_capture_guard_accepts_temp_and_rejects_checkout_and_non_temp() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let output = dir.path().join("capture.json");
+    assert_eq!(
+        vector_capture_path(&output)?,
+        output.parent().unwrap().canonicalize()?.join("capture.json")
+    );
+    std::fs::write(&output, b"{}")?;
+    assert_eq!(vector_capture_path(&output)?, output.canonicalize()?);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tbd-cases.json");
+    assert!(vector_capture_path(&fixture).is_err());
+    let current = std::env::current_dir()?;
+    let filesystem_root = current.ancestors().last().unwrap();
+    assert!(vector_capture_path(&filesystem_root.join("capture.json")).is_err());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn vector_capture_guard_rejects_symlink_and_parent_traversal_escape() -> eyre::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).canonicalize()?;
+    std::os::unix::fs::symlink(&checkout, dir.path().join("checkout"))?;
+    assert!(
+        vector_capture_path(&dir.path().join("checkout/tests/fixtures/tbd-cases.json")).is_err()
+    );
+    std::os::unix::fs::symlink(
+        checkout.join("tests/fixtures/tbd-cases.json"),
+        dir.path().join("capture.json"),
+    )?;
+    assert!(vector_capture_path(&dir.path().join("capture.json")).is_err());
+    std::os::unix::fs::symlink(
+        checkout.join("nonexistent-capture.json"),
+        dir.path().join("dangling.json"),
+    )?;
+    assert!(vector_capture_path(&dir.path().join("dangling.json")).is_err());
+    let temp = std::env::temp_dir().canonicalize()?;
+    assert!(vector_capture_path(&temp.join("../capture.json")).is_err());
+    Ok(())
+}
+
 pub fn verify_vector(name: &str, actual: Value) -> eyre::Result<()> {
     if let Ok(path) = std::env::var("TBD_VECTOR_OUTPUT") {
         // Explicit fixture capture writes outside the source tree. Normal test runs only read
         // the checked-in commitments. Capture is not independent historical evidence.
-        let path = PathBuf::from(path);
-        assert!(path.starts_with("/private/tmp"));
+        let path = vector_capture_path(std::path::Path::new(&path))?;
         let mut vectors: Value = std::fs::read(&path)
             .ok()
             .map(|bytes| serde_json::from_slice(&bytes).unwrap())

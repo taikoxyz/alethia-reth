@@ -2,7 +2,7 @@
 """Reproduce the five historical V2 vectors without changing any checkout's production code.
 
 Run from any directory: python3 crates/node/tests/fixtures/generate-legacy-reference.py
-The isolated archive and captured JSON stay in /private/tmp for inspection.
+The isolated archive and captured JSON stay in the platform temporary directory for inspection.
 """
 
 import json
@@ -15,8 +15,10 @@ import tempfile
 
 BASE = "ca88961eb1f7de266ad16eda015d3cacb886ff62"
 ROOT = Path(__file__).resolve().parents[4]
-SNAPSHOT = Path(tempfile.mkdtemp(prefix="alethia-legacy-ca88961-", dir="/private/tmp"))
-OUTPUT = SNAPSHOT / "historical-vectors.json"
+WORKDIR = Path(tempfile.mkdtemp(prefix="alethia-legacy-ca88961-"))
+SNAPSHOT = WORKDIR / "checkout"
+SNAPSHOT.mkdir()
+OUTPUT = WORKDIR / "historical-vectors.json"
 
 
 def closing_brace(text, opening):
@@ -74,8 +76,9 @@ for stage, name in enumerate(["genesis", "ontake", "pacaya", "shasta", "unzen"])
                f'    run_live_test(historical_snapshot({stage}, "{name}"))\n}}\n')
 (SNAPSHOT / "crates/node/tests/legacy_reference.rs").write_text(output)
 
-env = dict(os.environ, CARGO_TARGET_DIR="/Users/cai/taiko/alethia-reth/target",
-           TBD_VECTOR_OUTPUT=str(OUTPUT))
+# Resolve an explicit relative override against the caller before changing Cargo's cwd.
+target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).absolute()
+env = dict(os.environ, CARGO_TARGET_DIR=str(target), TBD_VECTOR_OUTPUT=str(OUTPUT))
 subprocess.run(["cargo", "test", "--offline", "--manifest-path", str(SNAPSHOT / "Cargo.toml"),
                 "-p", "alethia-reth-node", "--test", "legacy_reference", "--all-features"],
                cwd=ROOT, env=env, check=True)

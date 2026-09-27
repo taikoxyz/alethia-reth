@@ -1,5 +1,6 @@
 //! Tests for fork-scoped zk gas schedule selection.
 
+use crate::env::TaikoEvmEnv;
 use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, address};
 use reth_revm::{
@@ -660,8 +661,8 @@ fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
 }
 
-fn evm_env(spec: TaikoSpecId) -> EvmEnv<TaikoSpecId> {
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+fn evm_env(spec: TaikoSpecId) -> TaikoEvmEnv {
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = spec;
     env.cfg_env.chain_id = 167;
     env.block_env.gas_limit = 30_000_000;

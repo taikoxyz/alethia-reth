@@ -4,6 +4,7 @@
 //! `alethia_reth_payload::builder::execution` tests to avoid duplicating EVM
 //! setup, chain spec creation, and bytecode generation.
 
+use alethia_reth_evm::env::TaikoEvmEnv;
 use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_evm::EvmEnv;
 use alloy_hardforks::ForkCondition;
@@ -42,8 +43,8 @@ pub fn unzen_chain_spec() -> TaikoChainSpec {
 }
 
 /// Returns an [`EvmEnv`] configured for Unzen execution.
-pub fn unzen_evm_env() -> EvmEnv<TaikoSpecId> {
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+pub fn unzen_evm_env() -> TaikoEvmEnv {
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
     env.cfg_env.chain_id = 167;
     env.block_env.number = U256::from(1_u64);

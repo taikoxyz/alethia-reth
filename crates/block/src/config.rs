@@ -40,7 +40,8 @@ use alethia_reth_chainspec::{
     hardfork::{TaikoHardfork, TaikoHardforks},
     spec::TaikoChainSpec,
 };
-use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+use alethia_reth_evm::{env::TaikoBlockEnv, factory::TaikoEvmFactory, spec::TaikoSpecId};
+use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
@@ -75,6 +76,43 @@ impl std::fmt::Display for MissingUnzenHeaderDifficulty {
 }
 
 impl std::error::Error for MissingUnzenHeaderDifficulty {}
+
+/// Error when a non-genesis TBD block lacks the seven-byte Shasta extraData layout.
+#[derive(Debug)]
+pub struct InvalidTbdExtraData {
+    /// Actual extraData length in bytes.
+    pub len: usize,
+}
+
+impl std::fmt::Display for InvalidTbdExtraData {
+    /// Reports the malformed length required to diagnose invalid fee context.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid TBD extraData length {}, expected 7 bytes", self.len)
+    }
+}
+
+impl std::error::Error for InvalidTbdExtraData {}
+
+/// Carries header fee authority into TBD replay environments, rejecting malformed target blocks.
+/// Genesis may lack the Shasta layout; it then retains no authoritative fee percentage.
+fn with_taiko_fee_context(
+    block_env: BlockEnv,
+    spec: TaikoSpecId,
+    extra_data: &[u8],
+) -> Result<TaikoBlockEnv, AnyError> {
+    let mut block_env = TaikoBlockEnv::from(block_env);
+    if spec.is_enabled_in(TaikoSpecId::TBD) {
+        if extra_data.len() != 7 {
+            if block_env.number.is_zero() {
+                return Ok(block_env);
+            }
+            return Err(AnyError::new(InvalidTbdExtraData { len: extra_data.len() }));
+        }
+        block_env = block_env
+            .with_base_fee_share_pctg(u64::from(decode_shasta_basefee_sharing_pctg(extra_data)));
+    }
+    Ok(block_env)
+}
 
 /// A complete configuration of EVM for Taiko network.
 #[derive(Debug, Clone)]
@@ -191,6 +229,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             slot_num: 0,
         };
 
+        let block_env = with_taiko_fee_context(block_env, spec, &header.extra_data)?;
         Ok(EvmEnv { cfg_env, block_env })
     }
 
@@ -229,6 +268,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             slot_num: 0,
         };
 
+        let block_env = with_taiko_fee_context(block_env, spec, &attributes.extra_data)?;
         Ok((cfg, block_env).into())
     }
 
@@ -319,6 +359,8 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             slot_num: 0,
         };
 
+        let block_env =
+            with_taiko_fee_context(block_env, spec, &payload.execution_payload.extra_data)?;
         Ok((cfg_env, block_env).into())
     }
 
@@ -465,6 +507,135 @@ mod tests {
         TaikoEvmConfig::new(Arc::new(chain_spec))
     }
 
+    fn config_with_tbd_at(timestamp: u64) -> TaikoEvmConfig {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(timestamp));
+        TaikoEvmConfig::new(Arc::new(chain_spec))
+    }
+
+    fn tbd_header(percentage: u8) -> Header {
+        Header {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 30_000_000,
+            beneficiary: Address::with_last_byte(0xBB),
+            base_fee_per_gas: Some(10_000_000),
+            extra_data: vec![percentage, 0, 0, 0, 0, 0, 1].into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tbd_header_environment_validates_extra_data_and_preserves_genesis() {
+        let config = config_with_tbd_at(0);
+        let mut header = tbd_header(25);
+        assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(25));
+        header.extra_data = vec![0; 7].into();
+        assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(0));
+        for len in [0, 1, 6, 8] {
+            header.extra_data = vec![0; len].into();
+            assert!(config.evm_env(&header).is_err(), "non-genesis extraData length {len}");
+            assert!(
+                config_with_tbd_at(100)
+                    .evm_env(&header)
+                    .unwrap()
+                    .block_env
+                    .base_fee_share_pctg
+                    .is_none()
+            );
+        }
+        let genesis_env = config.evm_env(config.chain_spec().genesis_header()).unwrap();
+        assert_eq!(genesis_env.cfg_env.spec, TaikoSpecId::TBD);
+        assert_eq!(genesis_env.block_env.base_fee_share_pctg, None);
+    }
+
+    #[test]
+    fn tbd_next_environment_uses_attribute_fee_percentage() {
+        let config = config_with_tbd_at(0);
+        let parent = tbd_header(80);
+        let mut attrs = TaikoNextBlockEnvAttributes {
+            timestamp: 2,
+            suggested_fee_recipient: Address::ZERO,
+            prev_randao: B256::ZERO,
+            gas_limit: 30_000_000,
+            extra_data: vec![25, 0, 0, 0, 0, 0, 2].into(),
+            base_fee_per_gas: 1,
+            parent_beacon_block_root: Some(B256::ZERO),
+        };
+        assert_eq!(
+            config.next_evm_env(&parent, &attrs).unwrap().block_env.base_fee_share_pctg,
+            Some(25)
+        );
+        attrs.extra_data = Bytes::new();
+        assert!(config.next_evm_env(&parent, &attrs).is_err());
+    }
+
+    #[test]
+    fn tbd_recreated_inspected_environment_preserves_fee_authority() {
+        use alethia_reth_evm::{alloy::TaikoAnchorEvm, handler::get_treasury_address};
+        use alloy_evm::{Evm, EvmFactory};
+        use reth_revm::{
+            context::TxEnv, db::InMemoryDB, inspector::NoOpInspector, state::AccountInfo,
+        };
+
+        let config = config_with_tbd_at(0);
+        let caller = Address::with_last_byte(0xA1);
+        let balance = U256::from(100_000_000_000_000u64);
+        for (percentage, treasury_fee, beneficiary_fee) in [
+            (Some(25), 157_500_000_000u64, 52_500_000_000u64),
+            (Some(0), 210_000_000_000u64, 0),
+            (None, 0, 0),
+        ] {
+            let header = tbd_header(percentage.unwrap_or_default());
+            let mut env = config.evm_env(&header).unwrap();
+            if percentage.is_none() {
+                // Raw standalone environments have no authoritative header fee data.
+                env.block_env = env.block_env.inner.clone().into();
+            }
+            let treasury = get_treasury_address(env.cfg_env.chain_id);
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(caller, AccountInfo { balance, ..Default::default() });
+            let mut direct_env = env.clone();
+            direct_env.block_env.base_fee_share_pctg = None;
+            let mut direct = TaikoEvmFactory.create_evm(db.clone(), direct_env);
+            if let Some(percentage) = percentage {
+                direct.set_block_fee_context(u64::from(percentage));
+            }
+            // Mirror the trace topology: pre-execution initializes one EVM, then replay
+            // builds an inspected EVM from an earlier clone of the block environment.
+            let replay_env = env.clone();
+            let mut pre_execution = TaikoEvmFactory.create_evm(db, env);
+            if let Some(percentage) = percentage {
+                pre_execution.set_block_fee_context(u64::from(percentage));
+            }
+            let (db, _) = pre_execution.finish();
+            let mut replay =
+                TaikoEvmFactory.create_evm_with_inspector(db, replay_env, NoOpInspector {});
+            let tx = TxEnv::builder()
+                .caller(caller)
+                .to(Address::with_last_byte(0xB0))
+                .gas_limit(21_000)
+                .gas_price(10_000_000)
+                .chain_id(None)
+                .build()
+                .unwrap();
+            let expected = direct.transact(tx.clone()).unwrap();
+            let actual = replay.transact(tx).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual.result.is_success());
+            assert_eq!(actual.result.tx_gas_used(), 21_000);
+            assert_eq!(
+                actual.state[&caller].info.balance,
+                balance - U256::from(210_000_000_000u64)
+            );
+            assert_eq!(
+                actual.state.get(&treasury).map_or(U256::ZERO, |a| a.info.balance),
+                U256::from(treasury_fee)
+            );
+            assert_eq!(actual.state[&header.beneficiary].info.balance, U256::from(beneficiary_fee));
+        }
+    }
+
     #[test]
     fn unzen_takes_precedence_over_shasta() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
@@ -590,6 +761,19 @@ mod tests {
                     osaka: None,
                 },
             }
+        }
+
+        #[test]
+        fn tbd_payload_environment_uses_payload_fee_percentage() {
+            let config = config_with_tbd_at(0);
+            let mut payload = sample_payload(Some(U256::ZERO));
+            payload.execution_payload.extra_data = vec![25, 0, 0, 0, 0, 0, 1].into();
+            assert_eq!(
+                config.evm_env_for_payload(&payload).unwrap().block_env.base_fee_share_pctg,
+                Some(25)
+            );
+            payload.execution_payload.extra_data = Bytes::new();
+            assert!(config.evm_env_for_payload(&payload).is_err());
         }
 
         #[test]

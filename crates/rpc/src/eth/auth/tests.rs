@@ -9,6 +9,7 @@ use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
     StoredL1OriginTable,
 };
+use alethia_reth_evm::env::TaikoEvmEnv;
 use alethia_reth_primitives::decode_shasta_proposal_id;
 use alloy_consensus::{BlockBody, Header, TxLegacy};
 use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
@@ -218,7 +219,7 @@ fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
 fn reserves_anchor_zk_gas_for_tx_pool_selection() {
     let mut state =
         State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
     let evm = TaikoEvmFactory.create_evm(&mut state, env);
     let ctx = TaikoBlockExecutionCtx {

@@ -23,7 +23,7 @@ use alethia_reth_block::{
         select_and_execute_pool_transactions,
     },
 };
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
 use alethia_reth_primitives::transaction::is_allowed_tx_type;
 
@@ -42,10 +42,10 @@ pub(super) enum ExecutionOutcome {
     Completed(U256),
 }
 
-/// Context for executing transactions in new mode (anchor + pool transactions).
+/// Context for selecting pool transactions under the target fork's anchor policy.
 pub(super) struct PoolExecutionContext<'a> {
-    /// Prebuilt anchor transaction for new mode.
-    pub(super) anchor_tx: &'a Recovered<EthTransactionSigned>,
+    /// Prebuilt anchor transaction required before TBD and forbidden after activation.
+    pub(super) anchor_tx: Option<&'a Recovered<EthTransactionSigned>>,
     /// The parent block header.
     pub(super) parent_header: &'a RethHeader,
     /// Timestamp for the new block.
@@ -114,9 +114,11 @@ pub(super) fn execute_provided_transactions(
     Ok(ExecutionOutcome::Completed(total_fees))
 }
 
-/// Executes new-mode transactions: injects the anchor transaction, then pulls
-/// from the mempool until exhaustion or cancellation.
-pub(super) fn execute_anchor_and_pool_transactions<Client, Pool>(
+/// Executes fork-aware pool transactions until exhaustion or cancellation.
+///
+/// Legacy payloads validate and execute their supplied anchor before pool selection. TBD payloads
+/// require no anchor and begin ordinary selection with the caller-supplied full gas budget.
+pub(super) fn execute_pool_transactions<Client, Pool>(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
     pool: &Pool,
     client: &Client,
@@ -133,38 +135,46 @@ where
             >,
         >,
 {
-    debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
-
     let chain_spec = client.chain_spec();
-    validate_anchor_transaction(
-        ctx.anchor_tx.inner(),
-        chain_spec.as_ref(),
-        AnchorValidationContext {
-            timestamp: ctx.block_timestamp,
-            block_number: ctx.parent_header.number + 1,
-            base_fee_per_gas: ctx.base_fee,
-        },
-    )
-    .map_err(PayloadBuilderError::other)?;
+    if chain_spec.is_tbd_active(ctx.block_timestamp) {
+        if ctx.anchor_tx.is_some() {
+            return Err(PayloadBuilderError::Internal(RethError::msg(
+                "TBD pool execution must not include an anchor transaction",
+            )));
+        }
+        debug!(target: "payload_builder", id=%ctx.payload_id, "selecting anchorless TBD transactions");
+    } else {
+        let anchor_tx = ctx.anchor_tx.ok_or(PayloadBuilderError::MissingPayload)?;
+        debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
 
-    // Execute the anchor transaction as the first transaction in the block
-    // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
-    match builder.execute_transaction(ctx.anchor_tx.clone()) {
-        Ok(gas_output) => {
-            // Note: Anchor transaction has zero priority fee (tip), so no fees to add
-            debug!(target: "payload_builder", id=%ctx.payload_id, gas_used = gas_output.tx_gas_used(), "anchor transaction executed successfully");
-        }
-        Err(err) if is_zk_gas_limit_exceeded(&err) => {
-            debug!(
-                target: "payload_builder",
-                id=%ctx.payload_id,
-                "stopping new-mode payload after anchor hit the zk gas limit"
-            );
-            return Err(PayloadBuilderError::evm(err));
-        }
-        Err(err) => {
-            warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
-            return Err(PayloadBuilderError::evm(err));
+        validate_anchor_transaction(
+            anchor_tx.inner(),
+            chain_spec.as_ref(),
+            AnchorValidationContext {
+                timestamp: ctx.block_timestamp,
+                block_number: ctx.parent_header.number + 1,
+                base_fee_per_gas: ctx.base_fee,
+            },
+        )
+        .map_err(PayloadBuilderError::other)?;
+
+        // The legacy anchor does not contribute to the pool DA-size calculation.
+        match builder.execute_transaction(anchor_tx.clone()) {
+            Ok(gas_output) => {
+                debug!(target: "payload_builder", id=%ctx.payload_id, gas_used = gas_output.tx_gas_used(), "anchor transaction executed successfully");
+            }
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
+                debug!(
+                    target: "payload_builder",
+                    id=%ctx.payload_id,
+                    "stopping new-mode payload after anchor hit the zk gas limit"
+                );
+                return Err(PayloadBuilderError::evm(err));
+            }
+            Err(err) => {
+                warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
+                return Err(PayloadBuilderError::evm(err));
+            }
         }
     }
 
@@ -201,14 +211,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll, Waker},
+    };
 
     use super::*;
     use alloy_consensus::{
-        SignableTransaction, Signed, TxEip1559,
+        SignableTransaction, Signed, TxEip1559, TxLegacy,
         transaction::{SignerRecoverable, TxHashable},
     };
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth::revm::State;
@@ -221,18 +235,21 @@ mod tests {
     use reth_primitives_traits::Recovered;
     use reth_provider::test_utils::MockEthProvider;
     use reth_storage_api::StateProvider;
-    use reth_transaction_pool::noop::NoopTransactionPool;
+    use reth_transaction_pool::{
+        TransactionOrigin, TransactionPool, noop::NoopTransactionPool, test_utils::testing_pool,
+    };
 
     use alethia_reth_block::{
         executor::{TaikoBlockExecutor, ZkGasLimitExceeded},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
-            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            recovered_tx, tbd_chain_spec, tbd_evm_env, tbd_execution_ctx, unzen_chain_spec,
+            unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR};
-    use alethia_reth_evm::factory::TaikoEvmFactory;
+    use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
     use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
     const BENCH_SUCCESS_CALLER: Address = Address::with_last_byte(0x30);
@@ -250,7 +267,7 @@ mod tests {
             gas_limit: ANCHOR_V3_V4_GAS_LIMIT,
             max_fee_per_gas: 0,
             max_priority_fee_per_gas: 0,
-            to: BENCH_LIMIT_TARGET.into(),
+            to: BENCH_SUCCESS_TARGET.into(),
             value: U256::ZERO,
             access_list: Default::default(),
             input: Bytes::copy_from_slice(ANCHOR_V4_SELECTOR),
@@ -263,8 +280,41 @@ mod tests {
         signed.try_into_recovered().expect("fixture anchor transaction should be recoverable")
     }
 
+    fn test_ordinary_transaction(
+        caller: Address,
+        gas_limit: u64,
+        gas_price: u128,
+        input: Bytes,
+    ) -> Recovered<EthTransactionSigned> {
+        let tx = TxLegacy {
+            chain_id: Some(167),
+            nonce: 0,
+            gas_price,
+            gas_limit,
+            to: TxKind::Call(BENCH_SUCCESS_TARGET),
+            value: U256::ZERO,
+            input,
+        };
+        let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
+        let signed: EthTransactionSigned =
+            Signed::new_unchecked(tx, signature, B256::with_last_byte(caller.as_slice()[19]))
+                .into();
+        Recovered::new_unchecked(signed, caller)
+    }
+
     fn test_client(chain_spec: TaikoChainSpec) -> MockEthProvider<EthPrimitives, TaikoChainSpec> {
         MockEthProvider::default().with_chain_spec(chain_spec)
+    }
+
+    fn block_on_ready<F: Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
     }
 
     struct FirstTxZkGasErrorBuilder<E> {
@@ -375,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_anchor_and_pool_transactions_errors_when_anchor_hits_zk_gas_limit() {
+    fn execute_pool_transactions_errors_when_legacy_anchor_hits_zk_gas_limit() {
         let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
@@ -398,12 +448,12 @@ mod tests {
         let cancel = CancelOnDrop::default();
         let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
 
-        let result = execute_anchor_and_pool_transactions(
+        let result = execute_pool_transactions(
             &mut builder,
             &pool,
             &client,
             &PoolExecutionContext {
-                anchor_tx: &anchor_tx,
+                anchor_tx: Some(&anchor_tx),
                 parent_header: &parent_header,
                 block_timestamp: 1,
                 payload_id: "anchor-zk-gas".to_string(),
@@ -428,5 +478,268 @@ mod tests {
             .downcast_ref::<BlockExecutionError>()
             .expect("payload evm error should retain the block execution error");
         assert!(is_zk_gas_limit_exceeded(execution_err));
+    }
+
+    #[test]
+    fn tbd_pool_uses_full_gas_budget_and_matches_the_derived_list() {
+        let caller = Address::with_last_byte(0x40);
+        let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
+        let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
+        let cancel = CancelOnDrop::default();
+
+        let legacy_spec = Arc::new(unzen_chain_spec());
+        let mut legacy_state = State::builder()
+            .with_database(db_with_contracts(&[
+                (Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0),
+                (caller, 0),
+            ]))
+            .with_bundle_update()
+            .build();
+        let legacy_evm = TaikoEvmFactory.create_evm(&mut legacy_state, unzen_evm_env());
+        let legacy_executor = TaikoBlockExecutor::new(
+            legacy_evm,
+            unzen_execution_ctx(),
+            legacy_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut legacy_builder = ExecutorBackedBuilder { executor: legacy_executor };
+        let legacy_pool = testing_pool();
+        block_on_ready(
+            legacy_pool.add_consensus_transaction(ordinary.clone(), TransactionOrigin::External),
+        )
+        .expect("ordinary transaction should enter the legacy pool");
+        let anchor = test_anchor_transaction();
+
+        let legacy_outcome = execute_pool_transactions(
+            &mut legacy_builder,
+            &legacy_pool,
+            &test_client((*legacy_spec).clone()),
+            &PoolExecutionContext {
+                anchor_tx: Some(&anchor),
+                parent_header: &parent_header,
+                block_timestamp: 1,
+                payload_id: "legacy-reduced-budget".to_string(),
+                base_fee: 0,
+                gas_limit: 5_500_000_u64.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
+            },
+            &cancel,
+        )
+        .expect("legacy pool execution should complete");
+        let ExecutionOutcome::Completed(legacy_fees) = legacy_outcome else {
+            panic!("legacy pool execution should not cancel")
+        };
+        assert_eq!(legacy_fees, U256::ZERO);
+        assert_eq!(legacy_builder.executor.receipts().len(), 1, "only the anchor should execute");
+
+        let tbd_spec = Arc::new(tbd_chain_spec());
+        let mut pool_state = State::builder()
+            .with_database(db_with_contracts(&[(caller, 0)]))
+            .with_bundle_update()
+            .build();
+        let pool_evm = TaikoEvmFactory.create_evm(&mut pool_state, tbd_evm_env());
+        let pool_ctx = tbd_execution_ctx(B256::with_last_byte(1));
+        let pool_executor = TaikoBlockExecutor::new(
+            pool_evm,
+            pool_ctx.clone(),
+            tbd_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut pool_builder = ExecutorBackedBuilder { executor: pool_executor };
+        let tbd_pool = testing_pool();
+        block_on_ready(
+            tbd_pool.add_consensus_transaction(ordinary.clone(), TransactionOrigin::External),
+        )
+        .expect("ordinary transaction should enter the TBD pool");
+
+        let pool_outcome = execute_pool_transactions(
+            &mut pool_builder,
+            &tbd_pool,
+            &test_client((*tbd_spec).clone()),
+            &PoolExecutionContext {
+                anchor_tx: None,
+                parent_header: &parent_header,
+                block_timestamp: 1,
+                payload_id: "tbd-full-budget".to_string(),
+                base_fee: 0,
+                gas_limit: 5_500_000,
+            },
+            &cancel,
+        )
+        .expect("TBD pool execution should complete");
+
+        let mut derived_state = State::builder()
+            .with_database(db_with_contracts(&[(caller, 0)]))
+            .with_bundle_update()
+            .build();
+        let derived_evm = TaikoEvmFactory.create_evm(&mut derived_state, tbd_evm_env());
+        let derived_ctx = tbd_execution_ctx(B256::with_last_byte(1));
+        let derived_executor = TaikoBlockExecutor::new(
+            derived_evm,
+            derived_ctx.clone(),
+            tbd_spec,
+            RethReceiptBuilder::default(),
+        );
+        let mut derived_builder = ExecutorBackedBuilder { executor: derived_executor };
+        let derived_outcome =
+            execute_provided_transactions(&mut derived_builder, &[ordinary], 0, &cancel)
+                .expect("TBD derived execution should complete");
+
+        let ExecutionOutcome::Completed(pool_fees) = pool_outcome else {
+            panic!("TBD pool execution should not cancel")
+        };
+        let ExecutionOutcome::Completed(derived_fees) = derived_outcome else {
+            panic!("TBD derived execution should not cancel")
+        };
+        assert_eq!(pool_fees, derived_fees);
+        assert_eq!(pool_builder.executor.receipts(), derived_builder.executor.receipts());
+        assert_eq!(pool_builder.executor.receipts().len(), 1);
+        assert_eq!(pool_ctx.finalized_block_zk_gas(), derived_ctx.finalized_block_zk_gas());
+        assert!(pool_ctx.finalized_block_zk_gas() > 0);
+    }
+
+    #[test]
+    fn tbd_pool_counts_the_first_ordinary_transaction_against_the_da_budget() {
+        let first_caller = Address::with_last_byte(0x41);
+        let second_caller = Address::with_last_byte(0x42);
+        let mut state_byte = 0x1234_5678_u32;
+        let input: Vec<u8> = (0..90_000)
+            .map(|_| {
+                state_byte ^= state_byte << 13;
+                state_byte ^= state_byte >> 17;
+                state_byte ^= state_byte << 5;
+                state_byte as u8
+            })
+            .collect();
+        let first =
+            test_ordinary_transaction(first_caller, 5_000_000, 20, Bytes::from(input.clone()));
+        let second = test_ordinary_transaction(second_caller, 5_000_000, 10, Bytes::from(input));
+        let spec = Arc::new(tbd_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(first_caller, 0), (second_caller, 0)]))
+            .with_bundle_update()
+            .build();
+        let mut da_only_env = tbd_evm_env();
+        da_only_env.cfg_env.spec = TaikoSpecId::SHASTA;
+        let evm = TaikoEvmFactory.create_evm(&mut state, da_only_env);
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            tbd_execution_ctx(B256::with_last_byte(1)),
+            spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let pool = testing_pool();
+        block_on_ready(pool.add_consensus_transaction(first, TransactionOrigin::External))
+            .expect("first transaction should enter the pool");
+        block_on_ready(pool.add_consensus_transaction(second, TransactionOrigin::External))
+            .expect("second transaction should enter the pool");
+
+        execute_pool_transactions(
+            &mut builder,
+            &pool,
+            &test_client((*spec).clone()),
+            &PoolExecutionContext {
+                anchor_tx: None,
+                parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
+                block_timestamp: 1,
+                payload_id: "tbd-da-budget".to_string(),
+                base_fee: 0,
+                gas_limit: 30_000_000,
+            },
+            &CancelOnDrop::default(),
+        )
+        .expect("TBD selection should complete");
+
+        assert_eq!(builder.executor.receipts().len(), 1);
+    }
+
+    #[test]
+    fn tbd_pool_cancellation_preserves_the_cancelled_outcome() {
+        let caller = Address::with_last_byte(0x43);
+        let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
+        let spec = Arc::new(tbd_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(caller, 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            tbd_execution_ctx(B256::with_last_byte(1)),
+            spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let pool = testing_pool();
+        block_on_ready(pool.add_consensus_transaction(ordinary, TransactionOrigin::External))
+            .expect("ordinary transaction should enter the pool");
+        let cancel = CancelOnDrop::default();
+        drop(cancel.clone());
+
+        let outcome = execute_pool_transactions(
+            &mut builder,
+            &pool,
+            &test_client((*spec).clone()),
+            &PoolExecutionContext {
+                anchor_tx: None,
+                parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
+                block_timestamp: 1,
+                payload_id: "tbd-cancelled".to_string(),
+                base_fee: 0,
+                gas_limit: 30_000_000,
+            },
+            &cancel,
+        )
+        .expect("cancellation is a non-error outcome");
+
+        assert!(matches!(outcome, ExecutionOutcome::Cancelled));
+        assert!(builder.executor.receipts().is_empty());
+    }
+
+    #[test]
+    fn tbd_pool_zk_gas_exhaustion_preserves_the_completed_prefix() {
+        let caller = Address::with_last_byte(0x44);
+        let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
+        let spec = Arc::new(tbd_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(caller, 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            tbd_execution_ctx(B256::with_last_byte(1)),
+            spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = FirstTxZkGasErrorBuilder {
+            inner: ExecutorBackedBuilder { executor },
+            fail_next_execution: true,
+        };
+        let pool = testing_pool();
+        block_on_ready(pool.add_consensus_transaction(ordinary, TransactionOrigin::External))
+            .expect("ordinary transaction should enter the pool");
+
+        let outcome = execute_pool_transactions(
+            &mut builder,
+            &pool,
+            &test_client((*spec).clone()),
+            &PoolExecutionContext {
+                anchor_tx: None,
+                parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
+                block_timestamp: 1,
+                payload_id: "tbd-zk-limit".to_string(),
+                base_fee: 0,
+                gas_limit: 30_000_000,
+            },
+            &CancelOnDrop::default(),
+        )
+        .expect("ordinary zk exhaustion should stop selection cleanly");
+
+        let ExecutionOutcome::Completed(fees) = outcome else {
+            panic!("zk exhaustion should not report cancellation")
+        };
+        assert_eq!(fees, U256::ZERO);
+        assert!(builder.inner.executor.receipts().is_empty());
     }
 }

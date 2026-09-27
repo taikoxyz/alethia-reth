@@ -134,6 +134,16 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
         for client in [&ca, &cb] {
             canonicalize(client, genesis, &legacy).await?;
         }
+        let http = a.inner.rpc_server_handle().http_client().unwrap();
+        // A seven-byte legacy parent crossing TBD still reaches the caught missing-root fallback.
+        assert_eq!(
+            http.request::<serde_json::Value, _>(
+                "eth_getBlockByNumber",
+                rpc_params!["pending", true]
+            )
+            .await?,
+            serde_json::Value::Null
+        );
         let activation = build(
             &cb,
             spec.clone(),
@@ -149,6 +159,15 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
             canonicalize(client, genesis, &activation).await?;
         }
         assert_execution_parity(&b, &activation).await?;
+        // The same fallback remains available over a normal post-TBD parent.
+        assert_eq!(
+            http.request::<serde_json::Value, _>(
+                "eth_getBlockByNumber",
+                rpc_params!["pending", true]
+            )
+            .await?,
+            serde_json::Value::Null
+        );
         // A's last resolved job remains legacy while B builds intervening blocks.
         let old: ExecutionPayloadEnvelopeV2 =
             ca.request("engine_getPayloadV2", rpc_params![legacy.id]).await?;
@@ -329,6 +348,38 @@ fn malicious_commitments_and_direct_tree_input_are_checked_during_execution() ->
             .new_payload(TaikoEngineTypes::block_to_payload(SealedBlock::new_unhashed(wrong), None))
             .await?;
         assert!(status.status.is_invalid());
+        Ok(())
+    })
+}
+
+#[test]
+fn canonical_devnet_tbd_genesis_pending_rpc_uses_simulation_context() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_chainspec::{TAIKO_DEVNET, spec::TaikoDevnetConfigExt};
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        use serde_json::{Value, json};
+        let spec = std::sync::Arc::new(
+            TAIKO_DEVNET.clone_with_devnet_fork_timestamps(0, Some(0))?.unwrap(),
+        );
+        assert!(spec.genesis_header().extra_data.is_empty());
+        let node = launch_test_node(spec, Runtime::test()).await?;
+        let http = node.inner.rpc_server_handle().http_client().unwrap();
+        let tx = json!({"to": "0x0000000000000000000000000000000000000021"});
+        // Gather every result before asserting so RED records all three affected HTTP methods.
+        let call = http.request::<Value, _>("eth_call", rpc_params![&tx, "pending"]).await;
+        let estimate =
+            http.request::<Value, _>("eth_estimateGas", rpc_params![&tx, "pending"]).await;
+        let block =
+            http.request::<Value, _>("eth_getBlockByNumber", rpc_params!["pending", true]).await;
+        assert!(
+            call.is_ok() && estimate.is_ok() && block.is_ok(),
+            "call={call:?}; estimate={estimate:?}; block={block:?}"
+        );
+        assert_eq!(call?, json!("0x"));
+        assert_eq!(estimate?, json!("0x5208"));
+        // No authoritative L1 root is available: the caught local-build failure stays null.
+        assert_eq!(block?, Value::Null);
+        assert_eq!(http.request::<Value, _>("eth_blockNumber", rpc_params![]).await?, json!("0x0"));
         Ok(())
     })
 }

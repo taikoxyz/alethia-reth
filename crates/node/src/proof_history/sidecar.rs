@@ -35,7 +35,7 @@ use reth_optimism_trie::{
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
 };
-use reth_trie_common::{HashedPostStateSorted, SortedTrieData, updates::TrieUpdatesSorted};
+use reth_trie_common::SortedTrieData;
 use std::{panic, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify, broadcast},
@@ -997,6 +997,15 @@ where
     }
 
     /// Handles a canonical chain reorg notification.
+    ///
+    /// The old branch is unwound first and the new blocks are then reprocessed one at a time, so
+    /// each block reads post-unwind parent state instead of stale old-branch state. Blocks with
+    /// notification trie data are stored directly; the rest are re-executed. Every reorg takes
+    /// this path: the unwind and each replacement block commit separately, which is what already
+    /// happened whenever a new block lacked trie data or the common ancestor was the retained
+    /// earliest block. A crash in between leaves storage at the fork block, which stays
+    /// canonical, so startup reconciliation reports `Ready` and the sync loop re-appends the
+    /// canonical blocks above it.
     fn handle_chain_reorged(
         &self,
         old: &Chain<Primitives>,
@@ -1023,49 +1032,6 @@ where
             ));
         }
 
-        // A reorg replacing the whole retained window bases at the earliest stored block, which
-        // `replace_updates` rejects even though `unwind_history` accepts unwinding one block
-        // higher. Route that boundary through the unwind path so the reorg still applies.
-        if old.first().number() == earliest_stored.number + 1 {
-            return self.reorg_by_unwind_and_reprocess(old, new, collector);
-        }
-
-        let mut block_updates: Vec<(
-            BlockWithParent,
-            Arc<TrieUpdatesSorted>,
-            Arc<HashedPostStateSorted>,
-        )> = Vec::with_capacity(new.len());
-
-        for (block_number, block) in new.blocks() {
-            let Some(trie_data) = new.trie_data_at(*block_number) else {
-                // Missing trie data on at least one new block.
-                return self.reorg_by_unwind_and_reprocess(old, new, collector);
-            };
-            let SortedTrieData { hashed_state, trie_updates } = &trie_data.get().sorted;
-            block_updates.push((
-                block.block_with_parent(),
-                trie_updates.clone(),
-                hashed_state.clone(),
-            ));
-        }
-
-        if !block_updates.is_empty() {
-            collector.unwind_and_store_block_updates(block_updates)?;
-        }
-
-        Ok(())
-    }
-
-    /// Applies a reorg by unwinding the old branch first and reprocessing the new blocks
-    /// individually, so each block reads post-unwind parent state instead of stale
-    /// old-branch state. Blocks with notification trie data are stored directly; the rest are
-    /// re-executed.
-    fn reorg_by_unwind_and_reprocess(
-        &self,
-        old: &Chain<Primitives>,
-        new: &Chain<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
-    ) -> eyre::Result<()> {
         collector.unwind_history(old.first().block_with_parent())?;
         for block_number in new.blocks().keys() {
             self.process_block(*block_number, new, collector)?;

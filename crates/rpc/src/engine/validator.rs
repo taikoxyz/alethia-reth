@@ -3,8 +3,8 @@ use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::{
     engine::{TaikoEngineTypes, types::TaikoExecutionData},
+    etna::validate_etna_root,
     payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes},
-    tbd::validate_tbd_root,
     transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
@@ -37,9 +37,9 @@ use std::sync::Arc;
 /// Taiko-specific payload validation errors that do not map to an upstream Ethereum fork rule.
 #[derive(Debug, thiserror::Error)]
 enum TaikoPayloadValidationError {
-    /// Required TBD payload data is absent or violates the Osaka body contract.
-    #[error("invalid TBD payload: {0}")]
-    InvalidTbdPayload(&'static str),
+    /// Required Etna payload data is absent or violates the Osaka body contract.
+    #[error("invalid Etna payload: {0}")]
+    InvalidEtnaPayload(&'static str),
     /// The payload contains blob transactions, which Taiko network never accepts.
     #[error("blob transactions are unsupported")]
     BlobTransactionsUnsupported,
@@ -49,13 +49,13 @@ enum TaikoPayloadValidationError {
     /// Taiko payload construction does not consume the post-Amsterdam target-gas-limit attribute.
     #[error("target gas limit is unsupported on Taiko")]
     TargetGasLimitUnsupported,
-    /// Before TBD, payload conversion rebuilds Unzen headers with the zero root, so a nonzero
+    /// Before Etna, payload conversion rebuilds Unzen headers with the zero root, so a nonzero
     /// build root would disagree with the reconstructed header commitment.
     #[error("non-zero parent beacon block roots are unsupported on Taiko")]
     NonZeroParentBeaconBlockRootUnsupported,
     /// Legacy conversion discards Osaka fields, which must carry only empty bodies and zero
     /// gas/root values to avoid executing data absent from the reconstructed header.
-    #[error("nonempty or nonzero Osaka fields are unsupported before TBD")]
+    #[error("nonempty or nonzero Osaka fields are unsupported before Etna")]
     LegacyOsakaFieldsUnsupported,
     /// Taiko schedules no Amsterdam fork, so EIP-7928 block access lists are never accepted.
     #[error("block access lists are unsupported on Taiko")]
@@ -138,13 +138,14 @@ impl TaikoEngineValidator {
         Self { chain_spec }
     }
 
-    /// Checks TBD body and sidecar invariants on both Engine RPC and direct tree submissions.
-    fn validate_tbd_payload(&self, payload: &TaikoExecutionData) -> Result<(), NewPayloadError> {
-        let invalid =
-            |reason| NewPayloadError::other(TaikoPayloadValidationError::InvalidTbdPayload(reason));
+    /// Checks Etna body and sidecar invariants on both Engine RPC and direct tree submissions.
+    fn validate_etna_payload(&self, payload: &TaikoExecutionData) -> Result<(), NewPayloadError> {
+        let invalid = |reason| {
+            NewPayloadError::other(TaikoPayloadValidationError::InvalidEtnaPayload(reason))
+        };
         let sidecar = &payload.taiko_sidecar;
         let osaka = sidecar.osaka.as_ref().ok_or_else(|| invalid("missing Osaka fields"))?;
-        validate_tbd_root(
+        validate_etna_root(
             true,
             payload.execution_payload.block_number,
             Some(osaka.parent_beacon_block_root),
@@ -207,9 +208,9 @@ where
         &self,
         payload: Types::ExecutionData,
     ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
-        let is_tbd_active = self.chain_spec.is_tbd_active(payload.execution_payload.timestamp);
-        if is_tbd_active {
-            self.validate_tbd_payload(&payload)?;
+        let is_etna_active = self.chain_spec.is_etna_active(payload.execution_payload.timestamp);
+        if is_etna_active {
+            self.validate_etna_payload(&payload)?;
         } else if payload.taiko_sidecar.osaka.as_ref().is_some_and(|osaka| {
             !osaka.parent_beacon_block_root.is_zero() ||
                 !osaka.withdrawals.is_empty() ||
@@ -245,10 +246,10 @@ where
             ));
         }
 
-        let block = if is_tbd_active {
+        let block = if is_etna_active {
             // Validation above requires the sidecar; reconstruct roots from the actual body.
             let osaka = taiko_sidecar.osaka.ok_or_else(|| {
-                NewPayloadError::other(TaikoPayloadValidationError::InvalidTbdPayload(
+                NewPayloadError::other(TaikoPayloadValidationError::InvalidEtnaPayload(
                     "missing Osaka fields",
                 ))
             })?;
@@ -262,7 +263,7 @@ where
             };
             let mut block = v3.try_into_block()?;
             block.header.difficulty = taiko_sidecar.header_difficulty.ok_or_else(|| {
-                NewPayloadError::other(TaikoPayloadValidationError::InvalidTbdPayload(
+                NewPayloadError::other(TaikoPayloadValidationError::InvalidEtnaPayload(
                     "missing header difficulty",
                 ))
             })?;
@@ -359,12 +360,12 @@ where
         version: EngineApiMessageVersion,
         payload_or_attrs: PayloadOrAttributes<'_, Types::ExecutionData, Types::PayloadAttributes>,
     ) -> Result<(), EngineObjectValidationError> {
-        let is_tbd_active = self.chain_spec.is_tbd_active(payload_or_attrs.timestamp());
+        let is_etna_active = self.chain_spec.is_etna_active(payload_or_attrs.timestamp());
         let expected_version = match &payload_or_attrs {
-            PayloadOrAttributes::ExecutionPayload(_) if is_tbd_active => {
+            PayloadOrAttributes::ExecutionPayload(_) if is_etna_active => {
                 EngineApiMessageVersion::V4
             }
-            PayloadOrAttributes::PayloadAttributes(_) if is_tbd_active => {
+            PayloadOrAttributes::PayloadAttributes(_) if is_etna_active => {
                 EngineApiMessageVersion::V3
             }
             _ => EngineApiMessageVersion::V2,
@@ -388,10 +389,10 @@ where
                 TaikoPayloadValidationError::TargetGasLimitUnsupported,
             )));
         }
-        if is_tbd_active {
+        if is_etna_active {
             match payload_or_attrs {
                 PayloadOrAttributes::ExecutionPayload(payload) => self
-                    .validate_tbd_payload(payload)
+                    .validate_etna_payload(payload)
                     .map_err(|err| EngineObjectValidationError::InvalidParams(Box::new(err)))?,
                 PayloadOrAttributes::PayloadAttributes(attributes) => {
                     TaikoPayloadBuilderAttributes::try_new_for_fork(
@@ -449,13 +450,13 @@ mod tests {
     use alloy_rpc_types_eth::Withdrawals;
     use reth_primitives_traits::BlockBody as _;
 
-    fn tbd_validator() -> TaikoEngineValidator {
+    fn etna_validator() -> TaikoEngineValidator {
         let mut spec = unzen_chain_spec();
-        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
         TaikoEngineValidator::new(Arc::new(spec))
     }
 
-    fn tbd_data(difficulty: U256) -> TaikoExecutionData {
+    fn etna_data(difficulty: U256) -> TaikoExecutionData {
         let old = sample_unzen_execution_data(difficulty, Some(difficulty), Some(B256::ZERO));
         let mut block = convert_payload(old).unwrap().into_block();
         block.header.timestamp = 100;
@@ -464,22 +465,22 @@ mod tests {
         TaikoEngineTypes::block_to_payload(block.seal_slow(), None)
     }
 
-    fn convert_tbd(payload: TaikoExecutionData) -> Result<SealedBlock<Block>, NewPayloadError> {
+    fn convert_etna(payload: TaikoExecutionData) -> Result<SealedBlock<Block>, NewPayloadError> {
         <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
-            &tbd_validator(),
+            &etna_validator(),
             payload,
         )
     }
 
-    fn version_tbd(payload: &TaikoExecutionData) -> Result<(), EngineObjectValidationError> {
-        <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::validate_version_specific_fields(&tbd_validator(), EngineApiMessageVersion::V4, PayloadOrAttributes::from_execution_payload(payload))
+    fn version_etna(payload: &TaikoExecutionData) -> Result<(), EngineObjectValidationError> {
+        <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::validate_version_specific_fields(&etna_validator(), EngineApiMessageVersion::V4, PayloadOrAttributes::from_execution_payload(payload))
     }
 
     #[test]
     fn legacy_osaka_sidecars_preserve_honest_blocks_and_reject_discarded_data() {
         let mut spec = unzen_chain_spec();
         spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
-        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
         let validator = TaikoEngineValidator::new(Arc::new(spec));
         for timestamp in [49, 99] {
             let mut block = convert_payload(sample_unzen_execution_data(
@@ -526,9 +527,9 @@ mod tests {
     }
 
     #[test]
-    fn tbd_invalid_sidecar_mutations_fail_rpc_and_direct_tree_validation() {
+    fn etna_invalid_sidecar_mutations_fail_rpc_and_direct_tree_validation() {
         for case in 0..12 {
-            let mut data = tbd_data(U256::ZERO);
+            let mut data = etna_data(U256::ZERO);
             match case {
                 0 => data.taiko_sidecar.osaka = None,
                 1 => {
@@ -559,32 +560,32 @@ mod tests {
                 10 => data.taiko_sidecar.slot_number = Some(1),
                 _ => data.taiko_sidecar.tx_hash = B256::with_last_byte(1),
             }
-            assert!(version_tbd(&data).is_err(), "RPC accepted case {case}");
-            assert!(convert_tbd(data).is_err(), "direct tree accepted case {case}");
+            assert!(version_etna(&data).is_err(), "RPC accepted case {case}");
+            assert!(convert_etna(data).is_err(), "direct tree accepted case {case}");
         }
-        let mut data = tbd_data(U256::ZERO);
+        let mut data = etna_data(U256::ZERO);
         data.taiko_sidecar.withdrawals_hash = Some(B256::with_last_byte(1));
-        assert!(version_tbd(&data).is_err());
-        assert!(convert_tbd(data).is_err());
+        assert!(version_etna(&data).is_err());
+        assert!(convert_etna(data).is_err());
     }
 
     #[test]
-    fn tbd_original_hash_is_checked_after_restoring_root_and_difficulty() {
-        let mut data = tbd_data(U256::from(91));
+    fn etna_original_hash_is_checked_after_restoring_root_and_difficulty() {
+        let mut data = etna_data(U256::from(91));
         data.execution_payload.block_hash = B256::with_last_byte(1);
-        assert!(convert_tbd(data).unwrap_err().to_string().contains("block hash"));
-        let mut data = tbd_data(U256::from(91));
+        assert!(convert_etna(data).unwrap_err().to_string().contains("block hash"));
+        let mut data = etna_data(U256::from(91));
         data.taiko_sidecar.header_difficulty = Some(U256::from(92));
-        assert!(convert_tbd(data).is_err());
+        assert!(convert_etna(data).is_err());
         // A self-consistent declared difficulty survives conversion unchanged. Actual zk-gas
         // equality belongs to the shared executor's post-execution validation, not this layer.
-        let data = tbd_data(U256::from(92));
-        assert_eq!(convert_tbd(data).unwrap().difficulty, U256::from(92));
+        let data = etna_data(U256::from(92));
+        assert_eq!(convert_etna(data).unwrap().difficulty, U256::from(92));
     }
 
     #[test]
-    fn tbd_direct_blocks_reject_withdrawal_only_and_partial_osaka_inputs() {
-        let original = convert_tbd(tbd_data(U256::ZERO)).unwrap().into_block();
+    fn etna_direct_blocks_reject_withdrawal_only_and_partial_osaka_inputs() {
+        let original = convert_etna(etna_data(U256::ZERO)).unwrap().into_block();
         for case in 0..7 {
             let mut block = original.clone();
             match case {
@@ -613,49 +614,49 @@ mod tests {
             let data = TaikoEngineTypes::block_to_payload(block.seal_slow(), None);
             if case == 0 {
                 assert_eq!(data.taiko_sidecar.osaka.as_ref().unwrap().withdrawals.len(), 1);
-                assert!(version_tbd(&data).is_err());
+                assert!(version_etna(&data).is_err());
             }
             assert!(
-                convert_tbd(data).is_err(),
+                convert_etna(data).is_err(),
                 "partial input case {case} was silently reconstructed"
             );
         }
     }
 
     #[test]
-    fn tbd_blob_transaction_rejected_without_versioned_hash_side_parameters() {
+    fn etna_blob_transaction_rejected_without_versioned_hash_side_parameters() {
         use alloy_eips::eip2718::Encodable2718;
         let tx = reth_ethereum::TransactionSigned::new_unhashed(
             alloy_consensus::TxEip4844::default().into(),
             alloy_primitives::Signature::new(U256::from(1), U256::from(2), false),
         );
-        let mut block = convert_tbd(tbd_data(U256::ZERO)).unwrap().into_block();
+        let mut block = convert_etna(etna_data(U256::ZERO)).unwrap().into_block();
         block.body.transactions.push(tx.clone());
         block.header.transactions_root =
             alloy_consensus::proofs::calculate_transaction_root(&block.body.transactions);
         let mut data = TaikoEngineTypes::block_to_payload(block.seal_slow(), None);
         data.execution_payload.transactions = Some(vec![tx.encoded_2718().into()]);
         data.taiko_sidecar.osaka.as_mut().unwrap().expected_blob_versioned_hashes.clear();
-        assert!(convert_tbd(data).unwrap_err().to_string().contains("blob transactions"));
+        assert!(convert_etna(data).unwrap_err().to_string().contains("blob transactions"));
     }
 
     #[test]
-    fn tbd_genesis_retains_canonical_zero_root_exception() {
-        let mut block = convert_tbd(tbd_data(U256::ZERO)).unwrap().into_block();
+    fn etna_genesis_retains_canonical_zero_root_exception() {
+        let mut block = convert_etna(etna_data(U256::ZERO)).unwrap().into_block();
         block.header.number = 0;
         block.header.parent_beacon_block_root = Some(B256::ZERO);
         let data = TaikoEngineTypes::block_to_payload(block.seal_slow(), None);
-        version_tbd(&data).unwrap();
-        assert_eq!(convert_tbd(data).unwrap().parent_beacon_block_root, Some(B256::ZERO));
+        version_etna(&data).unwrap();
+        assert_eq!(convert_etna(data).unwrap().parent_beacon_block_root, Some(B256::ZERO));
     }
     #[test]
-    fn tbd_common_conversion_restores_nonzero_root_and_difficulty() {
+    fn etna_common_conversion_restores_nonzero_root_and_difficulty() {
         for difficulty in [U256::ZERO, U256::from(91)] {
-            let data = tbd_data(difficulty);
+            let data = etna_data(difficulty);
             let expected_hash = data.execution_payload.block_hash;
             let block = <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
-                &tbd_validator(), data,
-            ).expect("TBD block must roundtrip through common tree conversion");
+                &etna_validator(), data,
+            ).expect("Etna block must roundtrip through common tree conversion");
             assert_eq!(block.hash(), expected_hash);
             assert_eq!(block.difficulty, difficulty);
             assert_eq!(block.parent_beacon_block_root, Some(B256::with_last_byte(42)));
@@ -663,16 +664,16 @@ mod tests {
     }
 
     #[test]
-    fn tbd_version_matrix_uses_target_timestamp() {
+    fn etna_version_matrix_uses_target_timestamp() {
         for timestamp in [99, 100] {
             for version in [EngineApiMessageVersion::V2, EngineApiMessageVersion::V4] {
-                let mut data = tbd_data(U256::ZERO);
+                let mut data = etna_data(U256::ZERO);
                 data.execution_payload.timestamp = timestamp;
                 if timestamp == 99 {
                     data.taiko_sidecar.osaka = None;
                 }
                 let result = <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::validate_version_specific_fields(
-                    &tbd_validator(), version, PayloadOrAttributes::from_execution_payload(&data),
+                    &etna_validator(), version, PayloadOrAttributes::from_execution_payload(&data),
                 );
                 assert_eq!(
                     result.is_ok(),

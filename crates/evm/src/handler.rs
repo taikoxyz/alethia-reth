@@ -164,7 +164,7 @@ fn reward_beneficiary<CTX: ContextTr>(
 
         // If the transaction is not an anchor transaction, we share the base fee income with the
         // coinbase and treasury. Sharing requires authoritative block fee context, installed
-        // directly at TBD or by the legacy anchor system call. Derived legacy replay contexts
+        // directly at Etna or by the legacy anchor system call. Derived legacy replay contexts
         // have no header percentage and retain their historical no-redistribution behavior.
         if !ctx.matches_legacy_anchor(
             tx_caller,

@@ -28,7 +28,7 @@ use alethia_reth_evm::{
     handler::get_treasury_address,
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
-use alethia_reth_primitives::{decode_shasta_basefee_sharing_pctg, tbd::validate_tbd_root};
+use alethia_reth_primitives::{decode_shasta_basefee_sharing_pctg, etna::validate_etna_root};
 
 /// Block execution artifacts for transactions that were accepted by prover filtering.
 #[cfg(feature = "prover")]
@@ -152,7 +152,7 @@ where
     where
         Evm: TaikoAnchorEvm + TaikoZkGasEvm,
     {
-        // Pre-execution installs authoritative fee context directly after TBD, or through the
+        // Pre-execution installs authoritative fee context directly after Etna, or through the
         // legacy anchor marker before it; replay-only derivation must stay off.
         evm.set_anchor_ctx_derivation_enabled(false);
         // The executor owns the per-transaction zk gas bracket (reset, intrinsic charge,
@@ -172,14 +172,14 @@ where
         }
     }
 
-    /// Returns the dedicated truncation error, classified as a TBD validation failure for
-    /// Engine INVALID responses while preserving the historical pre-TBD error mapping.
+    /// Returns the dedicated truncation error, classified as an Etna validation failure for
+    /// Engine INVALID responses while preserving the historical pre-Etna error mapping.
     fn zk_gas_limit_error(&self) -> BlockExecutionError
     where
         Spec: TaikoExecutorSpec,
         Evm: reth_evm::Evm,
     {
-        if self.spec.is_tbd_active(self.evm.block().timestamp().to()) {
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
             BlockValidationError::other(ZkGasLimitExceeded).into()
         } else {
             BlockExecutionError::other(ZkGasLimitExceeded)
@@ -248,7 +248,7 @@ where
     }
 
     /// Validates the imported header difficulty, when present, against the finalized block
-    /// zk gas recomputed by execution. TBD mismatches are consensus validation failures so
+    /// zk gas recomputed by execution. Etna mismatches are consensus validation failures so
     /// the Engine tree returns INVALID; earlier forks retain their historical error mapping.
     fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError>
     where
@@ -262,7 +262,7 @@ where
         }
 
         let mismatch = ZkGasDifficultyMismatch { expected, got };
-        if self.spec.is_tbd_active(self.evm.block().timestamp().to()) {
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
             Err(BlockValidationError::other(mismatch).into())
         } else {
             Err(BlockExecutionError::other(mismatch))
@@ -295,7 +295,7 @@ where
     {
         self.apply_pre_execution_changes()?;
 
-        let requires_legacy_anchor = !self.spec.is_tbd_active(self.evm.block().timestamp().to());
+        let requires_legacy_anchor = !self.spec.is_etna_active(self.evm.block().timestamp().to());
         let mut committed_transactions = Vec::new();
         for (idx, tx) in transactions.into_iter().enumerate() {
             let is_anchor_transaction = requires_legacy_anchor && idx == 0;
@@ -378,18 +378,19 @@ where
     type Result = EthTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
     /// Validates the root, runs standard system calls, and initializes block fee sharing.
-    /// Before TBD, the legacy marker also supplies the golden-touch nonce for anchor execution.
+    /// Before Etna, the legacy marker also supplies the golden-touch nonce for anchor execution.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         let timestamp = self.evm.block().timestamp().to();
-        let is_tbd_active = self.spec.is_tbd_active(timestamp);
-        validate_tbd_root(
-            is_tbd_active,
+        let is_etna_active = self.spec.is_etna_active(timestamp);
+        validate_etna_root(
+            is_etna_active,
             self.evm.block().number().to(),
             self.ctx.parent_beacon_block_root,
         )
         .map_err(BlockExecutionError::other)?;
-        if is_tbd_active && !self.evm.block().number().is_zero() && self.ctx.extra_data.len() != 7 {
-            return Err(BlockExecutionError::other(crate::config::InvalidTbdExtraData {
+        if is_etna_active && !self.evm.block().number().is_zero() && self.ctx.extra_data.len() != 7
+        {
+            return Err(BlockExecutionError::other(crate::config::InvalidEtnaExtraData {
                 len: self.ctx.extra_data.len(),
             }));
         }
@@ -409,7 +410,7 @@ where
                     0
                 };
 
-            if is_tbd_active {
+            if is_etna_active {
                 self.evm.set_block_fee_context(base_fee_share_pgtg);
             } else {
                 let account_info = self
@@ -600,7 +601,7 @@ where
     {
         self.apply_pre_execution_changes()?;
 
-        let requires_legacy_anchor = !self.spec.is_tbd_active(self.evm.block().timestamp().to());
+        let requires_legacy_anchor = !self.spec.is_etna_active(self.evm.block().timestamp().to());
         for (idx, tx) in transactions.into_iter().enumerate() {
             let is_anchor_transaction = requires_legacy_anchor && idx == 0;
             let (tx_env, tx) = tx.into_parts();
@@ -674,9 +675,9 @@ mod test {
     const BENCH_CALLER: Address = Address::with_last_byte(0x30);
 
     #[test]
-    fn tbd_empty_block_writes_system_storage_without_transaction_gas() {
+    fn etna_empty_block_writes_system_storage_without_transaction_gas() {
         use crate::testutil::{
-            db_with_system_contracts, tbd_chain_spec, tbd_evm_env, tbd_execution_ctx,
+            db_with_system_contracts, etna_chain_spec, etna_evm_env, etna_execution_ctx,
         };
         use alloy_eips::{eip2935, eip4788};
         let root = B256::with_last_byte(7);
@@ -685,13 +686,13 @@ mod test {
             .with_database(db_with_system_contracts(&[]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-        let mut ctx = tbd_execution_ctx(root);
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut ctx = etna_execution_ctx(root);
         ctx.parent_hash = parent;
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx.clone(),
-            Arc::new(tbd_chain_spec()),
+            Arc::new(etna_chain_spec()),
             RethReceiptBuilder::default(),
         );
         executor.apply_pre_execution_changes().unwrap();
@@ -715,39 +716,39 @@ mod test {
     }
 
     #[test]
-    fn tbd_direct_execution_context_requires_root() {
-        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+    fn etna_direct_execution_context_requires_root() {
+        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         for root in [None, Some(B256::ZERO)] {
             let mut state = State::builder().with_database(db_with_contracts(&[])).build();
-            let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-            let mut ctx = tbd_execution_ctx(B256::with_last_byte(7));
+            let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+            let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
             ctx.parent_beacon_block_root = root;
             let mut executor = TaikoBlockExecutor::new(
                 evm,
                 ctx,
-                Arc::new(tbd_chain_spec()),
+                Arc::new(etna_chain_spec()),
                 RethReceiptBuilder::default(),
             );
-            let err = executor.apply_pre_execution_changes().expect_err("TBD root guard");
+            let err = executor.apply_pre_execution_changes().expect_err("Etna root guard");
             assert!(err.to_string().contains("beacon"), "{err}");
         }
     }
 
     #[test]
-    fn tbd_direct_context_installs_authoritative_fee_percentage() {
-        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+    fn etna_direct_context_installs_authoritative_fee_percentage() {
+        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state =
             State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
-        let mut env = tbd_evm_env();
+        let mut env = etna_evm_env();
         env.block_env.basefee = 10;
         env.block_env.beneficiary = Address::with_last_byte(0xBB);
         let evm = TaikoEvmFactory.create_evm(&mut state, env);
-        let mut ctx = tbd_execution_ctx(B256::with_last_byte(7));
+        let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
         ctx.extra_data = vec![25, 0, 0, 0, 0, 0, 0].into();
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx,
-            Arc::new(tbd_chain_spec()),
+            Arc::new(etna_chain_spec()),
             RethReceiptBuilder::default(),
         );
         executor.apply_pre_execution_changes().unwrap();
@@ -771,16 +772,16 @@ mod test {
     }
 
     #[test]
-    fn tbd_direct_execution_rejects_malformed_extra_data() {
-        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+    fn etna_direct_execution_rejects_malformed_extra_data() {
+        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state = State::builder().with_database(db_with_contracts(&[])).build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-        let mut ctx = tbd_execution_ctx(B256::with_last_byte(7));
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
         ctx.extra_data = Bytes::new();
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx,
-            Arc::new(tbd_chain_spec()),
+            Arc::new(etna_chain_spec()),
             RethReceiptBuilder::default(),
         );
         assert!(
@@ -790,16 +791,16 @@ mod test {
 
     #[cfg(feature = "prover")]
     #[test]
-    fn tbd_prover_first_invalid_nonce_is_filtered_by_both_entry_points() {
-        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+    fn etna_prover_first_invalid_nonce_is_filtered_by_both_entry_points() {
+        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         for committed_entry in [false, true] {
             let mut state =
                 State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
-            let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+            let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
             let executor = TaikoBlockExecutor::new(
                 evm,
-                tbd_execution_ctx(B256::with_last_byte(7)),
-                Arc::new(tbd_chain_spec()),
+                etna_execution_ctx(B256::with_last_byte(7)),
+                Arc::new(etna_chain_spec()),
                 RethReceiptBuilder::default(),
             );
             let txs = [
@@ -992,16 +993,16 @@ mod test {
     }
 
     #[test]
-    fn tbd_zk_exhaustion_is_validation_and_remains_recoverable_for_derivation() {
-        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+    fn etna_zk_exhaustion_is_validation_and_remains_recoverable_for_derivation() {
+        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state =
             State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-        let ctx = tbd_execution_ctx(alloy_primitives::B256::with_last_byte(1));
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let ctx = etna_execution_ctx(alloy_primitives::B256::with_last_byte(1));
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx,
-            Arc::new(tbd_chain_spec()),
+            Arc::new(etna_chain_spec()),
             RethReceiptBuilder::default(),
         );
         executor.apply_pre_execution_changes().unwrap();
@@ -1014,16 +1015,16 @@ mod test {
     }
 
     #[test]
-    fn tbd_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
-        use crate::testutil::{tbd_chain_spec, tbd_evm_env, tbd_execution_ctx};
+    fn etna_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
+        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state = State::builder().with_database(db_with_contracts(&[])).build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-        let mut ctx = tbd_execution_ctx(alloy_primitives::B256::with_last_byte(1));
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut ctx = etna_execution_ctx(alloy_primitives::B256::with_last_byte(1));
         ctx.expected_difficulty = Some(U256::from(1));
         let executor = TaikoBlockExecutor::new(
             evm,
             ctx,
-            Arc::new(tbd_chain_spec()),
+            Arc::new(etna_chain_spec()),
             RethReceiptBuilder::default(),
         );
         let err = executor.validate_expected_zk_gas_difficulty().unwrap_err();

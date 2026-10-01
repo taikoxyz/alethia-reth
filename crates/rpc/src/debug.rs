@@ -353,7 +353,7 @@ where
 {
     let mut witness_record = ExecutionWitnessRecord::default();
     let requires_legacy_anchor =
-        !chain_spec.fork(TaikoHardfork::TBD).active_at_timestamp(block.timestamp());
+        !chain_spec.fork(TaikoHardfork::Etna).active_at_timestamp(block.timestamp());
 
     {
         let mut block_executor = evm_config
@@ -504,7 +504,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn tbd_witness_filters_first_position_and_enforces_root_when_difficulty_skipped() {
+    fn etna_witness_filters_first_position_and_enforces_root_when_difficulty_skipped() {
         use alethia_reth_block::config::TaikoEvmConfig;
         use alethia_reth_chainspec::TAIKO_DEVNET;
         use alloy_consensus::Header;
@@ -515,7 +515,7 @@ mod tests {
             state::{AccountInfo, Bytecode},
         };
         let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
         let chain_id = spec.inner.chain().id();
         let config = TaikoEvmConfig::new(Arc::new(spec));
         let target = Address::with_last_byte(0xBB);

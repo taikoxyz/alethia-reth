@@ -420,9 +420,9 @@ fn unzen_chain_spec() -> TaikoChainSpec {
 }
 
 #[test]
-fn tbd_header_requires_nonzero_root_and_ordinary_first_transaction() {
+fn etna_header_requires_nonzero_root_and_ordinary_first_transaction() {
     let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
     let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
     for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
         let header = Header {
@@ -459,9 +459,9 @@ fn tbd_header_requires_nonzero_root_and_ordinary_first_transaction() {
 }
 
 #[test]
-fn tbd_canonical_import_rejects_body_with_filtered_first_transaction() {
+fn etna_canonical_import_rejects_body_with_filtered_first_transaction() {
     let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
     let tx: TransactionSigned = Signed::new_unchecked(
         TxLegacy::default(),
         Signature::new(U256::from(1), U256::from(2), false),
@@ -496,9 +496,9 @@ fn tbd_canonical_import_rejects_body_with_filtered_first_transaction() {
 }
 
 #[test]
-fn tbd_activation_preserves_legacy_empty_body_and_pre_fork_header_roots() {
+fn etna_activation_preserves_legacy_empty_body_and_pre_fork_header_roots() {
     let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(10));
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(10));
     let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
     for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
         let header = Header {

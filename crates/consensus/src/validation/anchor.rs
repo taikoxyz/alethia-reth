@@ -90,7 +90,7 @@ pub fn validate_anchor_transaction_in_block<B>(
 where
     B: Block,
 {
-    if chain_spec.is_tbd_active(block.header().timestamp()) {
+    if chain_spec.is_etna_active(block.header().timestamp()) {
         return Ok(());
     }
     let anchor_transaction = match block.body().transactions().first() {

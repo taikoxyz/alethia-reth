@@ -38,12 +38,12 @@ where
 
 /// Supplies simulation-only metadata missing from a genesis parent, without fabricating L1 roots.
 struct TaikoPendingEnvBuilder {
-    /// Chain configuration used to gate the pending target's TBD fee context.
+    /// Chain configuration used to gate the pending target's Etna fee context.
     evm: TaikoEvmConfig,
 }
 
 impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
-    /// Uses zero-percent sharing only for a TBD pending target over empty-metadata genesis.
+    /// Uses zero-percent sharing only for an Etna pending target over empty-metadata genesis.
     ///
     /// Seven zero bytes are a simulation default, not authoritative metadata for a real block.
     /// Fee-enabled simulation credits base fees to the treasury; absent fee authority would not.
@@ -57,7 +57,7 @@ impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
             TaikoNextBlockEnvAttributes::build_pending_env(parent, block_overrides);
         if parent.number == 0 &&
             parent.extra_data.is_empty() &&
-            self.evm.chain_spec().is_tbd_active(attributes.timestamp)
+            self.evm.chain_spec().is_etna_active(attributes.timestamp)
         {
             attributes.extra_data = Bytes::from_static(&[0; 7]);
         }
@@ -68,9 +68,9 @@ impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alethia_reth_block::config::InvalidTbdExtraData;
+    use alethia_reth_block::config::InvalidEtnaExtraData;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::tbd::MissingTbdBeaconRoot;
+    use alethia_reth_primitives::etna::MissingEtnaBeaconRoot;
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::B256;
     use reth_evm::ConfigureEvm;
@@ -78,7 +78,7 @@ mod tests {
 
     fn pending_builder(activation: u64) -> TaikoPendingEnvBuilder {
         let mut spec = TAIKO_DEVNET.as_ref().clone();
-        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(activation));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(activation));
         TaikoPendingEnvBuilder { evm: TaikoEvmConfig::new(Arc::new(spec)) }
     }
 
@@ -118,7 +118,7 @@ mod tests {
                 .next_evm_env(&genesis, &real)
                 .unwrap_err()
                 .as_error()
-                .is::<InvalidTbdExtraData>()
+                .is::<InvalidEtnaExtraData>()
         );
         let simulated = builder.pending_env_attributes(&genesis, None).unwrap();
         let env = builder.evm.next_evm_env(&genesis, &simulated).unwrap();
@@ -129,7 +129,7 @@ mod tests {
                 .context_for_next_block(&genesis, simulated)
                 .unwrap_err()
                 .as_error()
-                .is::<MissingTbdBeaconRoot>()
+                .is::<MissingEtnaBeaconRoot>()
         );
         for (activation, timestamp) in [(100, 99), (0, 1)] {
             let builder = pending_builder(activation);
@@ -156,7 +156,7 @@ mod tests {
                     .context_for_next_block(&parent, attributes)
                     .unwrap_err()
                     .as_error()
-                    .is::<MissingTbdBeaconRoot>()
+                    .is::<MissingEtnaBeaconRoot>()
             );
             let overrides =
                 BlockOverrides { beacon_root: Some(B256::with_last_byte(7)), ..Default::default() };

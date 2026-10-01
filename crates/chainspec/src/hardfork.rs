@@ -22,8 +22,8 @@ hardfork!(
         Shasta,
         /// Unzen protocol upgrade.
         Unzen,
-        /// Temporary identifier for the anchorless Osaka protocol upgrade.
-        TBD,
+        /// Etna anchorless Osaka protocol upgrade.
+        Etna,
     }
 );
 
@@ -59,9 +59,9 @@ pub trait TaikoHardforks: EthereumHardforks {
         self.taiko_fork_activation(TaikoHardfork::Unzen).active_at_timestamp(timestamp)
     }
 
-    /// Convenience method to check if [`TaikoHardfork::TBD`] is active at the given timestamp.
-    fn is_tbd_active(&self, timestamp: u64) -> bool {
-        self.taiko_fork_activation(TaikoHardfork::TBD).active_at_timestamp(timestamp)
+    /// Convenience method to check if [`TaikoHardfork::Etna`] is active at the given timestamp.
+    fn is_etna_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Etna).active_at_timestamp(timestamp)
     }
 }
 
@@ -80,7 +80,7 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_775_135_700)),
         (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(1_786_021_200)),
-        (TaikoHardfork::TBD.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Etna.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -91,7 +91,7 @@ pub static TAIKO_HOODI_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_770_296_400)),
         (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(1_781_787_600)),
-        (TaikoHardfork::TBD.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Etna.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -102,7 +102,7 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
         (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::TBD.boxed(), ForkCondition::Never),
+        (TaikoHardfork::Etna.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -305,28 +305,28 @@ mod test {
     }
 
     #[test]
-    fn test_built_in_chains_leave_tbd_disabled() {
+    fn test_built_in_chains_leave_etna_disabled() {
         for hardforks in
             [&*TAIKO_MAINNET_HARDFORKS, &*TAIKO_HOODI_HARDFORKS, &*TAIKO_DEVNET_HARDFORKS]
         {
-            assert_eq!(hardforks.fork(TaikoHardfork::TBD), ForkCondition::Never);
+            assert_eq!(hardforks.fork(TaikoHardfork::Etna), ForkCondition::Never);
         }
     }
 
     #[test]
-    fn test_disabled_tbd_does_not_change_fork_id() {
-        let without_tbd = shasta_before_unzen_chain_spec();
-        let mut with_tbd_forks = shasta_before_unzen_hardforks();
-        with_tbd_forks.push((TaikoHardfork::TBD.boxed(), ForkCondition::Never));
-        let with_tbd = ChainSpec::builder()
+    fn test_disabled_etna_does_not_change_fork_id() {
+        let without_etna = shasta_before_unzen_chain_spec();
+        let mut with_etna_forks = shasta_before_unzen_hardforks();
+        with_etna_forks.push((TaikoHardfork::Etna.boxed(), ForkCondition::Never));
+        let with_etna = ChainSpec::builder()
             .chain(Chain::mainnet())
             .genesis(Genesis::default())
-            .with_forks(ChainHardforks::new(extend_with_shared_hardforks(with_tbd_forks)))
+            .with_forks(ChainHardforks::new(extend_with_shared_hardforks(with_etna_forks)))
             .build();
 
         for timestamp in [0, 150, 250, u64::MAX] {
             let head = Head { number: 2, timestamp, ..Default::default() };
-            assert_eq!(without_tbd.fork_id(&head), with_tbd.fork_id(&head));
+            assert_eq!(without_etna.fork_id(&head), with_etna.fork_id(&head));
         }
     }
 }

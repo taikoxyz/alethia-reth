@@ -176,7 +176,7 @@ fn auth_pool_rpc_preserves_legacy_arity_and_trailing_null() -> eyre::Result<()> 
 }
 
 #[test]
-fn auth_pool_rpc_rejects_invalid_target_context_at_tbd_boundary() -> eyre::Result<()> {
+fn auth_pool_rpc_rejects_invalid_target_context_at_etna_boundary() -> eyre::Result<()> {
     run_live_test(async {
         let runtime = AuthRuntime(Runtime::test());
         let spec = fixture_chain_spec();

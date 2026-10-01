@@ -19,11 +19,11 @@ use std::sync::Arc;
 use support::*;
 
 #[test]
-fn pool_build_uses_full_tbd_gas_limit_and_preserves_the_legacy_reserve() -> eyre::Result<()> {
+fn pool_build_uses_full_etna_gas_limit_and_preserves_the_legacy_reserve() -> eyre::Result<()> {
     run_live_test(async {
-        // Mutating taiko_payload to subtract 1M on TBD must exclude this 1M-limit transaction
+        // Mutating taiko_payload to subtract 1M on Etna must exclude this 1M-limit transaction
         // from a 1.5M block, even though its actual EVM gas use is much smaller.
-        for tbd in [false, true] {
+        for etna in [false, true] {
             let genesis: Genesis =
                 serde_json::from_str(include_str!("fixtures/historical-genesis.json"))?;
             let mut inner = ChainSpec::builder()
@@ -39,7 +39,7 @@ fn pool_build_uses_full_tbd_gas_limit_and_preserves_the_legacy_reserve() -> eyre
             let ca = a.auth_server_handle().http_client();
             let cb = b.auth_server_handle().http_client();
             for client in [&ca, &cb] {
-                fcu(client, if tbd { 3 } else { 2 }, genesis, genesis, None).await?;
+                fcu(client, if etna { 3 } else { 2 }, genesis, genesis, None).await?;
             }
             let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1))?;
             let ordinary = TxEip1559 {
@@ -56,7 +56,7 @@ fn pool_build_uses_full_tbd_gas_limit_and_preserves_the_legacy_reserve() -> eyre
                 a.rpc.inject_tx(Bytes::from(ordinary.encoded_2718())).await?,
                 *ordinary.hash()
             );
-            let mut attrs = fixture_attributes(if tbd { 100 } else { 99 });
+            let mut attrs = fixture_attributes(if etna { 100 } else { 99 });
             attrs.block_metadata.tx_list = None;
             attrs.block_metadata.gas_limit = 1_500_000;
             let anchor = signed_tx(
@@ -65,7 +65,7 @@ fn pool_build_uses_full_tbd_gas_limit_and_preserves_the_legacy_reserve() -> eyre
                 get_treasury_address(167001),
                 Bytes::copy_from_slice(ANCHOR_V4_SELECTOR),
             );
-            if !tbd {
+            if !etna {
                 attrs.anchor_transaction = Some(alloy_rlp::encode(&anchor).into());
             }
             let built = build(&ca, spec.clone(), spec.genesis_header(), 0, attrs).await?;
@@ -73,7 +73,7 @@ fn pool_build_uses_full_tbd_gas_limit_and_preserves_the_legacy_reserve() -> eyre
             assert!(built.attrs.block_metadata.tx_list.is_none());
             assert_eq!(
                 built.block.body().transactions,
-                if tbd { vec![ordinary] } else { vec![anchor] },
+                if etna { vec![ordinary] } else { vec![anchor] },
                 "fork-dependent gas budget must be selected by the production payload builder"
             );
             // canonicalize includes the actual newPayload V4/V2 request and asserts VALID.

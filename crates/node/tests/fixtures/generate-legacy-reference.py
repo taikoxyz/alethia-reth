@@ -95,19 +95,19 @@ serde_json = { workspace = true }
 """
 node_manifest.write_text(node_text.replace("[dev-dependencies]\n", "[dev-dependencies]\n" +
                                            dev_additions, 1))
-for relative in ["crates/node/tests/fixtures/tbd-genesis.json",
+for relative in ["crates/node/tests/fixtures/etna-genesis.json",
                  "crates/node/tests/fixtures/historical-genesis.json",
-                 "crates/node/tests/fixtures/tbd-cases.json"]:
+                 "crates/node/tests/fixtures/etna-cases.json"]:
     destination = SNAPSHOT / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / relative, destination)
 
 # Adapt test support only to release APIs; the dedicated historical test itself is unchanged.
 support = (ROOT / "crates/node/tests/support/mod.rs").read_text()
-support = re.sub(r"forks\.insert\(TaikoHardfork::TBD,[^;]+;", "", support)
+support = re.sub(r"forks\.insert\(TaikoHardfork::Etna,[^;]+;", "", support)
 support = support.replace("activation: u64", "_activation: u64")
 support = re.sub(r"\s*osaka::TaikoExecutionPayloadV3,?", "", support)
-start = support.index("let (payload, data, response) = if tbd {")
+start = support.index("let (payload, data, response) = if etna {")
 opening = support.index("{", start)
 closing = closing_brace(support, opening)
 assert support[closing:closing + 8] == "} else {"
@@ -120,7 +120,7 @@ support = support.replace("for version in [2, 3]", "for version in [2]")
 destination = SNAPSHOT / "crates/node/tests/support/mod.rs"
 destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_text("#![allow(dead_code, unused_imports, unused_mut)]\n" + support)
-shutil.copyfile(ROOT / "crates/node/tests/tbd_history.rs",
+shutil.copyfile(ROOT / "crates/node/tests/etna_history.rs",
                 SNAPSHOT / "crates/node/tests/legacy_reference.rs")
 
 # Begin with the release lock, resolve only harness additions offline, then fail closed if a
@@ -155,7 +155,7 @@ manifest = {
     "dependencyEdgeChanges": changed_edges,
     "harnessInputsSha256": {
         relative: sha256((ROOT / relative).read_bytes())
-        for relative in ["crates/node/tests/tbd_history.rs", "crates/node/tests/support/mod.rs",
+        for relative in ["crates/node/tests/etna_history.rs", "crates/node/tests/support/mod.rs",
                          "crates/node/tests/fixtures/historical-genesis.json",
                          "crates/node/tests/fixtures/generate-legacy-reference.py"]
     },
@@ -166,12 +166,12 @@ manifest = {
 }
 MANIFEST.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).absolute()
-env = dict(os.environ, CARGO_TARGET_DIR=str(target), TBD_VECTOR_OUTPUT=str(OUTPUT))
+env = dict(os.environ, CARGO_TARGET_DIR=str(target), ETNA_VECTOR_OUTPUT=str(OUTPUT))
 subprocess.run(["cargo", "test", "--offline", "--locked", "--manifest-path", str(SNAPSHOT / "Cargo.toml"),
                 "-p", "alethia-reth-node", "--test", "legacy_reference", "--all-features", "historical_v2"],
                cwd=ROOT, env=env, check=True)
 actual = json.loads(OUTPUT.read_text())
-expected = json.loads((ROOT / "crates/node/tests/fixtures/tbd-cases.json").read_text())
+expected = json.loads((ROOT / "crates/node/tests/fixtures/etna-cases.json").read_text())
 assert len(actual) == 5
 # This digest identifies output content; it is not independent execution provenance.
 manifest["capturedVectorsSha256"] = sha256(OUTPUT.read_bytes())

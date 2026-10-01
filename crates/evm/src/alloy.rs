@@ -45,7 +45,7 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     inspect: bool,
     /// Whether [`Self::maybe_derive_anchor_execution_ctx`] may install a derived anchor
     /// context for replay-style execution. Enabled by default; the block executor turns it off
-    /// because it installs authoritative block context. TBD factories also disable derivation
+    /// because it installs authoritative block context. Etna factories also disable derivation
     /// so golden-touch calls follow ordinary transaction rules.
     derive_anchor_ctx: bool,
     /// Whether [`Evm::transact_raw`] discards in-flight zk gas before executing. Enabled by
@@ -116,7 +116,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// authoritative context is present and the incoming transaction is anchor-shaped
     /// (golden touch calling the network treasury).
     ///
-    /// Before TBD, block execution installs context through the anchor system call before any
+    /// Before Etna, block execution installs context through the anchor system call before any
     /// transaction runs, so this only fires on replay-style paths (`debug_trace*`, `trace_*`
     /// and the `eth_call` family) that execute block transactions without the block executor.
     /// Without a context those paths fail the anchor's balance check, which is what made every
@@ -420,7 +420,7 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if !self.cfg.spec.is_enabled_in(TaikoSpecId::TBD) &&
+        if !self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
             caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
             contract == get_treasury_address(self.chain_id())
         {
@@ -745,12 +745,12 @@ mod tests {
     }
 
     #[test]
-    fn tbd_golden_touch_requires_funds_in_both_factories() {
+    fn etna_golden_touch_requires_funds_in_both_factories() {
         let chain_id = 167_000;
         let treasury = get_treasury_address(chain_id);
         for inspected in [false, true] {
             let mut env = replay_env(chain_id);
-            env.cfg_env.spec = TaikoSpecId::TBD;
+            env.cfg_env.spec = TaikoSpecId::ETNA;
             let mut evm = if inspected {
                 TaikoEvmFactory.create_evm_with_inspector(
                     replay_db(7, treasury),
@@ -761,7 +761,7 @@ mod tests {
                 TaikoEvmFactory.create_evm(replay_db(7, treasury), env)
             };
             let err =
-                evm.transact(anchor_tx(treasury, 7)).expect_err("TBD has no anchor exemption");
+                evm.transact(anchor_tx(treasury, 7)).expect_err("Etna has no anchor exemption");
             assert!(matches!(
                 err,
                 EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })
@@ -770,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn tbd_funded_golden_touch_pays_gas_and_receives_normal_refund() {
+    fn etna_funded_golden_touch_pays_gas_and_receives_normal_refund() {
         let chain_id = 167_000;
         let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let treasury = get_treasury_address(chain_id);
@@ -779,7 +779,7 @@ mod tests {
         let mut outcomes = Vec::new();
         for (inspected, from_env) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut env = replay_env(chain_id);
-            env.cfg_env.spec = TaikoSpecId::TBD;
+            env.cfg_env.spec = TaikoSpecId::ETNA;
             env.block_env.beneficiary = beneficiary;
             if from_env {
                 env.block_env = env.block_env.with_base_fee_share_pctg(25);
@@ -816,12 +816,12 @@ mod tests {
     }
 
     #[test]
-    fn tbd_marker_call_cannot_restore_legacy_anchor_privileges() {
+    fn etna_marker_call_cannot_restore_legacy_anchor_privileges() {
         let chain_id = 167_000;
         let treasury = get_treasury_address(chain_id);
         let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let mut env = replay_env(chain_id);
-        env.cfg_env.spec = TaikoSpecId::TBD;
+        env.cfg_env.spec = TaikoSpecId::ETNA;
         let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), env);
         evm.transact_system_call(golden, treasury, encode_anchor_system_call_data(25, 7)).unwrap();
         assert!(evm.base_evm().extra_execution_ctx.is_none());

@@ -1,4 +1,4 @@
-//! Synthetic pre-TBD differential fixtures; these do not replay public-chain history.
+//! Synthetic pre-Etna differential fixtures; these do not replay public-chain history.
 
 #[allow(dead_code)]
 mod support;
@@ -130,26 +130,26 @@ async fn historical_snapshot(stage: usize, name: &str) -> eyre::Result<()> {
 }
 
 #[test]
-fn historical_v2_genesis_matches_independent_pre_tbd_reference() -> eyre::Result<()> {
+fn historical_v2_genesis_matches_independent_pre_etna_reference() -> eyre::Result<()> {
     run_live_test(historical_snapshot(0, "genesis"))
 }
 
 #[test]
-fn historical_v2_ontake_matches_independent_pre_tbd_reference() -> eyre::Result<()> {
+fn historical_v2_ontake_matches_independent_pre_etna_reference() -> eyre::Result<()> {
     run_live_test(historical_snapshot(1, "ontake"))
 }
 
 #[test]
-fn historical_v2_pacaya_matches_independent_pre_tbd_reference() -> eyre::Result<()> {
+fn historical_v2_pacaya_matches_independent_pre_etna_reference() -> eyre::Result<()> {
     run_live_test(historical_snapshot(2, "pacaya"))
 }
 
 #[test]
-fn historical_v2_shasta_matches_independent_pre_tbd_reference() -> eyre::Result<()> {
+fn historical_v2_shasta_matches_independent_pre_etna_reference() -> eyre::Result<()> {
     run_live_test(historical_snapshot(3, "shasta"))
 }
 
 #[test]
-fn historical_v2_unzen_matches_independent_pre_tbd_reference() -> eyre::Result<()> {
+fn historical_v2_unzen_matches_independent_pre_etna_reference() -> eyre::Result<()> {
     run_live_test(historical_snapshot(4, "unzen"))
 }

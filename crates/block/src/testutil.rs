@@ -68,23 +68,23 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     }
 }
 
-/// Returns the Unzen test chain with TBD active from timestamp zero.
-pub fn tbd_chain_spec() -> TaikoChainSpec {
+/// Returns the Unzen test chain with Etna active from timestamp zero.
+pub fn etna_chain_spec() -> TaikoChainSpec {
     let mut spec = unzen_chain_spec();
-    spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(0));
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
     spec
 }
 
-/// Returns a TBD environment with authoritative zero base-fee sharing.
-pub fn tbd_evm_env() -> TaikoEvmEnv {
+/// Returns an Etna environment with authoritative zero base-fee sharing.
+pub fn etna_evm_env() -> TaikoEvmEnv {
     let mut env = unzen_evm_env();
-    env.cfg_env.spec = TaikoSpecId::TBD;
+    env.cfg_env.spec = TaikoSpecId::ETNA;
     env.block_env.base_fee_share_pctg = Some(0);
     env
 }
 
-/// Returns a TBD execution context with seven-byte extraData and the supplied beacon root.
-pub fn tbd_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
+/// Returns an Etna execution context with seven-byte extraData and the supplied beacon root.
+pub fn etna_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
     let mut ctx = unzen_execution_ctx();
     ctx.extra_data = vec![0; 7].into();
     ctx.parent_beacon_block_root = Some(root);

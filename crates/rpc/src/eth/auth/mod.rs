@@ -68,7 +68,7 @@ const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 
 /// Resolves and validates explicit target values before tx-pool simulation reaches the EVM.
 ///
-/// Legacy omission preserves parent-context behavior. Explicit TBD targets require their root and
+/// Legacy omission preserves parent-context behavior. Explicit Etna targets require their root and
 /// seven-byte fee metadata; pre-Shasta metadata must fit the legacy decoder's 256-bit input.
 fn resolve_tx_pool_block_context(
     chain_spec: &TaikoChainSpec,
@@ -76,9 +76,9 @@ fn resolve_tx_pool_block_context(
     supplied: Option<TxPoolBlockContext>,
 ) -> Result<TxPoolBlockContext, EthApiError> {
     let Some(context) = supplied else {
-        if chain_spec.is_tbd_active(parent.timestamp()) {
+        if chain_spec.is_etna_active(parent.timestamp()) {
             return Err(EthApiError::InvalidParams(
-                "`blockContext` is required when the parent is at or after TBD activation"
+                "`blockContext` is required when the parent is at or after Etna activation"
                     .to_string(),
             ))
         }
@@ -102,16 +102,16 @@ fn resolve_tx_pool_block_context(
         )))
     }
 
-    if chain_spec.is_tbd_active(context.timestamp) {
+    if chain_spec.is_etna_active(context.timestamp) {
         if context.parent_beacon_block_root.is_zero() {
             return Err(EthApiError::InvalidParams(
-                "`blockContext.parentBeaconBlockRoot` must be non-zero for a TBD target"
+                "`blockContext.parentBeaconBlockRoot` must be non-zero for an Etna target"
                     .to_string(),
             ))
         }
         if context.extra_data.len() != 7 {
             return Err(EthApiError::InvalidParams(format!(
-                "`blockContext.extraData` must contain exactly 7 bytes for a TBD target, got {}",
+                "`blockContext.extraData` must contain exactly 7 bytes for an Etna target, got {}",
                 context.extra_data.len()
             )))
         }
@@ -137,7 +137,7 @@ where
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
 }
 
-/// Applies explicit target pre-execution and retains the legacy anchor budget only before TBD.
+/// Applies explicit target pre-execution and retains the legacy anchor budget only before Etna.
 fn prepare_tx_pool_executor<'a, Evm, Spec, R>(
     executor: &mut TaikoBlockExecutor<'a, Evm, Spec, R>,
     chain_spec: &TaikoChainSpec,
@@ -153,7 +153,7 @@ where
     if explicit_context {
         executor.apply_pre_execution_changes()?;
     }
-    if !chain_spec.is_tbd_active(target_timestamp) {
+    if !chain_spec.is_etna_active(target_timestamp) {
         reserve_anchor_zk_gas_for_tx_pool_selection(executor)?;
     }
     Ok(())

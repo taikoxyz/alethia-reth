@@ -54,11 +54,11 @@ impl ZkGasSchedule {
     }
 }
 
-/// Returns the consensus zk gas schedule for the active Taiko fork, when defined. Unzen and TBD
+/// Returns the consensus zk gas schedule for the active Taiko fork, when defined. Unzen and Etna
 /// share the single [`UNZEN_ZK_GAS_SCHEDULE`].
 pub const fn schedule_for(spec: TaikoSpecId) -> Option<&'static ZkGasSchedule> {
     match spec {
-        TaikoSpecId::UNZEN | TaikoSpecId::TBD => Some(&UNZEN_ZK_GAS_SCHEDULE),
+        TaikoSpecId::UNZEN | TaikoSpecId::ETNA => Some(&UNZEN_ZK_GAS_SCHEDULE),
         _ => None,
     }
 }
@@ -68,10 +68,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tbd_reuses_the_unzen_schedule() {
+    fn etna_reuses_the_unzen_schedule() {
         let unzen = schedule_for(TaikoSpecId::UNZEN).expect("Unzen should define a schedule");
-        let tbd = schedule_for(TaikoSpecId::TBD).expect("TBD should define a schedule");
+        let etna = schedule_for(TaikoSpecId::ETNA).expect("Etna should define a schedule");
 
-        assert!(std::ptr::eq(unzen, tbd));
+        assert!(std::ptr::eq(unzen, etna));
     }
 }

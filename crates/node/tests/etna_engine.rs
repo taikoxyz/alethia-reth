@@ -55,13 +55,13 @@ fn legacy_osaka_sidecar_rejection_does_not_poison_an_honest_hash() -> eyre::Resu
             U256::ZERO
         );
         drop(state);
-        // The same direct route must retain the nonzero root once TBD activates.
-        let tbd = build(&ca, spec, honest.block.header(), 0, fixture_attributes(100)).await?;
-        let tbd_data = TaikoEngineTypes::block_to_payload(tbd.block.clone(), None);
+        // The same direct route must retain the nonzero root once Etna activates.
+        let etna = build(&ca, spec, honest.block.header(), 0, fixture_attributes(100)).await?;
+        let etna_data = TaikoEngineTypes::block_to_payload(etna.block.clone(), None);
         let status: PayloadStatus =
-            cb.request("reth_newPayload", rpc_params![tbd_data, false, false]).await?;
+            cb.request("reth_newPayload", rpc_params![etna_data, false, false]).await?;
         assert!(status.status.is_valid(), "{status:?}");
-        canonicalize(&cb, genesis, &tbd).await?;
+        canonicalize(&cb, genesis, &etna).await?;
         Ok(())
     })
 }
@@ -247,7 +247,7 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
             canonicalize(client, genesis, &legacy).await?;
         }
         let http = a.inner.rpc_server_handle().http_client().unwrap();
-        // A seven-byte legacy parent crossing TBD still reaches the caught missing-root fallback.
+        // A seven-byte legacy parent crossing Etna still reaches the caught missing-root fallback.
         assert_eq!(
             http.request::<serde_json::Value, _>(
                 "eth_getBlockByNumber",
@@ -271,7 +271,7 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
             canonicalize(client, genesis, &activation).await?;
         }
         assert_execution_parity(&b, &activation).await?;
-        // The same fallback remains available over a normal post-TBD parent.
+        // The same fallback remains available over a normal post-Etna parent.
         assert_eq!(
             http.request::<serde_json::Value, _>(
                 "eth_getBlockByNumber",
@@ -294,7 +294,7 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
                 .to_string()
                 .contains("Unsupported fork")
         );
-        // A builds the alternative legacy branch. B's retained job remains the TBD child.
+        // A builds the alternative legacy branch. B's retained job remains the Etna child.
         fcu(&ca, 2, genesis, genesis, None).await?;
         let alternative =
             build(&ca, spec.clone(), spec.genesis_header(), 0, fixture_attributes(98)).await?;
@@ -465,7 +465,7 @@ fn malicious_commitments_and_direct_tree_input_are_checked_during_execution() ->
 }
 
 #[test]
-fn canonical_devnet_tbd_genesis_pending_rpc_uses_simulation_context() -> eyre::Result<()> {
+fn canonical_devnet_etna_genesis_pending_rpc_uses_simulation_context() -> eyre::Result<()> {
     run_live_test(async {
         use alethia_reth_chainspec::{TAIKO_DEVNET, spec::TaikoDevnetConfigExt};
         use jsonrpsee::{core::client::ClientT, rpc_params};
@@ -497,7 +497,7 @@ fn canonical_devnet_tbd_genesis_pending_rpc_uses_simulation_context() -> eyre::R
 }
 
 #[test]
-fn canonical_genesis_at_tbd_zero_retains_zero_beacon_root() -> eyre::Result<()> {
+fn canonical_genesis_at_etna_zero_retains_zero_beacon_root() -> eyre::Result<()> {
     run_live_test(async {
         use alloy_primitives::U256;
         use reth_storage_api::{HeaderProvider, StateProvider, StateProviderFactory};

@@ -44,7 +44,7 @@ pub(super) enum ExecutionOutcome {
 
 /// Context for selecting pool transactions under the target fork's anchor policy.
 pub(super) struct PoolExecutionContext<'a> {
-    /// Prebuilt anchor transaction required before TBD and forbidden after activation.
+    /// Prebuilt anchor transaction required before Etna and forbidden after activation.
     pub(super) anchor_tx: Option<&'a Recovered<EthTransactionSigned>>,
     /// The parent block header.
     pub(super) parent_header: &'a RethHeader,
@@ -116,7 +116,7 @@ pub(super) fn execute_provided_transactions(
 
 /// Executes fork-aware pool transactions until exhaustion or cancellation.
 ///
-/// Legacy payloads validate and execute their supplied anchor before pool selection. TBD payloads
+/// Legacy payloads validate and execute their supplied anchor before pool selection. Etna payloads
 /// require no anchor and begin ordinary selection with the caller-supplied full gas budget.
 pub(super) fn execute_pool_transactions<Client, Pool>(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
@@ -136,13 +136,13 @@ where
         >,
 {
     let chain_spec = client.chain_spec();
-    if chain_spec.is_tbd_active(ctx.block_timestamp) {
+    if chain_spec.is_etna_active(ctx.block_timestamp) {
         if ctx.anchor_tx.is_some() {
             return Err(PayloadBuilderError::Internal(RethError::msg(
-                "TBD pool execution must not include an anchor transaction",
+                "Etna pool execution must not include an anchor transaction",
             )));
         }
-        debug!(target: "payload_builder", id=%ctx.payload_id, "selecting anchorless TBD transactions");
+        debug!(target: "payload_builder", id=%ctx.payload_id, "selecting anchorless Etna transactions");
     } else {
         let anchor_tx = ctx.anchor_tx.ok_or(PayloadBuilderError::MissingPayload)?;
         debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
@@ -243,7 +243,7 @@ mod tests {
         executor::{TaikoBlockExecutor, ZkGasLimitExceeded},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
-            recovered_tx, tbd_chain_spec, tbd_evm_env, tbd_execution_ctx, unzen_chain_spec,
+            etna_chain_spec, etna_evm_env, etna_execution_ctx, recovered_tx, unzen_chain_spec,
             unzen_evm_env, unzen_execution_ctx,
         },
     };
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn tbd_pool_uses_full_gas_budget_and_matches_the_derived_list() {
+    fn etna_pool_uses_full_gas_budget_and_matches_the_derived_list() {
         let caller = Address::with_last_byte(0x40);
         let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
         let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
@@ -531,64 +531,64 @@ mod tests {
         assert_eq!(legacy_fees, U256::ZERO);
         assert_eq!(legacy_builder.executor.receipts().len(), 1, "only the anchor should execute");
 
-        let tbd_spec = Arc::new(tbd_chain_spec());
+        let etna_spec = Arc::new(etna_chain_spec());
         let mut pool_state = State::builder()
             .with_database(db_with_contracts(&[(caller, 0)]))
             .with_bundle_update()
             .build();
-        let pool_evm = TaikoEvmFactory.create_evm(&mut pool_state, tbd_evm_env());
-        let pool_ctx = tbd_execution_ctx(B256::with_last_byte(1));
+        let pool_evm = TaikoEvmFactory.create_evm(&mut pool_state, etna_evm_env());
+        let pool_ctx = etna_execution_ctx(B256::with_last_byte(1));
         let pool_executor = TaikoBlockExecutor::new(
             pool_evm,
             pool_ctx.clone(),
-            tbd_spec.clone(),
+            etna_spec.clone(),
             RethReceiptBuilder::default(),
         );
         let mut pool_builder = ExecutorBackedBuilder { executor: pool_executor };
-        let tbd_pool = testing_pool();
+        let etna_pool = testing_pool();
         block_on_ready(
-            tbd_pool.add_consensus_transaction(ordinary.clone(), TransactionOrigin::External),
+            etna_pool.add_consensus_transaction(ordinary.clone(), TransactionOrigin::External),
         )
-        .expect("ordinary transaction should enter the TBD pool");
+        .expect("ordinary transaction should enter the Etna pool");
 
         let pool_outcome = execute_pool_transactions(
             &mut pool_builder,
-            &tbd_pool,
-            &test_client((*tbd_spec).clone()),
+            &etna_pool,
+            &test_client((*etna_spec).clone()),
             &PoolExecutionContext {
                 anchor_tx: None,
                 parent_header: &parent_header,
                 block_timestamp: 1,
-                payload_id: "tbd-full-budget".to_string(),
+                payload_id: "etna-full-budget".to_string(),
                 base_fee: 0,
                 gas_limit: 5_500_000,
             },
             &cancel,
         )
-        .expect("TBD pool execution should complete");
+        .expect("Etna pool execution should complete");
 
         let mut derived_state = State::builder()
             .with_database(db_with_contracts(&[(caller, 0)]))
             .with_bundle_update()
             .build();
-        let derived_evm = TaikoEvmFactory.create_evm(&mut derived_state, tbd_evm_env());
-        let derived_ctx = tbd_execution_ctx(B256::with_last_byte(1));
+        let derived_evm = TaikoEvmFactory.create_evm(&mut derived_state, etna_evm_env());
+        let derived_ctx = etna_execution_ctx(B256::with_last_byte(1));
         let derived_executor = TaikoBlockExecutor::new(
             derived_evm,
             derived_ctx.clone(),
-            tbd_spec,
+            etna_spec,
             RethReceiptBuilder::default(),
         );
         let mut derived_builder = ExecutorBackedBuilder { executor: derived_executor };
         let derived_outcome =
             execute_provided_transactions(&mut derived_builder, &[ordinary], 0, &cancel)
-                .expect("TBD derived execution should complete");
+                .expect("Etna derived execution should complete");
 
         let ExecutionOutcome::Completed(pool_fees) = pool_outcome else {
-            panic!("TBD pool execution should not cancel")
+            panic!("Etna pool execution should not cancel")
         };
         let ExecutionOutcome::Completed(derived_fees) = derived_outcome else {
-            panic!("TBD derived execution should not cancel")
+            panic!("Etna derived execution should not cancel")
         };
         assert_eq!(pool_fees, derived_fees);
         assert_eq!(pool_builder.executor.receipts(), derived_builder.executor.receipts());
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn tbd_pool_counts_the_first_ordinary_transaction_against_the_da_budget() {
+    fn etna_pool_counts_the_first_ordinary_transaction_against_the_da_budget() {
         let first_caller = Address::with_last_byte(0x41);
         let second_caller = Address::with_last_byte(0x42);
         let mut state_byte = 0x1234_5678_u32;
@@ -613,17 +613,17 @@ mod tests {
         let first =
             test_ordinary_transaction(first_caller, 5_000_000, 20, Bytes::from(input.clone()));
         let second = test_ordinary_transaction(second_caller, 5_000_000, 10, Bytes::from(input));
-        let spec = Arc::new(tbd_chain_spec());
+        let spec = Arc::new(etna_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(first_caller, 0), (second_caller, 0)]))
             .with_bundle_update()
             .build();
-        let mut da_only_env = tbd_evm_env();
+        let mut da_only_env = etna_evm_env();
         da_only_env.cfg_env.spec = TaikoSpecId::SHASTA;
         let evm = TaikoEvmFactory.create_evm(&mut state, da_only_env);
         let executor = TaikoBlockExecutor::new(
             evm,
-            tbd_execution_ctx(B256::with_last_byte(1)),
+            etna_execution_ctx(B256::with_last_byte(1)),
             spec.clone(),
             RethReceiptBuilder::default(),
         );
@@ -642,30 +642,30 @@ mod tests {
                 anchor_tx: None,
                 parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
                 block_timestamp: 1,
-                payload_id: "tbd-da-budget".to_string(),
+                payload_id: "etna-da-budget".to_string(),
                 base_fee: 0,
                 gas_limit: 30_000_000,
             },
             &CancelOnDrop::default(),
         )
-        .expect("TBD selection should complete");
+        .expect("Etna selection should complete");
 
         assert_eq!(builder.executor.receipts().len(), 1);
     }
 
     #[test]
-    fn tbd_pool_cancellation_preserves_the_cancelled_outcome() {
+    fn etna_pool_cancellation_preserves_the_cancelled_outcome() {
         let caller = Address::with_last_byte(0x43);
         let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
-        let spec = Arc::new(tbd_chain_spec());
+        let spec = Arc::new(etna_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(caller, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
         let executor = TaikoBlockExecutor::new(
             evm,
-            tbd_execution_ctx(B256::with_last_byte(1)),
+            etna_execution_ctx(B256::with_last_byte(1)),
             spec.clone(),
             RethReceiptBuilder::default(),
         );
@@ -684,7 +684,7 @@ mod tests {
                 anchor_tx: None,
                 parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
                 block_timestamp: 1,
-                payload_id: "tbd-cancelled".to_string(),
+                payload_id: "etna-cancelled".to_string(),
                 base_fee: 0,
                 gas_limit: 30_000_000,
             },
@@ -697,16 +697,16 @@ mod tests {
     }
 
     #[test]
-    fn tbd_pool_zk_gas_exhaustion_preserves_empty_and_completed_prefixes() {
+    fn etna_pool_zk_gas_exhaustion_preserves_empty_and_completed_prefixes() {
         for prefix_len in [0, 1] {
             let caller = Address::with_last_byte(0x44);
-            let spec = Arc::new(tbd_chain_spec());
+            let spec = Arc::new(etna_chain_spec());
             let mut state = State::builder()
                 .with_database(db_with_contracts(&[(caller, 0)]))
                 .with_bundle_update()
                 .build();
-            let evm = TaikoEvmFactory.create_evm(&mut state, tbd_evm_env());
-            let ctx = tbd_execution_ctx(B256::with_last_byte(1));
+            let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+            let ctx = etna_execution_ctx(B256::with_last_byte(1));
             let executor = TaikoBlockExecutor::new(
                 evm,
                 ctx.clone(),
@@ -717,7 +717,7 @@ mod tests {
             builder.apply_pre_execution_changes().unwrap();
             let pool = testing_pool();
             // A single nonce chain fixes ordering: optional success, real zk exhaustion, then
-            // a transaction that must remain unexecuted. The real executor emits TBD Validation.
+            // a transaction that must remain unexecuted. The real executor emits Etna Validation.
             for nonce in 0..prefix_len + 2 {
                 let target =
                     if nonce == prefix_len { BENCH_LIMIT_TARGET } else { BENCH_SUCCESS_TARGET };
@@ -747,7 +747,7 @@ mod tests {
                     anchor_tx: None,
                     parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
                     block_timestamp: 1,
-                    payload_id: format!("tbd-zk-limit-{prefix_len}"),
+                    payload_id: format!("etna-zk-limit-{prefix_len}"),
                     base_fee: 0,
                     gas_limit: 30_000_000,
                 },

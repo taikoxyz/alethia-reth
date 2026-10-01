@@ -18,17 +18,17 @@ use crate::payload::attributes::TaikoPayloadAttributes;
 /// Version byte stamped into Taiko payload identifiers for the `engine_*V2` surface.
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
 
-/// Version byte for payload identifiers that bind all TBD execution and persistence inputs.
-pub const PAYLOAD_ID_VERSION_TBD: u8 = 3;
+/// Version byte for payload identifiers that bind all Etna execution and persistence inputs.
+pub const PAYLOAD_ID_VERSION_ETNA: u8 = 3;
 
 /// Selects the stable payload-ID hashing domain from the committed beacon-root shape.
 ///
-/// A non-zero root selects the TBD domain so engine-facing attributes and normalized builder
+/// A non-zero root selects the Etna domain so engine-facing attributes and normalized builder
 /// attributes derive the same cache key. Fork authorization remains the responsibility of the
 /// chain-spec timestamp checks performed during normalization.
 pub fn payload_id_version(attributes: &TaikoPayloadAttributes) -> u8 {
     if attributes.payload_attributes.parent_beacon_block_root.is_some_and(|root| !root.is_zero()) {
-        PAYLOAD_ID_VERSION_TBD
+        PAYLOAD_ID_VERSION_ETNA
     } else {
         PAYLOAD_ID_VERSION_V2
     }
@@ -70,7 +70,7 @@ pub struct TaikoPayloadBuilderAttributes {
     pub transactions: Option<Vec<Recovered<TransactionSigned>>>,
     /// The extra data for the L2 block.
     pub extra_data: Bytes,
-    /// Optional prebuilt anchor transaction required for pre-TBD pool selection.
+    /// Optional prebuilt anchor transaction required for pre-Etna pool selection.
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
 }
 
@@ -117,16 +117,16 @@ impl TaikoPayloadBuilderAttributes {
 
     /// Normalizes payload attributes under the rules active at the target timestamp.
     ///
-    /// TBD jobs require matching full-width timestamps, a non-zero beacon root, seven-byte
+    /// Etna jobs require matching full-width timestamps, a non-zero beacon root, seven-byte
     /// extraData, empty withdrawals, and no anchor transaction. Legacy callers retain the V2
     /// acceptance rules by passing `false` through [`Self::try_new`].
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,
-        is_tbd_active: bool,
+        is_etna_active: bool,
     ) -> Result<Self, alloy_rlp::Error> {
         let payload_timestamp = U256::from(attributes.payload_attributes.timestamp);
-        if is_tbd_active {
+        if is_etna_active {
             if attributes.block_metadata.timestamp != payload_timestamp {
                 return Err(alloy_rlp::Error::Custom(
                     "block metadata timestamp must match payload attributes timestamp",
@@ -138,12 +138,12 @@ impl TaikoPayloadBuilderAttributes {
                 .is_none_or(|root| root.is_zero())
             {
                 return Err(alloy_rlp::Error::Custom(
-                    "TBD payload requires a non-zero parent_beacon_block_root",
+                    "Etna payload requires a non-zero parent_beacon_block_root",
                 ));
             }
             if attributes.anchor_transaction.is_some() {
                 return Err(alloy_rlp::Error::Custom(
-                    "TBD payload must not include anchor_transaction",
+                    "Etna payload must not include anchor_transaction",
                 ));
             }
             if attributes
@@ -152,11 +152,11 @@ impl TaikoPayloadBuilderAttributes {
                 .as_ref()
                 .is_some_and(|withdrawals| !withdrawals.is_empty())
             {
-                return Err(alloy_rlp::Error::Custom("TBD payload withdrawals must be empty"));
+                return Err(alloy_rlp::Error::Custom("Etna payload withdrawals must be empty"));
             }
             if attributes.block_metadata.extra_data.len() != 7 {
                 return Err(alloy_rlp::Error::Custom(
-                    "TBD payload extra_data must contain exactly seven bytes",
+                    "Etna payload extra_data must contain exactly seven bytes",
                 ));
             }
         }
@@ -165,7 +165,7 @@ impl TaikoPayloadBuilderAttributes {
         // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
         // root here would build a header that legacy import rejects. Re-check at job creation
         // so callers outside the Engine RPC validation path retain the same invariant.
-        if !is_tbd_active &&
+        if !is_etna_active &&
             attributes
                 .payload_attributes
                 .parent_beacon_block_root
@@ -284,7 +284,8 @@ pub fn payload_id_taiko(
     payload_version: u8,
 ) -> PayloadId {
     let mut hasher = Sha256::new();
-    if payload_version == PAYLOAD_ID_VERSION_TBD {
+    if payload_version == PAYLOAD_ID_VERSION_ETNA {
+        // Preserve the original domain bytes so naming the fork Etna does not change payload IDs.
         hasher.update(b"taiko-tbd-payload-v1");
         hasher.update(parent.as_slice());
         hasher.update(attributes.payload_attributes.timestamp.to_be_bytes());
@@ -462,7 +463,7 @@ mod test {
         }
     }
 
-    fn tbd_payload_attrs(tx_list: Option<Bytes>) -> TaikoPayloadAttributes {
+    fn etna_payload_attrs(tx_list: Option<Bytes>) -> TaikoPayloadAttributes {
         TaikoPayloadAttributes {
             payload_attributes: EthPayloadAttributes {
                 timestamp: 0x0102_0304_0506_0708,
@@ -545,20 +546,20 @@ mod test {
     }
 
     #[test]
-    fn tbd_payload_id_uses_the_exact_v3_field_order() {
-        let attributes = tbd_payload_attrs(Some(Bytes::from_static(&[0x99, 0xaa])));
+    fn etna_payload_id_uses_the_exact_v3_field_order() {
+        let attributes = etna_payload_attrs(Some(Bytes::from_static(&[0x99, 0xaa])));
 
         assert_eq!(
-            payload_id_taiko(&B256::repeat_byte(0xaa), &attributes, PAYLOAD_ID_VERSION_TBD),
+            payload_id_taiko(&B256::repeat_byte(0xaa), &attributes, PAYLOAD_ID_VERSION_ETNA),
             PayloadId::new([0x03, 0x54, 0xca, 0xc0, 0x73, 0x60, 0xde, 0x17])
         );
     }
 
     #[test]
-    fn tbd_payload_id_binds_every_execution_and_origin_input() {
+    fn etna_payload_id_binds_every_execution_and_origin_input() {
         let parent = B256::repeat_byte(0xaa);
-        let attributes = tbd_payload_attrs(None);
-        let before = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_TBD);
+        let attributes = etna_payload_attrs(None);
+        let before = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_ETNA);
 
         let mutations: &[fn(&mut TaikoPayloadAttributes)] = &[
             |a| a.payload_attributes.timestamp += 1,
@@ -588,17 +589,17 @@ mod test {
             mutate(&mut changed);
             assert_ne!(
                 before,
-                payload_id_taiko(&parent, &changed, PAYLOAD_ID_VERSION_TBD),
+                payload_id_taiko(&parent, &changed, PAYLOAD_ID_VERSION_ETNA),
                 "every execution or persistence input must affect the payload id"
             );
         }
-        assert_eq!(before, payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_TBD));
+        assert_eq!(before, payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_ETNA));
     }
 
     #[test]
-    fn tbd_payload_id_distinguishes_absent_and_explicit_empty_values() {
+    fn etna_payload_id_distinguishes_absent_and_explicit_empty_values() {
         let parent = B256::repeat_byte(0xaa);
-        let mut absent = tbd_payload_attrs(None);
+        let mut absent = etna_payload_attrs(None);
         absent.payload_attributes.withdrawals = None;
         absent.l1_origin.l1_block_height = None;
         absent.l1_origin.l1_block_hash = None;
@@ -610,25 +611,25 @@ mod test {
         explicit_empty.l1_origin.l1_block_hash = Some(B256::ZERO);
 
         assert_ne!(
-            payload_id_taiko(&parent, &absent, PAYLOAD_ID_VERSION_TBD),
-            payload_id_taiko(&parent, &explicit_empty, PAYLOAD_ID_VERSION_TBD)
+            payload_id_taiko(&parent, &absent, PAYLOAD_ID_VERSION_ETNA),
+            payload_id_taiko(&parent, &explicit_empty, PAYLOAD_ID_VERSION_ETNA)
         );
     }
 
     #[test]
-    fn payload_id_domain_follows_the_root_without_authorizing_tbd() {
+    fn payload_id_domain_follows_the_root_without_authorizing_etna() {
         let parent = B256::repeat_byte(0xaa);
         let mut attributes = create_payload_attrs(1000, None, 100_000_000);
         assert_eq!(payload_id_version(&attributes), PAYLOAD_ID_VERSION_V2);
 
         attributes.payload_attributes.parent_beacon_block_root = Some(B256::with_last_byte(1));
         attributes.block_metadata.extra_data = Bytes::from_static(b"1234567");
-        assert_eq!(payload_id_version(&attributes), PAYLOAD_ID_VERSION_TBD);
+        assert_eq!(payload_id_version(&attributes), PAYLOAD_ID_VERSION_ETNA);
         assert!(TaikoPayloadBuilderAttributes::try_new(parent, attributes.clone()).is_err());
 
         let normalized =
             TaikoPayloadBuilderAttributes::try_new_for_fork(parent, attributes.clone(), true)
-                .expect("the explicit TBD constructor should accept the required root");
+                .expect("the explicit Etna constructor should accept the required root");
         assert_eq!(
             normalized.payload_id(),
             reth_payload_primitives::PayloadAttributes::payload_id(&attributes, &parent)

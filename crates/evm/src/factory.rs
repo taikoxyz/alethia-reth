@@ -62,7 +62,7 @@ impl EvmFactory for TaikoEvmFactory {
 
         let mut evm =
             TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false);
-        let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::TBD);
+        let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::ETNA);
         evm.set_anchor_ctx_derivation_enabled(allow_legacy_anchor);
         if !allow_legacy_anchor && let Some(percentage) = base_fee_share_pctg {
             evm.set_block_fee_context(percentage);
@@ -90,7 +90,7 @@ impl EvmFactory for TaikoEvmFactory {
             )));
 
         let mut evm = TaikoEvmWrapper::new(TaikoEvm::new(evm), true);
-        let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::TBD);
+        let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::ETNA);
         evm.set_anchor_ctx_derivation_enabled(allow_legacy_anchor);
         if !allow_legacy_anchor && let Some(percentage) = base_fee_share_pctg {
             evm.set_block_fee_context(percentage);

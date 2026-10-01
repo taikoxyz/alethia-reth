@@ -91,7 +91,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
         execution_requests: Vec<Bytes>,
     ) -> RpcResult<PayloadStatus>;
 
-    /// Update fork choice and optionally build a TBD payload.
+    /// Update fork choice and optionally build an Etna payload.
     #[method(name = "forkchoiceUpdatedV3")]
     async fn fork_choice_updated_v3(
         &self,
@@ -99,7 +99,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
         payload_attributes: Option<Engine::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated>;
 
-    /// Fetch a previously built TBD payload in an Osaka envelope.
+    /// Fetch a previously built Etna payload in an Osaka envelope.
     #[method(name = "getPayloadV5")]
     async fn get_payload_v5(
         &self,
@@ -316,7 +316,7 @@ where
     /// Creates a new execution payload with the given execution data.
     async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
         validate_taiko_api_fork(
-            self.chain_spec.is_tbd_active(payload.execution_payload.timestamp),
+            self.chain_spec.is_etna_active(payload.execution_payload.timestamp),
             false,
         )?;
         self.inner.new_payload_v2(payload).await.map_err(|e| e.into())
@@ -332,7 +332,8 @@ where
             .await
     }
 
-    /// Updates fork choice with TBD build attributes while retaining the shared origin transaction.
+    /// Updates fork choice with Etna build attributes while retaining the shared origin
+    /// transaction.
     async fn fork_choice_updated_v3(
         &self,
         fork_choice_state: ForkchoiceState,
@@ -352,7 +353,7 @@ where
     ) -> RpcResult<PayloadStatus> {
         validate_taiko_api_fork(
             self.chain_spec
-                .is_tbd_active(payload.execution_payload.payload_inner.payload_inner.timestamp),
+                .is_etna_active(payload.execution_payload.payload_inner.payload_inner.timestamp),
             true,
         )?;
         let data = payload
@@ -375,7 +376,7 @@ where
         let built_payload =
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
         validate_taiko_api_fork(
-            self.chain_spec.is_tbd_active(built_payload.block().timestamp),
+            self.chain_spec.is_etna_active(built_payload.block().timestamp),
             true,
         )?;
         convert_built_payload_to_execution_payload_envelope_v5(built_payload).map_err(Into::into)
@@ -389,7 +390,7 @@ where
         let built_payload =
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
         validate_taiko_api_fork(
-            self.chain_spec.is_tbd_active(built_payload.block().timestamp),
+            self.chain_spec.is_etna_active(built_payload.block().timestamp),
             false,
         )?;
         Ok(self.convert_built_payload_to_execution_payload_envelope_v2(built_payload))
@@ -416,9 +417,9 @@ where
     }
 }
 
-/// Rejects Engine method families that do not match Taiko TBD at the target timestamp.
-fn validate_taiko_api_fork(is_tbd_active: bool, wants_tbd: bool) -> Result<(), EngineApiError> {
-    if is_tbd_active != wants_tbd {
+/// Rejects Engine method families that do not match Taiko Etna at the target timestamp.
+fn validate_taiko_api_fork(is_etna_active: bool, wants_etna: bool) -> Result<(), EngineApiError> {
+    if is_etna_active != wants_etna {
         return Err(EngineObjectValidationError::UnsupportedFork.into());
     }
     Ok(())
@@ -525,7 +526,7 @@ mod tests {
         };
         let provider = test_provider();
         let mut spec = (*unzen_chain_spec()).clone();
-        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
         spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
         let spec = Arc::new(spec);
         let (payload_tx, mut payload_rx) =
@@ -636,7 +637,7 @@ mod tests {
             }
         });
         let mut api_spec = (*unzen_chain_spec()).clone();
-        api_spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+        api_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
         api_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
         let api_spec = Arc::new(api_spec);
         let blockchain = reth_provider::providers::BlockchainProvider::with_latest(
@@ -872,7 +873,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_tbd_attributes_never_start_jobs_or_publish_origins() {
+    async fn invalid_etna_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
         for case in 0..7 {
             let mut attrs = fcu_attributes(100, false);

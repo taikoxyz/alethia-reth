@@ -127,11 +127,11 @@ fn normalize_payload_config(
     config: &PayloadConfig<TaikoPayloadAttributes>,
     chain_spec: &TaikoChainSpec,
 ) -> Result<TaikoPayloadBuilderAttributes, PayloadBuilderError> {
-    let is_tbd_active = chain_spec.is_tbd_active(config.attributes.payload_attributes.timestamp);
+    let is_etna_active = chain_spec.is_etna_active(config.attributes.payload_attributes.timestamp);
     let mut attributes = TaikoPayloadBuilderAttributes::try_new_for_fork(
         config.parent_header.hash(),
         config.attributes.clone(),
-        is_tbd_active,
+        is_etna_active,
     )
     .map_err(PayloadBuilderError::other)?;
     attributes.id = config.payload_id;
@@ -261,8 +261,8 @@ where
         }
         None => {
             debug!(target: "payload_builder", id=%payload_id, "selecting transactions from mempool");
-            let is_tbd_active = chain_spec.is_tbd_active(attributes.timestamp());
-            let gas_limit = if is_tbd_active {
+            let is_etna_active = chain_spec.is_etna_active(attributes.timestamp());
+            let gas_limit = if is_etna_active {
                 attributes.gas_limit
             } else {
                 attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT)
@@ -379,46 +379,46 @@ mod tests {
         PayloadConfig::new(parent_header, attributes, payload_id)
     }
 
-    fn chain_spec_with_tbd_at(timestamp: u64) -> TaikoChainSpec {
+    fn chain_spec_with_etna_at(timestamp: u64) -> TaikoChainSpec {
         let mut spec = TaikoChainSpec::default();
-        spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(timestamp));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
         spec
     }
 
     #[test]
-    fn tbd_derived_transaction_lists_normalize_without_an_anchor() {
+    fn etna_derived_transaction_lists_normalize_without_an_anchor() {
         let config = test_payload_config(Some(Bytes::from_static(&[0xc0])));
-        let attributes = normalize_payload_config(&config, &chain_spec_with_tbd_at(100))
-            .expect("TBD config should normalize");
+        let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
+            .expect("Etna config should normalize");
 
         assert_eq!(attributes.transactions.as_deref(), Some([].as_slice()));
         assert!(attributes.anchor_transaction.is_none());
     }
 
     #[test]
-    fn tbd_pool_transaction_source_normalizes_without_an_anchor() {
+    fn etna_pool_transaction_source_normalizes_without_an_anchor() {
         let config = test_payload_config(None);
-        let attributes = normalize_payload_config(&config, &chain_spec_with_tbd_at(100))
-            .expect("TBD config should normalize");
+        let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
+            .expect("Etna config should normalize");
 
         assert!(attributes.transactions.is_none());
         assert!(attributes.anchor_transaction.is_none());
     }
 
     #[test]
-    fn tbd_normalization_rejects_mismatched_or_wide_metadata_timestamps() {
+    fn etna_normalization_rejects_mismatched_or_wide_metadata_timestamps() {
         for timestamp in [U256::from(99), U256::from(100) + (U256::from(1) << 128)] {
             let mut config = test_payload_config(None);
             config.attributes.block_metadata.timestamp = timestamp;
 
-            let err = normalize_payload_config(&config, &chain_spec_with_tbd_at(100))
+            let err = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
                 .expect_err("metadata timestamp must match without narrowing");
             assert!(err.to_string().contains("timestamp"), "unexpected error: {err}");
         }
     }
 
     #[test]
-    fn tbd_normalization_rejects_anchor_withdrawals_and_invalid_roots() {
+    fn etna_normalization_rejects_anchor_withdrawals_and_invalid_roots() {
         let mut cases = Vec::new();
 
         let mut anchor = test_payload_config(None);
@@ -437,19 +437,19 @@ mod tests {
         zero_root.attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO);
         cases.push(zero_root);
 
-        let spec = chain_spec_with_tbd_at(100);
+        let spec = chain_spec_with_etna_at(100);
         for config in cases {
             assert!(normalize_payload_config(&config, &spec).is_err());
         }
     }
 
     #[test]
-    fn tbd_normalization_rejects_non_shasta_extra_data() {
+    fn etna_normalization_rejects_non_shasta_extra_data() {
         let mut config = test_payload_config(None);
         config.attributes.block_metadata.extra_data = Bytes::from_static(b"short");
 
-        let err = normalize_payload_config(&config, &chain_spec_with_tbd_at(100))
-            .expect_err("TBD extraData must preserve the seven-byte layout");
+        let err = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
+            .expect_err("Etna extraData must preserve the seven-byte layout");
         assert!(err.to_string().contains("extra"), "unexpected error: {err}");
     }
 
@@ -459,7 +459,7 @@ mod tests {
         config.attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO);
         config.attributes.anchor_transaction = Some(Bytes::from_static(&[0x01]));
 
-        let err = normalize_payload_config(&config, &chain_spec_with_tbd_at(101))
+        let err = normalize_payload_config(&config, &chain_spec_with_etna_at(101))
             .expect_err("legacy malformed anchor bytes should still reach anchor decoding");
         assert!(err.to_string().contains("anchor"), "unexpected error: {err}");
     }

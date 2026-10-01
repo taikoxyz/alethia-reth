@@ -83,8 +83,8 @@ Use `--chain` with one of the supported presets:
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
-For the temporary TBD fork, driver method routing, payload normalization, devnet configuration,
-and release prerequisites are documented in the [TBD Engine API guide](docs/engine-api-tbd.md).
+For the Etna fork, driver method routing, payload normalization, devnet configuration,
+and release prerequisites are documented in the [Etna Engine API guide](docs/engine-api-etna.md).
 
 ## License
 

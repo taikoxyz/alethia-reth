@@ -153,16 +153,16 @@ fn create_test_api(
 // Deserialization tests
 // ---------------------------------------------------------------------------
 
-/// Returns a devnet chain spec whose TBD rules activate at timestamp 100.
-fn chain_spec_with_tbd_at_100() -> TaikoChainSpec {
+/// Returns a devnet chain spec whose Etna rules activate at timestamp 100.
+fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
     let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-    chain_spec.inner.hardforks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(100));
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
     chain_spec
 }
 
 #[test]
-fn resolves_explicit_context_at_tbd_boundary_without_changing_fields() {
-    let chain_spec = chain_spec_with_tbd_at_100();
+fn resolves_explicit_context_at_etna_boundary_without_changing_fields() {
+    let chain_spec = chain_spec_with_etna_at_100();
     let parent = Header { number: 1, timestamp: 99, ..Default::default() };
     let supplied = TxPoolBlockContext {
         timestamp: 100,
@@ -178,8 +178,8 @@ fn resolves_explicit_context_at_tbd_boundary_without_changing_fields() {
 }
 
 #[test]
-fn preserves_legacy_parent_time_context_before_tbd() {
-    let chain_spec = chain_spec_with_tbd_at_100();
+fn preserves_legacy_parent_time_context_before_etna() {
+    let chain_spec = chain_spec_with_etna_at_100();
     let parent = Header {
         number: 1,
         timestamp: 99,
@@ -188,7 +188,7 @@ fn preserves_legacy_parent_time_context_before_tbd() {
     };
 
     let resolved = super::resolve_tx_pool_block_context(&chain_spec, &parent, None)
-        .expect("legacy preselection should remain available before TBD");
+        .expect("legacy preselection should remain available before Etna");
 
     assert_eq!(resolved.timestamp, 99);
     assert_eq!(resolved.parent_beacon_block_root, alloy_primitives::B256::ZERO);
@@ -196,8 +196,8 @@ fn preserves_legacy_parent_time_context_before_tbd() {
 }
 
 #[test]
-fn rejects_omitted_context_for_tbd_parent() {
-    let chain_spec = chain_spec_with_tbd_at_100();
+fn rejects_omitted_context_for_etna_parent() {
+    let chain_spec = chain_spec_with_etna_at_100();
     let parent = Header { number: 1, timestamp: 100, ..Default::default() };
 
     assert!(super::resolve_tx_pool_block_context(&chain_spec, &parent, None).is_err());
@@ -205,7 +205,7 @@ fn rejects_omitted_context_for_tbd_parent() {
 
 #[test]
 fn rejects_non_increasing_explicit_context_under_shasta_rules() {
-    let chain_spec = chain_spec_with_tbd_at_100();
+    let chain_spec = chain_spec_with_etna_at_100();
     let parent = Header { number: 1, timestamp: 99, ..Default::default() };
     let supplied = TxPoolBlockContext {
         timestamp: 99,
@@ -216,7 +216,7 @@ fn rejects_non_increasing_explicit_context_under_shasta_rules() {
     assert!(super::resolve_tx_pool_block_context(&chain_spec, &parent, Some(supplied)).is_err());
 }
 
-/// Runs the real tx-selection loop around the TBD boundary and returns the selected count and
+/// Runs the real tx-selection loop around the Etna boundary and returns the selected count and
 /// resulting state so callers can inspect standard system-contract writes.
 fn select_near_limit_at_target(
     target_timestamp: u64,
@@ -225,13 +225,13 @@ fn select_near_limit_at_target(
     extra_data: Bytes,
 ) -> (usize, State<InMemoryDB>) {
     let caller = Address::with_last_byte(0x31);
-    let chain_spec = Arc::new(chain_spec_with_tbd_at_100());
+    let chain_spec = Arc::new(chain_spec_with_etna_at_100());
     let mut state = State::builder()
         .with_database(db_with_system_contracts(&[(caller, 0)]))
         .with_bundle_update()
         .build();
     let mut env = unzen_evm_env();
-    env.cfg_env.spec = if target_timestamp >= 100 { TaikoSpecId::TBD } else { TaikoSpecId::UNZEN };
+    env.cfg_env.spec = if target_timestamp >= 100 { TaikoSpecId::ETNA } else { TaikoSpecId::UNZEN };
     env.block_env.number = U256::from(2);
     env.block_env.timestamp = U256::from(target_timestamp);
     env.block_env.base_fee_share_pctg = (target_timestamp >= 100).then_some(0);
@@ -281,7 +281,7 @@ fn select_near_limit_at_target(
 }
 
 #[test]
-fn explicit_tbd_context_removes_anchor_reserve_and_records_supplied_root() {
+fn explicit_etna_context_removes_anchor_reserve_and_records_supplied_root() {
     use alloy_eips::eip4788;
 
     let root = alloy_primitives::B256::with_last_byte(7);
@@ -300,7 +300,7 @@ fn explicit_tbd_context_removes_anchor_reserve_and_records_supplied_root() {
 }
 
 #[test]
-fn legacy_context_keeps_anchor_reserve_before_tbd() {
+fn legacy_context_keeps_anchor_reserve_before_etna() {
     let (selected, _) =
         select_near_limit_at_target(99, false, alloy_primitives::B256::ZERO, Bytes::default());
 
@@ -308,18 +308,18 @@ fn legacy_context_keeps_anchor_reserve_before_tbd() {
 }
 
 #[test]
-fn explicit_tbd_context_rejects_zero_root_and_malformed_extra_data() {
+fn explicit_etna_context_rejects_zero_root_and_malformed_extra_data() {
     for (root, extra_data, expected) in [
         (alloy_primitives::B256::ZERO, Bytes::from(vec![0; 7]), "beacon"),
         (alloy_primitives::B256::with_last_byte(1), Bytes::from(vec![0; 6]), "extraData"),
     ] {
-        let chain_spec = Arc::new(chain_spec_with_tbd_at_100());
+        let chain_spec = Arc::new(chain_spec_with_etna_at_100());
         let mut state = State::builder()
             .with_database(db_with_system_contracts(&[]))
             .with_bundle_update()
             .build();
         let mut env = unzen_evm_env();
-        env.cfg_env.spec = TaikoSpecId::TBD;
+        env.cfg_env.spec = TaikoSpecId::ETNA;
         env.block_env.number = U256::from(2);
         env.block_env.timestamp = U256::from(100);
         env.block_env.base_fee_share_pctg = Some(0);

@@ -229,11 +229,11 @@ mod tests {
         assert_eq!(filtered_block.body().transactions().count(), 2);
     }
     #[test]
-    fn tbd_derivation_filters_first_position_and_preserves_truncation() {
-        use crate::testutil::{BENCH_LIMIT_TARGET, recovered_tx_with_chain_id, tbd_chain_spec};
+    fn etna_derivation_filters_first_position_and_preserves_truncation() {
+        use crate::testutil::{BENCH_LIMIT_TARGET, etna_chain_spec, recovered_tx_with_chain_id};
         use alloy_consensus::TxEip4844;
         use reth_evm::block::BlockExecutor;
-        let config = TaikoEvmConfig::new(Arc::new(tbd_chain_spec()));
+        let config = TaikoEvmConfig::new(Arc::new(etna_chain_spec()));
         let parent = SealedHeader::seal_slow(Header::default());
         let chain_id = config.chain_spec().inner.chain().id();
         let valid = test_transaction(chain_id, 0);

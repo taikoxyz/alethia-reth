@@ -18,8 +18,8 @@ pub trait TaikoNodeExtArgs {
     /// Returns the configured devnet Unzen activation timestamp override.
     fn devnet_unzen_timestamp(&self) -> u64;
 
-    /// Returns the optional devnet TBD activation timestamp override.
-    fn devnet_tbd_timestamp(&self) -> Option<u64>;
+    /// Returns the optional devnet Etna activation timestamp override.
+    fn devnet_etna_timestamp(&self) -> Option<u64>;
 
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
@@ -31,8 +31,8 @@ impl TaikoNodeExtArgs for NoArgs {
         0
     }
 
-    /// Leaves TBD disabled for commands without Taiko options.
-    fn devnet_tbd_timestamp(&self) -> Option<u64> {
+    /// Leaves Etna disabled for commands without Taiko options.
+    fn devnet_etna_timestamp(&self) -> Option<u64> {
         None
     }
 
@@ -48,9 +48,9 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
         self.devnet_unzen_timestamp
     }
 
-    /// Returns the optional devnet TBD activation timestamp override.
-    fn devnet_tbd_timestamp(&self) -> Option<u64> {
-        self.devnet_tbd_timestamp
+    /// Returns the optional devnet Etna activation timestamp override.
+    fn devnet_etna_timestamp(&self) -> Option<u64> {
+        self.devnet_etna_timestamp
     }
 
     /// Returns proof-history configuration derived from parsed Taiko CLI flags.
@@ -162,7 +162,7 @@ where
         if let Some(overridden_chain) =
             node_config.chain.as_ref().clone_with_devnet_fork_timestamps(
                 ext.devnet_unzen_timestamp(),
-                ext.devnet_tbd_timestamp(),
+                ext.devnet_etna_timestamp(),
             )?
         {
             node_config.chain = Arc::new(overridden_chain);

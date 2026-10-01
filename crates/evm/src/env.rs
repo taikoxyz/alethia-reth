@@ -13,7 +13,7 @@ use crate::spec::TaikoSpecId;
 /// EVM environment retaining authoritative Taiko block fee data during replay.
 pub type TaikoEvmEnv = EvmEnv<TaikoSpecId, TaikoBlockEnv>;
 
-/// Standard block fields plus the fee percentage supplied by an authoritative TBD block.
+/// Standard block fields plus the fee percentage supplied by an authoritative Etna block.
 #[derive(Default, Clone, Debug)]
 pub struct TaikoBlockEnv {
     /// Standard revm block environment used for opcode execution and validation.

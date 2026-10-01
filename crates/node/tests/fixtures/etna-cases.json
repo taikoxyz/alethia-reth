@@ -1,6 +1,6 @@
 {
   "_provenance": {
-    "fixture": "tbd-genesis.json for TBD cases; historical-genesis.json for synthetic legacy profiles. Chain 167001; canonical 2935/4788 bytecode is checked against pinned Alloy constants.",
+    "fixture": "etna-genesis.json for Etna cases; historical-genesis.json for synthetic legacy profiles. Chain 167001; canonical 2935/4788 bytecode is checked against pinned Alloy constants.",
     "historicalDependencyOverlay": "Start with the release Cargo.lock and production manifests; add only the pinned Reth test utility and node dev dependencies/features needed by the harness. The generator asserts that all release package name/version/source/checksum pins and production Rust bytes remain unchanged. Test feature edges can differ; the generated run manifest records both lock hashes and dependency edge changes.",
     "historicalEvidence": "Five synthetic historical-* profiles are executed using unchanged v1.4.1 production Rust sources and compared with this branch. Zero-funded golden touch calls the treasury; a separate funded sender pays fees on a storage-clear refund transaction. Nonzero shares use the fork-specific extraData layout. This is not replay of mainnet/Hoodi blocks or independent client conformance.",
     "historicalProfiles": {
@@ -12,14 +12,14 @@
     },
     "historicalReproduction": [
       "python3 crates/node/tests/fixtures/generate-legacy-reference.py",
-      "cargo test --offline --locked -p alethia-reth-node --test tbd_history --all-features historical_v2",
+      "cargo test --offline --locked -p alethia-reth-node --test etna_history --all-features historical_v2",
       "The generator retains its isolated archive, captured vectors, and historical-run.json in the platform temporary directory. The run manifest records the immutable source commit, production-source digest, original/effective lock hashes, harness/input hashes, actual rustc/cargo versions, and comparison result. Output hashes identify content integrity, not independent provenance."
     ],
     "historicalSourceCommit": "0fb47d966f290c032e0ce88bdc8877121768d253",
     "historicalSourceTag": "v1.4.1",
     "purpose": "Cross-client handoff vectors verified against alethia-reth only; no other client conformance is claimed.",
     "retention": "Old-ID routing is tested only while its job remains the latest resolved job on that node; peer nodes build intervening blocks. No new payload cache.",
-    "tbdSource": "Expectations captured from alethia-reth live build/import/prover/witness checks; no independent reference-client evidence is claimed.",
+    "etnaSource": "Expectations captured from alethia-reth live build/import/prover/witness checks; no independent reference-client evidence is claimed.",
     "upstreamLimitation": "Pinned Reth f2eecc65482af4085e43eedb27a32024bf177a0d crates/engine/tree/src/tree/payload_validator.rs:1236 maps parallel signature-recovery errors through BlockExecutionError::other. A malformed signature is rejected as JSON-RPC InternalError with Failed to recover the signer, rather than PayloadStatus INVALID. Tests pin this inherited rejection; no duplicate signature prevalidation was added."
   },
   "activation": {

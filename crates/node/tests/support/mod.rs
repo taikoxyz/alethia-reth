@@ -37,7 +37,7 @@ pub fn fixture_chain_spec() -> Arc<TaikoChainSpec> {
 
 pub fn fixture_chain_spec_at(activation: u64) -> Arc<TaikoChainSpec> {
     let genesis: Genesis =
-        serde_json::from_str(include_str!("../fixtures/tbd-genesis.json")).unwrap();
+        serde_json::from_str(include_str!("../fixtures/etna-genesis.json")).unwrap();
     for (address, code) in [
         (eip2935::HISTORY_STORAGE_ADDRESS, eip2935::HISTORY_STORAGE_CODE.clone()),
         (eip4788::BEACON_ROOTS_ADDRESS, eip4788::BEACON_ROOTS_CODE.clone()),
@@ -45,7 +45,7 @@ pub fn fixture_chain_spec_at(activation: u64) -> Arc<TaikoChainSpec> {
         assert_eq!(genesis.alloc[&address].code.as_ref(), Some(&code));
     }
     let mut forks = TAIKO_DEVNET_HARDFORKS.clone();
-    forks.insert(TaikoHardfork::TBD, ForkCondition::Timestamp(activation));
+    forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(activation));
     let mut inner = ChainSpec::builder()
         .chain(genesis.config.chain_id.into())
         .genesis(genesis)
@@ -244,7 +244,7 @@ pub async fn build(
     };
     use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
-    let tbd = attrs.payload_attributes.timestamp >= 100;
+    let etna = attrs.payload_attributes.timestamp >= 100;
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
         parent.timestamp - grandparent_timestamp,
@@ -254,7 +254,7 @@ pub async fn build(
     attrs.l1_origin.block_id = U256::from(parent.number + 1);
     let status = fcu(
         client,
-        if tbd { 3 } else { 2 },
+        if etna { 3 } else { 2 },
         spec.genesis_hash(),
         parent.hash_slow(),
         Some(attrs.clone()),
@@ -263,7 +263,7 @@ pub async fn build(
     assert!(status.payload_status.status.is_valid(), "{status:?}");
     let id = status.payload_id.unwrap();
     let root = attrs.payload_attributes.parent_beacon_block_root.unwrap();
-    let (payload, data, response) = if tbd {
+    let (payload, data, response) = if etna {
         let envelope: ExecutionPayloadEnvelopeV5 = tokio::time::timeout(
             Duration::from_secs(30),
             client.request("engine_getPayloadV5", rpc_params![id]),
@@ -443,7 +443,7 @@ pub fn run_live_test(
         .truncate(false)
         .read(true)
         .write(true)
-        .open(std::env::temp_dir().join("alethia-reth-tbd-engine-tests.lock"))?;
+        .open(std::env::temp_dir().join("alethia-reth-etna-engine-tests.lock"))?;
     let deadline = std::time::Instant::now() + Duration::from_secs(180);
     loop {
         match lock.try_lock() {
@@ -497,7 +497,7 @@ fn vector_capture_guard_accepts_temp_and_rejects_checkout_and_non_temp() -> eyre
     );
     std::fs::write(&output, b"{}")?;
     assert_eq!(vector_capture_path(&output)?, output.canonicalize()?);
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tbd-cases.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/etna-cases.json");
     assert!(vector_capture_path(&fixture).is_err());
     let current = std::env::current_dir()?;
     let filesystem_root = current.ancestors().last().unwrap();
@@ -512,10 +512,10 @@ fn vector_capture_guard_rejects_symlink_and_parent_traversal_escape() -> eyre::R
     let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).canonicalize()?;
     std::os::unix::fs::symlink(&checkout, dir.path().join("checkout"))?;
     assert!(
-        vector_capture_path(&dir.path().join("checkout/tests/fixtures/tbd-cases.json")).is_err()
+        vector_capture_path(&dir.path().join("checkout/tests/fixtures/etna-cases.json")).is_err()
     );
     std::os::unix::fs::symlink(
-        checkout.join("tests/fixtures/tbd-cases.json"),
+        checkout.join("tests/fixtures/etna-cases.json"),
         dir.path().join("capture.json"),
     )?;
     assert!(vector_capture_path(&dir.path().join("capture.json")).is_err());
@@ -530,7 +530,7 @@ fn vector_capture_guard_rejects_symlink_and_parent_traversal_escape() -> eyre::R
 }
 
 pub fn verify_vector(name: &str, actual: Value) -> eyre::Result<()> {
-    if let Ok(path) = std::env::var("TBD_VECTOR_OUTPUT") {
+    if let Ok(path) = std::env::var("ETNA_VECTOR_OUTPUT") {
         // Explicit fixture capture writes outside the source tree. Normal test runs only read
         // the checked-in commitments. Capture is not independent historical evidence.
         let path = vector_capture_path(std::path::Path::new(&path))?;
@@ -541,7 +541,7 @@ pub fn verify_vector(name: &str, actual: Value) -> eyre::Result<()> {
         vectors[name] = actual;
         std::fs::write(path, serde_json::to_vec_pretty(&vectors)?)?;
     } else {
-        let vectors: Value = serde_json::from_str(include_str!("../fixtures/tbd-cases.json"))?;
+        let vectors: Value = serde_json::from_str(include_str!("../fixtures/etna-cases.json"))?;
         assert_eq!(actual, vectors[name], "vector {name}");
     }
     Ok(())
@@ -595,7 +595,7 @@ pub fn historical_chain_spec(stage: usize) -> Arc<TaikoChainSpec> {
     use alloy_hardforks::EthereumHardfork;
     let fixture = fixture_chain_spec();
     let mut forks = fixture.inner.hardforks.clone();
-    forks.insert(TaikoHardfork::TBD, ForkCondition::Never);
+    forks.insert(TaikoHardfork::Etna, ForkCondition::Never);
     for (index, fork) in
         [TaikoHardfork::Ontake, TaikoHardfork::Pacaya, TaikoHardfork::Shasta, TaikoHardfork::Unzen]
             .into_iter()

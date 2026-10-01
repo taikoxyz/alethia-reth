@@ -1,8 +1,8 @@
-# TBD fork and Engine API driver guide
+# Etna fork and Engine API driver guide
 
-This guide defines the alethia-reth wire contract for the temporary `TBD` fork. `TBD` selects
+This guide defines the alethia-reth wire contract for the `Etna` fork. `Etna` selects
 Osaka execution rules after Unzen. It is a driver and release-coordination handoff, not a network
-activation notice: every built-in network still configures TBD as `ForkCondition::Never`.
+activation notice: every built-in network still configures Etna as `ForkCondition::Never`.
 
 This implements alethia-reth's portion of
 [taiko-mono issue 22147](https://github.com/taikoxyz/taiko-mono/issues/22147). The required protocol
@@ -12,7 +12,7 @@ external integrations remain unconfirmed activation prerequisites. An ordinary E
 header invariant and executes EIP-4788 without independently fetching L1 data. The L1 inclusion
 hash in `l1Origin.l1BlockHash` is a different value and must not be substituted for it.
 
-TBD retains Osaka execution, the Unzen zk-gas schedule, fee sharing, EIP-4396 base fees, and strict
+Etna retains Osaka execution, the Unzen zk-gas schedule, fee sharing, EIP-4396 base fees, and strict
 post-Shasta timestamp ordering. EIP-2935 and EIP-4788 run even in empty blocks, and their writes
 must enter the state root and witness. No transaction position is reserved for an anchor, no
 synthetic transaction or receipt is inserted, and golden-touch transactions receive ordinary
@@ -21,11 +21,11 @@ derivation filtering is not permission to silently discard transactions from an 
 
 ## Engine API method matrix
 
-Drivers must choose the method family from the target payload timestamp, compared with the TBD
+Drivers must choose the method family from the target payload timestamp, compared with the Etna
 activation timestamp. The current head and the time when a request is sent do not select the
 family.
 
-| Operation | Target before TBD | Target at or after TBD |
+| Operation | Target before Etna | Target at or after Etna |
 | --- | --- | --- |
 | Start a build | `engine_forkchoiceUpdatedV2` | `engine_forkchoiceUpdatedV3` |
 | Read a build | `engine_getPayloadV2` | `engine_getPayloadV5` |
@@ -49,10 +49,10 @@ preserved, but two operational V2 responses have changed: a non-`VALID` FCU resu
 now returns that status, and an unknown payload ID returns `-38001`; both previously surfaced as
 `-32603`. Drivers must distinguish payload status from JSON-RPC errors.
 
-TBD block construction uses the nonzero `parentBeaconBlockRoot` from the FCU payload attributes.
+Etna block construction uses the nonzero `parentBeaconBlockRoot` from the FCU payload attributes.
 The driver must associate that original root with the returned payload ID and use the same root
 when importing the resolved payload. Do not derive it from the current head or replace it after a
-reorg. Non-genesis TBD blocks require a present, nonzero root. Genesis processing separately uses
+reorg. Non-genesis Etna blocks require a present, nonzero root. Genesis processing separately uses
 the canonical zero beacon root.
 
 ### V5 normalization and V4 import
@@ -90,11 +90,11 @@ property are rejected, including properties set to `null` or zero. Transaction a
 roots are derived from the actual body; legacy root overrides are not supported on this route.
 
 The second argument is the empty expected-blob-versioned-hashes array. The fourth is the empty
-execution-requests array. TBD does not accept blob transactions, withdrawals, nonempty execution
+execution-requests array. Etna does not accept blob transactions, withdrawals, nonempty execution
 requests, Amsterdam block-access-list data, or a slot-number extension.
 
 Generic Ethereum clients expect `blockValue` to represent builder revenue. They cannot assume
-this Taiko endpoint has Ethereum `blockValue` semantics: both the Unzen V2 response and TBD V5
+this Taiko endpoint has Ethereum `blockValue` semantics: both the Unzen V2 response and Etna V5
 response carry hash-relevant zk-gas there. Alethia-reth changes only the response envelope;
 internal payload ranking remains based on actual transaction fees.
 
@@ -110,8 +110,8 @@ receivers of externally built blocks must obtain it from the original header or 
 | Known method used for the wrong target fork | JSON-RPC `-38005` |
 | Unknown or evicted payload ID | JSON-RPC `-38001` |
 | Malformed/missing V4 arguments, unsupported object properties | JSON-RPC `-32602` |
-| TBD body checks: zero root, nonempty withdrawals/hash/request arrays, nonzero blob gas | Currently JSON-RPC `-32602` on `engine_newPayloadV4` |
-| Invalid TBD FCUv3 attributes | Currently JSON-RPC `-32602` |
+| Etna body checks: zero root, nonempty withdrawals/hash/request arrays, nonzero blob gas | Currently JSON-RPC `-32602` on `engine_newPayloadV4` |
+| Invalid Etna FCUv3 attributes | Currently JSON-RPC `-32602` |
 | Block-hash mismatch, executed zk-gas/difficulty mismatch, zk-gas exhaustion | Payload status `INVALID` |
 
 The body and FCU rows describe the current implementation, not the intended final interoperability
@@ -123,17 +123,17 @@ must fail conversion before it can poison the invalid-header cache.
 
 ### FCU attributes, gas limits, and metadata
 
-For a TBD target, send no `anchorTransaction`, send `withdrawals: []`, and require
+For an Etna target, send no `anchorTransaction`, send `withdrawals: []`, and require
 `blockMetadata.timestamp == payloadAttributes.timestamp`. Supply a nonzero root and exactly seven
 bytes of `blockMetadata.extraData`. An explicit transaction list, including an empty list, is
 derived input; an absent list requests selection from the transaction pool. Null/omitted
 withdrawals currently pass normalization but are outside this driver contract; strict rejection
 is an activation compatibility item.
 
-For TBD targets, both `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` exclude the
+For Etna targets, both `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` exclude the
 legacy **1,000,000 gas anchor reserve**. The builder uses the complete supplied limit for ordinary
 transactions. Drivers must fork-gate any code that adds the reserve when converting a manifest
-limit into a target block limit. Explicit TBD preselection also removes the legacy 2,000,000
+limit into a target block limit. Explicit Etna preselection also removes the legacy 2,000,000
 zk-gas anchor reserve; the final builder still enforces actual gas and zk-gas limits.
 
 EIP-4396 always uses the real parent header's `gasLimit` and `gasUsed`. At the boundary that parent
@@ -148,25 +148,25 @@ big-endian proposal ID. They intentionally use different JSON encodings.
 
 ## Devnet activation override
 
-The optional `--devnet-tbd-timestamp <TIMESTAMP>` flag and
-`ALETHIA_RETH_DEVNET_TBD_TIMESTAMP=<TIMESTAMP>` environment variable apply only to the canonical
+The optional `--devnet-etna-timestamp <TIMESTAMP>` flag and
+`ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP=<TIMESTAMP>` environment variable apply only to the canonical
 Taiko devnet chain spec.
 
-- Omitted means no TBD override; the embedded `ForkCondition::Never` remains in effect.
-- Explicit `0` is distinct from omission and activates TBD at genesis for a fresh devnet.
-- A nonzero value activates TBD at that Unix timestamp.
+- Omitted means no Etna override; the embedded `ForkCondition::Never` remains in effect.
+- Explicit `0` is distinct from omission and activates Etna at genesis for a fresh devnet.
+- A nonzero value activates Etna at that Unix timestamp.
 
-An enabled TBD fork must use timestamp activation and must be ordered at or after Unzen. Equal
-Unzen and TBD timestamps are valid. Startup rejects a missing Unzen activation, a non-timestamp
-activation condition, or a TBD timestamp earlier than Unzen. Existing-chain genesis must not be
+An enabled Etna fork must use timestamp activation and must be ordered at or after Unzen. Equal
+Unzen and Etna timestamps are valid. Startup rejects a missing Unzen activation, a non-timestamp
+activation condition, or an Etna timestamp earlier than Unzen. Existing-chain genesis must not be
 rewritten to activate this fork.
 
 The override is a node-start option. Offline commands such as `stage run` and `re-execute` do not
-parse the Taiko extension and cannot reproduce an overridden TBD devnet schedule merely from
-`--chain devnet`. Offline TBD replay is unsupported until those commands can receive and verify
+parse the Taiko extension and cannot reproduce an overridden Etna devnet schedule merely from
+`--chain devnet`. Offline Etna replay is unsupported until those commands can receive and verify
 the actual Taiko fork schedule; a generic genesis JSON is not a verified workaround. The override
 is ignored for non-devnet chain specs, matching the existing devnet-only override convention.
-Custom TBD schedules must also have Shasta active;
+Custom Etna schedules must also have Shasta active;
 the current startup ordering validator checks Unzen but does not yet enforce Shasta.
 
 ## `taikoAuth` target context
@@ -210,12 +210,12 @@ The context object is:
 `timestamp` is an Ethereum hex quantity. The root and `extraData` are ordinary Alloy hex bytes;
 the example extra data is exactly seven zero bytes. An explicit context selects rules from its
 target timestamp and supplies the root and extra data used by standard pre-execution. Omission
-retains the legacy parent-context simulation only while the parent is before TBD. Once the parent
-is at or after TBD, `blockContext` is required. Drivers should supply it when simulating a target
+retains the legacy parent-context simulation only while the parent is before Etna. Once the parent
+is at or after Etna, `blockContext` is required. Drivers should supply it when simulating a target
 that crosses the activation boundary.
 
 Preselection is an estimate, not a block-validity decision. Explicit context must have a timestamp
-later than the selected parent from Shasta onward; earlier forks also allow equality. TBD context
+later than the selected parent from Shasta onward; earlier forks also allow equality. Etna context
 requires a nonzero root and exactly seven extra-data bytes. A pre-Shasta explicit context must fit
 its legacy 32-byte extra-data decoder. Invalid
 context is a parameter error, with the field-specific reason retained.
@@ -225,11 +225,12 @@ context is a parameter error, with the field-specific reason retained.
 - Batch lookup's cache-miss fallback still stops on an empty block or a non-anchor transaction at
   index zero. Make that stop condition fork-aware before using `lastBlockIDByBatchID` or
   `lastL1OriginByBatchID` on anchorless history; cache hits are unaffected.
-- Agree the TBD payload-ID preimage with both drivers. It currently includes
+- Agree the Etna payload-ID preimage with both drivers. It currently includes
   `l1Origin.buildPayloadArgsId`, so a driver that computes an ID and then stamps that field cannot
   reproduce the EL ID. The inspected Rust driver logs a mismatch and uses the returned EL ID;
-  this is not evidence of an immediate build rejection. V2 IDs must remain unchanged.
-- `eth_simulateV1` requires an explicit nonzero `blockOverrides.beaconRoot` for a TBD target.
+  this is not evidence of an immediate build rejection. V2 IDs must remain unchanged. The internal
+  hash domain remains `taiko-tbd-payload-v1`, preserving job IDs across the rename to Etna.
+- `eth_simulateV1` requires an explicit nonzero `blockOverrides.beaconRoot` for an Etna target.
   Locally constructed full pending blocks are unavailable without a root. `eth_call` and
   `eth_estimateGas` have their own pending simulation path and are covered separately. Decide and
   test any simulation-only root inheritance policy before activation, including a legacy/genesis
@@ -248,20 +249,20 @@ They identify port work; they do not establish that a later geth release has com
 | --- | --- |
 | `core/state_processor.go:115`, `miner/taiko_worker.go:273`, `eth/state_accessor.go:261`, and five `eth/tracers/api.go` sites | Index-zero `MarkAsAnchor` and its balance/fee exemptions must remain legacy-only, including replay and tracing. |
 | `miner/taiko_worker.go:225–227` and its transaction loop | Empty lists are valid; index-zero ordinary failures use normal filtering rather than anchor-fatal handling. |
-| `miner/taiko_worker.go:300`, `core/state_processor.go:144` | Remove the `i > 0` zk-gas exception for TBD; index zero can exhaust the budget. |
+| `miner/taiko_worker.go:300`, `core/state_processor.go:144` | Remove the `i > 0` zk-gas exception for Etna; index zero can exhaust the budget. |
 | `consensus/taiko/consensus.go:357–362` | `FinalizeAndAssemble` must stop requiring an anchor at index zero. |
-| `consensus/taiko/consensus.go:265`, `miner/worker.go:319–322` | Legacy zero-root checks must become the TBD nonzero-root rule, with matching EIP-4788 execution. |
+| `consensus/taiko/consensus.go:265`, `miner/worker.go:319–322` | Legacy zero-root checks must become the Etna nonzero-root rule, with matching EIP-4788 execution. |
 | Pool/build, preselection, fee distribution, and body validation | Match the full target gas budget, zero anchor zk reserve, nonzero fee shares, empty bodies, blob rejection, and ordinary golden-touch transactions. |
 
-A first unfunded transaction is a useful discriminator: TBD derivation skips it as an ordinary
+A first unfunded transaction is a useful discriminator: Etna derivation skips it as an ordinary
 failure; a port retaining `MarkAsAnchor` could include it fee-exempt. Cross-client tests must check
 committed transactions, receipts, state roots, balances, and zk-gas, not merely API acceptance.
 
 ## Evidence and remaining replay work
 
-The checked-in corpus is [`tbd-cases.json`](../crates/node/tests/fixtures/tbd-cases.json), exercised
-by [`tbd_engine.rs`](../crates/node/tests/tbd_engine.rs) and
-[`tbd_history.rs`](../crates/node/tests/tbd_history.rs). The legacy reference capture helper is
+The checked-in corpus is [`etna-cases.json`](../crates/node/tests/fixtures/etna-cases.json), exercised
+by [`etna_engine.rs`](../crates/node/tests/etna_engine.rs) and
+[`etna_history.rs`](../crates/node/tests/etna_history.rs). The legacy reference capture helper is
 [`generate-legacy-reference.py`](../crates/node/tests/fixtures/generate-legacy-reference.py).
 Synthetic differential fixtures establish only the cases they execute. A checksum of their
 entries is an integrity check, not independent evidence that a reference client was run.
@@ -286,7 +287,7 @@ wraps signature recovery errors as `BlockExecutionError::other` in
 `crates/engine/tree/src/tree/payload_validator.rs:1236`. Consequently, a malformed signature can make
 `engine_newPayloadV4` return a JSON-RPC internal error instead of a payload status of `INVALID`.
 Drivers must not treat the current response as proof that all malformed transaction bodies use
-the `INVALID` status. Local TBD difficulty mismatches and zk-gas exhaustion are classified as
+the `INVALID` status. Local Etna difficulty mismatches and zk-gas exhaustion are classified as
 payload validation failures and do return `INVALID`.
 
 ## Activation checklist
@@ -298,7 +299,7 @@ coordinated.
 - [ ] Roll out matching geth build/import EIP-4788 handling and verify state-transition parity
       before deploying the beacon-roots contract on existing networks.
 - [ ] Deploy and verify the canonical EIP-2935 history-storage and EIP-4788 beacon-roots contracts.
-- [ ] Disable privileged Anchor writes **strictly before the first TBD block**: deploy the
+- [ ] Disable privileged Anchor writes **strictly before the first Etna block**: deploy the
       `anchorV4` timestamp gate and disable the L2 `_authorizedSyncer` path, as required by the
       [accepted issue corrections](https://github.com/taikoxyz/taiko-mono/issues/22147#issuecomment-5756503026).
       Preserve proxy storage and historical state. On devnet/Hoodi, construct a funded forged

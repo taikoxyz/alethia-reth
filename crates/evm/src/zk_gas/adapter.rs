@@ -3,8 +3,8 @@
 //! High-level flow:
 //! 1. Capture the opcode and pre-step gas in `step`.
 //! 2. Resolve the step into a `FinishedStep` in `step_end`.
-//! 3. Either charge immediately, or defer charging until `call_end` / `create_end` confirms whether
-//!    a spawn opcode actually opened child work.
+//! 3. Read the interpreter action in `step_end`: `NewFrame` uses the spawn estimate, while every
+//!    other result uses the measured interpreter delta, matching the production plain loop.
 
 use alloy_primitives::{Address, Log, U256};
 use reth_revm::{
@@ -13,7 +13,9 @@ use reth_revm::{
     handler::FrameResult,
     interpreter::{
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter,
-        interpreter::EthInterpreter, interpreter_types::Jumps,
+        InterpreterAction,
+        interpreter::EthInterpreter,
+        interpreter_types::{Jumps, LoopControl},
     },
 };
 
@@ -21,7 +23,7 @@ use crate::alloy::TaikoEvmContext;
 
 use super::{
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
-    runtime::set_custom_error,
+    runtime::{halt_for_zk_gas_limit, set_custom_error},
     schedule::ZkGasSchedule,
 };
 
@@ -101,22 +103,13 @@ where
         self.inner.initialize_interp(interp, context);
     }
 
-    /// Flushes any deferred spawn-opcode charge before starting the next opcode.
+    /// Captures the opcode and its pre-step EVM gas snapshot.
     fn step(
         &mut self,
         interp: &mut Interpreter<EthInterpreter>,
         context: &mut TaikoEvmContext<DB>,
     ) {
         if let Some(metering) = &mut self.metering {
-            // Spawn opcodes are charged one callback later, once the runtime tells us whether
-            // they actually opened a child frame or hit a precompile.
-            if metering.has_deferred_steps &&
-                let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps()
-            {
-                set_custom_error(context);
-                interp.halt_fatal();
-                return;
-            }
             // Snapshot the opcode and remaining gas before the interpreter mutates frame state.
             metering.begin_step(
                 context.journal().depth(),
@@ -127,8 +120,7 @@ where
         self.inner.step(interp, context);
     }
 
-    /// Charges ordinary opcodes immediately and defers CALL/CREATE-family charging until dispatch
-    /// resolves.
+    /// Charges every completed opcode from the same post-step action used by the production loop.
     fn step_end(
         &mut self,
         interp: &mut Interpreter<EthInterpreter>,
@@ -141,21 +133,14 @@ where
         };
         let depth = context.journal().depth();
         // Pair the pre-step snapshot captured in `step` with the post-step gas remaining.
-        let step = metering.finish_step(depth, interp.gas.remaining());
+        let mut step = metering.finish_step(depth, interp.gas.remaining());
+        step.spawned = is_spawn_opcode(step.opcode) &&
+            matches!(interp.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
 
-        if is_spawn_opcode(step.opcode) {
-            // CALL/CREATE-family opcodes need one more callback to learn whether they really
-            // spawned child work. Until then we cannot choose between measured gas and the fixed
-            // spawn estimate from the consensus schedule.
-            metering.defer_step(depth, step);
-            return;
-        }
-
-        // Ordinary opcodes can be charged immediately from their measured interpreter gas cost.
-        if let Err(ZkGasOutcome::LimitExceeded) = metering.charge_opcode(step.opcode, step.step_gas)
-        {
-            set_custom_error(context);
-            interp.halt_fatal();
+        // NewFrame has been selected but not dispatched yet, so a failed wrapper charge can still
+        // replace the action before any child contract or precompile executes.
+        if metering.charge_finished_step(step).is_err() {
+            halt_for_zk_gas_limit(context, interp);
         }
     }
 
@@ -183,25 +168,16 @@ where
         self.inner.frame_start(context, frame_input)
     }
 
-    /// Marks CALL-family steps that actually opened a child frame.
+    /// Forwards CALL-family frame initialization to the wrapped inspector.
     fn call(
         &mut self,
         context: &mut TaikoEvmContext<DB>,
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
-        let outcome = self.inner.call(context, inputs);
-        if outcome.is_none() &&
-            let Some(metering) = &mut self.metering
-        {
-            // `None` means REVM continues into a child frame, so this CALL-family opcode should
-            // use the fixed spawn estimate instead of its measured interpreter-only gas delta.
-            metering.mark_call_spawn(context.journal().depth());
-        }
-        outcome
+        self.inner.call(context, inputs)
     }
 
-    /// Marks precompile dispatches and flushes deferred CALL-family charges once the call outcome
-    /// is known.
+    /// Charges completed precompile work separately from its already-metered CALL wrapper.
     fn call_end(
         &mut self,
         context: &mut TaikoEvmContext<DB>,
@@ -211,47 +187,30 @@ where
         let was_precompile_called = outcome.was_precompile_called;
         self.inner.call_end(context, inputs, outcome);
 
-        if let Some(metering) = &mut self.metering {
-            if was_precompile_called {
-                // Precompile dispatch is also treated as spawned child work for CALL-family steps.
-                metering.mark_call_spawn(context.journal().depth());
-            }
-            // At this point the call outcome is known, so any deferred CALL-family opcode can be
-            // charged using the correct raw-gas source.
-            if let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps() {
+        if let Some(metering) = &mut self.metering &&
+            was_precompile_called
+        {
+            // Precompile usage is charged separately from the CALL opcode itself, keyed by the
+            // full precompile address.
+            let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
+            if let Err(ZkGasOutcome::LimitExceeded) =
+                metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
+            {
                 set_custom_error(context);
-                return;
-            }
-            if was_precompile_called {
-                // Precompile usage is charged separately from the CALL opcode itself, keyed by the
-                // full precompile address.
-                let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
-                if let Err(ZkGasOutcome::LimitExceeded) =
-                    metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
-                {
-                    set_custom_error(context);
-                }
             }
         }
     }
 
-    /// Marks CREATE-family steps that actually opened a child frame.
+    /// Forwards CREATE-family frame initialization to the wrapped inspector.
     fn create(
         &mut self,
         context: &mut TaikoEvmContext<DB>,
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
-        let outcome = self.inner.create(context, inputs);
-        if outcome.is_none() &&
-            let Some(metering) = &mut self.metering
-        {
-            // CREATE-family opcodes use the same deferred pattern as CALL-family opcodes.
-            metering.mark_create_spawn(context.journal().depth());
-        }
-        outcome
+        self.inner.create(context, inputs)
     }
 
-    /// Flushes deferred CREATE-family charges once the create outcome is known.
+    /// Forwards CREATE-family completion to the wrapped inspector.
     fn create_end(
         &mut self,
         context: &mut TaikoEvmContext<DB>,
@@ -259,13 +218,6 @@ where
         outcome: &mut CreateOutcome,
     ) {
         self.inner.create_end(context, inputs, outcome);
-
-        if let Some(metering) = &mut self.metering &&
-            // CREATE-family opcodes can finally be charged once the create outcome is resolved.
-            let Err(ZkGasOutcome::LimitExceeded) = metering.flush_deferred_steps()
-        {
-            set_custom_error(context);
-        }
     }
 
     /// Forwards the generic frame-end hook to the wrapped inner inspector.
@@ -290,13 +242,8 @@ struct ZkGasMeteringState {
     meter: ZkGasMeter<'static>,
     /// Per-frame in-flight opcode step state keyed by journal depth.
     pending_steps: [PendingStep; MAX_CALL_DEPTH],
-    /// Completed CALL/CREATE-family steps waiting for spawn information before charging.
-    deferred_steps: [Option<FinishedStep>; MAX_CALL_DEPTH],
-    /// Whether any deferred CALL/CREATE-family step is currently waiting to be charged.
-    has_deferred_steps: bool,
     /// Highest journal depth ever observed in this state's lifetime.
-    /// Bounds the work done by `flush_deferred_steps` so it stays proportional to
-    /// the actual call depth a transaction reaches, not the array capacity.
+    /// Bounds transaction reset work to the actual call depth reached.
     max_active_depth: usize,
 }
 
@@ -306,24 +253,19 @@ impl ZkGasMeteringState {
         Self {
             meter: ZkGasMeter::new(schedule),
             pending_steps: [PendingStep::EMPTY; MAX_CALL_DEPTH],
-            deferred_steps: [const { None }; MAX_CALL_DEPTH],
-            has_deferred_steps: false,
             max_active_depth: 0,
         }
     }
 
     /// Discards the in-flight transaction zk gas together with all per-frame step bookkeeping.
     ///
-    /// The unwind of a failed transaction drains deferred steps through `call_end`/`create_end`
-    /// today, but that invariant lives in revm's frame handling; resetting everything here keeps
-    /// the transaction boundary self-contained regardless of how execution aborted.
+    /// Resetting the per-depth snapshots here keeps aborted execution from leaking into the next
+    /// transaction regardless of how REVM unwound its frames.
     fn reset_transaction(&mut self) {
         self.meter.reset_transaction();
         for index in 0..=self.max_active_depth {
             self.pending_steps[index] = PendingStep::EMPTY;
-            self.deferred_steps[index] = None;
         }
-        self.has_deferred_steps = false;
         self.max_active_depth = 0;
     }
 
@@ -331,25 +273,10 @@ impl ZkGasMeteringState {
     #[inline(always)]
     fn begin_step(&mut self, depth: usize, opcode: u8, gas_remaining: u64) {
         // Any previous pending step at this depth must already have been consumed by `step_end`.
-        self.pending_steps[depth] = PendingStep { opcode, gas_remaining, spawned: false };
+        self.pending_steps[depth] = PendingStep { opcode, gas_remaining };
         if depth > self.max_active_depth {
             self.max_active_depth = depth;
         }
-    }
-
-    /// Marks that the current CALL-family opcode actually dispatched child work.
-    fn mark_call_spawn(&mut self, depth: usize) {
-        // REVM can report the spawn signal from either the current frame or the parent frame
-        // depending on callback timing, so mark both locations defensively.
-        self.mark_spawn(depth, is_call_opcode);
-        self.mark_spawn(parent_step_depth(depth), is_call_opcode);
-    }
-
-    /// Marks that the current CREATE-family opcode actually dispatched child work.
-    fn mark_create_spawn(&mut self, depth: usize) {
-        // Same defensive marking strategy as CALL-family opcodes.
-        self.mark_spawn(depth, is_create_opcode);
-        self.mark_spawn(parent_step_depth(depth), is_create_opcode);
     }
 
     /// Finalizes the current step state and returns the completed metering record.
@@ -359,48 +286,15 @@ impl ZkGasMeteringState {
         FinishedStep {
             opcode: pending.opcode,
             step_gas: pending.gas_remaining.saturating_sub(gas_remaining),
-            spawned: pending.spawned,
+            spawned: false,
         }
-    }
-
-    /// Stores a finished spawn opcode until frame-resolution hooks can determine its raw gas
-    /// source.
-    fn defer_step(&mut self, depth: usize, step: FinishedStep) {
-        // There should be at most one unresolved spawn step per frame depth at a time.
-        self.deferred_steps[depth] = Some(step);
-        self.has_deferred_steps = true;
-        if depth > self.max_active_depth {
-            self.max_active_depth = depth;
-        }
-    }
-
-    /// Charges and clears every deferred spawn opcode.
-    #[inline(always)]
-    fn flush_deferred_steps(&mut self) -> Result<(), ZkGasOutcome> {
-        if !self.has_deferred_steps {
-            return Ok(());
-        }
-
-        for index in 0..=self.max_active_depth {
-            if let Some(step) = self.deferred_steps[index].take() {
-                // `take()` clears the slot first so partial progress is preserved if charging
-                // returns `LimitExceeded`.
-                if let Err(err) = self.charge_finished_step(step) {
-                    self.has_deferred_steps =
-                        self.deferred_steps[..=self.max_active_depth].iter().any(Option::is_some);
-                    return Err(err);
-                }
-            }
-        }
-        self.has_deferred_steps = false;
-        Ok(())
     }
 
     /// Charges a completed opcode step against the active meter.
     #[inline(always)]
     fn charge_finished_step(&mut self, step: FinishedStep) -> Result<(), ZkGasOutcome> {
-        // Spawn opcodes use the fixed consensus estimate only when they actually dispatched child
-        // work. Otherwise we charge the measured interpreter gas delta from this opcode step.
+        // Spawn opcodes use the fixed consensus estimate only when they selected a child frame.
+        // Otherwise we charge the measured interpreter gas delta from this opcode step.
         if step.spawned {
             self.meter.charge_spawn_opcode(step.opcode)
         } else {
@@ -413,20 +307,6 @@ impl ZkGasMeteringState {
     fn charge_opcode(&mut self, opcode: u8, raw_gas: u64) -> Result<(), ZkGasOutcome> {
         self.meter.charge_opcode(opcode, raw_gas)
     }
-
-    /// Marks pending or deferred spawn steps when the opcode matches the expected family.
-    fn mark_spawn(&mut self, depth: usize, predicate: fn(u8) -> bool) {
-        if let Some(pending) = self.pending_steps.get_mut(depth) &&
-            predicate(pending.opcode)
-        {
-            pending.spawned = true;
-        }
-        if let Some(Some(deferred)) = self.deferred_steps.get_mut(depth) &&
-            predicate(deferred.opcode)
-        {
-            deferred.spawned = true;
-        }
-    }
 }
 
 /// Per-frame state captured between `step` and `step_end`.
@@ -436,13 +316,11 @@ struct PendingStep {
     opcode: u8,
     /// Remaining EVM gas observed before the opcode executed.
     gas_remaining: u64,
-    /// Whether this opcode already proved that it dispatched child work.
-    spawned: bool,
 }
 
 impl PendingStep {
     /// Empty placeholder overwritten by `begin_step` before `finish_step` reads a depth.
-    const EMPTY: Self = Self { opcode: 0, gas_remaining: 0, spawned: false };
+    const EMPTY: Self = Self { opcode: 0, gas_remaining: 0 };
 }
 
 /// Completed metering record for a single opcode step.
@@ -452,96 +330,25 @@ struct FinishedStep {
     opcode: u8,
     /// Raw EVM gas spent by the opcode step on the interpreter path.
     step_gas: u64,
-    /// Whether the opcode dispatched child work and should use the fixed spawn estimate.
+    /// Whether the opcode selected `NewFrame` and should use the fixed spawn estimate.
     spawned: bool,
-}
-
-/// Returns `true` when `opcode` is a CALL-family spawn opcode.
-fn is_call_opcode(opcode: u8) -> bool {
-    // 0xf1 = CALL, 0xf2 = CALLCODE, 0xf4 = DELEGATECALL, 0xfa = STATICCALL.
-    matches!(opcode, 0xf1 | 0xf2 | 0xf4 | 0xfa)
-}
-
-/// Returns `true` when `opcode` is a CREATE-family spawn opcode.
-fn is_create_opcode(opcode: u8) -> bool {
-    // 0xf0 = CREATE, 0xf5 = CREATE2.
-    matches!(opcode, 0xf0 | 0xf5)
-}
-
-/// Returns the caller-frame depth that owns the current spawn-opcode step.
-fn parent_step_depth(depth: usize) -> usize {
-    depth.saturating_sub(1)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        spec::TaikoSpecId,
-        zk_gas::{schedule::schedule_for, unzen::UNZEN_ZK_GAS_SCHEDULE},
-    };
+    use crate::zk_gas::unzen::UNZEN_ZK_GAS_SCHEDULE;
 
     use super::{FinishedStep, ZkGasMeteringState};
-
-    #[test]
-    fn flush_deferred_steps_returns_immediately_when_empty() {
-        let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
-        let mut metering = ZkGasMeteringState::new(schedule);
-
-        metering.flush_deferred_steps().expect("empty flush should succeed");
-
-        assert!(!metering.has_deferred_steps);
-        assert_eq!(metering.meter.tx_zk_gas_used(), 0);
-    }
-
-    #[test]
-    fn flush_deferred_steps_clears_flag_after_charging_deferred_step() {
-        let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
-        let mut metering = ZkGasMeteringState::new(schedule);
-
-        metering.defer_step(0, FinishedStep { opcode: 0x01, step_gas: 3, spawned: false });
-        metering.flush_deferred_steps().expect("deferred flush should succeed");
-
-        assert!(!metering.has_deferred_steps);
-        assert_eq!(
-            metering.meter.tx_zk_gas_used(),
-            3 * u64::from(schedule.opcode_multipliers[0x01])
-        );
-    }
-
-    #[test]
-    fn flush_deferred_steps_preserves_flag_when_later_deferred_step_remains_after_error() {
-        let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
-
-        metering.defer_step(
-            0,
-            FinishedStep {
-                opcode: 0xf0,
-                step_gas: UNZEN_ZK_GAS_SCHEDULE.block_limit + 1,
-                spawned: false,
-            },
-        );
-        metering.defer_step(1, FinishedStep { opcode: 0x01, step_gas: 1, spawned: false });
-
-        assert!(metering.flush_deferred_steps().is_err());
-
-        assert!(metering.has_deferred_steps);
-        assert!(metering.deferred_steps[0].is_none());
-        assert!(metering.deferred_steps[1].is_some());
-    }
 
     #[test]
     fn reset_transaction_clears_meter_and_step_bookkeeping() {
         let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
         metering.begin_step(1, 0x01, 10);
-        metering.defer_step(0, FinishedStep { opcode: 0xf1, step_gas: 5, spawned: true });
-        metering.defer_step(1, FinishedStep { opcode: 0x01, step_gas: 3, spawned: false });
         metering.meter.charge_opcode(0x01, 3).expect("charge fits");
 
         metering.reset_transaction();
 
         assert_eq!(metering.meter.tx_zk_gas_used(), 0);
-        assert!(!metering.has_deferred_steps);
-        assert!(metering.deferred_steps[..2].iter().all(Option::is_none));
         assert_eq!(metering.pending_steps[1].opcode, 0);
         assert_eq!(metering.pending_steps[1].gas_remaining, 0);
         assert_eq!(metering.max_active_depth, 0);

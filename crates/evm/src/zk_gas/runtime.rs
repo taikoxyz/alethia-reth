@@ -57,8 +57,7 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
         };
 
         if let Err(ZkGasOutcome::LimitExceeded) = charge {
-            set_custom_error(context);
-            interpreter.halt_fatal();
+            halt_for_zk_gas_limit(context, interpreter);
             break;
         }
 
@@ -68,6 +67,22 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
     }
 
     interpreter.take_next_action()
+}
+
+/// Replaces any pending interpreter action with the dedicated zk-gas fatal halt.
+///
+/// Spawn opcodes install `NewFrame` before the wrapper charge runs. Consuming that action first is
+/// required in debug builds (where replacing an action directly is rejected) and prevents the
+/// child frame from being dispatched after the wrapper charge exceeds the block budget.
+pub(crate) fn halt_for_zk_gas_limit<CTX: ContextTr>(
+    context: &mut CTX,
+    interpreter: &mut Interpreter<EthInterpreter>,
+) {
+    set_custom_error(context);
+    if interpreter.bytecode.action().is_some() {
+        let _ = interpreter.take_next_action();
+    }
+    interpreter.halt_fatal();
 }
 
 /// Sets the dedicated custom zk gas limit error on the EVM context when none is present yet.

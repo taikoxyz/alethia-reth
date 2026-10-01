@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.2](https://github.com/taikoxyz/alethia-reth/compare/v1.4.1...v1.4.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** restrict [@claude](https://github.com/claude) workflow to members and same-repo PRs ([ed4a25d](https://github.com/taikoxyz/alethia-reth/commit/ed4a25dc4044c611ab7626f829d2e8f13a9a8216))
+* **repo:** check [@claude](https://github.com/claude) PRs for forks in a read-only job before the secret-bearing job ([322a020](https://github.com/taikoxyz/alethia-reth/commit/322a0202f6af344a4d1b3f9e57e918a4f328d920))
+* **repo:** restrict [@claude](https://github.com/claude) workflow to members and same-repo PRs ([#244](https://github.com/taikoxyz/alethia-reth/issues/244)) ([ed4a25d](https://github.com/taikoxyz/alethia-reth/commit/ed4a25dc4044c611ab7626f829d2e8f13a9a8216))
+
+
+### Chores
+
+* **repo:** move CI to GitHub-hosted runners ([#250](https://github.com/taikoxyz/alethia-reth/issues/250)) ([b3f68ce](https://github.com/taikoxyz/alethia-reth/commit/b3f68ce727b9c6c28836c333761c0aa649a75a8d))
+* **repo:** run PR hygiene jobs on GitHub-hosted runners ([#245](https://github.com/taikoxyz/alethia-reth/issues/245)) ([0f4d628](https://github.com/taikoxyz/alethia-reth/commit/0f4d628380d03a5dc53445e4582ddebbc41a7cc6))
+
+
+### Workflow
+
+* **repo:** check [@claude](https://github.com/claude) PRs for forks in a read-only job ([#247](https://github.com/taikoxyz/alethia-reth/issues/247)) ([322a020](https://github.com/taikoxyz/alethia-reth/commit/322a0202f6af344a4d1b3f9e57e918a4f328d920))
+* **repo:** fail the [@claude](https://github.com/claude) gate closed on a missing head SHA ([#249](https://github.com/taikoxyz/alethia-reth/issues/249)) ([b71613d](https://github.com/taikoxyz/alethia-reth/commit/b71613d98ee7aeaa0fc271f19a7c442044e18299))
+
 ## [1.4.1](https://github.com/taikoxyz/alethia-reth/compare/v1.4.0...v1.4.1) (2026-09-19)
 
 

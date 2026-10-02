@@ -69,7 +69,8 @@ const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 /// Resolves and validates explicit target values before tx-pool simulation reaches the EVM.
 ///
 /// Legacy omission preserves parent-context behavior. Explicit Etna targets require their root and
-/// seven-byte fee metadata; pre-Shasta metadata must fit the legacy decoder's 256-bit input.
+/// seven-byte fee metadata. Explicit pre-Etna targets require the zero root that legacy builds
+/// stamp, and pre-Shasta metadata must fit the legacy decoder's 256-bit input.
 fn resolve_tx_pool_block_context(
     chain_spec: &TaikoChainSpec,
     parent: &Header,
@@ -115,11 +116,21 @@ fn resolve_tx_pool_block_context(
                 context.extra_data.len()
             )))
         }
-    } else if !chain_spec.is_shasta_active(context.timestamp) && context.extra_data.len() > 32 {
-        return Err(EthApiError::InvalidParams(format!(
-            "`blockContext.extraData` must contain at most 32 bytes before Shasta, got {}",
-            context.extra_data.len()
-        )))
+    } else {
+        // Legacy job creation rejects a nonzero root, so simulating with one would run EIP-4788
+        // against a value the real block cannot carry.
+        if !context.parent_beacon_block_root.is_zero() {
+            return Err(EthApiError::InvalidParams(format!(
+                "`blockContext.parentBeaconBlockRoot` must be zero for a pre-Etna target, got {}",
+                context.parent_beacon_block_root
+            )))
+        }
+        if !chain_spec.is_shasta_active(context.timestamp) && context.extra_data.len() > 32 {
+            return Err(EthApiError::InvalidParams(format!(
+                "`blockContext.extraData` must contain at most 32 bytes before Shasta, got {}",
+                context.extra_data.len()
+            )))
+        }
     }
 
     Ok(context)

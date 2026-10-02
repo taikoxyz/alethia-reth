@@ -222,9 +222,10 @@ that crosses the activation boundary.
 
 Preselection is an estimate, not a block-validity decision. Explicit context must have a timestamp
 later than the selected parent from Shasta onward; earlier forks also allow equality. Etna context
-requires a nonzero root and exactly seven extra-data bytes. A pre-Shasta explicit context must fit
-its legacy 32-byte extra-data decoder. Invalid
-context is a parameter error, with the field-specific reason retained.
+requires a nonzero root and exactly seven extra-data bytes. A pre-Etna explicit context must use
+a zero root, matching the legacy build rule. A pre-Shasta explicit context must fit its legacy
+32-byte extra-data decoder. Invalid context is a parameter error, with the field-specific reason
+retained.
 
 ## Other local activation work
 

@@ -209,11 +209,41 @@ fn rejects_non_increasing_explicit_context_under_shasta_rules() {
     let parent = Header { number: 1, timestamp: 99, ..Default::default() };
     let supplied = TxPoolBlockContext {
         timestamp: 99,
-        parent_beacon_block_root: alloy_primitives::B256::with_last_byte(1),
+        parent_beacon_block_root: alloy_primitives::B256::ZERO,
         extra_data: Bytes::from(vec![0; 7]),
     };
 
     assert!(super::resolve_tx_pool_block_context(&chain_spec, &parent, Some(supplied)).is_err());
+}
+
+#[test]
+fn rejects_nonzero_root_for_explicit_pre_etna_context() {
+    let chain_spec = chain_spec_with_etna_at_100();
+    let parent = Header { number: 1, timestamp: 98, ..Default::default() };
+    let context = |root| TxPoolBlockContext {
+        timestamp: 99,
+        parent_beacon_block_root: root,
+        extra_data: Bytes::from(vec![0; 7]),
+    };
+
+    let error = super::resolve_tx_pool_block_context(
+        &chain_spec,
+        &parent,
+        Some(context(alloy_primitives::B256::with_last_byte(1))),
+    )
+    .expect_err("a pre-Etna target must not simulate EIP-4788 with a nonzero root");
+    assert!(
+        matches!(&error, EthApiError::InvalidParams(message) if message.contains("parentBeaconBlockRoot")),
+        "{error}"
+    );
+
+    let resolved = super::resolve_tx_pool_block_context(
+        &chain_spec,
+        &parent,
+        Some(context(alloy_primitives::B256::ZERO)),
+    )
+    .expect("a pre-Etna target keeps the legacy zero root");
+    assert_eq!(resolved, context(alloy_primitives::B256::ZERO));
 }
 
 /// Runs the real tx-selection loop around the Etna boundary and returns the selected count and

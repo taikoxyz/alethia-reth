@@ -93,6 +93,12 @@ The second argument is the empty expected-blob-versioned-hashes array. The fourt
 execution-requests array. Etna does not accept blob transactions, withdrawals, nonempty execution
 requests, Amsterdam block-access-list data, or a slot-number extension.
 
+These are block-validity rules, not only Engine input checks. Shared consensus requires every
+non-genesis Etna header to commit to the empty withdrawals root and zero `blobGasUsed` and
+`excessBlobGas`, and rejects Etna bodies that carry withdrawals, so P2P downloads, backfill, and
+staged sync reject the same blocks as `engine_newPayloadV4`. Taiko execution ignores both
+commitments, so other clients must enforce them at import too.
+
 Generic Ethereum clients expect `blockValue` to represent builder revenue. They cannot assume
 this Taiko endpoint has Ethereum `blockValue` semantics: both the Unzen V2 response and Etna V5
 response carry hash-relevant zk-gas there. Alethia-reth changes only the response envelope;

@@ -6,6 +6,8 @@ pub mod addresses;
 #[cfg(feature = "net")]
 /// Engine API payload and type definitions.
 pub mod engine;
+/// Etna fork invariants shared by payload construction and validation.
+pub mod etna;
 /// Helpers for decoding Taiko extra-data fields.
 pub mod extra_data;
 /// Payload-attribute and builder primitive types.

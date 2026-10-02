@@ -6,7 +6,8 @@ use alethia_reth_chainspec::{
 };
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, Signed, TxEip4844, TxLegacy,
-    constants::EMPTY_ROOT_HASH, proofs,
+    constants::{EMPTY_ROOT_HASH, EMPTY_WITHDRAWALS},
+    proofs,
 };
 use alloy_hardforks::{EthereumHardfork, EthereumHardforks, ForkCondition};
 use alloy_primitives::{Address, B256, Bytes, ChainId, FixedBytes, Signature, TxKind, U256};
@@ -417,4 +418,180 @@ fn unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = devnet_chain_spec();
     chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
     chain_spec
+}
+
+fn etna_chain_spec() -> TaikoChainSpec {
+    let mut chain_spec = devnet_chain_spec();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+    chain_spec
+}
+
+/// Returns a non-genesis Etna header that satisfies every header rule.
+fn etna_header() -> Header {
+    Header {
+        number: 1,
+        timestamp: 1,
+        gas_limit: 30_000_000,
+        base_fee_per_gas: Some(1),
+        extra_data: shasta_extra_data(),
+        parent_beacon_block_root: Some(B256::with_last_byte(7)),
+        withdrawals_root: Some(EMPTY_WITHDRAWALS),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn etna_header_requires_nonzero_root_and_ordinary_first_transaction() {
+    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+    let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
+    for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+        let header = Header { parent_beacon_block_root: root, ..etna_header() };
+        assert_eq!(
+            consensus.validate_header(&SealedHeader::seal_slow(header)).is_ok(),
+            root.is_some_and(|r| !r.is_zero())
+        );
+    }
+    let tx: TransactionSigned = Signed::new_unchecked(
+        TxLegacy::default(),
+        Signature::new(U256::from(1), U256::from(2), false),
+        B256::ZERO,
+    )
+    .into();
+    let block = RecoveredBlock::new_unhashed(
+        Block {
+            header: Header { number: 1, timestamp: 1, ..Default::default() },
+            body: reth_ethereum_primitives::BlockBody {
+                transactions: vec![tx],
+                ..Default::default()
+            },
+        },
+        vec![Address::ZERO],
+    );
+    assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
+}
+
+#[test]
+fn etna_canonical_import_rejects_body_with_filtered_first_transaction() {
+    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+    let tx: TransactionSigned = Signed::new_unchecked(
+        TxLegacy::default(),
+        Signature::new(U256::from(1), U256::from(2), false),
+        B256::ZERO,
+    )
+    .into();
+    let block = RecoveredBlock::new_unhashed(
+        Block {
+            header: Header { number: 1, timestamp: 1, ..Default::default() },
+            body: reth_ethereum_primitives::BlockBody {
+                transactions: vec![tx.clone(), tx],
+                ..Default::default()
+            },
+        },
+        vec![Address::ZERO; 2],
+    );
+    // A filtered nonce, signature, type, or EVM-gas failure leaves one receipt;
+    // first-position zk-gas exhaustion leaves none. Neither is a valid imported body.
+    for committed in [0, 1] {
+        let receipts: Vec<Receipt> = vec![Receipt::default(); committed];
+        assert!(validate_zk_gas_post_execution(&block, &spec, &receipts).is_err());
+        assert_eq!(block.body().transactions.len(), 2);
+    }
+    assert!(
+        validate_zk_gas_post_execution::<_, Receipt>(
+            &block,
+            &spec,
+            &[Receipt::default(), Receipt::default()]
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn etna_activation_preserves_legacy_empty_body_and_pre_fork_header_roots() {
+    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(10));
+    let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
+    for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
+        let header = Header {
+            number: 1,
+            timestamp: 9,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(1),
+            extra_data: vec![0; 7].into(),
+            parent_beacon_block_root: root,
+            ..Default::default()
+        };
+        assert!(consensus.validate_header(&SealedHeader::seal_slow(header.clone())).is_ok());
+        let block =
+            RecoveredBlock::new_unhashed(Block { header, body: Default::default() }, vec![]);
+        assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
+    }
+}
+
+#[test]
+fn etna_header_requires_empty_withdrawals_and_zero_blob_gas() {
+    let consensus = test_consensus(etna_chain_spec());
+    consensus
+        .validate_header(&SealedHeader::seal_slow(etna_header()))
+        .expect("an Etna header with empty body commitments should validate");
+
+    for (name, header) in [
+        ("missing withdrawals root", Header { withdrawals_root: None, ..etna_header() }),
+        (
+            "nonempty withdrawals root",
+            Header { withdrawals_root: Some(B256::with_last_byte(1)), ..etna_header() },
+        ),
+        ("missing blob gas used", Header { blob_gas_used: None, ..etna_header() }),
+        ("nonzero blob gas used", Header { blob_gas_used: Some(131_072), ..etna_header() }),
+        ("missing excess blob gas", Header { excess_blob_gas: None, ..etna_header() }),
+        ("nonzero excess blob gas", Header { excess_blob_gas: Some(1), ..etna_header() }),
+    ] {
+        let err = consensus.validate_header(&SealedHeader::seal_slow(header)).expect_err(name);
+        assert!(matches!(err, ConsensusError::Other(_)), "{name}: unexpected error {err:?}");
+    }
+
+    // Genesis keeps its genesis-file header fields, matching the beacon-root exemption.
+    let genesis = Header {
+        number: 0,
+        parent_beacon_block_root: Some(B256::ZERO),
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+        ..etna_header()
+    };
+    consensus
+        .validate_header(&SealedHeader::seal_slow(genesis))
+        .expect("the Etna genesis header is exempt from body commitments");
+}
+
+#[test]
+fn etna_rejects_a_block_that_commits_to_withdrawals() {
+    let consensus = test_consensus(etna_chain_spec());
+    let mut body = BlockBody { withdrawals: Some(Default::default()), ..Default::default() };
+    let valid = SealedBlock::seal_slow(Block { header: etna_header(), body: body.clone() });
+    consensus.validate_block_pre_execution(&valid).expect("an empty Etna body should validate");
+
+    // A zero-amount withdrawal with a matching root changes neither Taiko execution nor the
+    // body-against-header check, so only the Etna rules can reject it.
+    body.withdrawals.as_mut().expect("withdrawals are present").push(Default::default());
+    let header = Header {
+        withdrawals_root: Some(proofs::calculate_withdrawals_root(
+            body.withdrawals.as_ref().expect("withdrawals are present"),
+        )),
+        ..etna_header()
+    };
+    let mutated = SealedBlock::seal_slow(Block { header, body });
+    <TaikoBeaconConsensus as Consensus<Block>>::validate_body_against_header(
+        &consensus,
+        mutated.body(),
+        mutated.sealed_header(),
+    )
+    .expect("the mutated body still matches its own header");
+
+    assert!(consensus.validate_header(mutated.sealed_header()).is_err());
+    assert!(consensus.validate_block_pre_execution(&mutated).is_err());
 }

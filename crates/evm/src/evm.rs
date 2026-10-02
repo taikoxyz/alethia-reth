@@ -23,7 +23,7 @@ pub struct TaikoEvm<CTX, INSP, P> {
     /// Inner revm engine with Taiko instruction wiring.
     pub inner:
         RevmEvm<CTX, INSP, EthInstructions<EthInterpreter, CTX>, P, EthFrame<EthInterpreter>>,
-    /// Optional per-block context captured from pre-executed anchor system calls.
+    /// Optional per-block fee authority and legacy anchor eligibility.
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
     /// Production-path zk gas meter used when execution does not need an external inspector.
     zk_gas_meter: Option<ZkGasMeter<'static>>,
@@ -241,11 +241,11 @@ pub struct TaikoEvmExtraExecutionCtx {
     anchor_caller_address: Address,
     /// Anchor caller nonce used to detect anchor transactions.
     anchor_caller_nonce: u64,
-    /// Whether this context was installed by the authoritative anchor system call issued by the
-    /// block executor. A `false` value marks a context derived on the fly for replay-style
-    /// execution (RPC tracing), where the basefee-share percentage from block extra data is
-    /// unknown and basefee sharing must therefore stay disabled.
-    from_anchor_system_call: bool,
+    /// Whether the fee percentage came from authoritative block data. Derived legacy replay
+    /// contexts lack this data and must not redistribute base fees.
+    authoritative_fee_context: bool,
+    /// Whether the stored caller identity is eligible for legacy anchor exemptions.
+    legacy_anchor_eligible: bool,
 }
 
 impl TaikoEvmExtraExecutionCtx {
@@ -259,7 +259,8 @@ impl TaikoEvmExtraExecutionCtx {
             base_fee_share_pctg,
             anchor_caller_address,
             anchor_caller_nonce,
-            from_anchor_system_call: true,
+            authoritative_fee_context: true,
+            legacy_anchor_eligible: true,
         }
     }
 
@@ -267,16 +268,40 @@ impl TaikoEvmExtraExecutionCtx {
     /// never issue the anchor system call (RPC tracing and transaction replay).
     ///
     /// The derived context carries the anchor caller identity needed for the anchor
-    /// exemptions, but no basefee-share percentage: that value comes from block extra data,
-    /// which replay paths do not have. [`Self::is_from_anchor_system_call`] returns `false` so
-    /// fee-sharing logic can tell the two apart.
+    /// exemptions, but no basefee-share percentage: legacy replay paths lack that header
+    /// context. [`Self::has_authoritative_fee_context`] returns false to disable redistribution.
     pub fn derived(anchor_caller_address: Address, anchor_caller_nonce: u64) -> Self {
         Self {
             base_fee_share_pctg: 0,
             anchor_caller_address,
             anchor_caller_nonce,
-            from_anchor_system_call: false,
+            authoritative_fee_context: false,
+            legacy_anchor_eligible: true,
         }
+    }
+
+    /// Creates authoritative block fee context without granting legacy anchor exemptions.
+    pub fn for_anchorless_block(base_fee_share_pctg: u64) -> Self {
+        Self { base_fee_share_pctg, authoritative_fee_context: true, ..Self::default() }
+    }
+
+    /// Returns whether this transaction matches an eligible legacy anchor identity.
+    pub fn matches_legacy_anchor(
+        &self,
+        caller: Address,
+        nonce: u64,
+        to: Option<Address>,
+        treasury: Address,
+    ) -> bool {
+        self.legacy_anchor_eligible &&
+            self.anchor_caller_address == caller &&
+            self.anchor_caller_nonce == nonce &&
+            to == Some(treasury)
+    }
+
+    /// Returns whether the block supplied its fee percentage, including an explicit zero.
+    pub fn has_authoritative_fee_context(&self) -> bool {
+        self.authoritative_fee_context
     }
 
     /// Returns the base fee share percentage.
@@ -301,7 +326,7 @@ impl TaikoEvmExtraExecutionCtx {
     /// (as opposed to being derived from database state for replay-style execution).
     #[inline]
     pub fn is_from_anchor_system_call(&self) -> bool {
-        self.from_anchor_system_call
+        self.authoritative_fee_context && self.legacy_anchor_eligible
     }
 }
 
@@ -316,6 +341,22 @@ mod test {
     use crate::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
     use super::*;
+
+    #[test]
+    fn anchorless_context_shares_fees_without_anchor_eligibility() {
+        let ctx = TaikoEvmExtraExecutionCtx::for_anchorless_block(25);
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = Address::with_last_byte(9);
+        assert_eq!(ctx.base_fee_share_pctg(), 25);
+        assert!(ctx.has_authoritative_fee_context());
+        assert!(!ctx.matches_legacy_anchor(golden, 0, Some(treasury), treasury));
+        assert!(!TaikoEvmExtraExecutionCtx::default().matches_legacy_anchor(
+            Address::ZERO,
+            0,
+            Some(treasury),
+            treasury,
+        ));
+    }
 
     #[test]
     fn test_transact_one_with_extra_execution_context() {

@@ -60,6 +60,15 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_unzen_timestamp: u64,
+
+    /// Optionally activate the devnet Etna hardfork at this Unix timestamp.
+    #[arg(
+        long,
+        env = "ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP",
+        value_name = "TIMESTAMP",
+        help_heading = "Taiko"
+    )]
+    pub devnet_etna_timestamp: Option<u64>,
 }
 
 /// CLI arguments controlling the optional proof-history sidecar.
@@ -331,6 +340,45 @@ mod tests {
         unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_UNZEN_TIMESTAMP") };
 
         assert_eq!(cli.ext.devnet_unzen_timestamp, 42);
+    }
+
+    #[test]
+    fn test_parse_devnet_etna_timestamp_omitted() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
+
+        assert_eq!(cli.ext.devnet_etna_timestamp, None);
+    }
+
+    #[test]
+    fn test_parse_devnet_etna_timestamp_flag_preserves_zero() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
+        let cli = TestCli::try_parse_from(["alethia-reth", "--devnet-etna-timestamp", "0"])
+            .expect("zero timestamp should parse");
+
+        assert_eq!(cli.ext.devnet_etna_timestamp, Some(0));
+    }
+
+    #[test]
+    fn test_parse_devnet_etna_timestamp_flag() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
+        let cli = TestCli::try_parse_from(["alethia-reth", "--devnet-etna-timestamp", "100"])
+            .expect("timestamp should parse");
+
+        assert_eq!(cli.ext.devnet_etna_timestamp, Some(100));
+    }
+
+    #[test]
+    fn test_parse_devnet_etna_timestamp_from_env() {
+        let _lock = env_lock();
+        unsafe { std::env::set_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP", "100") };
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("env-backed args should parse");
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
+
+        assert_eq!(cli.ext.devnet_etna_timestamp, Some(100));
     }
 
     #[test]

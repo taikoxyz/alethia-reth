@@ -228,4 +228,113 @@ mod tests {
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
     }
+    #[test]
+    fn etna_derivation_filters_first_position_and_preserves_truncation() {
+        use crate::testutil::{BENCH_LIMIT_TARGET, etna_chain_spec, recovered_tx_with_chain_id};
+        use alloy_consensus::TxEip4844;
+        use reth_evm::block::BlockExecutor;
+        let config = TaikoEvmConfig::new(Arc::new(etna_chain_spec()));
+        let parent = SealedHeader::seal_slow(Header::default());
+        let chain_id = config.chain_spec().inner.chain().id();
+        let valid = test_transaction(chain_id, 0);
+        let invalid_nonce = test_transaction(chain_id, 99);
+        let invalid_signature = Recovered::new_unchecked(valid.clone_inner(), Address::ZERO);
+        let excessive =
+            TxLegacy { chain_id: Some(chain_id), gas_limit: 30_000_001, ..Default::default() };
+        let excessive = Recovered::new_unchecked(
+            Signed::new_unchecked(
+                excessive,
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::ZERO,
+            )
+            .into(),
+            TEST_CALLER,
+        );
+        let blob = TxEip4844 {
+            chain_id,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_fee_per_blob_gas: 1,
+            blob_versioned_hashes: vec![B256::repeat_byte(1)],
+            ..Default::default()
+        };
+        let blob = Recovered::new_unchecked(
+            Signed::new_unchecked(
+                blob,
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::ZERO,
+            )
+            .into(),
+            TEST_CALLER,
+        );
+        let exhausted = recovered_tx_with_chain_id(TEST_CALLER, BENCH_LIMIT_TARGET, 0, 1, chain_id);
+        for (name, first, truncates) in [
+            ("valid", valid.clone(), false),
+            ("nonce", invalid_nonce, false),
+            ("signature", invalid_signature, false),
+            ("type", blob, false),
+            ("gas", excessive, false),
+            ("zk", exhausted, true),
+        ] {
+            let txs = [first, valid.clone()];
+            let block = RecoveredBlock::new_unhashed(
+                Block {
+                    header: Header {
+                        number: 1,
+                        timestamp: 1,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        extra_data: vec![0; 7].into(),
+                        parent_beacon_block_root: Some(B256::with_last_byte(7)),
+                        ..Default::default()
+                    },
+                    body: BlockBody {
+                        transactions: txs.iter().map(|t| t.clone_inner()).collect(),
+                        ..Default::default()
+                    },
+                },
+                txs.iter().map(|t| t.signer()).collect(),
+            );
+            let outcome = execute_derived_block(
+                &config,
+                &parent,
+                &block,
+                db_with_contracts(&[(TEST_CALLER, 0)]),
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let expected = if truncates { vec![] } else { vec![valid.clone()] };
+            assert_eq!(outcome.committed_transactions, expected, "{name}");
+            assert_eq!(outcome.execution_result.receipts.len(), expected.len(), "{name}");
+            let filtered = assemble_filtered_block(
+                &config,
+                &parent,
+                &block,
+                outcome.committed_transactions,
+                &outcome.execution_result,
+                outcome.finalized_block_zk_gas,
+                B256::ZERO,
+            )
+            .unwrap();
+            assert_eq!(
+                filtered.body().transactions,
+                expected.iter().map(|t| t.clone_inner()).collect::<Vec<_>>(),
+                "{name}"
+            );
+            let mut state =
+                State::builder().with_database(db_with_contracts(&[(TEST_CALLER, 0)])).build();
+            let mut ctx = config.context_for_block(block.sealed_block()).unwrap();
+            ctx.expected_difficulty = None;
+            let evm = config.evm_with_env(&mut state, config.evm_env(block.header()).unwrap());
+            let executor = TaikoBlockExecutor::new(
+                evm,
+                ctx,
+                config.chain_spec().clone(),
+                config.executor_factory.receipt_builder(),
+            );
+            let result = executor
+                .execute_block(block.transactions_recovered())
+                .unwrap_or_else(|e| panic!("trait {name}: {e}"));
+            assert_eq!(result.receipts, outcome.execution_result.receipts, "{name}");
+        }
+    }
 }

@@ -7,12 +7,14 @@ use alloy_rpc_types_engine::{
 use reth_engine_primitives::EngineTypes;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_payload_primitives::{BuiltPayload, PayloadTypes};
-use reth_primitives_traits::{NodePrimitives, SealedBlock};
+use reth_primitives_traits::{BlockBody as _, NodePrimitives, SealedBlock};
 use std::sync::Arc;
 
-use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
+use self::types::{TaikoExecutionData, TaikoExecutionDataSidecar, TaikoOsakaPayloadFields};
 use crate::payload::attributes::TaikoPayloadAttributes;
 
+/// Osaka engine wire types and normalization helpers.
+pub mod osaka;
 /// Taiko execution payload and sidecar structures.
 pub mod types;
 
@@ -45,6 +47,24 @@ impl PayloadTypes for TaikoEngineTypes {
         let tx_hash = block.transactions_root;
         let withdrawals_hash = block.withdrawals_root;
         let header_difficulty = block.header().difficulty;
+        let withdrawals = block.body().withdrawals().map(|value| value.to_vec());
+        let expected_blob_versioned_hashes =
+            block.body().blob_versioned_hashes_iter().copied().collect::<Vec<_>>();
+        let has_osaka_fields = withdrawals_hash.is_some() ||
+            withdrawals.is_some() ||
+            !expected_blob_versioned_hashes.is_empty() ||
+            block.header().parent_beacon_block_root.is_some() ||
+            block.header().blob_gas_used.is_some() ||
+            block.header().excess_blob_gas.is_some() ||
+            block.header().requests_hash.is_some();
+        let osaka = has_osaka_fields.then(|| TaikoOsakaPayloadFields {
+            withdrawals: withdrawals.unwrap_or_default(),
+            blob_gas_used: block.header().blob_gas_used.unwrap_or_default(),
+            excess_blob_gas: block.header().excess_blob_gas.unwrap_or_default(),
+            parent_beacon_block_root: block.header().parent_beacon_block_root.unwrap_or_default(),
+            expected_blob_versioned_hashes,
+            execution_requests: Vec::new(),
+        });
 
         let payload = ExecutionPayloadV1::from_block_unchecked(block.hash(), &block.into_block());
 
@@ -57,6 +77,7 @@ impl PayloadTypes for TaikoEngineTypes {
                 taiko_block: Some(true),
                 block_access_list: bal,
                 slot_number: None,
+                osaka,
             },
         }
     }
@@ -85,4 +106,136 @@ impl EngineTypes for TaikoEngineTypes {
     type ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5;
     /// Execution Payload V6 envelope type.
     type ExecutionPayloadEnvelopeV6 = ExecutionPayloadEnvelopeV6;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TaikoEngineTypes;
+    use alloy_consensus::{Block, BlockBody, Header};
+    use alloy_primitives::{B256, U256};
+    use alloy_rpc_types_engine::ExecutionPayload;
+    use alloy_rpc_types_eth::Withdrawal;
+    use reth_payload_primitives::PayloadTypes;
+    use reth_primitives_traits::SealedBlock;
+
+    #[test]
+    fn block_conversion_preserves_osaka_header_and_body_inputs() {
+        let root = B256::with_last_byte(0x11);
+        let requests_hash = B256::with_last_byte(0x22);
+        let block = Block {
+            header: Header {
+                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
+                withdrawals_root: Some(alloy_consensus::EMPTY_ROOT_HASH),
+                difficulty: U256::from(91),
+                parent_beacon_block_root: Some(root),
+                blob_gas_used: Some(5),
+                excess_blob_gas: Some(7),
+                requests_hash: Some(requests_hash),
+                ..Default::default()
+            },
+            body: BlockBody::default(),
+        };
+        let hash = block.header.hash_slow();
+
+        let data =
+            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
+        let osaka = data.taiko_sidecar.osaka.as_ref().unwrap();
+
+        assert_eq!(data.execution_payload.block_hash, hash);
+        assert_eq!(data.taiko_sidecar.header_difficulty, Some(U256::from(91)));
+        assert_eq!(osaka.parent_beacon_block_root, root);
+        assert_eq!(osaka.blob_gas_used, 5);
+        assert_eq!(osaka.excess_blob_gas, 7);
+        assert!(osaka.withdrawals.is_empty());
+        assert!(osaka.expected_blob_versioned_hashes.is_empty());
+        assert!(osaka.execution_requests.is_empty());
+
+        let ExecutionPayload::V3(payload) = data.into_payload() else {
+            panic!("Osaka block must produce a V3 execution payload")
+        };
+        assert!(payload.payload_inner.payload_inner.transactions.is_empty());
+        assert_eq!(payload.payload_inner.withdrawals, Vec::new());
+        assert_eq!(payload.blob_gas_used, 5);
+        assert_eq!(payload.excess_blob_gas, 7);
+    }
+
+    #[test]
+    fn empty_legacy_block_remains_v1() {
+        let block = Block { header: Header::default(), body: BlockBody::default() };
+        let hash = block.header.hash_slow();
+        let data =
+            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
+
+        assert!(data.taiko_sidecar.osaka.is_none());
+        assert!(matches!(data.into_payload(), ExecutionPayload::V1(_)));
+    }
+
+    #[test]
+    fn block_conversion_preserves_body_only_withdrawals() {
+        let withdrawal = Withdrawal {
+            index: 1,
+            validator_index: 2,
+            address: alloy_primitives::Address::with_last_byte(3),
+            amount: 4,
+        };
+        let block = Block {
+            header: Header {
+                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: Vec::new(),
+                ommers: Vec::new(),
+                withdrawals: Some(vec![withdrawal].into()),
+            },
+        };
+        let hash = block.header.hash_slow();
+
+        let data =
+            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
+        let ExecutionPayload::V3(payload) = data.into_payload() else {
+            panic!("withdrawal-bearing block must produce a V3 execution payload")
+        };
+
+        assert_eq!(payload.payload_inner.withdrawals, vec![withdrawal]);
+    }
+
+    #[test]
+    fn withdrawal_root_alone_marks_a_partial_osaka_payload() {
+        let block = Block {
+            header: Header {
+                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
+                withdrawals_root: Some(B256::with_last_byte(9)),
+                ..Default::default()
+            },
+            body: BlockBody::default(),
+        };
+        let hash = block.header.hash_slow();
+
+        let data =
+            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
+
+        assert!(data.taiko_sidecar.osaka.is_some());
+        assert_eq!(data.execution_payload.block_hash, hash);
+    }
+
+    #[test]
+    fn partial_osaka_header_keeps_original_hash_for_later_validation() {
+        let block = Block {
+            header: Header {
+                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
+                parent_beacon_block_root: Some(B256::with_last_byte(1)),
+                requests_hash: Some(B256::with_last_byte(2)),
+                ..Default::default()
+            },
+            body: BlockBody::default(),
+        };
+        let hash = block.header.hash_slow();
+
+        let data =
+            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
+
+        assert!(data.taiko_sidecar.osaka.is_some());
+        assert_eq!(data.execution_payload.block_hash, hash);
+    }
 }

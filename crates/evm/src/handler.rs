@@ -163,15 +163,16 @@ fn reward_beneficiary<CTX: ContextTr>(
         );
 
         // If the transaction is not an anchor transaction, we share the base fee income with the
-        // coinbase and treasury. Sharing requires the authoritative context installed by the
-        // anchor system call: a context derived for replay-style execution carries no
-        // basefee-share percentage (it comes from block extra data), so redistribution stays
-        // disabled there, matching pre-existing replay behavior.
-        if ctx.anchor_caller_address() != tx_caller ||
-            ctx.anchor_caller_nonce() != tx_nonce ||
-            context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
-        {
-            if ctx.is_from_anchor_system_call() {
+        // coinbase and treasury. Sharing requires authoritative block fee context, installed
+        // directly at Etna or by the legacy anchor system call. Derived legacy replay contexts
+        // have no header percentage and retain their historical no-redistribution behavior.
+        if !ctx.matches_legacy_anchor(
+            tx_caller,
+            tx_nonce,
+            context.tx().kind().to().copied(),
+            get_treasury_address(context.cfg().chain_id()),
+        ) {
+            if ctx.has_authoritative_fee_context() {
                 // Total base fee income; guard against underflow if refunded exceeds spent.
                 let spent_minus_refund =
                     gas.total_gas_spent().saturating_sub(gas.refunded() as u64);
@@ -223,9 +224,12 @@ pub fn validate_against_state_and_deduct_caller<
     debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block.number());
 
     let is_anchor_transaction = extra_execution_ctx.as_ref().is_some_and(|ctx| {
-        ctx.anchor_caller_address() == tx.caller() &&
-            ctx.anchor_caller_nonce() == tx.nonce() &&
-            tx.kind().to() == Some(&get_treasury_address(cfg.chain_id()))
+        ctx.matches_legacy_anchor(
+            tx.caller(),
+            tx.nonce(),
+            tx.kind().to().copied(),
+            get_treasury_address(cfg.chain_id()),
+        )
     });
 
     // Load caller's account.
@@ -294,9 +298,12 @@ pub fn reimburse_caller<CTX: ContextTr>(
     let (tx, _journal) = context.tx_journal_mut();
 
     if let Some(ctx) = extra_execution_ctx &&
-        ctx.anchor_caller_address() == tx.caller() &&
-        ctx.anchor_caller_nonce() == tx.nonce() &&
-        tx.kind().to() == Some(&get_treasury_address(chain_id))
+        ctx.matches_legacy_anchor(
+            tx.caller(),
+            tx.nonce(),
+            tx.kind().to().copied(),
+            get_treasury_address(chain_id),
+        )
     {
         debug!(
             target: "taiko_evm",

@@ -32,6 +32,92 @@ pub struct TaikoChainSpec {
     pub inner: ChainSpec,
 }
 
+/// Error returned when the configured Etna activation cannot follow Unzen safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EtnaForkOrderError {
+    /// Etna is enabled but the chain does not register an Unzen activation.
+    MissingUnzen,
+    /// One of the ordered forks uses an activation condition other than a timestamp.
+    UnsupportedActivationCondition {
+        /// Fork whose activation condition cannot participate in timestamp ordering.
+        fork: TaikoHardfork,
+        /// Unsupported condition configured for the fork.
+        condition: ForkCondition,
+    },
+    /// Etna activates before Unzen, which would regress the execution rule ordering.
+    EtnaPrecedesUnzen {
+        /// Configured Unzen activation timestamp.
+        unzen_timestamp: u64,
+        /// Configured Etna activation timestamp.
+        etna_timestamp: u64,
+    },
+}
+
+impl Display for EtnaForkOrderError {
+    /// Formats a diagnostic describing the invalid Etna fork ordering.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingUnzen => write!(f, "Etna activation requires an Unzen activation"),
+            Self::UnsupportedActivationCondition { fork, condition } => {
+                write!(f, "{} uses unsupported activation condition {condition:?}", fork.name())
+            }
+            Self::EtnaPrecedesUnzen { unzen_timestamp, etna_timestamp } => write!(
+                f,
+                "Etna timestamp {etna_timestamp} precedes Unzen timestamp {unzen_timestamp}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EtnaForkOrderError {}
+
+impl TaikoChainSpec {
+    /// Validates that an enabled Etna timestamp is ordered at or after Unzen.
+    ///
+    /// A missing or disabled Etna entry is valid. When Etna is enabled, both forks must use
+    /// timestamp activation and Unzen must be explicitly registered.
+    pub fn validate_etna_fork_order(&self) -> Result<(), EtnaForkOrderError> {
+        let etna_condition = self.inner.hardforks.forks_iter().find_map(|(fork, condition)| {
+            (fork.name() == TaikoHardfork::Etna.name()).then_some(condition)
+        });
+        let Some(etna_condition) = etna_condition else { return Ok(()) };
+        let etna_timestamp = match etna_condition {
+            ForkCondition::Never => return Ok(()),
+            ForkCondition::Timestamp(timestamp) => timestamp,
+            condition => {
+                return Err(EtnaForkOrderError::UnsupportedActivationCondition {
+                    fork: TaikoHardfork::Etna,
+                    condition,
+                })
+            }
+        };
+
+        let unzen_condition = self
+            .inner
+            .hardforks
+            .forks_iter()
+            .find_map(|(fork, condition)| {
+                (fork.name() == TaikoHardfork::Unzen.name()).then_some(condition)
+            })
+            .ok_or(EtnaForkOrderError::MissingUnzen)?;
+        let unzen_timestamp = match unzen_condition {
+            ForkCondition::Timestamp(timestamp) => timestamp,
+            condition => {
+                return Err(EtnaForkOrderError::UnsupportedActivationCondition {
+                    fork: TaikoHardfork::Unzen,
+                    condition,
+                })
+            }
+        };
+
+        if etna_timestamp < unzen_timestamp {
+            return Err(EtnaForkOrderError::EtnaPrecedesUnzen { unzen_timestamp, etna_timestamp })
+        }
+
+        Ok(())
+    }
+}
+
 impl From<Genesis> for TaikoChainSpec {
     /// Converts the given [`Genesis`] into a [`TaikoChainSpec`].
     fn from(genesis: Genesis) -> Self {
@@ -174,6 +260,17 @@ pub trait TaikoDevnetConfigExt {
     fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized;
+
+    /// Returns a cloned devnet chain spec with the requested Unzen and optional Etna timestamps.
+    ///
+    /// Non-devnet specs retain the no-op convention and are validated without being cloned.
+    fn clone_with_devnet_fork_timestamps(
+        &self,
+        unzen_timestamp: u64,
+        etna_timestamp: Option<u64>,
+    ) -> Result<Option<Self>, EtnaForkOrderError>
+    where
+        Self: Sized;
 }
 
 impl TaikoDevnetConfigExt for TaikoChainSpec {
@@ -214,6 +311,34 @@ impl TaikoDevnetConfigExt for TaikoChainSpec {
 
         Some(cloned)
     }
+
+    /// Returns a cloned canonical devnet spec with validated Unzen and Etna timestamp overrides.
+    ///
+    /// The optional Etna value preserves the distinction between an omitted override and an
+    /// explicit genesis activation at timestamp zero.
+    fn clone_with_devnet_fork_timestamps(
+        &self,
+        unzen_timestamp: u64,
+        etna_timestamp: Option<u64>,
+    ) -> Result<Option<Self>, EtnaForkOrderError>
+    where
+        Self: Sized,
+    {
+        if self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH {
+            self.validate_etna_fork_order()?;
+            return Ok(None)
+        }
+
+        let unzen_overridden = unzen_timestamp != 0;
+        let mut cloned =
+            self.clone_with_devnet_unzen_timestamp(unzen_timestamp).unwrap_or_else(|| self.clone());
+        if let Some(timestamp) = etna_timestamp {
+            cloned.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
+        }
+        cloned.validate_etna_fork_order()?;
+
+        Ok((unzen_overridden || etna_timestamp.is_some()).then_some(cloned))
+    }
 }
 
 /// Helper methods for Ethereum forks.
@@ -249,6 +374,11 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
     /// Checks if the `Unzen` hardfork is active at the given timestamp.
     fn is_unzen_active(&self, timestamp: u64) -> bool {
         self.taiko_fork_activation(TaikoHardfork::Unzen).active_at_timestamp(timestamp)
+    }
+
+    /// Checks if the `Etna` hardfork is active at the given timestamp.
+    fn is_etna_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Etna).active_at_timestamp(timestamp)
     }
 }
 
@@ -340,5 +470,85 @@ mod test {
             mainnet_spec.as_ref().clone_with_devnet_unzen_timestamp(1).is_none(),
             "non-devnet overrides should be ignored"
         );
+    }
+
+    #[test]
+    fn test_etna_activation_and_fork_order() {
+        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+        assert!(!crate::hardfork::TaikoHardforks::is_etna_active(&spec, u64::MAX));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
+        assert!(!crate::hardfork::TaikoHardforks::is_etna_active(&spec, 99));
+        assert!(crate::hardfork::TaikoHardforks::is_etna_active(&spec, 100));
+        assert!(spec.validate_etna_fork_order().is_ok());
+        spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(101));
+        assert!(spec.validate_etna_fork_order().is_err());
+    }
+
+    #[test]
+    fn test_etna_fork_order_rejects_missing_unzen() {
+        let mut spec = TaikoChainSpec::default();
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
+
+        assert_eq!(spec.validate_etna_fork_order(), Err(EtnaForkOrderError::MissingUnzen));
+    }
+
+    #[test]
+    fn test_etna_fork_order_rejects_unsupported_activation_condition() {
+        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Block(100));
+
+        assert!(matches!(
+            spec.validate_etna_fork_order(),
+            Err(EtnaForkOrderError::UnsupportedActivationCondition { .. })
+        ));
+    }
+
+    #[test]
+    fn test_clone_with_devnet_fork_timestamps() {
+        let devnet = TAIKO_DEVNET.as_ref();
+
+        let same_timestamp = devnet
+            .clone_with_devnet_fork_timestamps(100, Some(100))
+            .expect("matching timestamps should be valid")
+            .expect("an override should return a clone");
+        assert_eq!(
+            same_timestamp.taiko_fork_activation(TaikoHardfork::Unzen),
+            ForkCondition::Timestamp(100)
+        );
+        assert_eq!(
+            same_timestamp.taiko_fork_activation(TaikoHardfork::Etna),
+            ForkCondition::Timestamp(100)
+        );
+        assert_eq!(same_timestamp.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH_SHANGHAI);
+
+        assert!(matches!(
+            devnet.clone_with_devnet_fork_timestamps(100, Some(99)),
+            Err(EtnaForkOrderError::EtnaPrecedesUnzen { .. })
+        ));
+
+        let unzen_only = devnet
+            .clone_with_devnet_fork_timestamps(100, None)
+            .expect("an omitted Etna override should be valid")
+            .expect("the Unzen override should return a clone");
+        assert_eq!(unzen_only.taiko_fork_activation(TaikoHardfork::Etna), ForkCondition::Never);
+        assert_eq!(unzen_only.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH_SHANGHAI);
+
+        let genesis = devnet
+            .clone_with_devnet_fork_timestamps(0, Some(0))
+            .expect("genesis timestamps should be valid")
+            .expect("an explicit Etna timestamp should return a clone");
+        assert_eq!(genesis.taiko_fork_activation(TaikoHardfork::Etna), ForkCondition::Timestamp(0));
+        assert_eq!(genesis.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
+    }
+
+    #[test]
+    fn test_combined_override_validates_non_devnet_fork_order() {
+        let mut custom = (*TAIKO_MAINNET).as_ref().clone();
+        custom.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(1));
+
+        assert!(matches!(
+            custom.clone_with_devnet_fork_timestamps(0, None),
+            Err(EtnaForkOrderError::EtnaPrecedesUnzen { .. })
+        ));
     }
 }

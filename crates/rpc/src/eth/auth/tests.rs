@@ -144,13 +144,6 @@ fn create_test_api(
 // Deserialization tests
 // ---------------------------------------------------------------------------
 
-/// Returns a devnet chain spec whose Etna rules activate at timestamp 100.
-fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
-    let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
-    chain_spec
-}
-
 #[test]
 /// Ensures `txPoolContent` accepts a camelCase object payload.
 fn tx_pool_content_params_deserialize_from_camel_case() {
@@ -225,6 +218,13 @@ fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
     assert!(super::combined_tx_lists_gas_limit(u64::MAX, 2).is_err());
 }
 
+/// Returns a devnet chain spec whose Etna rules activate at timestamp 100.
+fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
+    let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
+    chain_spec
+}
+
 #[test]
 fn reserves_anchor_zk_gas_for_tx_pool_selection() {
     let mut state =
@@ -260,6 +260,16 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
         .expect("tx-pool anchor reserve should fit");
 
     assert_eq!(ctx.finalized_block_zk_gas(), super::TX_POOL_ANCHOR_ZK_GAS_RESERVE);
+}
+
+#[test]
+/// Ensures preselection on an Etna genesis parent simulates with zero fee metadata.
+fn tx_pool_simulation_extra_data_zero_fills_an_etna_genesis() {
+    let genesis = Header { number: 0, timestamp: 100, ..Default::default() };
+    assert_eq!(
+        super::tx_pool_simulation_extra_data(&chain_spec_with_etna_at_100(), &genesis),
+        Bytes::from(vec![0; 13])
+    );
 }
 
 // ---------------------------------------------------------------------------

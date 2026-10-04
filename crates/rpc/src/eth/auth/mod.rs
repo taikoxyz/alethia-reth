@@ -83,6 +83,22 @@ where
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
 }
 
+/// Returns the `extraData` that tx-pool preselection simulates the parent's child with.
+///
+/// An Etna parent's 13-byte fee metadata carries over and an Etna genesis gets simulation-only
+/// zeros, so simulated base fees still reach the treasury as on the pending path. A pre-Etna
+/// parent's bytes pass through.
+fn tx_pool_simulation_extra_data(
+    chain_spec: &TaikoChainSpec,
+    parent: &alloy_consensus::Header,
+) -> Bytes {
+    if chain_spec.is_etna_active(parent.timestamp()) {
+        etna_simulation_extra_data(parent)
+    } else {
+        parent.extra_data().clone()
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -367,8 +383,7 @@ where
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
         // Preselection simulates under the parent's fork rules and never runs pre-execution system
-        // calls, so it needs no beacon root. An Etna parent's child needs 13-byte fee metadata; an
-        // Etna genesis gets simulation-only zeros.
+        // calls, so it needs no beacon root.
         let mut builder = self
             .evm_config
             .builder_for_next_block(
@@ -379,11 +394,7 @@ where
                     suggested_fee_recipient: beneficiary,
                     prev_randao: parent.mix_hash().unwrap_or_default(),
                     gas_limit: combined_gas_limit,
-                    extra_data: if chain_spec.is_etna_active(parent.timestamp()) {
-                        etna_simulation_extra_data(parent)
-                    } else {
-                        parent.extra_data().clone()
-                    },
+                    extra_data: tx_pool_simulation_extra_data(chain_spec.as_ref(), parent),
                     base_fee_per_gas: base_fee,
                     parent_beacon_block_root: None,
                 },

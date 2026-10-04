@@ -80,7 +80,6 @@ pub static TAIKO_MAINNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| 
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(1_166_000)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_775_135_700)),
         (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(1_786_021_200)),
-        (TaikoHardfork::Etna.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -91,7 +90,6 @@ pub static TAIKO_HOODI_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(1_770_296_400)),
         (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(1_781_787_600)),
-        (TaikoHardfork::Etna.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -102,7 +100,6 @@ pub static TAIKO_DEVNET_HARDFORKS: LazyLock<ChainHardforks> = LazyLock::new(|| {
         (TaikoHardfork::Pacaya.boxed(), ForkCondition::Block(0)),
         (TaikoHardfork::Shasta.boxed(), ForkCondition::Timestamp(0)),
         (TaikoHardfork::Unzen.boxed(), ForkCondition::Timestamp(0)),
-        (TaikoHardfork::Etna.boxed(), ForkCondition::Never),
     ]))
 });
 
@@ -310,23 +307,6 @@ mod test {
             [&*TAIKO_MAINNET_HARDFORKS, &*TAIKO_HOODI_HARDFORKS, &*TAIKO_DEVNET_HARDFORKS]
         {
             assert_eq!(hardforks.fork(TaikoHardfork::Etna), ForkCondition::Never);
-        }
-    }
-
-    #[test]
-    fn test_disabled_etna_does_not_change_fork_id() {
-        let without_etna = shasta_before_unzen_chain_spec();
-        let mut with_etna_forks = shasta_before_unzen_hardforks();
-        with_etna_forks.push((TaikoHardfork::Etna.boxed(), ForkCondition::Never));
-        let with_etna = ChainSpec::builder()
-            .chain(Chain::mainnet())
-            .genesis(Genesis::default())
-            .with_forks(ChainHardforks::new(extend_with_shared_hardforks(with_etna_forks)))
-            .build();
-
-        for timestamp in [0, 150, 250, u64::MAX] {
-            let head = Head { number: 2, timestamp, ..Default::default() };
-            assert_eq!(without_etna.fork_id(&head), with_etna.fork_id(&head));
         }
     }
 }

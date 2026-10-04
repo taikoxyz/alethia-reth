@@ -392,7 +392,6 @@ dependencies = [
  "reth-rpc-engine-api",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
- "reth-transaction-pool",
  "reth-trie-common",
  "serde",
  "serde_json",

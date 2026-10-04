@@ -70,6 +70,4 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-alethia-reth-block = { path = "../block", features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
-reth-transaction-pool = { workspace = true, features = ["test-utils"] }

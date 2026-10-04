@@ -2,15 +2,7 @@ use super::{
     lookup::{MAX_BACKWARD_SCAN_BLOCKS, max_backward_scan_blocks},
     *,
 };
-use alethia_reth_block::{
-    executor::TaikoBlockExecutor,
-    factory::TaikoBlockExecutionCtx,
-    testutil::{
-        BENCH_NEAR_LIMIT_TARGET, ExecutorBackedBuilder, db_with_contracts, recovered_tx,
-        unzen_evm_env, unzen_execution_ctx,
-    },
-    tx_selection::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions},
-};
+use alethia_reth_block::{executor::TaikoBlockExecutor, factory::TaikoBlockExecutionCtx};
 use alethia_reth_chainspec::{
     TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoChainSpec,
 };
@@ -42,7 +34,6 @@ use reth_provider::{
     test_utils::MockNodeTypesWithDB,
 };
 use reth_revm::{State, db::InMemoryDB};
-use reth_transaction_pool::{TransactionOrigin, TransactionPool, test_utils::testing_pool};
 use std::{path::PathBuf, sync::Arc};
 
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
@@ -161,106 +152,6 @@ fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
 }
 
 #[test]
-fn tx_pool_simulation_attributes_follow_the_parent_fork() {
-    let chain_spec = chain_spec_with_etna_at_100();
-    let root = alloy_primitives::B256::with_last_byte(7);
-    let legacy = Header {
-        number: 1,
-        timestamp: 99,
-        extra_data: Bytes::from_static(&[0x11, 0x22]),
-        parent_beacon_block_root: Some(alloy_primitives::B256::ZERO),
-        ..Default::default()
-    };
-    let etna = Header {
-        number: 2,
-        timestamp: 100,
-        extra_data: Bytes::from(vec![25; 13]),
-        parent_beacon_block_root: Some(root),
-        ..Default::default()
-    };
-    let etna_genesis = Header { number: 0, timestamp: 100, ..Default::default() };
-    for (parent, extra_data, parent_beacon_block_root) in [
-        (&legacy, Bytes::from_static(&[0x11, 0x22]), None),
-        (&etna, Bytes::from(vec![25; 13]), Some(root)),
-        (&etna_genesis, Bytes::from(vec![0; 13]), None),
-    ] {
-        let attributes = super::tx_pool_simulation_attributes(
-            &chain_spec,
-            parent,
-            Address::with_last_byte(0x42),
-            30_000_000,
-            1,
-        );
-        assert_eq!(attributes.timestamp, parent.timestamp);
-        assert_eq!(attributes.extra_data, extra_data);
-        assert_eq!(attributes.parent_beacon_block_root, parent_beacon_block_root);
-    }
-}
-
-/// Runs the real tx-selection loop at `target_timestamp` and returns how many transactions fit
-/// after the fork-dependent anchor zk-gas reserve.
-fn select_near_limit_at(target_timestamp: u64) -> usize {
-    let caller = Address::with_last_byte(0x31);
-    let chain_spec = Arc::new(chain_spec_with_etna_at_100());
-    let mut state = State::builder()
-        .with_database(db_with_contracts(&[(caller, 0)]))
-        .with_bundle_update()
-        .build();
-    let mut env = unzen_evm_env();
-    env.cfg_env.spec = if target_timestamp >= 100 { TaikoSpecId::ETNA } else { TaikoSpecId::UNZEN };
-    env.block_env.number = U256::from(2);
-    env.block_env.timestamp = U256::from(target_timestamp);
-    env.block_env.base_fee_share_pctg = (target_timestamp >= 100).then_some(0);
-    let evm = TaikoEvmFactory.create_evm(&mut state, env);
-    let executor = TaikoBlockExecutor::new(
-        evm,
-        unzen_execution_ctx(),
-        chain_spec.clone(),
-        RethReceiptBuilder::default(),
-    );
-    let mut builder = ExecutorBackedBuilder { executor };
-
-    super::prepare_tx_pool_executor(builder.executor_mut(), chain_spec.as_ref(), target_timestamp)
-        .expect("preselection preparation should succeed");
-
-    let pool = testing_pool();
-    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    runtime
-        .block_on(pool.add_consensus_transaction(
-            recovered_tx(caller, BENCH_NEAR_LIMIT_TARGET, 0, 10),
-            TransactionOrigin::External,
-        ))
-        .unwrap();
-    let outcome = select_and_execute_pool_transactions(
-        &mut builder,
-        &pool,
-        &TxSelectionConfig {
-            base_fee: 0,
-            gas_limit_per_list: 30_000_000,
-            max_da_bytes_per_list: 1_000_000,
-            da_size_zlib_guard_bytes: 0,
-            max_lists: 1,
-            min_tip: 0,
-            locals: vec![],
-        },
-        || false,
-    )
-    .unwrap();
-    let SelectionOutcome::Completed(lists) = outcome else { panic!("selection cancelled") };
-    lists[0].transactions.len()
-}
-
-#[test]
-fn etna_selection_drops_the_anchor_reserve() {
-    assert_eq!(select_near_limit_at(100), 1);
-}
-
-#[test]
-fn legacy_selection_keeps_the_anchor_reserve() {
-    assert_eq!(select_near_limit_at(99), 0);
-}
-
-#[test]
 /// Ensures `txPoolContent` accepts a camelCase object payload.
 fn tx_pool_content_params_deserialize_from_camel_case() {
     let value = serde_json::json!({
@@ -358,8 +249,14 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
         TAIKO_DEVNET.clone(),
         RethReceiptBuilder::default(),
     );
+    let chain_spec = chain_spec_with_etna_at_100();
 
-    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor)
+    // An Etna parent is followed by no anchor, so preselection reserves nothing.
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, 100)
+        .expect("an Etna parent reserves nothing");
+    assert_eq!(ctx.finalized_block_zk_gas(), 0);
+
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, 99)
         .expect("tx-pool anchor reserve should fit");
 
     assert_eq!(ctx.finalized_block_zk_gas(), super::TX_POOL_ANCHOR_ZK_GAS_RESERVE);

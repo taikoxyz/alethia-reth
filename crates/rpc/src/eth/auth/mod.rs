@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use alloy_consensus::{BlockHeader as _, Header};
+use alloy_consensus::BlockHeader as _;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
 use alloy_primitives::{Bytes, U256};
@@ -62,65 +62,25 @@ pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipPara
 /// transactions. Revisit this value if the anchor implementation changes substantially.
 const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 
-/// Applies the anchor zk gas safety margin before tx-pool transaction simulation.
+/// Applies the legacy anchor zk-gas safety margin before tx-pool transaction simulation.
+///
+/// Preselection simulates under the parent's fork rules. A pre-Etna parent keeps the reserve for
+/// the mandatory anchor that preselection cannot execute, which stays conservative for the first
+/// Etna block; an Etna parent reserves nothing because no anchor follows it.
 fn reserve_anchor_zk_gas_for_tx_pool_selection<Evm, Spec, R>(
     executor: &mut TaikoBlockExecutor<'_, Evm, Spec, R>,
+    chain_spec: &TaikoChainSpec,
+    parent_timestamp: u64,
 ) -> Result<(), BlockExecutionError>
 where
     Evm: TaikoZkGasEvm,
     Spec: Clone,
     R: ReceiptBuilder,
 {
-    executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
-}
-
-/// Builds the simulated next-block attributes used by tx-pool preselection.
-///
-/// Preselection simulates under the parent's fork rules and never applies pre-execution system
-/// calls. An Etna parent supplies its own root and fee metadata, as an inherited anchor would; an
-/// Etna genesis without that metadata uses simulation-only zeros.
-fn tx_pool_simulation_attributes(
-    chain_spec: &TaikoChainSpec,
-    parent: &Header,
-    beneficiary: Address,
-    gas_limit: u64,
-    base_fee: u64,
-) -> TaikoNextBlockEnvAttributes {
-    let is_etna_parent = chain_spec.is_etna_active(parent.timestamp());
-    TaikoNextBlockEnvAttributes {
-        timestamp: parent.timestamp(),
-        suggested_fee_recipient: beneficiary,
-        prev_randao: parent.mix_hash().unwrap_or_default(),
-        gas_limit,
-        extra_data: if is_etna_parent {
-            etna_simulation_extra_data(parent)
-        } else {
-            parent.extra_data().clone()
-        },
-        base_fee_per_gas: base_fee,
-        parent_beacon_block_root: if is_etna_parent {
-            parent.parent_beacon_block_root()
-        } else {
-            None
-        },
-    }
-}
-
-/// Retains the legacy anchor zk-gas reserve only while the simulated block is before Etna.
-fn prepare_tx_pool_executor<Evm, Spec, R>(
-    executor: &mut TaikoBlockExecutor<'_, Evm, Spec, R>,
-    chain_spec: &TaikoChainSpec,
-    target_timestamp: u64,
-) -> Result<(), BlockExecutionError>
-where
-    Evm: TaikoZkGasEvm,
-    Spec: Clone,
-    R: ReceiptBuilder,
-{
-    if chain_spec.is_etna_active(target_timestamp) {
+    if chain_spec.is_etna_active(parent_timestamp) {
         return Ok(());
     }
-    reserve_anchor_zk_gas_for_tx_pool_selection(executor)
+    executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
 }
 
 #[cfg(test)]
@@ -406,26 +366,38 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
-        // Simulate under the parent's fork rules. Preselection never applies pre-execution system
-        // calls, so its execution context does not require an Etna beacon root.
-        let attributes = tx_pool_simulation_attributes(
-            chain_spec.as_ref(),
-            parent,
-            beneficiary,
-            combined_gas_limit,
-            base_fee,
-        );
-        let evm_env = self.evm_config.next_evm_env(parent, &attributes).map_err(|_| {
-            EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
-        })?;
-        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
-        let ctx = self.evm_config.context_for_next_block(parent, attributes).map_err(|_| {
-            EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
-        })?;
-        let mut builder = self.evm_config.create_block_builder(evm, parent, ctx);
+        // Preselection simulates under the parent's fork rules and never runs pre-execution system
+        // calls, so it needs no beacon root. An Etna parent's child needs 13-byte fee metadata; an
+        // Etna genesis gets simulation-only zeros.
+        let mut builder = self
+            .evm_config
+            .builder_for_next_block(
+                &mut db,
+                parent,
+                TaikoNextBlockEnvAttributes {
+                    timestamp: parent.timestamp(),
+                    suggested_fee_recipient: beneficiary,
+                    prev_randao: parent.mix_hash().unwrap_or_default(),
+                    gas_limit: combined_gas_limit,
+                    extra_data: if chain_spec.is_etna_active(parent.timestamp()) {
+                        etna_simulation_extra_data(parent)
+                    } else {
+                        parent.extra_data().clone()
+                    },
+                    base_fee_per_gas: base_fee,
+                    parent_beacon_block_root: None,
+                },
+            )
+            .map_err(|_| {
+                EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
+            })?;
 
-        prepare_tx_pool_executor(builder.executor_mut(), chain_spec.as_ref(), parent.timestamp())
-            .map_err(|err| EthApiError::Internal(err.into()))?;
+        reserve_anchor_zk_gas_for_tx_pool_selection(
+            builder.executor_mut(),
+            chain_spec.as_ref(),
+            parent.timestamp(),
+        )
+        .map_err(|err| EthApiError::Internal(err.into()))?;
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 

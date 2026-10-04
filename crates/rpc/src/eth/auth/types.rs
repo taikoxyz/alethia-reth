@@ -4,5 +4,5 @@
 //! can depend on the types crate alone.
 
 pub use alethia_reth_rpc_types::{
-    PreBuiltTxList, TxPoolBlockContext, TxPoolContentParams, TxPoolContentWithMinTipParams,
+    PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipParams,
 };

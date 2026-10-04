@@ -5,7 +5,7 @@ use std::sync::Arc;
 use alloy_consensus::{BlockHeader as _, Header};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth::{
@@ -15,9 +15,7 @@ use reth::{
 use reth_db_api::transaction::{DbTx, DbTxMut};
 use reth_ethereum::{EthPrimitives, TransactionSigned};
 use reth_evm::{
-    ConfigureEngineEvm,
-    block::{BlockExecutionError, BlockExecutor},
-    eth::receipt_builder::ReceiptBuilder,
+    ConfigureEngineEvm, block::BlockExecutionError, eth::receipt_builder::ReceiptBuilder,
     execute::BlockBuilder,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
@@ -30,10 +28,10 @@ use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
 use tracing::info;
 
-use crate::eth::error::internal_eth_error;
+use crate::eth::{builder::etna_simulation_extra_data, error::internal_eth_error};
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
-    config::TaikoNextBlockEnvAttributes,
+    config::{TaikoNextBlockEnvAttributes, simulation_context_for_next_block},
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
     tx_selection::{
@@ -55,9 +53,7 @@ mod lookup;
 /// `taikoAuth` request/response types for tx-pool simulation endpoints.
 mod types;
 
-pub use types::{
-    PreBuiltTxList, TxPoolBlockContext, TxPoolContentParams, TxPoolContentWithMinTipParams,
-};
+pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipParams};
 
 /// Conservative zk gas reserved for the mandatory anchor during tx-pool preselection.
 ///
@@ -65,76 +61,6 @@ pub use types::{
 /// headroom for anchor execution changes while retaining 98% of the Unzen block budget for user
 /// transactions. Revisit this value if the anchor implementation changes substantially.
 const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
-
-/// Resolves and validates explicit target values before tx-pool simulation reaches the EVM.
-///
-/// Legacy omission preserves parent-context behavior. Explicit Etna targets require their root and
-/// seven-byte fee metadata. Explicit pre-Etna targets require the zero root that legacy builds
-/// stamp, and pre-Shasta metadata must fit the legacy decoder's 256-bit input.
-fn resolve_tx_pool_block_context(
-    chain_spec: &TaikoChainSpec,
-    parent: &Header,
-    supplied: Option<TxPoolBlockContext>,
-) -> Result<TxPoolBlockContext, EthApiError> {
-    let Some(context) = supplied else {
-        if chain_spec.is_etna_active(parent.timestamp()) {
-            return Err(EthApiError::InvalidParams(
-                "`blockContext` is required when the parent is at or after Etna activation"
-                    .to_string(),
-            ))
-        }
-        return Ok(TxPoolBlockContext {
-            timestamp: parent.timestamp(),
-            parent_beacon_block_root: B256::ZERO,
-            extra_data: parent.extra_data().clone(),
-        })
-    };
-
-    let timestamp_is_invalid = if chain_spec.is_shasta_active(context.timestamp) {
-        context.timestamp <= parent.timestamp()
-    } else {
-        context.timestamp < parent.timestamp()
-    };
-    if timestamp_is_invalid {
-        return Err(EthApiError::InvalidParams(format!(
-            "target block timestamp {} must follow parent timestamp {}",
-            context.timestamp,
-            parent.timestamp()
-        )))
-    }
-
-    if chain_spec.is_etna_active(context.timestamp) {
-        if context.parent_beacon_block_root.is_zero() {
-            return Err(EthApiError::InvalidParams(
-                "`blockContext.parentBeaconBlockRoot` must be non-zero for an Etna target"
-                    .to_string(),
-            ))
-        }
-        if context.extra_data.len() != 7 {
-            return Err(EthApiError::InvalidParams(format!(
-                "`blockContext.extraData` must contain exactly 7 bytes for an Etna target, got {}",
-                context.extra_data.len()
-            )))
-        }
-    } else {
-        // Legacy job creation rejects a nonzero root, so simulating with one would run EIP-4788
-        // against a value the real block cannot carry.
-        if !context.parent_beacon_block_root.is_zero() {
-            return Err(EthApiError::InvalidParams(format!(
-                "`blockContext.parentBeaconBlockRoot` must be zero for a pre-Etna target, got {}",
-                context.parent_beacon_block_root
-            )))
-        }
-        if !chain_spec.is_shasta_active(context.timestamp) && context.extra_data.len() > 32 {
-            return Err(EthApiError::InvalidParams(format!(
-                "`blockContext.extraData` must contain at most 32 bytes before Shasta, got {}",
-                context.extra_data.len()
-            )))
-        }
-    }
-
-    Ok(context)
-}
 
 /// Applies the anchor zk gas safety margin before tx-pool transaction simulation.
 fn reserve_anchor_zk_gas_for_tx_pool_selection<Evm, Spec, R>(
@@ -148,26 +74,53 @@ where
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
 }
 
-/// Applies explicit target pre-execution and retains the legacy anchor budget only before Etna.
-fn prepare_tx_pool_executor<'a, Evm, Spec, R>(
-    executor: &mut TaikoBlockExecutor<'a, Evm, Spec, R>,
+/// Builds the simulated next-block attributes used by tx-pool preselection.
+///
+/// Preselection simulates under the parent's fork rules and never applies pre-execution system
+/// calls. An Etna parent supplies its own root and fee metadata, as an inherited anchor would; an
+/// Etna genesis without that metadata uses simulation-only zeros.
+fn tx_pool_simulation_attributes(
+    chain_spec: &TaikoChainSpec,
+    parent: &Header,
+    beneficiary: Address,
+    gas_limit: u64,
+    base_fee: u64,
+) -> TaikoNextBlockEnvAttributes {
+    let is_etna_parent = chain_spec.is_etna_active(parent.timestamp());
+    TaikoNextBlockEnvAttributes {
+        timestamp: parent.timestamp(),
+        suggested_fee_recipient: beneficiary,
+        prev_randao: parent.mix_hash().unwrap_or_default(),
+        gas_limit,
+        extra_data: if is_etna_parent {
+            etna_simulation_extra_data(parent)
+        } else {
+            parent.extra_data().clone()
+        },
+        base_fee_per_gas: base_fee,
+        parent_beacon_block_root: if is_etna_parent {
+            parent.parent_beacon_block_root()
+        } else {
+            None
+        },
+    }
+}
+
+/// Retains the legacy anchor zk-gas reserve only while the simulated block is before Etna.
+fn prepare_tx_pool_executor<Evm, Spec, R>(
+    executor: &mut TaikoBlockExecutor<'_, Evm, Spec, R>,
     chain_spec: &TaikoChainSpec,
     target_timestamp: u64,
-    explicit_context: bool,
 ) -> Result<(), BlockExecutionError>
 where
     Evm: TaikoZkGasEvm,
     Spec: Clone,
     R: ReceiptBuilder,
-    TaikoBlockExecutor<'a, Evm, Spec, R>: BlockExecutor,
 {
-    if explicit_context {
-        executor.apply_pre_execution_changes()?;
+    if chain_spec.is_etna_active(target_timestamp) {
+        return Ok(());
     }
-    if !chain_spec.is_etna_active(target_timestamp) {
-        reserve_anchor_zk_gas_for_tx_pool_selection(executor)?;
-    }
-    Ok(())
+    reserve_anchor_zk_gas_for_tx_pool_selection(executor)
 }
 
 #[cfg(test)]
@@ -230,7 +183,6 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
-        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 
     /// Returns candidate transaction lists without enforcing a tip threshold.
@@ -243,7 +195,6 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
         max_bytes_per_tx_list: u64,
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
-        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
 }
 
@@ -402,7 +353,6 @@ where
         max_bytes_per_tx_list: u64,
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
-        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         self.tx_pool_content_with_min_tip(
             beneficiary,
@@ -412,7 +362,6 @@ where
             locals,
             max_transactions_lists,
             0,
-            block_context,
         )
         .await
     }
@@ -427,7 +376,6 @@ where
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
         min_tip: u64,
-        block_context: Option<TxPoolBlockContext>,
     ) -> RpcResult<Vec<PreBuiltTxList<RpcTransaction<Eth::Network>>>> {
         if max_transactions_lists == 0 {
             return Err(EthApiError::InvalidParams(
@@ -446,9 +394,7 @@ where
             .ok_or(EthApiError::HeaderNotFound(BlockId::Number(BlockNumberOrTag::Latest)))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
-        let explicit_context = block_context.is_some();
         let chain_spec = self.evm_config.block_executor_factory().spec();
-        let context = resolve_tx_pool_block_context(chain_spec.as_ref(), parent, block_context)?;
 
         let state_provider = self.provider.state_by_block_hash(parent.hash()).map_err(|_| {
             EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
@@ -460,34 +406,24 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
-        // Create the block builder based on the parent block and the provided attributes.
-        let mut builder = self
-            .evm_config
-            .builder_for_next_block(
-                &mut db,
-                parent,
-                TaikoNextBlockEnvAttributes {
-                    timestamp: context.timestamp,
-                    suggested_fee_recipient: beneficiary,
-                    prev_randao: parent.mix_hash().unwrap_or_default(),
-                    gas_limit: combined_gas_limit,
-                    extra_data: context.extra_data,
-                    base_fee_per_gas: base_fee,
-                    parent_beacon_block_root: explicit_context
-                        .then_some(context.parent_beacon_block_root),
-                },
-            )
-            .map_err(|_| {
-                EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
-            })?;
-
-        prepare_tx_pool_executor(
-            builder.executor_mut(),
+        // Simulate under the parent's fork rules. Preselection never applies pre-execution system
+        // calls, so its execution context does not require an Etna beacon root.
+        let attributes = tx_pool_simulation_attributes(
             chain_spec.as_ref(),
-            context.timestamp,
-            explicit_context,
-        )
-        .map_err(|err| EthApiError::Internal(err.into()))?;
+            parent,
+            beneficiary,
+            combined_gas_limit,
+            base_fee,
+        );
+        let evm_env = self.evm_config.next_evm_env(parent, &attributes).map_err(|_| {
+            EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
+        })?;
+        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
+        let ctx = simulation_context_for_next_block(chain_spec.as_ref(), parent, attributes);
+        let mut builder = self.evm_config.create_block_builder(evm, parent, ctx);
+
+        prepare_tx_pool_executor(builder.executor_mut(), chain_spec.as_ref(), parent.timestamp())
+            .map_err(|err| EthApiError::Internal(err.into()))?;
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 

@@ -406,9 +406,7 @@ name = "alethia-reth-rpc-types"
 version = "1.4.1"
 dependencies = [
  "alloy-primitives",
- "alloy-serde",
  "serde",
- "serde_json",
 ]
 
 [[package]]

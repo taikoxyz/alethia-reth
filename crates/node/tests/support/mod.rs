@@ -6,6 +6,7 @@ use alethia_reth_node::TaikoNode;
 use alethia_reth_primitives::payload::attributes::{
     RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes,
 };
+use alethia_reth_rpc::eth::auth::{TaikoAuthExt, TaikoAuthExtApiServer};
 use alloy_eips::{eip2935, eip4788};
 use alloy_genesis::Genesis;
 use alloy_hardforks::ForkCondition;
@@ -22,10 +23,11 @@ use reth_db::{
     test_utils::{TempDatabase, tempdir_path},
 };
 use reth_e2e_test_utils::{NodeHelperType, node::NodeTestContext};
-use reth_node_api::TreeConfig;
+use reth_node_api::{FullNodeComponents, TreeConfig};
 use reth_node_builder::{EngineNodeLauncher, Node, NodeBuilder, NodeConfig};
 use reth_node_core::args::RpcServerArgs;
 use reth_provider::providers::BlockchainProvider;
+use reth_rpc::eth::EthApiTypes;
 use reth_rpc_server_types::RpcModuleSelection;
 use reth_tasks::Runtime;
 use serde_json::Value;
@@ -148,6 +150,14 @@ pub async fn launch_test_node(
         },
     )?;
     let builder = builder.extend_rpc_modules(move |mut ctx| {
+        // Mirror the binary's authenticated `taikoAuth` registration.
+        let taiko_auth = TaikoAuthExt::new(
+            ctx.node().provider().clone(),
+            ctx.node().pool().clone(),
+            ctx.registry.eth_api().converter().clone(),
+            ctx.node().evm_config().clone(),
+        );
+        ctx.auth_module.merge_auth_methods(taiko_auth.into_rpc())?;
         alethia_reth_node::proof_history::install_proof_history_rpc(&mut ctx, handles.unwrap())
     });
     let handle = tokio::time::timeout(

@@ -165,6 +165,11 @@ fn taiko_blob_excess_gas_and_price(spec: TaikoSpecId) -> Option<BlobExcessGasAnd
         .then_some(BlobExcessGasAndPrice { excess_blob_gas: 0, blob_gasprice: 1 })
 }
 
+/// Applies the Unzen zero-root fallback; earlier forks carry no beacon root.
+fn legacy_beacon_root_fallback(is_post_unzen: bool, root: Option<B256>) -> Option<B256> {
+    if is_post_unzen { root.or(Some(B256::ZERO)) } else { None }
+}
+
 /// Validates Etna roots before applying the legacy Unzen zero-root fallback.
 /// Genesis remains exempt from the nonzero-root requirement.
 fn normalize_parent_beacon_block_root(
@@ -174,11 +179,34 @@ fn normalize_parent_beacon_block_root(
     parent_beacon_block_root: Option<B256>,
 ) -> Result<Option<B256>, MissingEtnaBeaconRoot> {
     validate_etna_root(is_etna_active, block_number, parent_beacon_block_root)?;
-    Ok(if is_unzen_active || is_etna_active {
-        parent_beacon_block_root.or(Some(B256::ZERO))
-    } else {
-        None
-    })
+    Ok(legacy_beacon_root_fallback(is_unzen_active || is_etna_active, parent_beacon_block_root))
+}
+
+/// Builds the execution context for the block after `parent` without the Etna beacon-root check.
+///
+/// Only simulations that never apply pre-execution system calls may use this directly, such as
+/// tx-pool preselection. [`ConfigureEvm::context_for_next_block`] validates the root first.
+pub fn simulation_context_for_next_block<'a>(
+    chain_spec: &TaikoChainSpec,
+    parent: &SealedHeader,
+    attributes: TaikoNextBlockEnvAttributes,
+) -> TaikoBlockExecutionCtx<'a> {
+    let is_unzen_active = chain_spec.is_unzen_active(attributes.timestamp);
+    let is_etna_active = chain_spec.is_etna_active(attributes.timestamp);
+    TaikoBlockExecutionCtx {
+        parent_hash: parent.hash(),
+        parent_beacon_block_root: legacy_beacon_root_fallback(
+            is_unzen_active || is_etna_active,
+            attributes.parent_beacon_block_root,
+        ),
+        ommers: &[],
+        withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
+        basefee_per_gas: attributes.base_fee_per_gas,
+        extra_data: attributes.extra_data,
+        is_unzen_active,
+        expected_difficulty: None,
+        finalized_block_zk_gas: Default::default(),
+    }
 }
 
 impl ConfigureEvm for TaikoEvmConfig {
@@ -315,24 +343,13 @@ impl ConfigureEvm for TaikoEvmConfig {
         parent: &SealedHeader,
         ctx: Self::NextBlockEnvCtx,
     ) -> Result<reth_evm::ExecutionCtxFor<'_, Self>, Self::Error> {
-        let is_unzen_active = self.chain_spec().is_unzen_active(ctx.timestamp);
-        Ok(TaikoBlockExecutionCtx {
-            parent_hash: parent.hash(),
-            parent_beacon_block_root: normalize_parent_beacon_block_root(
-                is_unzen_active,
-                self.chain_spec().is_etna_active(ctx.timestamp),
-                parent.number + 1,
-                ctx.parent_beacon_block_root,
-            )
-            .map_err(AnyError::new)?,
-            ommers: &[],
-            withdrawals: Some(Cow::Owned(Withdrawals::new(vec![]))),
-            basefee_per_gas: ctx.base_fee_per_gas,
-            extra_data: ctx.extra_data,
-            is_unzen_active,
-            expected_difficulty: None,
-            finalized_block_zk_gas: Default::default(),
-        })
+        validate_etna_root(
+            self.chain_spec().is_etna_active(ctx.timestamp),
+            parent.number + 1,
+            ctx.parent_beacon_block_root,
+        )
+        .map_err(AnyError::new)?;
+        Ok(simulation_context_for_next_block(self.chain_spec(), parent, ctx))
     }
 }
 
@@ -572,6 +589,9 @@ mod tests {
                 base_fee_per_gas: 1,
                 parent_beacon_block_root: root,
             };
+            let simulated =
+                simulation_context_for_next_block(config.chain_spec(), &parent, attrs.clone());
+            assert_eq!(simulated.parent_beacon_block_root, Some(root.unwrap_or_default()));
             let result = config.context_for_next_block(&parent, attrs);
             assert_eq!(result.is_ok(), root.is_some_and(|r| !r.is_zero()), "next root {root:?}");
             if let Ok(ctx) = result {

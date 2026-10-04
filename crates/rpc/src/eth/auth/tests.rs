@@ -6,7 +6,7 @@ use alethia_reth_block::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutionCtx,
     testutil::{
-        BENCH_NEAR_LIMIT_TARGET, ExecutorBackedBuilder, db_with_system_contracts, recovered_tx,
+        BENCH_NEAR_LIMIT_TARGET, ExecutorBackedBuilder, db_with_contracts, recovered_tx,
         unzen_evm_env, unzen_execution_ctx,
     },
     tx_selection::{SelectionOutcome, TxSelectionConfig, select_and_execute_pool_transactions},
@@ -41,7 +41,7 @@ use reth_provider::{
     providers::{BlockchainProvider, RocksDBBuilder, StaticFileProvider},
     test_utils::MockNodeTypesWithDB,
 };
-use reth_revm::{Database, State, db::InMemoryDB};
+use reth_revm::{State, db::InMemoryDB};
 use reth_transaction_pool::{TransactionOrigin, TransactionPool, test_utils::testing_pool};
 use std::{path::PathBuf, sync::Arc};
 
@@ -161,103 +161,49 @@ fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
 }
 
 #[test]
-fn resolves_explicit_context_at_etna_boundary_without_changing_fields() {
+fn tx_pool_simulation_attributes_follow_the_parent_fork() {
     let chain_spec = chain_spec_with_etna_at_100();
-    let parent = Header { number: 1, timestamp: 99, ..Default::default() };
-    let supplied = TxPoolBlockContext {
-        timestamp: 100,
-        parent_beacon_block_root: alloy_primitives::B256::with_last_byte(1),
-        extra_data: Bytes::from(vec![0x2a; 7]),
-    };
-
-    let resolved =
-        super::resolve_tx_pool_block_context(&chain_spec, &parent, Some(supplied.clone()))
-            .expect("target context should cross the fork boundary");
-
-    assert_eq!(resolved, supplied);
-}
-
-#[test]
-fn preserves_legacy_parent_time_context_before_etna() {
-    let chain_spec = chain_spec_with_etna_at_100();
-    let parent = Header {
+    let root = alloy_primitives::B256::with_last_byte(7);
+    let legacy = Header {
         number: 1,
         timestamp: 99,
         extra_data: Bytes::from_static(&[0x11, 0x22]),
+        parent_beacon_block_root: Some(alloy_primitives::B256::ZERO),
         ..Default::default()
     };
-
-    let resolved = super::resolve_tx_pool_block_context(&chain_spec, &parent, None)
-        .expect("legacy preselection should remain available before Etna");
-
-    assert_eq!(resolved.timestamp, 99);
-    assert_eq!(resolved.parent_beacon_block_root, alloy_primitives::B256::ZERO);
-    assert_eq!(resolved.extra_data, Bytes::from_static(&[0x11, 0x22]));
-}
-
-#[test]
-fn rejects_omitted_context_for_etna_parent() {
-    let chain_spec = chain_spec_with_etna_at_100();
-    let parent = Header { number: 1, timestamp: 100, ..Default::default() };
-
-    assert!(super::resolve_tx_pool_block_context(&chain_spec, &parent, None).is_err());
-}
-
-#[test]
-fn rejects_non_increasing_explicit_context_under_shasta_rules() {
-    let chain_spec = chain_spec_with_etna_at_100();
-    let parent = Header { number: 1, timestamp: 99, ..Default::default() };
-    let supplied = TxPoolBlockContext {
-        timestamp: 99,
-        parent_beacon_block_root: alloy_primitives::B256::ZERO,
-        extra_data: Bytes::from(vec![0; 7]),
+    let etna = Header {
+        number: 2,
+        timestamp: 100,
+        extra_data: Bytes::from(vec![25; 7]),
+        parent_beacon_block_root: Some(root),
+        ..Default::default()
     };
-
-    assert!(super::resolve_tx_pool_block_context(&chain_spec, &parent, Some(supplied)).is_err());
+    let etna_genesis = Header { number: 0, timestamp: 100, ..Default::default() };
+    for (parent, extra_data, parent_beacon_block_root) in [
+        (&legacy, Bytes::from_static(&[0x11, 0x22]), None),
+        (&etna, Bytes::from(vec![25; 7]), Some(root)),
+        (&etna_genesis, Bytes::from(vec![0; 7]), None),
+    ] {
+        let attributes = super::tx_pool_simulation_attributes(
+            &chain_spec,
+            parent,
+            Address::with_last_byte(0x42),
+            30_000_000,
+            1,
+        );
+        assert_eq!(attributes.timestamp, parent.timestamp);
+        assert_eq!(attributes.extra_data, extra_data);
+        assert_eq!(attributes.parent_beacon_block_root, parent_beacon_block_root);
+    }
 }
 
-#[test]
-fn rejects_nonzero_root_for_explicit_pre_etna_context() {
-    let chain_spec = chain_spec_with_etna_at_100();
-    let parent = Header { number: 1, timestamp: 98, ..Default::default() };
-    let context = |root| TxPoolBlockContext {
-        timestamp: 99,
-        parent_beacon_block_root: root,
-        extra_data: Bytes::from(vec![0; 7]),
-    };
-
-    let error = super::resolve_tx_pool_block_context(
-        &chain_spec,
-        &parent,
-        Some(context(alloy_primitives::B256::with_last_byte(1))),
-    )
-    .expect_err("a pre-Etna target must not simulate EIP-4788 with a nonzero root");
-    assert!(
-        matches!(&error, EthApiError::InvalidParams(message) if message.contains("parentBeaconBlockRoot")),
-        "{error}"
-    );
-
-    let resolved = super::resolve_tx_pool_block_context(
-        &chain_spec,
-        &parent,
-        Some(context(alloy_primitives::B256::ZERO)),
-    )
-    .expect("a pre-Etna target keeps the legacy zero root");
-    assert_eq!(resolved, context(alloy_primitives::B256::ZERO));
-}
-
-/// Runs the real tx-selection loop around the Etna boundary and returns the selected count and
-/// resulting state so callers can inspect standard system-contract writes.
-fn select_near_limit_at_target(
-    target_timestamp: u64,
-    explicit_context: bool,
-    root: alloy_primitives::B256,
-    extra_data: Bytes,
-) -> (usize, State<InMemoryDB>) {
+/// Runs the real tx-selection loop at `target_timestamp` and returns how many transactions fit
+/// after the fork-dependent anchor zk-gas reserve.
+fn select_near_limit_at(target_timestamp: u64) -> usize {
     let caller = Address::with_last_byte(0x31);
     let chain_spec = Arc::new(chain_spec_with_etna_at_100());
     let mut state = State::builder()
-        .with_database(db_with_system_contracts(&[(caller, 0)]))
+        .with_database(db_with_contracts(&[(caller, 0)]))
         .with_bundle_update()
         .build();
     let mut env = unzen_evm_env();
@@ -266,20 +212,16 @@ fn select_near_limit_at_target(
     env.block_env.timestamp = U256::from(target_timestamp);
     env.block_env.base_fee_share_pctg = (target_timestamp >= 100).then_some(0);
     let evm = TaikoEvmFactory.create_evm(&mut state, env);
-    let mut ctx = unzen_execution_ctx();
-    ctx.parent_beacon_block_root = Some(root);
-    ctx.extra_data = extra_data;
-    let executor =
-        TaikoBlockExecutor::new(evm, ctx, chain_spec.clone(), RethReceiptBuilder::default());
+    let executor = TaikoBlockExecutor::new(
+        evm,
+        unzen_execution_ctx(),
+        chain_spec.clone(),
+        RethReceiptBuilder::default(),
+    );
     let mut builder = ExecutorBackedBuilder { executor };
 
-    super::prepare_tx_pool_executor(
-        builder.executor_mut(),
-        chain_spec.as_ref(),
-        target_timestamp,
-        explicit_context,
-    )
-    .expect("target context preparation should succeed");
+    super::prepare_tx_pool_executor(builder.executor_mut(), chain_spec.as_ref(), target_timestamp)
+        .expect("preselection preparation should succeed");
 
     let pool = testing_pool();
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -305,66 +247,17 @@ fn select_near_limit_at_target(
     )
     .unwrap();
     let SelectionOutcome::Completed(lists) = outcome else { panic!("selection cancelled") };
-    let selected = lists[0].transactions.len();
-    drop(builder);
-    (selected, state)
+    lists[0].transactions.len()
 }
 
 #[test]
-fn explicit_etna_context_removes_anchor_reserve_and_records_supplied_root() {
-    use alloy_eips::eip4788;
-
-    let root = alloy_primitives::B256::with_last_byte(7);
-    let (selected, mut state) =
-        select_near_limit_at_target(100, true, root, Bytes::from(vec![0; 7]));
-
-    assert_eq!(selected, 1);
-    assert_eq!(
-        state.storage(eip4788::BEACON_ROOTS_ADDRESS, U256::from(100)).unwrap(),
-        U256::from(100)
-    );
-    assert_eq!(
-        state.storage(eip4788::BEACON_ROOTS_ADDRESS, U256::from(8291)).unwrap(),
-        U256::from_be_bytes(root.0)
-    );
+fn etna_selection_drops_the_anchor_reserve() {
+    assert_eq!(select_near_limit_at(100), 1);
 }
 
 #[test]
-fn legacy_context_keeps_anchor_reserve_before_etna() {
-    let (selected, _) =
-        select_near_limit_at_target(99, false, alloy_primitives::B256::ZERO, Bytes::default());
-
-    assert_eq!(selected, 0);
-}
-
-#[test]
-fn explicit_etna_context_rejects_zero_root_and_malformed_extra_data() {
-    for (root, extra_data, expected) in [
-        (alloy_primitives::B256::ZERO, Bytes::from(vec![0; 7]), "beacon"),
-        (alloy_primitives::B256::with_last_byte(1), Bytes::from(vec![0; 6]), "extraData"),
-    ] {
-        let chain_spec = Arc::new(chain_spec_with_etna_at_100());
-        let mut state = State::builder()
-            .with_database(db_with_system_contracts(&[]))
-            .with_bundle_update()
-            .build();
-        let mut env = unzen_evm_env();
-        env.cfg_env.spec = TaikoSpecId::ETNA;
-        env.block_env.number = U256::from(2);
-        env.block_env.timestamp = U256::from(100);
-        env.block_env.base_fee_share_pctg = Some(0);
-        let evm = TaikoEvmFactory.create_evm(&mut state, env);
-        let mut ctx = unzen_execution_ctx();
-        ctx.parent_beacon_block_root = Some(root);
-        ctx.extra_data = extra_data;
-        let mut executor =
-            TaikoBlockExecutor::new(evm, ctx, chain_spec.clone(), RethReceiptBuilder::default());
-
-        let error = super::prepare_tx_pool_executor(&mut executor, chain_spec.as_ref(), 100, true)
-            .unwrap_err();
-
-        assert!(error.to_string().contains(expected), "{error}");
-    }
+fn legacy_selection_keeps_the_anchor_reserve() {
+    assert_eq!(select_near_limit_at(99), 0);
 }
 
 #[test]
@@ -429,7 +322,6 @@ fn tx_pool_content_params_conversion_defaults_min_tip_to_zero() {
         max_bytes_per_tx_list: 120_000,
         locals: None,
         max_transactions_lists: 2,
-        block_context: None,
     };
     let with_tip = TxPoolContentWithMinTipParams::from(params);
     assert_eq!(with_tip.min_tip, 0);

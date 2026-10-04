@@ -42,6 +42,18 @@ struct TaikoPendingEnvBuilder {
     evm: TaikoEvmConfig,
 }
 
+/// Returns simulation-only Etna fee metadata for a child of `parent`.
+///
+/// An empty genesis has no authoritative metadata, so simulations use zero sharing. Every other
+/// parent keeps its own bytes, and the real-context guards still reject malformed values.
+pub(crate) fn etna_simulation_extra_data(parent: &Header) -> Bytes {
+    if parent.number == 0 && parent.extra_data.is_empty() {
+        Bytes::from_static(&[0; 7])
+    } else {
+        parent.extra_data.clone()
+    }
+}
+
 impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
     /// Uses zero-percent sharing only for an Etna pending target over empty-metadata genesis.
     ///
@@ -55,11 +67,8 @@ impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
     ) -> Result<TaikoNextBlockEnvAttributes, EthApiError> {
         let mut attributes =
             TaikoNextBlockEnvAttributes::build_pending_env(parent, block_overrides);
-        if parent.number == 0 &&
-            parent.extra_data.is_empty() &&
-            self.evm.chain_spec().is_etna_active(attributes.timestamp)
-        {
-            attributes.extra_data = Bytes::from_static(&[0; 7]);
+        if self.evm.chain_spec().is_etna_active(attributes.timestamp) {
+            attributes.extra_data = etna_simulation_extra_data(parent);
         }
         Ok(attributes)
     }

@@ -507,6 +507,21 @@ fn canonical_devnet_etna_genesis_keeps_zero_root_and_serves_pending_simulation()
                 fcu(&client, version, spec.genesis_hash(), spec.genesis_hash(), None).await?;
             assert!(status.payload_status.status.is_valid(), "{status:?}");
         }
+        // Preselection over an Etna genesis needs no beacon root: it never runs system calls.
+        let lists: Value = client
+            .request(
+                "taikoAuth_txPoolContent",
+                rpc_params![
+                    alloy_primitives::Address::with_last_byte(0x42),
+                    1u64,
+                    30_000_000u64,
+                    120_000u64,
+                    Option::<Vec<alloy_primitives::Address>>::None,
+                    1u64
+                ],
+            )
+            .await?;
+        assert!(lists.is_array(), "{lists}");
         let http = node.inner.rpc_server_handle().http_client().unwrap();
         let tx = json!({"to": "0x0000000000000000000000000000000000000021"});
         assert_eq!(
@@ -522,6 +537,7 @@ fn canonical_devnet_etna_genesis_keeps_zero_root_and_serves_pending_simulation()
             http.request::<Value, _>("eth_getBlockByNumber", rpc_params!["pending", true]).await?,
             Value::Null
         );
+        assert_eq!(http.request::<Value, _>("eth_blockNumber", rpc_params![]).await?, json!("0x0"));
         Ok(())
     })
 }

@@ -139,6 +139,7 @@ impl TaikoEngineValidator {
     }
 
     /// Checks Etna body and sidecar invariants on both Engine RPC and direct tree submissions.
+    /// Both callers reject the inbound-only block access list and slot number sentinels.
     fn validate_etna_payload(&self, payload: &TaikoExecutionData) -> Result<(), NewPayloadError> {
         let invalid = |reason| {
             NewPayloadError::other(TaikoPayloadValidationError::InvalidEtnaPayload(reason))
@@ -176,14 +177,6 @@ impl TaikoEngineValidator {
                 Some(alloy_consensus::proofs::calculate_withdrawals_root(&osaka.withdrawals))
         {
             return Err(invalid("legacy root overrides must match the actual body"));
-        }
-        if sidecar.block_access_list.is_some() {
-            return Err(NewPayloadError::other(
-                TaikoPayloadValidationError::BlockAccessListUnsupported,
-            ));
-        }
-        if sidecar.slot_number.is_some() {
-            return Err(NewPayloadError::other(TaikoPayloadValidationError::SlotNumberUnsupported));
         }
         Ok(())
     }

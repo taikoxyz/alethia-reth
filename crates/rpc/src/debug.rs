@@ -351,7 +351,6 @@ where
     E: ConfigureEvm<Primitives = EthPrimitives>,
     DB: reth_revm::Database + std::fmt::Debug,
 {
-    let mut witness_record = ExecutionWitnessRecord::default();
     let requires_legacy_anchor =
         !chain_spec.fork(TaikoHardfork::Etna).active_at_timestamp(block.timestamp());
 
@@ -369,12 +368,8 @@ where
             // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
             // validation rejects any block that includes one. Keep the same filtering,
             // but never silently discard the mandatory anchor transaction.
-            match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
-                Ok(true) => {
-                    continue;
-                }
-                Ok(false) => {}
-                Err(err) => return Err(err),
+            if should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction)? {
+                continue;
             }
 
             match block_executor.execute_transaction(tx) {
@@ -397,9 +392,7 @@ where
     }
 
     state.merge_transitions(BundleRetention::Reverts);
-    witness_record.record_executed_state(state, mode);
-
-    Ok(witness_record)
+    Ok(ExecutionWitnessRecord::from_executed_state(state, mode))
 }
 
 /// Decode an RLP transaction list and recover each transaction signer for EVM execution.

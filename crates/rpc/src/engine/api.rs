@@ -214,15 +214,13 @@ where
                 .payload_id
                 .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
 
-            let built_payload = self
-                .wait_for_built_payload(payload_id)
-                .await
-                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+            let built_payload =
+                self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
 
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
             self.persist_l1_origin(stored_l1_origin, is_preconf_block, batch_id)
-                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+                .map_err(ErrorObjectOwned::from)?;
         }
 
         Ok(status)

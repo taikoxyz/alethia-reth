@@ -228,6 +228,7 @@ mod tests {
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
     }
+
     #[test]
     fn etna_derivation_filters_first_position_and_preserves_truncation() {
         use crate::testutil::{BENCH_LIMIT_TARGET, etna_chain_spec, recovered_tx_with_chain_id};

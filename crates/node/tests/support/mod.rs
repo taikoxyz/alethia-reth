@@ -34,10 +34,6 @@ use serde_json::Value;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 pub fn fixture_chain_spec() -> Arc<TaikoChainSpec> {
-    fixture_chain_spec_at(100)
-}
-
-pub fn fixture_chain_spec_at(activation: u64) -> Arc<TaikoChainSpec> {
     let genesis: Genesis =
         serde_json::from_str(include_str!("../fixtures/etna-genesis.json")).unwrap();
     for (address, code) in [
@@ -47,7 +43,7 @@ pub fn fixture_chain_spec_at(activation: u64) -> Arc<TaikoChainSpec> {
         assert_eq!(genesis.alloc[&address].code.as_ref(), Some(&code));
     }
     let mut forks = TAIKO_DEVNET_HARDFORKS.clone();
-    forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(activation));
+    forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
     let mut inner = ChainSpec::builder()
         .chain(genesis.config.chain_id.into())
         .genesis(genesis)

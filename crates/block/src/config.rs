@@ -799,7 +799,7 @@ mod tests {
     mod payload_ctx {
         use super::*;
         use alethia_reth_primitives::engine::types::{
-            TaikoExecutionDataSidecar, TaikoExecutionPayloadV1,
+            TaikoExecutionDataSidecar, TaikoExecutionPayloadV1, TaikoOsakaPayloadFields,
         };
         use alloy_primitives::Bloom;
 
@@ -833,23 +833,26 @@ mod tests {
             }
         }
 
+        fn osaka_fields(parent_beacon_block_root: B256) -> TaikoOsakaPayloadFields {
+            TaikoOsakaPayloadFields {
+                parent_beacon_block_root,
+                withdrawals: vec![],
+                blob_gas_used: 0,
+                excess_blob_gas: 0,
+                expected_blob_versioned_hashes: vec![],
+                execution_requests: vec![],
+            }
+        }
+
         #[test]
         fn payload_root_follows_etna_activation_without_changing_legacy_execution() {
-            use alethia_reth_primitives::engine::types::TaikoOsakaPayloadFields;
             let mut spec = (*TAIKO_DEVNET).as_ref().clone();
             spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
             spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
             let config = TaikoEvmConfig::new(Arc::new(spec));
             let root = B256::with_last_byte(7);
             let mut payload = sample_payload(Some(U256::ZERO));
-            payload.taiko_sidecar.osaka = Some(TaikoOsakaPayloadFields {
-                parent_beacon_block_root: root,
-                withdrawals: vec![],
-                blob_gas_used: 0,
-                excess_blob_gas: 0,
-                expected_blob_versioned_hashes: vec![],
-                execution_requests: vec![],
-            });
+            payload.taiko_sidecar.osaka = Some(osaka_fields(root));
             for (timestamp, expected) in
                 [(49, None), (50, Some(B256::ZERO)), (99, Some(B256::ZERO)), (100, Some(root))]
             {
@@ -861,19 +864,11 @@ mod tests {
 
         #[test]
         fn etna_payload_context_requires_nonzero_root() {
-            use alethia_reth_primitives::engine::types::TaikoOsakaPayloadFields;
             let config = config_with_etna_at(0);
             for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
                 let mut payload = sample_payload(Some(U256::ZERO));
                 payload.execution_payload.extra_data = vec![0; 13].into();
-                payload.taiko_sidecar.osaka = root.map(|root| TaikoOsakaPayloadFields {
-                    parent_beacon_block_root: root,
-                    withdrawals: vec![],
-                    blob_gas_used: 0,
-                    excess_blob_gas: 0,
-                    expected_blob_versioned_hashes: vec![],
-                    execution_requests: vec![],
-                });
+                payload.taiko_sidecar.osaka = root.map(osaka_fields);
                 let result = config.context_for_payload(&payload);
                 assert_eq!(
                     result.is_ok(),

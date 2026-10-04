@@ -448,9 +448,8 @@ fn etna_header() -> Header {
 
 #[test]
 fn etna_header_requires_nonzero_root_and_ordinary_first_transaction() {
-    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
-    let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
+    let spec = etna_chain_spec();
+    let consensus = test_consensus(spec.clone());
     for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
         let header = Header { parent_beacon_block_root: root, ..etna_header() };
         assert_eq!(
@@ -479,8 +478,7 @@ fn etna_header_requires_nonzero_root_and_ordinary_first_transaction() {
 
 #[test]
 fn etna_canonical_import_rejects_body_with_filtered_first_transaction() {
-    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+    let spec = etna_chain_spec();
     let tx: TransactionSigned = Signed::new_unchecked(
         TxLegacy::default(),
         Signature::new(U256::from(1), U256::from(2), false),
@@ -516,9 +514,9 @@ fn etna_canonical_import_rejects_body_with_filtered_first_transaction() {
 
 #[test]
 fn etna_activation_preserves_legacy_empty_body_and_pre_fork_header_roots() {
-    let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+    let mut spec = devnet_chain_spec();
     spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(10));
-    let consensus = TaikoBeaconConsensus::new(Arc::new(spec.clone()), Arc::new(NullBlockReader));
+    let consensus = test_consensus(spec.clone());
     for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
         let header = Header {
             number: 1,

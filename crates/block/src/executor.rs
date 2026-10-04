@@ -657,8 +657,9 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
-            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, db_with_system_contracts,
+            etna_chain_spec, etna_evm_env, etna_execution_ctx, recovered_tx, unzen_chain_spec,
+            unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -666,9 +667,6 @@ mod test {
 
     #[test]
     fn etna_empty_block_writes_system_storage_without_transaction_gas() {
-        use crate::testutil::{
-            db_with_system_contracts, etna_chain_spec, etna_evm_env, etna_execution_ctx,
-        };
         use alloy_eips::{eip2935, eip4788};
         let root = B256::with_last_byte(7);
         let parent = B256::with_last_byte(9);
@@ -707,7 +705,6 @@ mod test {
 
     #[test]
     fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
-        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let root = B256::with_last_byte(7);
         let cases: [(Option<B256>, Option<Bytes>, &str); 4] = [
             (None, None, "beacon"),
@@ -736,7 +733,6 @@ mod test {
 
     #[test]
     fn etna_direct_context_installs_authoritative_fee_percentage() {
-        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state =
             State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
         let mut env = etna_evm_env();
@@ -944,11 +940,10 @@ mod test {
 
     #[test]
     fn etna_zk_exhaustion_is_validation_and_remains_recoverable_for_derivation() {
-        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state =
             State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
         let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-        let ctx = etna_execution_ctx(alloy_primitives::B256::with_last_byte(1));
+        let ctx = etna_execution_ctx(B256::with_last_byte(1));
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx,
@@ -966,10 +961,9 @@ mod test {
 
     #[test]
     fn etna_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
-        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let mut state = State::builder().with_database(db_with_contracts(&[])).build();
         let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-        let mut ctx = etna_execution_ctx(alloy_primitives::B256::with_last_byte(1));
+        let mut ctx = etna_execution_ctx(B256::with_last_byte(1));
         ctx.expected_difficulty = Some(U256::from(1));
         let executor = TaikoBlockExecutor::new(
             evm,

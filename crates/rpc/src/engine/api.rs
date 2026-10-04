@@ -527,6 +527,7 @@ mod tests {
         spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
         spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
         let spec = Arc::new(spec);
+        let api_spec = spec.clone();
         let (payload_tx, mut payload_rx) =
             tokio::sync::mpsc::unbounded_channel::<PayloadServiceCommand<TaikoEngineTypes>>();
         // The store adapter supplies deterministic already-built jobs. Real wrapper routing,
@@ -634,10 +635,6 @@ mod tests {
                 }
             }
         });
-        let mut api_spec = (*unzen_chain_spec()).clone();
-        api_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
-        api_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
-        let api_spec = Arc::new(api_spec);
         let blockchain = reth_provider::providers::BlockchainProvider::with_latest(
             provider.clone(),
             reth_primitives_traits::SealedHeader::seal_slow(Header::default()),
@@ -758,6 +755,7 @@ mod tests {
         }
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
+
     fn fcu_attributes(timestamp: u64, preconf: bool) -> TaikoPayloadAttributes {
         use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
         TaikoPayloadAttributes {
@@ -1005,6 +1003,7 @@ mod tests {
             built.with_sidecars(vec![alloy_eips::eip4844::BlobTransactionSidecar::default()]);
         assert!(convert_built_payload_to_execution_payload_envelope_v5(unsupported).is_err());
     }
+
     #[test]
     fn engine_capabilities_advertise_exactly_the_served_methods() {
         let mut capabilities = taiko_engine_capabilities().list();

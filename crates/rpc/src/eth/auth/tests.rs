@@ -75,7 +75,7 @@ fn anchor_v4_input() -> Bytes {
 }
 
 /// Builds a ProviderFactory wired with both reth and Taiko tables for lookup tests.
-fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
+pub(crate) fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
     create_taiko_test_provider_factory_with_chain_spec(MAINNET.clone())
 }
 

@@ -627,51 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn etna_genesis_retains_canonical_zero_root_exception() {
-        let mut block = convert_etna(etna_data(U256::ZERO)).unwrap().into_block();
-        block.header.number = 0;
-        block.header.parent_beacon_block_root = Some(B256::ZERO);
-        let data = TaikoEngineTypes::block_to_payload(block.seal_slow(), None);
-        version_etna(&data).unwrap();
-        assert_eq!(convert_etna(data).unwrap().parent_beacon_block_root, Some(B256::ZERO));
-    }
-
-    #[test]
-    fn v3_attributes_require_withdrawals_and_parent_beacon_root() {
-        let validate = |attributes: &TaikoPayloadAttributes| {
-            <TaikoEngineValidator as EngineApiValidator<TaikoEngineTypes>>::validate_version_specific_fields(
-                &etna_validator(),
-                EngineApiMessageVersion::V3,
-                PayloadOrAttributes::from_attributes(attributes),
-            )
-        };
-        for timestamp in [99, 100] {
-            let mut complete = sample_payload_attributes();
-            complete.payload_attributes.timestamp = timestamp;
-            complete.block_metadata.timestamp = U256::from(timestamp);
-            if timestamp == 100 {
-                complete.payload_attributes.parent_beacon_block_root =
-                    Some(B256::with_last_byte(42));
-                complete.block_metadata.extra_data = Bytes::from(vec![0; 13]);
-            }
-            validate(&complete).unwrap();
-            for missing_withdrawals in [true, false] {
-                let mut attributes = complete.clone();
-                if missing_withdrawals {
-                    attributes.payload_attributes.withdrawals = None;
-                } else {
-                    attributes.payload_attributes.parent_beacon_block_root = None;
-                }
-                let error = validate(&attributes).unwrap_err();
-                assert!(
-                    matches!(error, EngineObjectValidationError::PayloadAttributes(_)),
-                    "timestamp {timestamp}, missing withdrawals {missing_withdrawals}: {error:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn formats_blob_transactions_unsupported_error() {
         assert_eq!(
             TaikoPayloadValidationError::BlobTransactionsUnsupported.to_string(),

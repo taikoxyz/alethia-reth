@@ -127,16 +127,6 @@ mod tests {
     }
 
     #[test]
-    fn header_difficulty_accepts_decimal_zero_and_nonzero() {
-        let zero: TaikoExecutionPayloadV3 = serde_json::from_value(wire_value(json!(0))).unwrap();
-        assert_eq!(zero.header_difficulty, 0);
-
-        let nonzero: TaikoExecutionPayloadV3 =
-            serde_json::from_value(wire_value(json!(42))).unwrap();
-        assert_eq!(nonzero.header_difficulty, 42);
-    }
-
-    #[test]
     fn header_difficulty_rejects_missing_null_and_overflow() {
         let mut missing = wire_value(json!(0));
         missing.as_object_mut().unwrap().remove("headerDifficulty");

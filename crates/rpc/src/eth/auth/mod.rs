@@ -124,7 +124,7 @@ where
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Computes the combined gas budget across all requested candidate tx lists, rejecting
 /// parameter combinations whose product does not fit in a `u64`.

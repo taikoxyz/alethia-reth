@@ -159,10 +159,6 @@ impl TaikoPayloadBuilderAttributes {
             ));
         }
 
-        let base_fee_per_gas = attributes
-            .base_fee_per_gas
-            .try_into()
-            .map_err(|_| alloy_rlp::Error::Custom("invalid attributes.base_fee_per_gas"))?;
         let id = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_V2);
 
         // Determine transaction source based on whether tx_list is provided.
@@ -213,7 +209,10 @@ impl TaikoPayloadBuilderAttributes {
             gas_limit: attributes.block_metadata.gas_limit,
             timestamp: attributes.block_metadata.timestamp.to(),
             mix_hash: attributes.payload_attributes.prev_randao,
-            base_fee_per_gas,
+            base_fee_per_gas: attributes
+                .base_fee_per_gas
+                .try_into()
+                .map_err(|_| alloy_rlp::Error::Custom("invalid attributes.base_fee_per_gas"))?,
             extra_data: attributes.block_metadata.extra_data,
             transactions,
             anchor_transaction,

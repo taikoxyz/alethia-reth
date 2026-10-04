@@ -87,6 +87,8 @@ fn live_two_node_build_import_state_and_empty_roundtrip() -> eyre::Result<()> {
             with_txs(fixture_attributes(100), &[tx]),
         )
         .await?;
+        // The anchor bytes are copied from the FCU attributes; consensus checks only the length.
+        assert_eq!(activation.block.extra_data, activation.attrs.block_metadata.extra_data);
         assert!(activation.block.difficulty > U256::ZERO);
         assert!(activation.payload["headerDifficulty"].is_number());
         for client in [&ca, &cb] {

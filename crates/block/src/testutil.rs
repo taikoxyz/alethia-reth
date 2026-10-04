@@ -83,10 +83,10 @@ pub fn etna_evm_env() -> TaikoEvmEnv {
     env
 }
 
-/// Returns an Etna execution context with seven-byte extraData and the supplied beacon root.
+/// Returns an Etna execution context with 13-byte extraData and the supplied beacon root.
 pub fn etna_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
     let mut ctx = unzen_execution_ctx();
-    ctx.extra_data = vec![0; 7].into();
+    ctx.extra_data = vec![0; 13].into();
     ctx.parent_beacon_block_root = Some(root);
     ctx
 }

@@ -1,6 +1,8 @@
 use alethia_reth_block::config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes};
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
-use alethia_reth_primitives::engine::TaikoEngineTypes;
+use alethia_reth_primitives::{
+    ETNA_EXTRA_DATA_LEN, SHASTA_EXTRA_DATA_LEN, engine::TaikoEngineTypes,
+};
 use alloy_consensus::Header;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::BlockOverrides;
@@ -44,20 +46,25 @@ struct TaikoPendingEnvBuilder {
 
 /// Returns simulation-only Etna fee metadata for a child of `parent`.
 ///
-/// An empty genesis has no authoritative metadata, so simulations use zero sharing. Every other
-/// parent keeps its own bytes, and the real-context guards still reject malformed values.
+/// Etna parents already carry the 13-byte layout, which models an inherited anchor. The last
+/// Shasta/Unzen parent keeps its fee share and proposal ID with a zero anchor number, and an empty
+/// genesis uses zeros. The anchor number takes part in no execution, so these defaults cannot
+/// change a simulation result. Other values are returned unchanged for the real guards to reject.
 pub(crate) fn etna_simulation_extra_data(parent: &Header) -> Bytes {
-    if parent.number == 0 && parent.extra_data.is_empty() {
-        Bytes::from_static(&[0; 7])
-    } else {
-        parent.extra_data.clone()
+    match parent.extra_data.len() {
+        SHASTA_EXTRA_DATA_LEN => {
+            let mut extra_data = parent.extra_data.to_vec();
+            extra_data.resize(ETNA_EXTRA_DATA_LEN, 0);
+            extra_data.into()
+        }
+        0 if parent.number == 0 => Bytes::from_static(&[0; ETNA_EXTRA_DATA_LEN]),
+        _ => parent.extra_data.clone(),
     }
 }
 
 impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
-    /// Uses zero-percent sharing only for an Etna pending target over empty-metadata genesis.
+    /// Uses simulation-only Etna metadata when the pending target's parent lacks the Etna layout.
     ///
-    /// Seven zero bytes are a simulation default, not authoritative metadata for a real block.
     /// Fee-enabled simulation credits base fees to the treasury; absent fee authority would not.
     /// The missing beacon root is preserved, so ordinary local pending builds still fall back.
     fn pending_env_attributes(
@@ -77,9 +84,8 @@ impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alethia_reth_block::config::InvalidEtnaExtraData;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::etna::MissingEtnaBeaconRoot;
+    use alethia_reth_primitives::etna::{InvalidEtnaExtraData, MissingEtnaBeaconRoot};
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::B256;
     use reth_evm::ConfigureEvm;
@@ -94,11 +100,12 @@ mod tests {
     #[test]
     fn pending_genesis_default_is_gated_by_target_fork_number_and_empty_metadata() {
         for (activation, number, timestamp, extra_data, expected) in [
-            (12, 0, 0, vec![], vec![0; 7]),
+            (12, 0, 0, vec![], vec![0; 13]),
             (13, 0, 0, vec![], vec![]),
             (0, 1, 1, vec![], vec![]),
             (0, 0, 0, vec![1], vec![1]),
-            (0, 0, 0, vec![25, 0, 0, 0, 0, 1, 2], vec![25, 0, 0, 0, 0, 1, 2]),
+            (0, 0, 0, vec![25, 0, 0, 0, 0, 1, 2], vec![25, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0]),
+            (0, 1, 1, vec![9; 13], vec![9; 13]),
         ] {
             let builder = pending_builder(activation);
             let parent = SealedHeader::new_unhashed(Header {
@@ -110,7 +117,7 @@ mod tests {
             let attributes = builder.pending_env_attributes(&parent, None).unwrap();
             assert_eq!(attributes.extra_data.as_ref(), expected);
             assert_eq!(attributes.parent_beacon_block_root, None);
-            if expected.len() != 7 && activation <= attributes.timestamp {
+            if expected.len() != 13 && activation <= attributes.timestamp {
                 assert!(builder.evm.next_evm_env(&parent, &attributes).is_err());
             }
         }

@@ -780,7 +780,11 @@ mod tests {
             block_metadata: TaikoBlockMetadata {
                 timestamp: U256::from(timestamp),
                 gas_limit: 30_000_000,
-                extra_data: Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
+                extra_data: if timestamp >= 100 {
+                    Bytes::from(vec![0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 1])
+                } else {
+                    Bytes::from(vec![0, 0, 0, 0, 0, 0, 9])
+                },
                 ..Default::default()
             },
             l1_origin: RpcL1Origin {
@@ -882,7 +886,7 @@ mod tests {
                 1 => attrs.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
                 2 => attrs.anchor_transaction = Some(Bytes::new()),
                 3 => attrs.block_metadata.timestamp = U256::from(99),
-                4 => attrs.block_metadata.extra_data = Bytes::new(),
+                4 => attrs.block_metadata.extra_data = Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
                 5 => attrs.payload_attributes.slot_number = Some(1),
                 _ => attrs.payload_attributes.target_gas_limit = Some(1),
             }

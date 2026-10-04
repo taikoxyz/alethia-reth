@@ -404,6 +404,10 @@ fn shasta_extra_data() -> Bytes {
     Bytes::from_static(&[75, 0, 0, 0, 0, 0x4c, 0x81])
 }
 
+fn etna_extra_data() -> Bytes {
+    Bytes::from_static(&[75, 0, 0, 0, 0, 0x4c, 0x81, 0, 0, 0, 0, 0x12, 0x34])
+}
+
 fn devnet_chain_spec() -> TaikoChainSpec {
     (*TAIKO_DEVNET).as_ref().clone()
 }
@@ -433,7 +437,7 @@ fn etna_header() -> Header {
         timestamp: 1,
         gas_limit: 30_000_000,
         base_fee_per_gas: Some(1),
-        extra_data: shasta_extra_data(),
+        extra_data: etna_extra_data(),
         parent_beacon_block_root: Some(B256::with_last_byte(7)),
         withdrawals_root: Some(EMPTY_WITHDRAWALS),
         blob_gas_used: Some(0),
@@ -566,6 +570,40 @@ fn etna_header_requires_empty_withdrawals_and_zero_blob_gas() {
     consensus
         .validate_header(&SealedHeader::seal_slow(genesis))
         .expect("the Etna genesis header is exempt from body commitments");
+}
+
+#[test]
+fn etna_header_requires_thirteen_byte_extra_data() {
+    let consensus = test_consensus(etna_chain_spec());
+    consensus
+        .validate_header(&SealedHeader::seal_slow(etna_header()))
+        .expect("the 13-byte Etna layout should validate");
+    for len in [0, 7, 12, 14] {
+        let header = Header { extra_data: Bytes::from(vec![0; len]), ..etna_header() };
+        let err = consensus
+            .validate_header(&SealedHeader::seal_slow(header))
+            .expect_err("a non-13-byte Etna extraData must be rejected");
+        assert!(err.to_string().contains("extraData"), "{len}: {err}");
+    }
+
+    let genesis = Header {
+        number: 0,
+        extra_data: Bytes::new(),
+        parent_beacon_block_root: Some(B256::ZERO),
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+        ..etna_header()
+    };
+    consensus
+        .validate_header(&SealedHeader::seal_slow(genesis))
+        .expect("the Etna genesis is exempt from the extraData layout");
+
+    let unzen = Header { parent_beacon_block_root: Some(B256::ZERO), ..etna_header() };
+    let err = test_consensus(unzen_chain_spec())
+        .validate_header(&SealedHeader::seal_slow(unzen))
+        .expect_err("Unzen keeps the 7-byte layout");
+    assert!(err.to_string().contains("Shasta extra-data"), "{err}");
 }
 
 #[test]

@@ -44,8 +44,8 @@ use alethia_reth_evm::{env::TaikoBlockEnv, factory::TaikoEvmFactory, spec::Taiko
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 use alethia_reth_primitives::{
-    decode_shasta_basefee_sharing_pctg,
-    etna::{MissingEtnaBeaconRoot, validate_etna_root},
+    ETNA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg,
+    etna::{MissingEtnaBeaconRoot, validate_etna_extra_data, validate_etna_root},
 };
 
 /// Error when base fee is missing from a block header.
@@ -80,24 +80,8 @@ impl std::fmt::Display for MissingUnzenHeaderDifficulty {
 
 impl std::error::Error for MissingUnzenHeaderDifficulty {}
 
-/// Error when a non-genesis Etna block lacks the seven-byte Shasta extraData layout.
-#[derive(Debug)]
-pub struct InvalidEtnaExtraData {
-    /// Actual extraData length in bytes.
-    pub len: usize,
-}
-
-impl std::fmt::Display for InvalidEtnaExtraData {
-    /// Reports the malformed length required to diagnose invalid fee context.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid Etna extraData length {}, expected 7 bytes", self.len)
-    }
-}
-
-impl std::error::Error for InvalidEtnaExtraData {}
-
 /// Carries header fee authority into Etna replay environments, rejecting malformed target blocks.
-/// Genesis may lack the Shasta layout; it then retains no authoritative fee percentage.
+/// Genesis may lack the Etna layout; it then retains no authoritative fee percentage.
 fn with_taiko_fee_context(
     block_env: BlockEnv,
     spec: TaikoSpecId,
@@ -105,14 +89,12 @@ fn with_taiko_fee_context(
 ) -> Result<TaikoBlockEnv, AnyError> {
     let mut block_env = TaikoBlockEnv::from(block_env);
     if spec.is_enabled_in(TaikoSpecId::ETNA) {
-        if extra_data.len() != 7 {
-            if block_env.number.is_zero() {
-                return Ok(block_env);
-            }
-            return Err(AnyError::new(InvalidEtnaExtraData { len: extra_data.len() }));
+        validate_etna_extra_data(true, block_env.number.to(), extra_data).map_err(AnyError::new)?;
+        if extra_data.len() == ETNA_EXTRA_DATA_LEN {
+            block_env = block_env.with_base_fee_share_pctg(u64::from(
+                decode_shasta_basefee_sharing_pctg(extra_data),
+            ));
         }
-        block_env = block_env
-            .with_base_fee_share_pctg(u64::from(decode_shasta_basefee_sharing_pctg(extra_data)));
     }
     Ok(block_env)
 }
@@ -558,7 +540,7 @@ mod tests {
             gas_limit: 30_000_000,
             beneficiary: Address::with_last_byte(0xBB),
             base_fee_per_gas: Some(10_000_000),
-            extra_data: vec![percentage, 0, 0, 0, 0, 0, 1].into(),
+            extra_data: vec![percentage, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1].into(),
             ..Default::default()
         }
     }
@@ -585,7 +567,7 @@ mod tests {
                 suggested_fee_recipient: Address::ZERO,
                 prev_randao: B256::ZERO,
                 gas_limit: 30_000_000,
-                extra_data: vec![0; 7].into(),
+                extra_data: vec![0; 13].into(),
                 base_fee_per_gas: 1,
                 parent_beacon_block_root: root,
             };
@@ -608,9 +590,9 @@ mod tests {
         let config = config_with_etna_at(0);
         let mut header = etna_header(25);
         assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(25));
-        header.extra_data = vec![0; 7].into();
+        header.extra_data = vec![0; 13].into();
         assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(0));
-        for len in [0, 1, 6, 8] {
+        for len in [0, 1, 7, 12, 14] {
             header.extra_data = vec![0; len].into();
             assert!(config.evm_env(&header).is_err(), "non-genesis extraData length {len}");
             assert!(
@@ -636,7 +618,7 @@ mod tests {
             suggested_fee_recipient: Address::ZERO,
             prev_randao: B256::ZERO,
             gas_limit: 30_000_000,
-            extra_data: vec![25, 0, 0, 0, 0, 0, 2].into(),
+            extra_data: vec![25, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 1].into(),
             base_fee_per_gas: 1,
             parent_beacon_block_root: Some(B256::ZERO),
         };
@@ -644,7 +626,7 @@ mod tests {
             config.next_evm_env(&parent, &attrs).unwrap().block_env.base_fee_share_pctg,
             Some(25)
         );
-        attrs.extra_data = Bytes::new();
+        attrs.extra_data = vec![25, 0, 0, 0, 0, 0, 2].into();
         assert!(config.next_evm_env(&parent, &attrs).is_err());
     }
 
@@ -883,7 +865,7 @@ mod tests {
             let config = config_with_etna_at(0);
             for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
                 let mut payload = sample_payload(Some(U256::ZERO));
-                payload.execution_payload.extra_data = vec![0; 7].into();
+                payload.execution_payload.extra_data = vec![0; 13].into();
                 payload.taiko_sidecar.osaka = root.map(|root| TaikoOsakaPayloadFields {
                     parent_beacon_block_root: root,
                     withdrawals: vec![],
@@ -910,12 +892,13 @@ mod tests {
         fn etna_payload_environment_uses_payload_fee_percentage() {
             let config = config_with_etna_at(0);
             let mut payload = sample_payload(Some(U256::ZERO));
-            payload.execution_payload.extra_data = vec![25, 0, 0, 0, 0, 0, 1].into();
+            payload.execution_payload.extra_data =
+                vec![25, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1].into();
             assert_eq!(
                 config.evm_env_for_payload(&payload).unwrap().block_env.base_fee_share_pctg,
                 Some(25)
             );
-            payload.execution_payload.extra_data = Bytes::new();
+            payload.execution_payload.extra_data = vec![25, 0, 0, 0, 0, 0, 1].into();
             assert!(config.evm_env_for_payload(&payload).is_err());
         }
 

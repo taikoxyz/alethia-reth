@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use tracing::debug;
 
-use crate::payload::attributes::TaikoPayloadAttributes;
+use crate::{extra_data::ETNA_EXTRA_DATA_LEN, payload::attributes::TaikoPayloadAttributes};
 
 /// Version byte stamped into Taiko payload identifiers for the `engine_*V2` surface.
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
@@ -117,7 +117,7 @@ impl TaikoPayloadBuilderAttributes {
 
     /// Normalizes payload attributes under the rules active at the target timestamp.
     ///
-    /// Etna jobs require matching full-width timestamps, a non-zero beacon root, seven-byte
+    /// Etna jobs require matching full-width timestamps, a non-zero beacon root, 13-byte
     /// extraData, empty withdrawals, and no anchor transaction. Legacy callers retain the V2
     /// acceptance rules by passing `false` through [`Self::try_new`].
     pub fn try_new_for_fork(
@@ -154,9 +154,9 @@ impl TaikoPayloadBuilderAttributes {
             {
                 return Err(alloy_rlp::Error::Custom("Etna payload withdrawals must be empty"));
             }
-            if attributes.block_metadata.extra_data.len() != 7 {
+            if attributes.block_metadata.extra_data.len() != ETNA_EXTRA_DATA_LEN {
                 return Err(alloy_rlp::Error::Custom(
-                    "Etna payload extra_data must contain exactly seven bytes",
+                    "Etna payload extra_data must contain exactly 13 bytes",
                 ));
             }
         }
@@ -634,7 +634,7 @@ mod test {
         assert_eq!(payload_id_version(&attributes), PAYLOAD_ID_VERSION_V2);
 
         attributes.payload_attributes.parent_beacon_block_root = Some(B256::with_last_byte(1));
-        attributes.block_metadata.extra_data = Bytes::from_static(b"1234567");
+        attributes.block_metadata.extra_data = Bytes::from_static(b"1234567890123");
         assert_eq!(payload_id_version(&attributes), PAYLOAD_ID_VERSION_ETNA);
         assert!(TaikoPayloadBuilderAttributes::try_new(parent, attributes.clone()).is_err());
 

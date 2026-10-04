@@ -369,6 +369,20 @@ fn malicious_commitments_and_direct_tree_input_are_checked_during_execution() ->
             .await?;
         assert!(changed_root.status.is_invalid());
         assert!(format!("{changed_root:?}").to_lowercase().contains("hash"));
+        // A legacy 7-byte extraData is invalid from Etna on, even with a recomputed block hash.
+        let mut short = built.block.clone().into_block();
+        short.header.extra_data = Bytes::from_static(&[0; 7]);
+        let mut payload = built.payload.clone();
+        payload["extraData"] = serde_json::to_value(&short.header.extra_data)?;
+        payload["blockHash"] = serde_json::to_value(short.header.hash_slow())?;
+        let status: PayloadStatus = cb
+            .request(
+                "engine_newPayloadV4",
+                rpc_params![payload, Vec::<B256>::new(), built.root, Vec::<Bytes>::new()],
+            )
+            .await?;
+        assert!(status.status.is_invalid(), "{status:?}");
+        assert!(format!("{status:?}").contains("extraData"), "{status:?}");
         let valid_direct = TaikoEngineTypes::block_to_payload(built.block.clone(), None);
         for sentinel in 0..2 {
             let mut data = valid_direct.clone();

@@ -461,7 +461,7 @@ mod tests {
         let mut block = convert_payload(old).unwrap().into_block();
         block.header.timestamp = 100;
         block.header.parent_beacon_block_root = Some(B256::with_last_byte(42));
-        block.header.extra_data = Bytes::from(vec![0; 7]);
+        block.header.extra_data = Bytes::from(vec![0; 13]);
         TaikoEngineTypes::block_to_payload(block.seal_slow(), None)
     }
 

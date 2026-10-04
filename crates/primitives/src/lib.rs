@@ -16,5 +16,6 @@ pub mod payload;
 pub mod transaction;
 
 pub use extra_data::{
-    SHASTA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg, decode_shasta_proposal_id,
+    ETNA_EXTRA_DATA_LEN, SHASTA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg,
+    decode_shasta_proposal_id,
 };

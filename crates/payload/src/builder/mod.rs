@@ -367,7 +367,7 @@ mod tests {
                 timestamp: U256::from(100),
                 mix_hash: B256::repeat_byte(0x55),
                 tx_list,
-                extra_data: Bytes::from_static(b"1234567"),
+                extra_data: Bytes::from_static(b"1234567890123"),
             },
             l1_origin: RpcL1Origin {
                 block_id: U256::ZERO,
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn etna_normalization_rejects_invalid_attributes() {
         type Mutation = fn(&mut PayloadConfig<TaikoPayloadAttributes>);
-        let cases: [(&str, Mutation); 7] = [
+        let cases: [(&str, Mutation); 8] = [
             ("timestamp", |c| c.attributes.block_metadata.timestamp = U256::from(99)),
             ("timestamp", |c| {
                 c.attributes.block_metadata.timestamp = U256::from(100) + (U256::from(1) << 128)
@@ -441,6 +441,9 @@ mod tests {
             }),
             ("extra_data", |c| {
                 c.attributes.block_metadata.extra_data = Bytes::from_static(b"short")
+            }),
+            ("extra_data", |c| {
+                c.attributes.block_metadata.extra_data = Bytes::from_static(b"1234567")
             }),
         ];
         let spec = chain_spec_with_etna_at(100);

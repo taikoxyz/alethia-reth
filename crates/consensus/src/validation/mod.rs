@@ -25,7 +25,9 @@ use crate::eip4396::{
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::{
-    SHASTA_EXTRA_DATA_LEN, etna::validate_etna_root, transaction::is_allowed_tx_type,
+    SHASTA_EXTRA_DATA_LEN,
+    etna::{validate_etna_extra_data, validate_etna_root},
+    transaction::is_allowed_tx_type,
 };
 
 /// Anchor transaction selectors, gas rules, and validation functions.
@@ -179,11 +181,15 @@ where
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
 
-        // Shasta extraData must be the 7-byte [pctg | proposalId(6)] layout — the only shape the
-        // drivers produce and the live chains carry. Reject anything else at import so a
-        // misbehaving block producer fails loudly here instead of minting headers whose embedded
-        // proposalId consumers cannot decode.
-        if self.chain_spec.is_shasta_active(header.timestamp()) &&
+        // Non-genesis Etna headers use the 13-byte [pctg | proposalId(6) | anchorBlockNumber(6)]
+        // layout, and Shasta/Unzen headers the 7-byte [pctg | proposalId(6)] layout — the only
+        // shapes the drivers produce. Reject anything else at import so a misbehaving block
+        // producer fails loudly here instead of minting headers whose fields consumers cannot
+        // decode.
+        if is_etna_active {
+            validate_etna_extra_data(true, header.number(), header.extra_data())
+                .map_err(|err| ConsensusError::msg(err.to_string()))?;
+        } else if self.chain_spec.is_shasta_active(header.timestamp()) &&
             header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
         {
             return Err(ConsensusError::msg(format!(

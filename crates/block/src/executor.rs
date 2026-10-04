@@ -28,7 +28,10 @@ use alethia_reth_evm::{
     handler::get_treasury_address,
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
-use alethia_reth_primitives::{decode_shasta_basefee_sharing_pctg, etna::validate_etna_root};
+use alethia_reth_primitives::{
+    decode_shasta_basefee_sharing_pctg,
+    etna::{validate_etna_extra_data, validate_etna_root},
+};
 
 /// Block execution artifacts for transactions that were accepted by prover filtering.
 #[cfg(feature = "prover")]
@@ -388,12 +391,12 @@ where
             self.ctx.parent_beacon_block_root,
         )
         .map_err(BlockExecutionError::other)?;
-        if is_etna_active && !self.evm.block().number().is_zero() && self.ctx.extra_data.len() != 7
-        {
-            return Err(BlockExecutionError::other(crate::config::InvalidEtnaExtraData {
-                len: self.ctx.extra_data.len(),
-            }));
-        }
+        validate_etna_extra_data(
+            is_etna_active,
+            self.evm.block().number().to(),
+            &self.ctx.extra_data,
+        )
+        .map_err(BlockExecutionError::other)?;
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
@@ -719,10 +722,11 @@ mod test {
     fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
         use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
         let root = B256::with_last_byte(7);
-        let cases: [(Option<B256>, Option<Bytes>, &str); 3] = [
+        let cases: [(Option<B256>, Option<Bytes>, &str); 4] = [
             (None, None, "beacon"),
             (Some(B256::ZERO), None, "beacon"),
             (Some(root), Some(Bytes::new()), "extraData"),
+            (Some(root), Some(Bytes::from(vec![0; 7])), "extraData"),
         ];
         for (parent_beacon_block_root, extra_data, expected) in cases {
             let mut state = State::builder().with_database(db_with_contracts(&[])).build();
@@ -753,7 +757,7 @@ mod test {
         env.block_env.beneficiary = Address::with_last_byte(0xBB);
         let evm = TaikoEvmFactory.create_evm(&mut state, env);
         let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
-        ctx.extra_data = vec![25, 0, 0, 0, 0, 0, 0].into();
+        ctx.extra_data = vec![25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into();
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx,

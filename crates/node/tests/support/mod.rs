@@ -79,7 +79,12 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             timestamp: U256::from(timestamp),
             mix_hash: B256::ZERO,
             tx_list: Some(Bytes::from_static(&[0xc0])),
-            extra_data: Bytes::from_static(&[0; 7]),
+            // Etna targets carry proposal ID 0 and L1 anchor block number 1.
+            extra_data: if timestamp >= 100 {
+                Bytes::from_static(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+            } else {
+                Bytes::from_static(&[0; 7])
+            },
         },
         l1_origin: RpcL1Origin {
             block_id: U256::from(1),

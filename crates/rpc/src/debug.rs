@@ -562,7 +562,7 @@ mod tests {
                             timestamp: 1,
                             base_fee_per_gas: Some(0),
                             gas_limit: 30_000_000,
-                            extra_data: vec![0; 7].into(),
+                            extra_data: vec![0; 13].into(),
                             parent_beacon_block_root: root,
                             ..Default::default()
                         },

@@ -174,15 +174,15 @@ fn tx_pool_simulation_attributes_follow_the_parent_fork() {
     let etna = Header {
         number: 2,
         timestamp: 100,
-        extra_data: Bytes::from(vec![25; 7]),
+        extra_data: Bytes::from(vec![25; 13]),
         parent_beacon_block_root: Some(root),
         ..Default::default()
     };
     let etna_genesis = Header { number: 0, timestamp: 100, ..Default::default() };
     for (parent, extra_data, parent_beacon_block_root) in [
         (&legacy, Bytes::from_static(&[0x11, 0x22]), None),
-        (&etna, Bytes::from(vec![25; 7]), Some(root)),
-        (&etna_genesis, Bytes::from(vec![0; 7]), None),
+        (&etna, Bytes::from(vec![25; 13]), Some(root)),
+        (&etna_genesis, Bytes::from(vec![0; 13]), None),
     ] {
         let attributes = super::tx_pool_simulation_attributes(
             &chain_spec,

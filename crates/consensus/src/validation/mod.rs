@@ -162,7 +162,7 @@ where
         let header = header.header();
         let is_etna_active = self.chain_spec.is_etna_active(header.timestamp());
         validate_etna_root(is_etna_active, header.number(), header.parent_beacon_block_root())
-            .map_err(|err| ConsensusError::msg(err.to_string()))?;
+            .map_err(ConsensusError::msg)?;
         if is_etna_active && header.number() != 0 {
             validate_etna_body_commitments(header)?;
         }
@@ -188,7 +188,7 @@ where
         // decode.
         if is_etna_active {
             validate_etna_extra_data(true, header.number(), header.extra_data())
-                .map_err(|err| ConsensusError::msg(err.to_string()))?;
+                .map_err(ConsensusError::msg)?;
         } else if self.chain_spec.is_shasta_active(header.timestamp()) &&
             header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
         {

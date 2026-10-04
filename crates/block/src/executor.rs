@@ -175,17 +175,18 @@ where
         }
     }
 
-    /// Returns the dedicated truncation error, classified as an Etna validation failure for
-    /// Engine INVALID responses while preserving the historical pre-Etna error mapping.
-    fn zk_gas_limit_error(&self) -> BlockExecutionError
+    /// Wraps a zk gas failure as a block validation error from Etna on, so the Engine tree returns
+    /// INVALID, while preserving the historical internal-error mapping before Etna.
+    fn zk_gas_error<E>(&self, error: E) -> BlockExecutionError
     where
+        E: std::error::Error + Send + Sync + 'static,
         Spec: TaikoExecutorSpec,
         Evm: reth_evm::Evm,
     {
         if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
-            BlockValidationError::other(ZkGasLimitExceeded).into()
+            BlockValidationError::other(error).into()
         } else {
-            BlockExecutionError::other(ZkGasLimitExceeded)
+            BlockExecutionError::other(error)
         }
     }
 
@@ -251,8 +252,7 @@ where
     }
 
     /// Validates the imported header difficulty, when present, against the finalized block
-    /// zk gas recomputed by execution. Etna mismatches are consensus validation failures so
-    /// the Engine tree returns INVALID; earlier forks retain their historical error mapping.
+    /// zk gas recomputed by execution.
     fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError>
     where
         Spec: TaikoExecutorSpec,
@@ -264,12 +264,7 @@ where
             return Ok(());
         }
 
-        let mismatch = ZkGasDifficultyMismatch { expected, got };
-        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
-            Err(BlockValidationError::other(mismatch).into())
-        } else {
-            Err(BlockExecutionError::other(mismatch))
-        }
+        Err(self.zk_gas_error(ZkGasDifficultyMismatch { expected, got }))
     }
 }
 
@@ -383,20 +378,12 @@ where
     /// Validates the root, runs standard system calls, and initializes block fee sharing.
     /// Before Etna, the legacy marker also supplies the golden-touch nonce for anchor execution.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
-        let timestamp = self.evm.block().timestamp().to();
-        let is_etna_active = self.spec.is_etna_active(timestamp);
-        validate_etna_root(
-            is_etna_active,
-            self.evm.block().number().to(),
-            self.ctx.parent_beacon_block_root,
-        )
-        .map_err(BlockExecutionError::other)?;
-        validate_etna_extra_data(
-            is_etna_active,
-            self.evm.block().number().to(),
-            &self.ctx.extra_data,
-        )
-        .map_err(BlockExecutionError::other)?;
+        let is_etna_active = self.spec.is_etna_active(self.evm.block().timestamp().to());
+        let block_number = self.evm.block().number().to();
+        validate_etna_root(is_etna_active, block_number, self.ctx.parent_beacon_block_root)
+            .map_err(BlockExecutionError::other)?;
+        validate_etna_extra_data(is_etna_active, block_number, &self.ctx.extra_data)
+            .map_err(BlockExecutionError::other)?;
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
@@ -467,7 +454,7 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         if self.zk_gas_exhausted {
-            return Err(self.zk_gas_limit_error());
+            return Err(self.zk_gas_error(ZkGasLimitExceeded));
         }
 
         let (tx_env, tx) = tx.into_parts();
@@ -495,7 +482,7 @@ where
         if let Err(ZkGasOutcome::LimitExceeded) = self.evm.charge_tx_intrinsic_zk_gas() {
             self.zk_gas_exhausted = true;
             self.reset_current_transaction_zk_gas();
-            return Err(self.zk_gas_limit_error());
+            return Err(self.zk_gas_error(ZkGasLimitExceeded));
         }
 
         let result = match self.evm.transact(tx_env) {
@@ -503,7 +490,7 @@ where
             Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
                 self.zk_gas_exhausted = true;
                 self.reset_current_transaction_zk_gas();
-                return Err(self.zk_gas_limit_error());
+                return Err(self.zk_gas_error(ZkGasLimitExceeded));
             }
             Err(err) => {
                 self.reset_current_transaction_zk_gas();
@@ -517,7 +504,7 @@ where
         if self.evm.transaction_zk_gas_commit_would_exceed() {
             self.zk_gas_exhausted = true;
             self.reset_current_transaction_zk_gas();
-            return Err(self.zk_gas_limit_error());
+            return Err(self.zk_gas_error(ZkGasLimitExceeded));
         }
 
         Ok(EthTxResult {

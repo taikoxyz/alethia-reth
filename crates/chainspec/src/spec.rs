@@ -77,11 +77,8 @@ impl TaikoChainSpec {
     /// A missing or disabled Etna entry is valid. When Etna is enabled, both forks must use
     /// timestamp activation and Unzen must be explicitly registered.
     pub fn validate_etna_fork_order(&self) -> Result<(), EtnaForkOrderError> {
-        let etna_condition = self.inner.hardforks.forks_iter().find_map(|(fork, condition)| {
-            (fork.name() == TaikoHardfork::Etna.name()).then_some(condition)
-        });
-        let Some(etna_condition) = etna_condition else { return Ok(()) };
-        let etna_timestamp = match etna_condition {
+        let hardforks = &self.inner.hardforks;
+        let etna_timestamp = match hardforks.fork(TaikoHardfork::Etna) {
             ForkCondition::Never => return Ok(()),
             ForkCondition::Timestamp(timestamp) => timestamp,
             condition => {
@@ -92,14 +89,8 @@ impl TaikoChainSpec {
             }
         };
 
-        let unzen_condition = self
-            .inner
-            .hardforks
-            .forks_iter()
-            .find_map(|(fork, condition)| {
-                (fork.name() == TaikoHardfork::Unzen.name()).then_some(condition)
-            })
-            .ok_or(EtnaForkOrderError::MissingUnzen)?;
+        let unzen_condition =
+            hardforks.get(TaikoHardfork::Unzen).ok_or(EtnaForkOrderError::MissingUnzen)?;
         let unzen_timestamp = match unzen_condition {
             ForkCondition::Timestamp(timestamp) => timestamp,
             condition => {

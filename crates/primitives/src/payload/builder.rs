@@ -159,18 +159,15 @@ impl TaikoPayloadBuilderAttributes {
                     "Etna payload extra_data must contain exactly 13 bytes",
                 ));
             }
-        }
-
-        // Legacy Engine conversion reconstructs the Unzen zero-root convention. Although
-        // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
-        // root here would build a header that legacy import rejects. Re-check at job creation
-        // so callers outside the Engine RPC validation path retain the same invariant.
-        if !is_etna_active &&
-            attributes
-                .payload_attributes
-                .parent_beacon_block_root
-                .is_some_and(|root| !root.is_zero())
+        } else if attributes
+            .payload_attributes
+            .parent_beacon_block_root
+            .is_some_and(|root| !root.is_zero())
         {
+            // Legacy Engine conversion reconstructs the Unzen zero-root convention. Although
+            // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
+            // root here would build a header that legacy import rejects. Re-check at job creation
+            // so callers outside the Engine RPC validation path retain the same invariant.
             return Err(alloy_rlp::Error::Custom(
                 "non-zero parent_beacon_block_root is unsupported on Taiko",
             ));

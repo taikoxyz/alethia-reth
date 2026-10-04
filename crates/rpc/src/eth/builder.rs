@@ -38,7 +38,8 @@ where
     }
 }
 
-/// Supplies simulation-only metadata missing from a genesis parent, without fabricating L1 roots.
+/// Supplies simulation-only Etna metadata when a pending target's parent lacks the Etna layout,
+/// without fabricating L1 roots.
 struct TaikoPendingEnvBuilder {
     /// Chain configuration used to gate the pending target's Etna fee context.
     evm: TaikoEvmConfig,
@@ -46,10 +47,10 @@ struct TaikoPendingEnvBuilder {
 
 /// Returns simulation-only Etna fee metadata for a child of `parent`.
 ///
-/// Etna parents already carry the 13-byte layout, which models an inherited anchor. The last
-/// Shasta/Unzen parent keeps its fee share and proposal ID with a zero anchor number, and an empty
-/// genesis uses zeros. The anchor number takes part in no execution, so these defaults cannot
-/// change a simulation result. Other values are returned unchanged for the real guards to reject.
+/// A 13-byte parent is copied, which models an inherited anchor. Any 7-byte parent (in practice the
+/// last Shasta/Unzen block) keeps its fee share and proposal ID with a zero anchor number, and an
+/// empty genesis uses zeros. The anchor number takes part in no execution, so these defaults cannot
+/// change a simulation result. Other lengths are returned unchanged for the real guards to reject.
 pub(crate) fn etna_simulation_extra_data(parent: &Header) -> Bytes {
     match parent.extra_data.len() {
         SHASTA_EXTRA_DATA_LEN => {

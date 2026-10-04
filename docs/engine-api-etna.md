@@ -6,7 +6,8 @@ configures Etna as `ForkCondition::Never`; this is a handoff, not an activation 
 
 Derivation rules live in taiko-mono's `packages/protocol/docs/Derivation.md`
 ([taikoxyz/taiko-mono#22189](https://github.com/taikoxyz/taiko-mono/pull/22189), which includes
-#22237) and track [taikoxyz/taiko-mono#22147](https://github.com/taikoxyz/taiko-mono/issues/22147).
+[#22237](https://github.com/taikoxyz/taiko-mono/pull/22237); checked at `5d35cdd`) and track
+[taikoxyz/taiko-mono#22147](https://github.com/taikoxyz/taiko-mono/issues/22147).
 
 ## Block rules
 
@@ -32,12 +33,14 @@ post-Shasta timestamp ordering. It removes the anchor transaction:
 | `requestsHash` | `sha256("")`. |
 | `difficulty` | The block's zk gas (`0` for an empty block). |
 
-The execution layer checks only that the root is nonzero and that `extraData` has 13 bytes. It does
-not fetch L1 data, decode the anchor number, or compare anchors with the parent's. Drivers derive
-both values, and prover guests authenticate them against L1 headers. The root is neither the L1
-anchor block hash nor `l1Origin.l1BlockHash`, which is the L1 block that included the proposal.
+For the two anchor fields, the execution layer checks only that the root is nonzero and that
+`extraData` has 13 bytes. It does not fetch L1 data, decode the anchor number, or compare anchors
+with the parent's. Drivers derive both values, and prover guests authenticate them against L1
+headers. The root is neither the L1 anchor block hash nor `l1Origin.l1BlockHash`, which is the L1
+block that included the proposal.
 
-Offsets are zero-based and inclusive. Both `uint48` fields are big-endian and must fit without
+Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0, `proposalId` bytes 1..6, and
+`anchorBlockNumber` bytes 7..12. Both `uint48` fields are big-endian and must fit without
 truncation, and `anchorBlockNumber` is the final value after validation and inheritance. Shasta and
 Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2 genesis header keeps
 a zero root, is exempt from the `extraData` and body rules, and performs no EIP-4788 call.
@@ -51,15 +54,19 @@ commitments, so other clients must enforce them at import too.
 Drivers recover a built parent's anchor number by the parent's fork:
 `Anchor.getBlockState().anchorBlockNumber` before Etna, bytes 7..12 of `extraData` from Etna, and `0`
 for genesis. An inherited anchor, as in forced-inclusion and default blocks, repeats the parent's
-number/root pair. Genesis inheritance uses number `0` and the state root of L1 block `0`.
+number/root pair. Take both from an Etna parent's header. A pre-Etna parent's header root is zero,
+so authenticate its anchor number and any saved checkpoint through its L2 state instead, and the L1
+header when no checkpoint exists. Genesis inheritance uses number `0` and the state root of L1 block
+`0`.
 
 ### Gas limits and base fee
 
-For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` exclude the legacy
-1,000,000 gas anchor reserve, and the builder uses the complete supplied limit for ordinary
-transactions. Derivation's `parent.metadata.gasLimit` subtracts that reserve only for a non-genesis
-pre-Etna parent. EIP-4396 always uses the raw parent header's `gasLimit` and `gasUsed`, including at
-the boundary, where the parent still contains the anchor.
+For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` contain no legacy
+1,000,000 gas anchor reserve (drivers add none when converting a manifest limit into an Etna target
+limit), and the builder uses the complete supplied limit for ordinary transactions. Derivation's
+`parent.metadata.gasLimit` subtracts that reserve only for a non-genesis pre-Etna parent. EIP-4396
+always uses the raw parent header's `gasLimit` and `gasUsed`, including at the boundary, where the
+parent still contains the anchor.
 
 ## Engine API method matrix
 
@@ -80,8 +87,9 @@ An ID stays routable only while the unchanged upstream payload store retains it.
 Both FCU versions accept `null` attributes. Such a request performs normal forkchoice validation and
 returns no payload ID. Non-`VALID` FCU results are returned as statuses without publishing L1-origin
 or proposal metadata, and an unknown payload ID returns `-38001`. Both responses previously surfaced
-as `-32603` on V2, so drivers must distinguish payload statuses from JSON-RPC errors. All six
-methods use the JWT-authenticated endpoint, and the advertised capabilities are exactly these six.
+as `-32603` on V2 (for FCU, only when the request carried attributes), so drivers must distinguish
+payload statuses from JSON-RPC errors. All six methods use the JWT-authenticated endpoint, and the
+advertised capabilities are exactly these six.
 
 Etna block construction uses the nonzero `parentBeaconBlockRoot` from the FCU attributes. The driver
 must keep that root with the returned payload ID and pass the same root when importing the payload,
@@ -95,7 +103,7 @@ must normalize the response and pass all four positional arguments:
 
 ```text
 root := the original root associated with this FCU payload ID
-zkGas := parse getPayloadV5.blockValue as an unsigned integer
+zkGas := parse getPayloadV5.blockValue as an unsigned integer that fits u64
 payload := getPayloadV5.executionPayload
 payload.headerDifficulty := zkGas as a decimal JSON number, including 0
 newPayloadV4(payload, [], root, [])
@@ -121,14 +129,16 @@ internal payload ranking still uses actual fees.
 | Unknown or evicted payload ID | JSON-RPC `-38001` |
 | Malformed V4 arguments or unsupported payload properties | JSON-RPC `-32602` |
 | Zero root, withdrawals, blob gas, or nonempty side arrays in `newPayloadV4` | JSON-RPC `-32602` (current) |
-| Invalid Etna FCUv3 attributes, including a non-13-byte `extraData` | JSON-RPC `-32602` (current) |
+| Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current); a `slotNumber` attribute returns `-38003` |
 | Wrong Etna `extraData` length on import | Payload status `INVALID` |
 | Block-hash mismatch, zk-gas/difficulty mismatch, zk-gas exhaustion | Payload status `INVALID` |
 
 The two "current" rows are not the intended final contract. Before activation, block-content
 failures should become `INVALID` (a blob-hash mismatch with `latestValidHash: null`) and invalid FCU
-attributes `-38003`. Direct `reth_newPayload` submissions run the same conversion checks, so an
-inconsistent legacy Osaka sidecar fails before it can reach the invalid-header cache.
+attributes `-38003`.
+
+Direct `reth_newPayload` submissions run the same payload conversion, so an inconsistent legacy
+Osaka sidecar fails conversion before it can reach the invalid-header cache.
 
 ### FCU attributes
 
@@ -146,7 +156,9 @@ Preselection simulates the next block under the parent's fork rules and never ap
 system calls. On an Etna parent it uses the parent's root and `extraData` (13 zero bytes for an Etna
 genesis) and drops the legacy 2,000,000 zk-gas anchor reserve. At the boundary the parent is still
 pre-Etna, so the first Etna block is selected with that reserve. Results are estimates; the builder
-enforces the actual gas and zk-gas limits.
+enforces the actual gas and zk-gas limits. A driver that still sends the removed trailing
+`blockContext` argument gets no error, because extra positional parameters are ignored; it then
+simulates under the parent's rules.
 
 ## Devnet activation override
 
@@ -169,6 +181,9 @@ yet require Shasta.
   locally built pending Etna block is unavailable. Decide any simulation-only root policy before
   activation without relaxing the consensus rule.
 - Downstream Rust code that builds `TaikoExecutionDataSidecar` literals needs the new `osaka` field.
+- Reject null or omitted FCUv3 `withdrawals` for Etna targets; they currently pass normalization.
+- Require Shasta in custom Etna schedules; the startup ordering check covers only Unzen.
+- Let offline commands such as `stage run` and `re-execute` load an overridden Etna schedule.
 
 ## Geth port checklist
 
@@ -184,7 +199,7 @@ They identify port work, not completed work.
 | `consensus/taiko/consensus.go:357–362` | `FinalizeAndAssemble` stops requiring an anchor at index zero. |
 | `consensus/taiko/consensus.go:265`, `miner/worker.go:319–322` | The zero-root rule becomes the Etna nonzero-root rule, with matching EIP-4788 execution. |
 | `consensus/taiko/consensus.go:206–212` | The 7-byte Shasta `extraData` rule becomes 13 bytes for non-genesis Etna headers. |
-| Pool/build, preselection, fee distribution, body validation | Full gas budget, no anchor zk reserve, fee shares, empty bodies, blob rejection, ordinary golden-touch transactions. |
+| Pool/build, preselection, fee distribution, body validation | Full gas budget, no anchor zk reserve once the parent is Etna, fee shares, empty bodies, blob rejection, ordinary golden-touch transactions. |
 
 An unfunded first transaction is a useful discriminator: Etna skips it as an ordinary failure, while
 a port that still applies `MarkAsAnchor` could include it fee-exempt.
@@ -219,9 +234,9 @@ Keep every network at `ForkCondition::Never` until each item is complete.
       the 13-byte `extraData`, and the parent anchor-number rule.
 - [ ] Prover guests verify the root as the state root of the L1 block named by the `extraData`
       anchor number, authenticated against L1 headers, plus the inheritance and genesis rules.
-- [ ] Checkpoint consumers work without Anchor privileges. EIP-4788 now records the anchor state root,
-      and the anchor number exists only in the L2 header, so a reveal that checks an L1 header hash
-      against the recorded value (as taikoxyz/taiko-mono#22222 currently does) needs a new design.
+- [ ] Bridge proofs after Etna verify against the anchor state root that EIP-4788 records for an L2
+      timestamp (taikoxyz/taiko-mono#22222). Relayers and UIs must build proofs with that timestamp,
+      refresh expired ones, and work without Anchor privileges.
 - [ ] Complete the geth port and run shared cross-client and prover vectors.
 - [ ] Resolve the local activation items above and the Engine error classes.
 - [ ] Record real-history differential results with reproducible inputs and both source revisions.

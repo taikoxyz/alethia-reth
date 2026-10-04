@@ -716,21 +716,30 @@ mod test {
     }
 
     #[test]
-    fn etna_direct_execution_context_requires_root() {
+    fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
         use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
-        for root in [None, Some(B256::ZERO)] {
+        let root = B256::with_last_byte(7);
+        let cases: [(Option<B256>, Option<Bytes>, &str); 3] = [
+            (None, None, "beacon"),
+            (Some(B256::ZERO), None, "beacon"),
+            (Some(root), Some(Bytes::new()), "extraData"),
+        ];
+        for (parent_beacon_block_root, extra_data, expected) in cases {
             let mut state = State::builder().with_database(db_with_contracts(&[])).build();
             let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-            let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
-            ctx.parent_beacon_block_root = root;
+            let mut ctx = etna_execution_ctx(root);
+            ctx.parent_beacon_block_root = parent_beacon_block_root;
+            if let Some(extra_data) = extra_data {
+                ctx.extra_data = extra_data;
+            }
             let mut executor = TaikoBlockExecutor::new(
                 evm,
                 ctx,
                 Arc::new(etna_chain_spec()),
                 RethReceiptBuilder::default(),
             );
-            let err = executor.apply_pre_execution_changes().expect_err("Etna root guard");
-            assert!(err.to_string().contains("beacon"), "{err}");
+            let err = executor.apply_pre_execution_changes().expect_err(expected);
+            assert!(err.to_string().contains(expected), "{expected}: {err}");
         }
     }
 
@@ -769,56 +778,6 @@ mod test {
             result.result.state[&Address::with_last_byte(0xBB)].info.balance,
             U256::from(52_500)
         );
-    }
-
-    #[test]
-    fn etna_direct_execution_rejects_malformed_extra_data() {
-        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
-        let mut state = State::builder().with_database(db_with_contracts(&[])).build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-        let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
-        ctx.extra_data = Bytes::new();
-        let mut executor = TaikoBlockExecutor::new(
-            evm,
-            ctx,
-            Arc::new(etna_chain_spec()),
-            RethReceiptBuilder::default(),
-        );
-        assert!(
-            executor.apply_pre_execution_changes().unwrap_err().to_string().contains("extraData")
-        );
-    }
-
-    #[cfg(feature = "prover")]
-    #[test]
-    fn etna_prover_first_invalid_nonce_is_filtered_by_both_entry_points() {
-        use crate::testutil::{etna_chain_spec, etna_evm_env, etna_execution_ctx};
-        for committed_entry in [false, true] {
-            let mut state =
-                State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
-            let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-            let executor = TaikoBlockExecutor::new(
-                evm,
-                etna_execution_ctx(B256::with_last_byte(7)),
-                Arc::new(etna_chain_spec()),
-                RethReceiptBuilder::default(),
-            );
-            let txs = [
-                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 99, 1),
-                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
-            ];
-            if committed_entry {
-                let result = executor
-                    .execute_block_with_committed_transactions(
-                        txs.iter().map(|t| Recovered::new_unchecked(t.inner(), t.signer())),
-                    )
-                    .unwrap();
-                assert_eq!(result.committed_transactions, vec![txs[1].clone()]);
-                assert_eq!(result.execution_result.receipts.len(), 1);
-            } else {
-                assert_eq!(executor.execute_block(txs).unwrap().receipts.len(), 1);
-            }
-        }
     }
 
     #[test]

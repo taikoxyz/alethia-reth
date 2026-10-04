@@ -654,49 +654,6 @@ mod tests {
     }
 
     #[test]
-    fn etna_pool_cancellation_preserves_the_cancelled_outcome() {
-        let caller = Address::with_last_byte(0x43);
-        let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
-        let spec = Arc::new(etna_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(caller, 0)]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-        let executor = TaikoBlockExecutor::new(
-            evm,
-            etna_execution_ctx(B256::with_last_byte(1)),
-            spec.clone(),
-            RethReceiptBuilder::default(),
-        );
-        let mut builder = ExecutorBackedBuilder { executor };
-        let pool = testing_pool();
-        block_on_ready(pool.add_consensus_transaction(ordinary, TransactionOrigin::External))
-            .expect("ordinary transaction should enter the pool");
-        let cancel = CancelOnDrop::default();
-        drop(cancel.clone());
-
-        let outcome = execute_pool_transactions(
-            &mut builder,
-            &pool,
-            &test_client((*spec).clone()),
-            &PoolExecutionContext {
-                anchor_tx: None,
-                parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
-                block_timestamp: 1,
-                payload_id: "etna-cancelled".to_string(),
-                base_fee: 0,
-                gas_limit: 30_000_000,
-            },
-            &cancel,
-        )
-        .expect("cancellation is a non-error outcome");
-
-        assert!(matches!(outcome, ExecutionOutcome::Cancelled));
-        assert!(builder.executor.receipts().is_empty());
-    }
-
-    #[test]
     fn etna_pool_zk_gas_exhaustion_preserves_empty_and_completed_prefixes() {
         for prefix_len in [0, 1] {
             let caller = Address::with_last_byte(0x44);

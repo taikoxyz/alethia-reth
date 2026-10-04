@@ -420,51 +420,34 @@ mod tests {
     }
 
     #[test]
-    fn etna_normalization_rejects_mismatched_or_wide_metadata_timestamps() {
-        for timestamp in [U256::from(99), U256::from(100) + (U256::from(1) << 128)] {
-            let mut config = test_payload_config(None);
-            config.attributes.block_metadata.timestamp = timestamp;
-
-            let err = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
-                .expect_err("metadata timestamp must match without narrowing");
-            assert!(err.to_string().contains("timestamp"), "unexpected error: {err}");
-        }
-    }
-
-    #[test]
-    fn etna_normalization_rejects_anchor_withdrawals_and_invalid_roots() {
-        let mut cases = Vec::new();
-
-        let mut anchor = test_payload_config(None);
-        anchor.attributes.anchor_transaction = Some(Bytes::from_static(&[0x01]));
-        cases.push(anchor);
-
-        let mut withdrawal = test_payload_config(None);
-        withdrawal.attributes.payload_attributes.withdrawals = Some(vec![Withdrawal::default()]);
-        cases.push(withdrawal);
-
-        let mut missing_root = test_payload_config(None);
-        missing_root.attributes.payload_attributes.parent_beacon_block_root = None;
-        cases.push(missing_root);
-
-        let mut zero_root = test_payload_config(None);
-        zero_root.attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO);
-        cases.push(zero_root);
-
+    fn etna_normalization_rejects_invalid_attributes() {
+        type Mutation = fn(&mut PayloadConfig<TaikoPayloadAttributes>);
+        let cases: [(&str, Mutation); 7] = [
+            ("timestamp", |c| c.attributes.block_metadata.timestamp = U256::from(99)),
+            ("timestamp", |c| {
+                c.attributes.block_metadata.timestamp = U256::from(100) + (U256::from(1) << 128)
+            }),
+            ("anchor", |c| c.attributes.anchor_transaction = Some(Bytes::from_static(&[0x01]))),
+            ("withdrawals", |c| {
+                c.attributes.payload_attributes.withdrawals = Some(vec![Withdrawal::default()])
+            }),
+            ("parent_beacon_block_root", |c| {
+                c.attributes.payload_attributes.parent_beacon_block_root = None
+            }),
+            ("parent_beacon_block_root", |c| {
+                c.attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO)
+            }),
+            ("extra_data", |c| {
+                c.attributes.block_metadata.extra_data = Bytes::from_static(b"short")
+            }),
+        ];
         let spec = chain_spec_with_etna_at(100);
-        for config in cases {
-            assert!(normalize_payload_config(&config, &spec).is_err());
+        for (expected, mutate) in cases {
+            let mut config = test_payload_config(None);
+            mutate(&mut config);
+            let err = normalize_payload_config(&config, &spec).expect_err(expected);
+            assert!(err.to_string().contains(expected), "{expected}: {err}");
         }
-    }
-
-    #[test]
-    fn etna_normalization_rejects_non_shasta_extra_data() {
-        let mut config = test_payload_config(None);
-        config.attributes.block_metadata.extra_data = Bytes::from_static(b"short");
-
-        let err = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
-            .expect_err("Etna extraData must preserve the seven-byte layout");
-        assert!(err.to_string().contains("extra"), "unexpected error: {err}");
     }
 
     #[test]

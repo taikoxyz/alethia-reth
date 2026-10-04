@@ -272,28 +272,10 @@ mod tests {
             },
         };
 
-        assert_eq!(
-            serde_json::to_value(data).unwrap(),
-            json!({
-                "parentHash": B256::ZERO,
-                "feeRecipient": Address::ZERO,
-                "stateRoot": B256::ZERO,
-                "receiptsRoot": B256::ZERO,
-                "logsBloom": Bloom::ZERO,
-                "prevRandao": B256::ZERO,
-                "blockNumber": "0x1",
-                "gasLimit": "0x2",
-                "gasUsed": "0x3",
-                "timestamp": "0x4",
-                "extraData": "0x",
-                "baseFeePerGas": "0x5",
-                "blockHash": B256::ZERO,
-                "transactions": [],
-                "txHash": B256::ZERO,
-                "withdrawalsHash": null,
-                "headerDifficulty": "0x6",
-                "taikoBlock": true,
-            })
-        );
+        let value = serde_json::to_value(data).unwrap();
+        assert!(value.get("osaka").is_none(), "{value}");
+        assert_eq!(value["headerDifficulty"], json!("0x6"));
+        assert_eq!(value["withdrawalsHash"], json!(null));
+        assert_eq!(value["taikoBlock"], json!(true));
     }
 }

@@ -171,71 +171,54 @@ mod tests {
     }
 
     #[test]
-    fn block_conversion_preserves_body_only_withdrawals() {
+    fn partial_osaka_inputs_keep_their_original_hash_and_body() {
         let withdrawal = Withdrawal {
             index: 1,
             validator_index: 2,
             address: alloy_primitives::Address::with_last_byte(3),
             amount: 4,
         };
-        let block = Block {
-            header: Header {
-                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
-                ..Default::default()
+        let header =
+            Header { transactions_root: alloy_consensus::EMPTY_ROOT_HASH, ..Default::default() };
+        let cases = [
+            // Body withdrawals without a withdrawals root.
+            Block {
+                header: header.clone(),
+                body: BlockBody {
+                    withdrawals: Some(vec![withdrawal].into()),
+                    ..Default::default()
+                },
             },
-            body: BlockBody {
-                transactions: Vec::new(),
-                ommers: Vec::new(),
-                withdrawals: Some(vec![withdrawal].into()),
+            // A withdrawals root without body withdrawals.
+            Block {
+                header: Header {
+                    withdrawals_root: Some(B256::with_last_byte(9)),
+                    ..header.clone()
+                },
+                body: BlockBody::default(),
             },
-        };
-        let hash = block.header.hash_slow();
-
-        let data =
-            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
-        let ExecutionPayload::V3(payload) = data.into_payload() else {
-            panic!("withdrawal-bearing block must produce a V3 execution payload")
-        };
-
-        assert_eq!(payload.payload_inner.withdrawals, vec![withdrawal]);
-    }
-
-    #[test]
-    fn withdrawal_root_alone_marks_a_partial_osaka_payload() {
-        let block = Block {
-            header: Header {
-                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
-                withdrawals_root: Some(B256::with_last_byte(9)),
-                ..Default::default()
+            // A beacon root and requests hash without the blob-gas fields.
+            Block {
+                header: Header {
+                    parent_beacon_block_root: Some(B256::with_last_byte(1)),
+                    requests_hash: Some(B256::with_last_byte(2)),
+                    ..header
+                },
+                body: BlockBody::default(),
             },
-            body: BlockBody::default(),
-        };
-        let hash = block.header.hash_slow();
-
-        let data =
-            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
-
-        assert!(data.taiko_sidecar.osaka.is_some());
-        assert_eq!(data.execution_payload.block_hash, hash);
-    }
-
-    #[test]
-    fn partial_osaka_header_keeps_original_hash_for_later_validation() {
-        let block = Block {
-            header: Header {
-                transactions_root: alloy_consensus::EMPTY_ROOT_HASH,
-                parent_beacon_block_root: Some(B256::with_last_byte(1)),
-                requests_hash: Some(B256::with_last_byte(2)),
-                ..Default::default()
-            },
-            body: BlockBody::default(),
-        };
-        let hash = block.header.hash_slow();
-
-        let data =
-            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
-
-        assert!(data.taiko_sidecar.osaka.is_some());
-        assert_eq!(data.execution_payload.block_hash, hash);
+        ];
+        for (index, block) in cases.into_iter().enumerate() {
+            let hash = block.header.hash_slow();
+            let data =
+                TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
+            assert!(data.taiko_sidecar.osaka.is_some(), "case {index}");
+            assert_eq!(data.execution_payload.block_hash, hash, "case {index}");
+            if index == 0 {
+                let ExecutionPayload::V3(payload) = data.into_payload() else {
+                    panic!("a withdrawal-bearing block must produce a V3 execution payload")
+                };
+                assert_eq!(payload.payload_inner.withdrawals, vec![withdrawal]);
+            }
+        }
     }
 }

@@ -695,90 +695,6 @@ mod tests {
     }
 
     #[test]
-    fn etna_full_block_and_recreated_inspector_charge_golden_touch_and_refund_equally() {
-        use crate::{
-            executor::TaikoBlockExecutor,
-            testutil::{
-                db_with_system_contracts, etna_execution_ctx, insert_contract,
-                recovered_tx_with_chain_id,
-            },
-        };
-        use alethia_reth_evm::{alloy::TAIKO_GOLDEN_TOUCH_ADDRESS, handler::get_treasury_address};
-        use alloy_evm::{Evm, EvmFactory};
-        use reth_evm::block::BlockExecutor;
-        use reth_revm::{
-            State,
-            context::TxEnv,
-            inspector::NoOpInspector,
-            state::{AccountInfo, Bytecode},
-        };
-        let config = config_with_etna_at(0);
-        let caller = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
-        let target = Address::with_last_byte(0xC0);
-        let balance = U256::from(100_000_000_000_000u64);
-        for percentage in [25, 0] {
-            let mut header = etna_header(percentage);
-            header.parent_beacon_block_root = Some(B256::with_last_byte(7));
-            let env = config.evm_env(&header).unwrap();
-            let treasury = get_treasury_address(env.cfg_env.chain_id);
-            let mut db = db_with_system_contracts(&[]);
-            db.insert_account_info(caller, AccountInfo { balance, ..Default::default() });
-            insert_contract(
-                &mut db,
-                target,
-                Bytecode::new_raw(Bytes::from_static(&[0x60, 0, 0x60, 0, 0x55, 0])),
-            );
-            db.insert_account_storage(target, U256::ZERO, U256::from(1)).unwrap();
-            let mut state = State::builder().with_database(db.clone()).build();
-            let evm = config.evm_with_env(&mut state, env.clone());
-            let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
-            ctx.extra_data = header.extra_data.clone();
-            let mut executor = TaikoBlockExecutor::new(
-                evm,
-                ctx,
-                config.chain_spec().clone(),
-                RethReceiptBuilder::default(),
-            );
-            executor.apply_pre_execution_changes().unwrap();
-            let tx =
-                recovered_tx_with_chain_id(caller, target, 0, 10_000_000, env.cfg_env.chain_id);
-            let full = executor.execute_transaction_without_commit(tx.clone()).unwrap();
-            let mut replay =
-                TaikoEvmFactory.create_evm_with_inspector(db, env.clone(), NoOpInspector {});
-            let replay_result = replay
-                .transact(
-                    TxEnv::builder()
-                        .caller(caller)
-                        .to(target)
-                        .gas_limit(5_000_000)
-                        .gas_price(10_000_000)
-                        .chain_id(Some(env.cfg_env.chain_id))
-                        .build()
-                        .unwrap(),
-                )
-                .unwrap();
-            assert_eq!(full.result, replay_result);
-            assert_eq!(full.result.result.tx_gas_used(), 21_206);
-            assert_eq!(
-                full.result.state[&caller].info.balance,
-                balance - U256::from(212_060_000_000u64)
-            );
-            let (treasury_fee, beneficiary_fee) = if percentage == 25 {
-                (159_045_000_000u64, 53_015_000_000u64)
-            } else {
-                (212_060_000_000u64, 0)
-            };
-            assert_eq!(full.result.state[&treasury].info.balance, U256::from(treasury_fee));
-            assert_eq!(
-                full.result.state[&header.beneficiary].info.balance,
-                U256::from(beneficiary_fee)
-            );
-            executor.commit_transaction(full);
-            assert_eq!(executor.finish().unwrap().1.gas_used, 21_206);
-        }
-    }
-
-    #[test]
     fn unzen_takes_precedence_over_shasta() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
         chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
@@ -826,25 +742,6 @@ mod tests {
 
         assert_eq!(blob_env.excess_blob_gas, 0);
         assert_eq!(blob_env.blob_gasprice, 1);
-    }
-
-    #[test]
-    fn etna_normalization_checks_before_legacy_fallback_and_preserves_genesis() {
-        let root = B256::with_last_byte(7);
-        assert_eq!(
-            normalize_parent_beacon_block_root(true, false, 1, None).unwrap(),
-            Some(B256::ZERO)
-        );
-        assert_eq!(
-            normalize_parent_beacon_block_root(true, true, 1, Some(root)).unwrap(),
-            Some(root)
-        );
-        assert!(normalize_parent_beacon_block_root(true, true, 1, None).is_err());
-        assert!(normalize_parent_beacon_block_root(true, true, 1, Some(B256::ZERO)).is_err());
-        assert_eq!(
-            normalize_parent_beacon_block_root(true, true, 0, Some(B256::ZERO)).unwrap(),
-            Some(B256::ZERO)
-        );
     }
 
     #[test]

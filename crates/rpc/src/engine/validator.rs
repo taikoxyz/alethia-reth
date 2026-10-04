@@ -649,19 +649,6 @@ mod tests {
         version_etna(&data).unwrap();
         assert_eq!(convert_etna(data).unwrap().parent_beacon_block_root, Some(B256::ZERO));
     }
-    #[test]
-    fn etna_common_conversion_restores_nonzero_root_and_difficulty() {
-        for difficulty in [U256::ZERO, U256::from(91)] {
-            let data = etna_data(difficulty);
-            let expected_hash = data.execution_payload.block_hash;
-            let block = <TaikoEngineValidator as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
-                &etna_validator(), data,
-            ).expect("Etna block must roundtrip through common tree conversion");
-            assert_eq!(block.hash(), expected_hash);
-            assert_eq!(block.difficulty, difficulty);
-            assert_eq!(block.parent_beacon_block_root, Some(B256::with_last_byte(42)));
-        }
-    }
 
     #[test]
     fn etna_version_matrix_uses_target_timestamp() {

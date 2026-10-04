@@ -525,6 +525,17 @@ mod test {
     }
 
     #[test]
+    fn malformed_tx_list_yields_an_empty_transaction_list() {
+        let payload_attrs = create_payload_attrs(1000, Some(Bytes::from_static(&[1])), 100_000_000);
+
+        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
+            .expect("an undecodable tx list still creates builder attributes");
+
+        assert_eq!(attrs.transactions.as_deref(), Some([].as_slice()));
+        assert_eq!(attrs.tx_list_hash, keccak256([1u8]));
+    }
+
+    #[test]
     fn test_taiko_payload_builder_attributes_new_mode() {
         let payload_attrs = create_payload_attrs(1000, None, 100_000_000);
 

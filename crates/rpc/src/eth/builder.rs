@@ -50,7 +50,8 @@ struct TaikoPendingEnvBuilder {
 /// A 13-byte parent is copied, which models an inherited anchor. Any 7-byte parent (in practice the
 /// last Shasta/Unzen block) keeps its fee share and proposal ID with a zero anchor number, and an
 /// empty genesis uses zeros. The anchor number takes part in no execution, so these defaults cannot
-/// change a simulation result. Other lengths are returned unchanged for the real guards to reject.
+/// change a simulation result. Other lengths are returned unchanged: block execution rejects them,
+/// and call-style simulations run without a fee share.
 pub(crate) fn etna_simulation_extra_data(parent: &Header) -> Bytes {
     match parent.extra_data.len() {
         SHASTA_EXTRA_DATA_LEN => {
@@ -88,6 +89,7 @@ mod tests {
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::B256;
+    use reth_evm::ConfigureEvm;
     use std::sync::Arc;
 
     fn pending_builder(activation: u64) -> TaikoPendingEnvBuilder {
@@ -98,11 +100,18 @@ mod tests {
 
     #[test]
     fn pending_genesis_default_is_gated_by_target_fork_number_and_empty_metadata() {
-        for (activation, number, timestamp, extra_data, expected) in [
-            (12, 0, 0, vec![], vec![0; 13]),
-            (13, 0, 0, vec![], vec![]),
-            (0, 0, 0, vec![25, 0, 0, 0, 0, 1, 2], vec![25, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0]),
-            (0, 1, 1, vec![9; 13], vec![9; 13]),
+        for (activation, number, timestamp, extra_data, expected, percentage) in [
+            (12, 0, 0, vec![], vec![0; 13], Some(0)),
+            (13, 0, 0, vec![], vec![], None),
+            (
+                0,
+                0,
+                0,
+                vec![25, 0, 0, 0, 0, 1, 2],
+                vec![25, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0],
+                Some(25),
+            ),
+            (0, 1, 1, vec![9; 13], vec![9; 13], Some(9)),
         ] {
             let builder = pending_builder(activation);
             let parent = SealedHeader::new_unhashed(Header {
@@ -114,6 +123,9 @@ mod tests {
             let attributes = builder.pending_env_attributes(&parent, None).unwrap();
             assert_eq!(attributes.extra_data.as_ref(), expected);
             assert_eq!(attributes.parent_beacon_block_root, None);
+            // The pending environment takes its fee share from the simulated attributes.
+            let env = builder.evm.next_evm_env(&parent, &attributes).unwrap();
+            assert_eq!(env.block_env.base_fee_share_pctg, percentage);
         }
         // `eth_simulateV1` supplies an Etna root through block overrides; it must pass through.
         let overrides =

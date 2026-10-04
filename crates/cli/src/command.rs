@@ -158,7 +158,8 @@ where
             jit,
         };
 
-        // Apply Taiko-specific devnet fork timestamp overrides and validate custom fork order.
+        // Apply Taiko-specific devnet fork timestamp overrides; the override rejects an Etna
+        // timestamp earlier than Unzen.
         if let Some(overridden_chain) =
             node_config.chain.as_ref().clone_with_devnet_fork_timestamps(
                 ext.devnet_unzen_timestamp(),

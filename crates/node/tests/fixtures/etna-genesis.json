@@ -26,11 +26,6 @@
       "balance": "0",
       "nonce": "0x1",
       "code": "0x3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500"
-    },
-    "0000000000000000000000000000000000000022": {
-      "balance": "0",
-      "nonce": "0x1",
-      "code": "0x5b6201000060002050600056"
     }
   }
 }

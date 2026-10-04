@@ -100,7 +100,6 @@ reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "f2
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d" }
 reth-db-common = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d", default-features = false }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d", default-features = false }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "f2eecc65482af4085e43eedb27a32024bf177a0d" }

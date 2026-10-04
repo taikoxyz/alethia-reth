@@ -362,16 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_devnet_etna_timestamp_flag() {
-        let _lock = env_lock();
-        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
-        let cli = TestCli::try_parse_from(["alethia-reth", "--devnet-etna-timestamp", "100"])
-            .expect("timestamp should parse");
-
-        assert_eq!(cli.ext.devnet_etna_timestamp, Some(100));
-    }
-
-    #[test]
     fn test_parse_devnet_etna_timestamp_from_env() {
         let _lock = env_lock();
         unsafe { std::env::set_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP", "100") };

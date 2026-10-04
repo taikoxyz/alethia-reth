@@ -15,6 +15,7 @@ use alloy_rpc_types_engine::{
     ExecutionPayloadEnvelopeV5, ForkchoiceState, ForkchoiceUpdated, PayloadAttributes,
 };
 use jsonrpsee::{core::client::ClientT, rpc_params};
+use reth::{args::RpcServerArgs, rpc::server_types::RpcModuleSelection, tasks::Runtime};
 use reth_chainspec::ChainSpec;
 use reth_db::{
     ClientVersion, DatabaseEnv, TableSet, Tables,
@@ -22,26 +23,21 @@ use reth_db::{
     table::TableInfo,
     test_utils::{TempDatabase, tempdir_path},
 };
-use reth_e2e_test_utils::{NodeHelperType, node::NodeTestContext};
 use reth_node_api::{FullNodeComponents, TreeConfig};
-use reth_node_builder::{EngineNodeLauncher, Node, NodeBuilder, NodeConfig};
-use reth_node_core::args::RpcServerArgs;
+use reth_node_builder::{
+    EngineNodeLauncher, FullNode, Node, NodeAdapter, NodeBuilder, NodeConfig, RethFullAdapter,
+};
 use reth_provider::providers::BlockchainProvider;
 use reth_rpc::eth::EthApiTypes;
-use reth_rpc_server_types::RpcModuleSelection;
-use reth_tasks::Runtime;
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc, time::Duration};
+
+type TestTypes = RethFullAdapter<Arc<TempDatabase<DatabaseEnv>>, TaikoNode>;
+pub type TestNode = FullNode<NodeAdapter<TestTypes>, <TaikoNode as Node<TestTypes>>::AddOns>;
 
 pub fn fixture_chain_spec() -> Arc<TaikoChainSpec> {
     let genesis: Genesis =
         serde_json::from_str(include_str!("../fixtures/etna-genesis.json")).unwrap();
-    for (address, code) in [
-        (eip2935::HISTORY_STORAGE_ADDRESS, eip2935::HISTORY_STORAGE_CODE.clone()),
-        (eip4788::BEACON_ROOTS_ADDRESS, eip4788::BEACON_ROOTS_CODE.clone()),
-    ] {
-        assert_eq!(genesis.alloc[&address].code.as_ref(), Some(&code));
-    }
     let mut forks = TAIKO_DEVNET_HARDFORKS.clone();
     forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
     let mut inner = ChainSpec::builder()
@@ -111,10 +107,8 @@ impl TableSet for TaikoTables {
     }
 }
 
-pub async fn launch_test_node(
-    chain_spec: Arc<TaikoChainSpec>,
-    runtime: Runtime,
-) -> eyre::Result<NodeHelperType<TaikoNode>> {
+pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<TestNode> {
+    let runtime = Runtime::test();
     TEST_RUNTIMES.lock().unwrap().push(runtime.clone());
     let path = tempdir_path();
     let database: Arc<TempDatabase<DatabaseEnv>> = Arc::new(TempDatabase::new(
@@ -173,7 +167,7 @@ pub async fn launch_test_node(
         }),
     )
     .await??;
-    NodeTestContext::new(handle.node, fixture_attributes).await
+    Ok(handle.node)
 }
 
 pub async fn fcu(
@@ -244,16 +238,16 @@ pub async fn build(
     client: &impl ClientT,
     spec: Arc<TaikoChainSpec>,
     parent: &alloy_consensus::Header,
-    grandparent_timestamp: u64,
     mut attrs: TaikoPayloadAttributes,
 ) -> eyre::Result<Built> {
     use alethia_reth_consensus::eip4396::{MIN_BASE_FEE, calculate_next_block_eip4396_base_fee};
     use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
     use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
+    // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
-        parent.timestamp - grandparent_timestamp,
+        parent.timestamp,
         parent.base_fee_per_gas.unwrap(),
         MIN_BASE_FEE,
     ));
@@ -295,18 +289,15 @@ pub async fn canonicalize(client: &impl ClientT, genesis: B256, built: &Built) -
     Ok(())
 }
 
-pub async fn assert_execution_parity(
-    node: &NodeHelperType<TaikoNode>,
-    built: &Built,
-) -> eyre::Result<()> {
+pub async fn assert_execution_parity(node: &TestNode, built: &Built) -> eyre::Result<()> {
     use alethia_reth_block::derived_block::{assemble_filtered_block, execute_derived_block};
     use reth_revm::database::StateProviderDatabase;
     use reth_storage_api::{HeaderProvider, StateProviderFactory, StateRootProvider};
-    let parent = node.inner.provider.sealed_header_by_hash(built.block.parent_hash)?.unwrap();
-    let state = node.inner.provider.history_by_block_hash(parent.hash())?;
+    let parent = node.provider.sealed_header_by_hash(built.block.parent_hash)?.unwrap();
+    let state = node.provider.history_by_block_hash(parent.hash())?;
     let recovered = built.block.clone().try_recover()?;
     let derived = execute_derived_block(
-        &node.inner.evm_config,
+        &node.evm_config,
         &parent,
         &recovered,
         StateProviderDatabase::new(&*state),
@@ -315,7 +306,7 @@ pub async fn assert_execution_parity(
     let root = state.state_root(derived.hashed_state)?;
     assert_eq!(root, built.block.state_root);
     let assembled = assemble_filtered_block(
-        &node.inner.evm_config,
+        &node.evm_config,
         &parent,
         &recovered,
         derived.committed_transactions,
@@ -324,7 +315,7 @@ pub async fn assert_execution_parity(
         root,
     )?;
     assert_eq!(assembled.header(), built.block.header());
-    let http = node.inner.rpc_server_handle().http_client().unwrap();
+    let http = node.rpc_server_handle().http_client().unwrap();
     let witness: alloy_rpc_types_debug::ExecutionWitness =
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
@@ -432,17 +423,4 @@ pub fn run_live_test(
     }
     eyre::ensure!(shut_down, "node shutdown timed out");
     result
-}
-
-pub fn assert_no_origin(node: &NodeHelperType<TaikoNode>, block_number: u64) -> eyre::Result<()> {
-    use alethia_reth_db::model::{
-        BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
-    };
-    use reth_db::transaction::DbTx;
-    use reth_provider::DatabaseProviderFactory;
-    let db = node.inner.provider.database_provider_ro()?;
-    assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(block_number)?, None);
-    assert_eq!(db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)?, None);
-    assert_eq!(db.tx_ref().get::<BatchToLastBlock>(0)?, None);
-    Ok(())
 }

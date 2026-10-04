@@ -275,7 +275,7 @@ mod tests {
         let value = serde_json::to_value(data).unwrap();
         assert!(value.get("osaka").is_none(), "{value}");
         assert_eq!(value["headerDifficulty"], json!("0x6"));
-        assert_eq!(value["withdrawalsHash"], json!(null));
+        assert_eq!(value.get("withdrawalsHash"), Some(&json!(null)));
         assert_eq!(value["taikoBlock"], json!(true));
     }
 }

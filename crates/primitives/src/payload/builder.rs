@@ -15,7 +15,7 @@ use tracing::debug;
 
 use crate::{extra_data::ETNA_EXTRA_DATA_LEN, payload::attributes::TaikoPayloadAttributes};
 
-/// Version byte stamped into Taiko payload identifiers for the `engine_*V2` surface.
+/// Version byte of payload identifiers that use the pre-Etna (zero-root) preimage.
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
 
 /// Version byte for payload identifiers that bind all Etna execution and persistence inputs.
@@ -105,9 +105,9 @@ impl PayloadAttributes for TaikoPayloadBuilderAttributes {
 impl TaikoPayloadBuilderAttributes {
     /// Creates a new payload builder for the given parent block and the attributes.
     ///
-    /// Derives the unique [`PayloadId`] for the given parent and attributes, stamped with the
-    /// [`PAYLOAD_ID_VERSION_V2`] byte to match the `engine_*V2` surface this client exposes.
-    /// Callers that want a different version byte should invoke [`payload_id_taiko`] directly.
+    /// Normalizes the attributes under the pre-Etna rules. The payload ID's version byte follows
+    /// [`payload_id_version`]; callers that want a different version byte should invoke
+    /// [`payload_id_taiko`] directly.
     pub fn try_new(
         parent: B256,
         attributes: TaikoPayloadAttributes,
@@ -118,8 +118,8 @@ impl TaikoPayloadBuilderAttributes {
     /// Normalizes payload attributes under the rules active at the target timestamp.
     ///
     /// Etna jobs require matching full-width timestamps, a non-zero beacon root, 13-byte
-    /// extraData, empty withdrawals, and no anchor transaction. Legacy callers retain the V2
-    /// acceptance rules by passing `false` through [`Self::try_new`].
+    /// extraData, empty withdrawals, and no anchor transaction. Pre-Etna jobs pass `false`, as
+    /// [`Self::try_new`] does, and only reject a nonzero root.
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,

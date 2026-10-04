@@ -68,32 +68,42 @@ limit), and the builder uses the complete supplied limit for ordinary transactio
 always uses the raw parent header's `gasLimit` and `gasUsed`, including at the boundary, where the
 parent still contains the anchor.
 
-## Engine API method matrix
+## Engine API methods
 
-Drivers choose the method family from the target payload timestamp. The current head and the time
-a request is sent do not select it.
+alethia-reth serves only the Ethereum Osaka method set, for Unzen and Etna blocks alike:
 
-| Operation | Target before Etna | Target at or after Etna |
-| --- | --- | --- |
-| Start a build | `engine_forkchoiceUpdatedV2` | `engine_forkchoiceUpdatedV3` |
-| Read a build | `engine_getPayloadV2` | `engine_getPayloadV5` |
-| Import a payload | `engine_newPayloadV2` | `engine_newPayloadV4` |
+| Operation | Method |
+| --- | --- |
+| Start a build, or set the head with `null` attributes | `engine_forkchoiceUpdatedV3` |
+| Read a build | `engine_getPayloadV5` |
+| Import a payload | `engine_newPayloadV4` |
 
-FCU requests with payload attributes route on the attributes' timestamp, and `newPayload` routes on
-the payload timestamp. For `getPayload`, alethia-reth resolves the payload ID and routes on that
-job's own timestamp, so a later head change or reorg does not change an existing job's method family.
-An ID stays routable only while the unchanged upstream payload store retains it.
+The V2 methods are not served; calling one returns JSON-RPC `-32601`. Version and fork checks follow
+the standard Osaka Engine API rules. Taiko activates Cancun, Prague, and Osaka at Unzen, so a target
+before Unzen returns `-38005`; every network has already activated Unzen. `getPayloadV5` checks the
+resolved job's own timestamp, so a later head change or reorg does not affect an existing job. An ID
+stays retrievable only while the unchanged upstream payload store retains it.
 
-Both FCU versions accept `null` attributes. Such a request performs normal forkchoice validation and
-returns no payload ID. Non-`VALID` FCU results are returned as statuses without publishing L1-origin
-or proposal metadata, and an unknown payload ID returns `-38001`. Both responses previously surfaced
-as `-32603` on V2 (for FCU, only when the request carried attributes), so drivers must distinguish
-payload statuses from JSON-RPC errors. All six methods use the JWT-authenticated endpoint, and the
-advertised capabilities are exactly these six.
+A `null`-attribute FCU performs normal forkchoice validation and returns no payload ID. Non-`VALID`
+FCU results are returned as statuses without publishing L1-origin or proposal metadata, and an
+unknown payload ID returns `-38001`, so drivers must distinguish payload statuses from JSON-RPC
+errors. All three methods use the JWT-authenticated endpoint, and the advertised capabilities are
+exactly these three.
 
-Etna block construction uses the nonzero `parentBeaconBlockRoot` from the FCU attributes. The driver
-must keep that root with the returned payload ID and pass the same root when importing the payload,
-never one derived from the current head.
+Block construction uses the `parentBeaconBlockRoot` from the FCU attributes: zero for Unzen and the
+nonzero anchor state root for Etna. The driver must keep that root with the returned payload ID and
+pass the same root when importing the payload, never one derived from the current head.
+
+### Breaking at deploy
+
+Dropping V2 takes effect as soon as a node runs this version, not when Etna activates. Release it
+together with both drivers and taiko-geth, and upgrade each node's execution client and driver
+together. Both drivers' CI runs against `alethia-reth:main`, so their switch must merge with this
+change. taiko-geth already serves Unzen through these three methods.
+
+Drivers keep computing `l1Origin.buildPayloadArgsId` for pre-Etna blocks exactly as before (version
+byte 2). The Go driver compares it with stored origins to detect blocks it already inserted, so a
+changed fingerprint would re-insert blocks preconfirmed before the upgrade.
 
 ### V5 normalization and V4 import
 
@@ -102,7 +112,7 @@ carries it as `headerDifficulty`, a decimal JSON number that is required and may
 must normalize the response and pass all four positional arguments:
 
 ```text
-root := the original root associated with this FCU payload ID
+root := the root sent with the FCU that returned this payload ID (zero for Unzen)
 zkGas := parse getPayloadV5.blockValue as an unsigned integer that fits u64
 payload := getPayloadV5.executionPayload
 payload.headerDifficulty := zkGas as a decimal JSON number, including 0
@@ -112,8 +122,8 @@ newPayloadV4(payload, [], root, [])
 The payload object allows exactly the 17 standard V3 properties plus `headerDifficulty`. Construct it
 explicitly: legacy Taiko properties such as `txHash`, `withdrawalsHash`, `taikoBlock`, and
 `slotNumber` are rejected, even when `null`. The transaction array is required (`[]` for an empty
-block). The expected-blob-hash and execution-request arrays must be empty. Etna accepts no blob
-transactions, withdrawals, execution requests, block access lists, or slot numbers.
+block). The expected-blob-hash and execution-request arrays must be empty. Neither Unzen nor Etna
+accepts blob transactions, withdrawals, execution requests, block access lists, or slot numbers.
 
 The V5 envelope returns empty `blobsBundle` fields, empty `executionRequests`,
 `shouldOverrideBuilder: false`, `withdrawals: []`, and zero blob-gas fields. It does not include the
@@ -125,11 +135,15 @@ internal payload ranking still uses actual fees.
 
 | Condition | Response |
 | --- | --- |
-| Known method used for the wrong target fork | JSON-RPC `-38005` |
+| A V2 method | JSON-RPC `-32601` |
+| A target before Unzen | JSON-RPC `-38005` |
 | Unknown or evicted payload ID | JSON-RPC `-38001` |
+| FCUv3 attributes without `withdrawals` or `parentBeaconBlockRoot`, or with `slotNumber` | JSON-RPC `-38003` |
 | Malformed V4 arguments or unsupported payload properties | JSON-RPC `-32602` |
-| Zero root, withdrawals, blob gas, or nonempty side arrays in `newPayloadV4` | JSON-RPC `-32602` (current) |
-| Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current); a `slotNumber` attribute returns `-38003` |
+| A nonzero root before Etna | JSON-RPC `-32602` |
+| Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current) |
+| An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
+| An Unzen payload with withdrawals, blob gas, or nonempty side arrays | Payload status `INVALID` |
 | Wrong Etna `extraData` length on import | Payload status `INVALID` |
 | Block-hash mismatch, zk-gas/difficulty mismatch, zk-gas exhaustion | Payload status `INVALID` |
 
@@ -142,12 +156,12 @@ Osaka sidecar fails conversion before it can reach the invalid-header cache.
 
 ### FCU attributes
 
-For an Etna target, send no `anchorTransaction`, send `withdrawals: []`, set
-`blockMetadata.timestamp` equal to `payloadAttributes.timestamp`, supply a nonzero root, and send
-exactly 13 bytes of `blockMetadata.extraData`. That field keeps its Base64 encoding; do not send hex.
-An explicit transaction list, including an empty one, is derived input; an absent list selects from
-the transaction pool. Null or omitted withdrawals currently pass normalization but are outside this
-contract.
+Every FCUv3 request with attributes sends `withdrawals: []` and a `parentBeaconBlockRoot`: zero for
+Unzen and the nonzero anchor state root for Etna. Omitting either returns `-38003`. For an Etna
+target, also send no `anchorTransaction`, set `blockMetadata.timestamp` equal to
+`payloadAttributes.timestamp`, and send exactly 13 bytes of `blockMetadata.extraData`. That field
+keeps its Base64 encoding; do not send hex. An explicit transaction list, including an empty one, is
+derived input; an absent list selects from the transaction pool.
 
 ## `taikoAuth` preselection
 
@@ -175,13 +189,12 @@ yet require Shasta.
 - Batch lookup's cache-miss fallback stops at an empty block or a non-anchor first transaction. Make
   it fork-aware before `lastBlockIDByBatchID` or `lastL1OriginByBatchID` serve anchorless history.
 - Agree the Etna payload-ID preimage with both drivers. It includes `l1Origin.buildPayloadArgsId`,
-  so a driver that stamps the returned ID into that field cannot reproduce it. V2 IDs stay
+  so a driver that stamps the returned ID into that field cannot reproduce it. Pre-Etna IDs stay
   unchanged, and the hash domain remains `taiko-tbd-payload-v1`.
 - `eth_simulateV1` needs an explicit nonzero `blockOverrides.beaconRoot` for an Etna target, and a
   locally built pending Etna block is unavailable. Decide any simulation-only root policy before
   activation without relaxing the consensus rule.
 - Downstream Rust code that builds `TaikoExecutionDataSidecar` literals needs the new `osaka` field.
-- Reject null or omitted FCUv3 `withdrawals` for Etna targets; they currently pass normalization.
 - Require Shasta in custom Etna schedules; the startup ordering check covers only Unzen.
 - Let offline commands such as `stage run` and `re-execute` load an overridden Etna schedule.
 
@@ -230,8 +243,8 @@ Keep every network at `ForkCondition::Never` until each item is complete.
 - [ ] Disable privileged Anchor writes strictly before the first Etna block: deploy the `anchorV4`
       timestamp gate (taikoxyz/taiko-mono#22222) and verify on devnet or Hoodi that a funded forged
       `anchorV4` call in the first anchorless block reverts.
-- [ ] Both drivers implement the six-method routing, V5 normalization, the retained per-job root,
-      the 13-byte `extraData`, and the parent anchor-number rule.
+- [ ] Both drivers implement the Etna parts of the contract: the nonzero per-job root, the 13-byte
+      `extraData`, and the parent anchor-number rule.
 - [ ] Prover guests verify the root as the state root of the L1 block named by the `extraData`
       anchor number, authenticated against L1 headers, plus the inheritance and genesis rules.
 - [ ] Bridge proofs after Etna verify against the anchor state root that EIP-4788 records for an L2

@@ -21,7 +21,7 @@ fn legacy_osaka_sidecar_rejection_does_not_poison_an_honest_hash() -> eyre::Resu
         let ca = a.auth_server_handle().http_client();
         let cb = b.auth_server_handle().http_client();
         for client in [&ca, &cb] {
-            fcu(client, 2, genesis, genesis, None).await?;
+            fcu(client, genesis, genesis, None).await?;
         }
         let honest =
             build(&ca, spec.clone(), spec.genesis_header(), 0, fixture_attributes(99)).await?;
@@ -39,7 +39,7 @@ fn legacy_osaka_sidecar_rejection_does_not_poison_an_honest_hash() -> eyre::Resu
         assert!(import(&ca, &honest).await?.status.is_valid());
         assert!(import(&cb, &honest).await?.status.is_valid());
         for client in [&ca, &cb] {
-            fcu(client, 2, genesis, honest.block.hash(), None).await?;
+            fcu(client, genesis, honest.block.hash(), None).await?;
         }
         let state = b.inner.provider.latest()?;
         assert_eq!(
@@ -76,7 +76,7 @@ fn live_two_node_build_import_state_and_empty_roundtrip() -> eyre::Result<()> {
         let ca = a.auth_server_handle().http_client();
         let cb = b.auth_server_handle().http_client();
         for client in [&ca, &cb] {
-            assert!(fcu(client, 3, genesis, genesis, None).await?.payload_status.status.is_valid());
+            assert!(fcu(client, genesis, genesis, None).await?.payload_status.status.is_valid());
         }
         let tx = signed_tx(0, false, Address::with_last_byte(0x21), Bytes::new());
         let activation = build(
@@ -95,7 +95,7 @@ fn live_two_node_build_import_state_and_empty_roundtrip() -> eyre::Result<()> {
             let status = import(client, &activation).await?;
             assert!(status.status.is_valid(), "{status:?}");
             assert!(
-                fcu(client, 3, genesis, activation.block.hash(), None)
+                fcu(client, genesis, activation.block.hash(), None)
                     .await?
                     .payload_status
                     .status
@@ -126,17 +126,17 @@ fn live_two_node_build_import_state_and_empty_roundtrip() -> eyre::Result<()> {
         assert!(empty.block.body().transactions.is_empty());
         assert!(import(&cb, &empty).await?.status.is_valid());
         assert!(
-            fcu(&cb, 3, genesis, empty.block.hash(), None).await?.payload_status.status.is_valid()
+            fcu(&cb, genesis, empty.block.hash(), None).await?.payload_status.status.is_valid()
         );
         Ok(())
     })
 }
 
 #[test]
-fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre::Result<()> {
+fn cross_fork_reorg_retains_jobs_and_rolls_back_system_storage() -> eyre::Result<()> {
     run_live_test(async {
         use alloy_primitives::{Address, Bytes, U256};
-        use alloy_rpc_types_engine::{ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV5};
+        use alloy_rpc_types_engine::ExecutionPayloadEnvelopeV5;
         use jsonrpsee::{core::client::ClientT, rpc_params};
         use reth_storage_api::{StateProvider, StateProviderFactory};
         let spec = fixture_chain_spec();
@@ -146,7 +146,7 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
         let ca = a.auth_server_handle().http_client();
         let cb = b.auth_server_handle().http_client();
         for client in [&ca, &cb] {
-            fcu(client, 2, genesis, genesis, None).await?;
+            fcu(client, genesis, genesis, None).await?;
         }
         let anchor = signed_tx(
             0,
@@ -228,22 +228,12 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
             .await?,
             serde_json::Value::Null
         );
-        // A's last resolved job remains legacy while B builds intervening blocks.
-        let old: ExecutionPayloadEnvelopeV2 =
-            ca.request("engine_getPayloadV2", rpc_params![legacy.id]).await?;
-        assert_eq!(
-            serde_json::to_value(old.execution_payload)?["blockHash"],
-            legacy.payload["blockHash"]
-        );
-        assert!(
-            ca.request::<serde_json::Value, _>("engine_getPayloadV5", rpc_params![legacy.id])
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("Unsupported fork")
-        );
+        // A's last resolved Unzen job stays retrievable while B builds intervening blocks.
+        let old: ExecutionPayloadEnvelopeV5 =
+            ca.request("engine_getPayloadV5", rpc_params![legacy.id]).await?;
+        assert_eq!(normalize_v5(old), legacy.payload);
         // A builds the alternative legacy branch. B's retained job remains the Etna child.
-        fcu(&ca, 2, genesis, genesis, None).await?;
+        fcu(&ca, genesis, genesis, None).await?;
         let alternative =
             build(&ca, spec.clone(), spec.genesis_header(), 0, fixture_attributes(98)).await?;
         for client in [&ca, &cb] {
@@ -277,13 +267,6 @@ fn cross_fork_reorg_retains_job_routing_and_rolls_back_system_storage() -> eyre:
         let old: ExecutionPayloadEnvelopeV5 =
             cb.request("engine_getPayloadV5", rpc_params![activation.id]).await?;
         assert_eq!(normalize_v5(old), activation.payload);
-        assert!(
-            cb.request::<serde_json::Value, _>("engine_getPayloadV2", rpc_params![activation.id])
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("Unsupported fork")
-        );
         let forward =
             build(&ca, spec.clone(), alternative.block.header(), 0, fixture_attributes(101))
                 .await?;
@@ -322,7 +305,7 @@ fn malicious_commitments_and_direct_tree_input_are_checked_during_execution() ->
         let ca = a.auth_server_handle().http_client();
         let cb = b.auth_server_handle().http_client();
         for client in [&ca, &cb] {
-            fcu(client, 3, genesis, genesis, None).await?;
+            fcu(client, genesis, genesis, None).await?;
         }
         let built = build(
             &ca,
@@ -351,9 +334,8 @@ fn malicious_commitments_and_direct_tree_input_are_checked_during_execution() ->
         assert!(format!("{status:?}").contains("zk gas header difficulty mismatch"), "{status:?}");
         // An already-invalid head plus attributes is an ordinary INVALID FCU, not an internal
         // error.
-        for (version, timestamp) in [(2, 99), (3, 101)] {
-            let invalid =
-                fcu(&cb, version, genesis, hash, Some(fixture_attributes(timestamp))).await?;
+        for timestamp in [99, 101] {
+            let invalid = fcu(&cb, genesis, hash, Some(fixture_attributes(timestamp))).await?;
             assert!(invalid.payload_status.status.is_invalid());
             assert!(invalid.payload_id.is_none());
             assert_no_origin(&b, 1)?;
@@ -411,7 +393,7 @@ fn malicious_commitments_and_direct_tree_input_are_checked_during_execution() ->
             );
         }
         canonicalize(&cb, genesis, &built).await?;
-        fcu(&ca, 3, genesis, built.block.hash(), None).await?;
+        fcu(&ca, genesis, built.block.hash(), None).await?;
         assert_execution_parity(&a, &built).await?;
         assert_execution_parity(&b, &built).await?;
         // Recomputing the hash does not rescue a wrong commitment on the direct tree path either.
@@ -437,7 +419,7 @@ fn full_block_trace_charges_ordinary_fees_to_golden_touch_and_checkpoint_calls()
         let genesis = spec.genesis_hash();
         let node = launch_test_node(spec.clone(), Runtime::test()).await?;
         let client = node.auth_server_handle().http_client();
-        fcu(&client, 3, genesis, genesis, None).await?;
+        fcu(&client, genesis, genesis, None).await?;
         let mut checkpoint =
             alloy_primitives::keccak256(b"revealCheckpoint(uint48,bytes32,bytes32)")[..4].to_vec();
         checkpoint.extend_from_slice(&[0; 96]);
@@ -518,11 +500,8 @@ fn canonical_devnet_etna_genesis_keeps_zero_root_and_serves_pending_simulation()
         assert_eq!(&header, spec.genesis_header());
         assert_eq!(header.parent_beacon_block_root, Some(B256::ZERO));
         let client = node.auth_server_handle().http_client();
-        for version in [2, 3] {
-            let status =
-                fcu(&client, version, spec.genesis_hash(), spec.genesis_hash(), None).await?;
-            assert!(status.payload_status.status.is_valid(), "{status:?}");
-        }
+        let status = fcu(&client, spec.genesis_hash(), spec.genesis_hash(), None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
         // Preselection over an Etna genesis needs no beacon root: it never runs system calls.
         let lists: Value = client
             .request(

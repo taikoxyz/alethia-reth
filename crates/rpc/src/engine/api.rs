@@ -9,8 +9,7 @@ use alethia_reth_primitives::{
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::{B256, BlockNumber, Bytes};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV5, ForkchoiceState, ForkchoiceUpdated,
-    PayloadId, PayloadStatus,
+    ExecutionPayloadEnvelopeV5, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
 };
 use async_trait::async_trait;
 use jsonrpsee::{RpcModule, proc_macros::rpc};
@@ -24,7 +23,10 @@ use reth_db_api::transaction::DbTxMut;
 use reth_engine_primitives::EngineApiValidator;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{EngineTypes, PayloadTypes};
-use reth_payload_primitives::{EngineApiMessageVersion, EngineObjectValidationError, PayloadKind};
+use reth_payload_primitives::{
+    EngineApiMessageVersion, EngineObjectValidationError, MessageValidationKind, PayloadKind,
+    validate_payload_timestamp,
+};
 use reth_provider::{
     BalProvider, BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
     StateProviderFactory,
@@ -41,14 +43,8 @@ use alethia_reth_db::model::{
 /// The list of all supported Engine capabilities available over the engine endpoint.
 ///
 /// Per the Engine API spec, `engine_exchangeCapabilities` itself is served but never listed.
-pub const TAIKO_ENGINE_CAPABILITIES: &[&str] = &[
-    "engine_forkchoiceUpdatedV2",
-    "engine_getPayloadV2",
-    "engine_newPayloadV2",
-    "engine_forkchoiceUpdatedV3",
-    "engine_getPayloadV5",
-    "engine_newPayloadV4",
-];
+pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
+    &["engine_forkchoiceUpdatedV3", "engine_getPayloadV5", "engine_newPayloadV4"];
 
 /// Returns the Engine API capabilities advertised by the Taiko engine endpoint.
 pub fn taiko_engine_capabilities() -> EngineCapabilities {
@@ -62,25 +58,6 @@ pub fn taiko_engine_capabilities() -> EngineCapabilities {
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "engine"), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "engine", client_bounds(Engine::PayloadAttributes: jsonrpsee::core::Serialize + Clone), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned)))]
 pub trait TaikoEngineApi<Engine: EngineTypes> {
-    /// Submit a new execution payload and return validation status.
-    #[method(name = "newPayloadV2")]
-    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus>;
-
-    /// Update fork choice and optionally start payload building.
-    #[method(name = "forkchoiceUpdatedV2")]
-    async fn fork_choice_updated_v2(
-        &self,
-        fork_choice_state: ForkchoiceState,
-        payload_attributes: Option<Engine::PayloadAttributes>,
-    ) -> RpcResult<ForkchoiceUpdated>;
-
-    /// Fetch a previously built payload by ID.
-    #[method(name = "getPayloadV2")]
-    async fn get_payload_v2(
-        &self,
-        payload_id: PayloadId,
-    ) -> RpcResult<Engine::ExecutionPayloadEnvelopeV2>;
-
     /// Submit an Osaka payload with the standard V4 side parameters.
     #[method(name = "newPayloadV4")]
     async fn new_payload_v4(
@@ -91,7 +68,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
         execution_requests: Vec<Bytes>,
     ) -> RpcResult<PayloadStatus>;
 
-    /// Update fork choice and optionally build an Etna payload.
+    /// Update fork choice and optionally start payload building.
     #[method(name = "forkchoiceUpdatedV3")]
     async fn fork_choice_updated_v3(
         &self,
@@ -99,7 +76,7 @@ pub trait TaikoEngineApi<Engine: EngineTypes> {
         payload_attributes: Option<Engine::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated>;
 
-    /// Fetch a previously built Etna payload in an Osaka envelope.
+    /// Fetch a previously built payload in an Osaka envelope.
     #[method(name = "getPayloadV5")]
     async fn get_payload_v5(
         &self,
@@ -117,7 +94,7 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
     /// Provider used for DB reads/writes during L1-origin persistence.
     provider: Provider,
-    /// Taiko chain spec used to detect Unzen payloads when preparing `getPayloadV2` responses.
+    /// Taiko chain spec used to decode Shasta proposal IDs and check Osaka payload timestamps.
     chain_spec: Arc<TaikoChainSpec>,
     /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
@@ -164,19 +141,16 @@ where
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
             BuiltPayload = EthBuiltPayload,
-            ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
             ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5,
         >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
-    /// Updates fork choice through the selected validator and atomically persists successful
-    /// builds. Null attributes still reach normal forkchoice validation without a build-version
-    /// gate.
+    /// Updates fork choice through FCUv3 and atomically persists the L1 origin of a successful
+    /// build. Null attributes still reach normal forkchoice validation.
     async fn fork_choice_updated(
         &self,
-        version: EngineApiMessageVersion,
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<TaikoPayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
@@ -196,12 +170,8 @@ where
             None => (None, false, None),
         };
 
-        let status = match version {
-            EngineApiMessageVersion::V3 => {
-                self.inner.fork_choice_updated_v3(fork_choice_state, payload_attributes).await?
-            }
-            _ => self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?,
-        };
+        let status =
+            self.inner.fork_choice_updated_v3(fork_choice_state, payload_attributes).await?;
 
         // Non-VALID forkchoice outcomes do not start a build and therefore carry no ID.
         // Preserve the upstream status without publishing origin/proposal metadata.
@@ -232,18 +202,6 @@ where
         E: std::error::Error + Send + Sync + 'static,
     {
         EngineApiError::Internal(Box::new(err))
-    }
-
-    /// Converts a built payload into the standard V2 envelope, preserving the builder fee unless
-    /// Unzen requires the hash-relevant header difficulty to be carried through `blockValue`.
-    fn convert_built_payload_to_execution_payload_envelope_v2(
-        &self,
-        built_payload: EthBuiltPayload,
-    ) -> ExecutionPayloadEnvelopeV2 {
-        convert_built_payload_to_execution_payload_envelope_v2(
-            self.chain_spec.as_ref(),
-            built_payload,
-        )
     }
 
     /// Resolves a stored payload, preserving builder errors and reporting unknown IDs distinctly.
@@ -304,41 +262,19 @@ where
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
             BuiltPayload = EthBuiltPayload,
-            ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
             ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5,
         >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
-    /// Creates a new execution payload with the given execution data.
-    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
-        validate_taiko_api_fork(
-            self.chain_spec.is_etna_active(payload.execution_payload.timestamp),
-            false,
-        )?;
-        self.inner.new_payload_v2(payload).await.map_err(|e| e.into())
-    }
-
-    /// Updates the fork choice with the given state and payload attributes.
-    async fn fork_choice_updated_v2(
-        &self,
-        fork_choice_state: ForkchoiceState,
-        payload_attributes: Option<EngineT::PayloadAttributes>,
-    ) -> RpcResult<ForkchoiceUpdated> {
-        self.fork_choice_updated(EngineApiMessageVersion::V2, fork_choice_state, payload_attributes)
-            .await
-    }
-
-    /// Updates fork choice with Etna build attributes while retaining the shared origin
-    /// transaction.
+    /// Updates fork choice and, when attributes start a build, persists its L1 origin.
     async fn fork_choice_updated_v3(
         &self,
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        self.fork_choice_updated(EngineApiMessageVersion::V3, fork_choice_state, payload_attributes)
-            .await
+        self.fork_choice_updated(fork_choice_state, payload_attributes).await
     }
 
     /// Normalizes all four wire arguments before forwarding the internal data to Reth.
@@ -349,11 +285,6 @@ where
         parent_beacon_block_root: B256,
         execution_requests: Vec<Bytes>,
     ) -> RpcResult<PayloadStatus> {
-        validate_taiko_api_fork(
-            self.chain_spec
-                .is_etna_active(payload.execution_payload.payload_inner.payload_inner.timestamp),
-            true,
-        )?;
         let data = payload
             .into_execution_data(
                 expected_blob_versioned_hashes,
@@ -366,32 +297,22 @@ where
         self.inner.new_payload_v4(data).await.map_err(Into::into)
     }
 
-    /// Resolves the stored job before gating its timestamp and converting the RPC envelope.
+    /// Resolves the stored job, checks that its own timestamp falls within Osaka, and converts
+    /// the RPC envelope.
     async fn get_payload_v5(
         &self,
         payload_id: PayloadId,
     ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV5> {
         let built_payload =
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
-        validate_taiko_api_fork(
-            self.chain_spec.is_etna_active(built_payload.block().timestamp),
-            true,
-        )?;
+        validate_payload_timestamp(
+            self.chain_spec.as_ref(),
+            EngineApiMessageVersion::V5,
+            built_payload.block().timestamp,
+            MessageValidationKind::GetPayload,
+        )
+        .map_err(EngineApiError::from)?;
         convert_built_payload_to_execution_payload_envelope_v5(built_payload).map_err(Into::into)
-    }
-
-    /// Retrieves the execution payload by its ID.
-    async fn get_payload_v2(
-        &self,
-        payload_id: PayloadId,
-    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
-        let built_payload =
-            self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
-        validate_taiko_api_fork(
-            self.chain_spec.is_etna_active(built_payload.block().timestamp),
-            false,
-        )?;
-        Ok(self.convert_built_payload_to_execution_payload_envelope_v2(built_payload))
     }
 
     /// Exchanges supported Engine API methods with the driver, returning this node's list.
@@ -415,14 +336,6 @@ where
     }
 }
 
-/// Rejects Engine method families that do not match Taiko Etna at the target timestamp.
-fn validate_taiko_api_fork(is_etna_active: bool, wants_etna: bool) -> Result<(), EngineApiError> {
-    if is_etna_active != wants_etna {
-        return Err(EngineObjectValidationError::UnsupportedFork.into());
-    }
-    Ok(())
-}
-
 /// Converts an Osaka payload while exposing finalized zk-gas as blockValue and preserving fees
 /// in the builder's stored payload. Unsupported sidecar conversions propagate without panicking.
 fn convert_built_payload_to_execution_payload_envelope_v5(
@@ -436,28 +349,6 @@ fn convert_built_payload_to_execution_payload_envelope_v5(
     Ok(envelope)
 }
 
-/// Converts a built payload into the standard V2 execution payload envelope.
-///
-/// Unzen reuses `blockValue` to transport the hash-relevant header difficulty through the standard
-/// `getPayloadV2` response shape without adding a new wire field.
-fn convert_built_payload_to_execution_payload_envelope_v2(
-    chain_spec: &TaikoChainSpec,
-    built_payload: EthBuiltPayload,
-) -> ExecutionPayloadEnvelopeV2 {
-    let block = built_payload.block();
-    let is_unzen_active = chain_spec.is_unzen_active(block.header().timestamp);
-    let header_difficulty = block.header().difficulty;
-    let mut envelope = ExecutionPayloadEnvelopeV2::from(built_payload);
-
-    if is_unzen_active {
-        // Consensus rule: Taiko Unzen round-trips the header difficulty through `blockValue` so
-        // the RPC response can carry the hash-relevant field without introducing a new wire field.
-        envelope.block_value = header_difficulty;
-    }
-
-    envelope
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,7 +357,7 @@ mod tests {
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
     use alloy_eips::merge::BEACON_NONCE;
-    use alloy_hardforks::ForkCondition;
+    use alloy_hardforks::{EthereumHardfork, ForkCondition};
     use alloy_primitives::{Address, B256, Bytes, U256};
     use std::sync::Arc;
 
@@ -523,7 +414,14 @@ mod tests {
             BeaconEngineMessage, ConsensusEngineHandle, OnForkChoiceUpdated,
         };
         let provider = test_provider();
-        let mut spec = (*unzen_chain_spec()).clone();
+        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+        // Unzen and the Cancun, Prague, and Osaka rules it implies start at 50, so timestamp 49
+        // is pre-Unzen. Those Ethereum forks are derived from Unzen only when a spec is built, so
+        // the fixture moves all four.
+        for fork in [EthereumHardfork::Cancun, EthereumHardfork::Prague, EthereumHardfork::Osaka] {
+            spec.inner.hardforks.insert(fork, ForkCondition::Timestamp(50));
+        }
+        spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
         spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
         spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
         let spec = Arc::new(spec);
@@ -536,13 +434,10 @@ mod tests {
             while let Some(command) = payload_rx.recv().await {
                 match command {
                     PayloadServiceCommand::Resolve(id, _, tx) => {
-                        let timestamp = if id == PayloadId::new([99; 8]) {
-                            Some(99)
-                        } else if id == PayloadId::new([100; 8]) {
-                            Some(100)
-                        } else {
-                            None
-                        };
+                        let timestamp = [49_u8, 99, 100]
+                            .into_iter()
+                            .find(|timestamp| id == PayloadId::new([*timestamp; 8]))
+                            .map(u64::from);
                         let future = timestamp.map(|timestamp| {
                             let mut block = sample_unzen_block(U256::from(7), timestamp);
                             block.header.blob_gas_used = Some(0);
@@ -682,7 +577,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registered_methods_and_get_payload_fork_matrix() {
+    async fn serves_only_osaka_methods_and_checks_get_payload_v5_fork() {
         let (module, _, _) = rpc_fixture();
         let mut methods = module.method_names().collect::<Vec<_>>();
         methods.sort();
@@ -690,69 +585,69 @@ mod tests {
             methods,
             vec![
                 "engine_exchangeCapabilities",
-                "engine_forkchoiceUpdatedV2",
                 "engine_forkchoiceUpdatedV3",
-                "engine_getPayloadV2",
                 "engine_getPayloadV5",
-                "engine_newPayloadV2",
                 "engine_newPayloadV4"
             ]
         );
-        for timestamp in [99, 100] {
-            // Simulate a changed head/reorg; routing must continue using the stored job.
+        // Per the Engine API spec, `engine_exchangeCapabilities` itself is never listed.
+        let mut capabilities = taiko_engine_capabilities().list();
+        capabilities.sort();
+        assert_eq!(
+            capabilities,
+            ["engine_forkchoiceUpdatedV3", "engine_getPayloadV5", "engine_newPayloadV4"]
+        );
+        for method in ["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"] {
+            let response = rpc_call(&module, method, serde_json::json!([])).await;
+            assert_eq!(response["error"]["code"], -32601, "{method}: {response}");
+        }
+        for timestamp in [49_u8, 99, 100] {
+            // A changed head must not affect the stored job's own timestamp check.
             let changed = rpc_call(
                 &module,
-                "engine_forkchoiceUpdatedV2",
+                "engine_forkchoiceUpdatedV3",
                 serde_json::json!([fcu_state(200 - timestamp), null]),
             )
             .await;
             assert!(changed.get("result").is_some(), "{changed}");
-            for method in ["engine_getPayloadV2", "engine_getPayloadV5"] {
-                let response =
-                    rpc_call(&module, method, serde_json::json!([PayloadId::new([timestamp; 8])]))
-                        .await;
-                if (method == "engine_getPayloadV2") == (timestamp == 99) {
-                    assert_eq!(
-                        response["result"]["executionPayload"]["timestamp"],
-                        format!("0x{timestamp:x}")
-                    );
-                    assert_eq!(response["result"]["blockValue"], "0x7");
-                    if timestamp == 100 {
-                        assert_eq!(response["result"]["executionPayload"]["blobGasUsed"], "0x0");
-                        assert_eq!(response["result"]["executionPayload"]["excessBlobGas"], "0x0");
-                        assert_eq!(
-                            response["result"]["executionPayload"]["withdrawals"],
-                            serde_json::json!([])
-                        );
-                        assert_eq!(response["result"]["executionRequests"], serde_json::json!([]));
-                        assert_eq!(
-                            response["result"]["blobsBundle"],
-                            serde_json::json!({"commitments": [], "proofs": [], "blobs": []})
-                        );
-                        assert_eq!(response["result"]["shouldOverrideBuilder"], false);
-                    }
-                } else {
-                    assert_eq!(response["error"]["code"], -38005, "{response}");
-                }
+            let response = rpc_call(
+                &module,
+                "engine_getPayloadV5",
+                serde_json::json!([PayloadId::new([timestamp; 8])]),
+            )
+            .await;
+            if timestamp == 49 {
+                assert_eq!(response["error"]["code"], -38005, "{response}");
+                continue;
             }
+            let result = &response["result"];
+            assert_eq!(result["executionPayload"]["timestamp"], format!("0x{timestamp:x}"));
+            assert_eq!(result["blockValue"], "0x7");
+            assert_eq!(result["executionPayload"]["blobGasUsed"], "0x0");
+            assert_eq!(result["executionPayload"]["excessBlobGas"], "0x0");
+            assert_eq!(result["executionPayload"]["withdrawals"], serde_json::json!([]));
+            assert_eq!(result["executionRequests"], serde_json::json!([]));
+            assert_eq!(
+                result["blobsBundle"],
+                serde_json::json!({"commitments": [], "proofs": [], "blobs": []})
+            );
+            assert_eq!(result["shouldOverrideBuilder"], false);
         }
-        for method in ["engine_getPayloadV2", "engine_getPayloadV5"] {
-            let response =
-                rpc_call(&module, method, serde_json::json!([PayloadId::new([0; 8])])).await;
-            assert_eq!(response["error"]["code"], -38001);
-            assert_eq!(response["error"]["message"], "Unknown payload");
-        }
+        let response =
+            rpc_call(&module, "engine_getPayloadV5", serde_json::json!([PayloadId::new([0; 8])]))
+                .await;
+        assert_eq!(response["error"]["code"], -38001);
+        assert_eq!(response["error"]["message"], "Unknown payload");
     }
 
     #[tokio::test]
-    async fn both_fcu_versions_allow_null_attributes_but_validate_forkchoice() {
+    async fn fcu_v3_allows_null_attributes_but_validates_forkchoice() {
         let (module, _, jobs) = rpc_fixture();
-        for method in ["engine_forkchoiceUpdatedV2", "engine_forkchoiceUpdatedV3"] {
-            let response = rpc_call(&module, method, serde_json::json!([fcu_state(1), null])).await;
-            assert_eq!(response["result"]["payloadStatus"]["status"], "VALID", "{response}");
-            let response = rpc_call(&module, method, serde_json::json!([fcu_state(0), null])).await;
-            assert_eq!(response["error"]["code"], -38002, "{response}");
-        }
+        let method = "engine_forkchoiceUpdatedV3";
+        let response = rpc_call(&module, method, serde_json::json!([fcu_state(1), null])).await;
+        assert_eq!(response["result"]["payloadStatus"]["status"], "VALID", "{response}");
+        let response = rpc_call(&module, method, serde_json::json!([fcu_state(0), null])).await;
+        assert_eq!(response["error"]["code"], -38002, "{response}");
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -797,57 +692,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fcu_fork_matrix_and_origin_persistence_parity() {
-        for timestamp in [99, 100] {
-            for method in ["engine_forkchoiceUpdatedV2", "engine_forkchoiceUpdatedV3"] {
-                for preconf in [false, true] {
-                    let (module, provider, jobs) = rpc_fixture();
-                    let attrs = fcu_attributes(timestamp, preconf);
-                    let response =
-                        rpc_call(&module, method, serde_json::json!([fcu_state(1), attrs])).await;
-                    let valid = (timestamp == 99) == (method == "engine_forkchoiceUpdatedV2");
-                    if valid {
-                        assert!(response.get("result").is_some(), "{response}");
-                    } else {
-                        assert_eq!(response["error"]["code"], -38005, "{response}");
-                    }
-                    assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), usize::from(valid));
-                    let db = provider.provider().unwrap();
-                    let origin = db.tx_ref().get::<StoredL1OriginTable>(timestamp).unwrap();
-                    assert_eq!(origin.is_some(), valid);
-                    if let Some(origin) = origin {
-                        assert_eq!(origin.block_id, U256::from(timestamp));
-                        assert!(!origin.l2_block_hash.is_zero());
-                    }
-                    assert_eq!(
-                        db.tx_ref()
-                            .get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)
-                            .unwrap(),
-                        (valid && !preconf).then_some(timestamp)
-                    );
-                    let proposal_id = decode_shasta_proposal_id(
-                        fcu_attributes(timestamp, preconf).block_metadata.extra_data.as_ref(),
-                    )
-                    .unwrap();
-                    assert_eq!(
-                        db.tx_ref().get::<BatchToLastBlock>(proposal_id).unwrap(),
-                        (valid && !preconf).then_some(timestamp)
-                    );
+    async fn fcu_v3_fork_checks_and_origin_persistence() {
+        for timestamp in [49, 99, 100] {
+            for preconf in [false, true] {
+                let (module, provider, jobs) = rpc_fixture();
+                let attrs = fcu_attributes(timestamp, preconf);
+                let response = rpc_call(
+                    &module,
+                    "engine_forkchoiceUpdatedV3",
+                    serde_json::json!([fcu_state(1), attrs]),
+                )
+                .await;
+                // Taiko activates Cancun, Prague, and Osaka at Unzen (50 in the fixture).
+                let valid = timestamp != 49;
+                if valid {
+                    assert!(response.get("result").is_some(), "{response}");
+                } else {
+                    assert_eq!(response["error"]["code"], -38005, "{response}");
                 }
+                assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), usize::from(valid));
+                let db = provider.provider().unwrap();
+                let origin = db.tx_ref().get::<StoredL1OriginTable>(timestamp).unwrap();
+                assert_eq!(origin.is_some(), valid);
+                if let Some(origin) = origin {
+                    assert_eq!(origin.block_id, U256::from(timestamp));
+                    assert!(!origin.l2_block_hash.is_zero());
+                }
+                assert_eq!(
+                    db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
+                    (valid && !preconf).then_some(timestamp)
+                );
+                let proposal_id = decode_shasta_proposal_id(
+                    fcu_attributes(timestamp, preconf).block_metadata.extra_data.as_ref(),
+                )
+                .unwrap();
+                assert_eq!(
+                    db.tx_ref().get::<BatchToLastBlock>(proposal_id).unwrap(),
+                    (valid && !preconf).then_some(timestamp)
+                );
             }
         }
     }
 
     #[tokio::test]
     async fn nonvalid_fcu_statuses_do_not_require_payload_ids_or_write_origins() {
-        for (method, timestamp) in
-            [("engine_forkchoiceUpdatedV2", 99), ("engine_forkchoiceUpdatedV3", 100)]
-        {
+        for timestamp in [99, 100] {
             for (head, expected) in [(200, "SYNCING"), (201, "INVALID"), (202, "VALID")] {
                 let (module, provider, jobs) = rpc_fixture();
                 let response = rpc_call(
                     &module,
-                    method,
+                    "engine_forkchoiceUpdatedV3",
                     serde_json::json!([fcu_state(head), fcu_attributes(timestamp, false)]),
                 )
                 .await;
@@ -905,10 +799,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_payload_four_argument_normalization_and_fork_matrix() {
-        use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
+    async fn new_payload_v4_normalization_and_fork_checks() {
+        use alethia_reth_primitives::engine::osaka::TaikoExecutionPayloadV3;
         let (module, _, _) = rpc_fixture();
-        for timestamp in [99, 100] {
+        for timestamp in [49, 99, 100] {
             let mut block = sample_unzen_block(U256::ZERO, timestamp);
             block.header.blob_gas_used = Some(0);
             block.header.excess_blob_gas = Some(0);
@@ -923,23 +817,14 @@ mod tests {
                 header_difficulty: 0,
                 extra_fields: Default::default(),
             };
-            let legacy = TaikoEngineTypes::block_to_payload(
-                reth_primitives_traits::SealedBlock::new_unhashed(block),
-                None,
-            );
-            for method in ["engine_newPayloadV2", "engine_newPayloadV4"] {
-                let params = if method == "engine_newPayloadV2" {
-                    serde_json::json!([legacy])
-                } else {
-                    serde_json::json!([wire, [], root, []])
-                };
-                let response = rpc_call(&module, method, params).await;
-                if (timestamp == 99) == (method == "engine_newPayloadV2") {
-                    assert_eq!(response["result"]["status"], "VALID", "{response}");
-                } else {
-                    assert_eq!(response["error"]["code"], -38005, "{response}");
-                }
+            let response =
+                rpc_call(&module, "engine_newPayloadV4", serde_json::json!([wire, [], root, []]))
+                    .await;
+            if timestamp == 49 {
+                assert_eq!(response["error"]["code"], -38005, "{response}");
+                continue;
             }
+            assert_eq!(response["result"]["status"], "VALID", "{response}");
             if timestamp == 100 {
                 for side in 0..3 {
                     let params = match side {
@@ -1002,64 +887,6 @@ mod tests {
         let unsupported =
             built.with_sidecars(vec![alloy_eips::eip4844::BlobTransactionSidecar::default()]);
         assert!(convert_built_payload_to_execution_payload_envelope_v5(unsupported).is_err());
-    }
-
-    #[test]
-    fn engine_capabilities_advertise_exactly_the_served_methods() {
-        let mut capabilities = taiko_engine_capabilities().list();
-        capabilities.sort();
-
-        // Exactly the methods routed by `TaikoEngineApiServer::into_rpc`; per the Engine API
-        // spec, `engine_exchangeCapabilities` itself must not be part of the list.
-        assert_eq!(
-            capabilities,
-            vec![
-                "engine_forkchoiceUpdatedV2",
-                "engine_forkchoiceUpdatedV3",
-                "engine_getPayloadV2",
-                "engine_getPayloadV5",
-                "engine_newPayloadV2",
-                "engine_newPayloadV4"
-            ]
-        );
-    }
-
-    #[test]
-    fn unzen_payload_overwrites_block_value_with_header_difficulty() {
-        let chain_spec = unzen_chain_spec();
-        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
-
-        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
-            chain_spec.as_ref(),
-            built_payload,
-        );
-
-        assert_eq!(envelope.block_value, U256::from(7_u64));
-    }
-
-    #[test]
-    fn pre_unzen_payload_preserves_original_block_value() {
-        let chain_spec = pre_unzen_chain_spec();
-        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
-
-        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
-            chain_spec.as_ref(),
-            built_payload,
-        );
-
-        assert_eq!(envelope.block_value, U256::from(1_u64));
-    }
-
-    fn unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
-        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
-        Arc::new(chain_spec)
-    }
-
-    fn pre_unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
-        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(10));
-        Arc::new(chain_spec)
     }
 
     fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {

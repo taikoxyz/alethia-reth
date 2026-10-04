@@ -178,7 +178,6 @@ pub async fn launch_test_node(
 
 pub async fn fcu(
     client: &impl ClientT,
-    version: u8,
     genesis: B256,
     head: B256,
     attrs: Option<TaikoPayloadAttributes>,
@@ -186,7 +185,7 @@ pub async fn fcu(
     Ok(tokio::time::timeout(
         Duration::from_secs(30),
         client.request(
-            &format!("engine_forkchoiceUpdatedV{version}"),
+            "engine_forkchoiceUpdatedV3",
             rpc_params![
                 ForkchoiceState {
                     head_block_hash: head,
@@ -249,12 +248,9 @@ pub async fn build(
     mut attrs: TaikoPayloadAttributes,
 ) -> eyre::Result<Built> {
     use alethia_reth_consensus::eip4396::{MIN_BASE_FEE, calculate_next_block_eip4396_base_fee};
-    use alethia_reth_primitives::engine::{
-        TaikoEngineTypes, osaka::TaikoExecutionPayloadV3, types::TaikoExecutionData,
-    };
+    use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
     use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
-    let etna = attrs.payload_attributes.timestamp >= 100;
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
         parent.timestamp - grandparent_timestamp,
@@ -262,48 +258,18 @@ pub async fn build(
         MIN_BASE_FEE,
     ));
     attrs.l1_origin.block_id = U256::from(parent.number + 1);
-    let status = fcu(
-        client,
-        if etna { 3 } else { 2 },
-        spec.genesis_hash(),
-        parent.hash_slow(),
-        Some(attrs.clone()),
-    )
-    .await?;
+    let status = fcu(client, spec.genesis_hash(), parent.hash_slow(), Some(attrs.clone())).await?;
     assert!(status.payload_status.status.is_valid(), "{status:?}");
     let id = status.payload_id.unwrap();
     let root = attrs.payload_attributes.parent_beacon_block_root.unwrap();
-    let (payload, data) = if etna {
-        let envelope: ExecutionPayloadEnvelopeV5 = tokio::time::timeout(
-            Duration::from_secs(30),
-            client.request("engine_getPayloadV5", rpc_params![id]),
-        )
-        .await??;
-        let payload = normalize_v5(envelope);
-        let wire: TaikoExecutionPayloadV3 = serde_json::from_value(payload.clone())?;
-        (payload, wire.into_execution_data(vec![], root, vec![])?)
-    } else {
-        let envelope: alloy_rpc_types_engine::ExecutionPayloadEnvelopeV2 = tokio::time::timeout(
-            Duration::from_secs(30),
-            client.request("engine_getPayloadV2", rpc_params![id]),
-        )
-        .await??;
-        let mut payload = serde_json::to_value(envelope.execution_payload)?;
-        let txs: Vec<Bytes> = serde_json::from_value(payload["transactions"].clone())?;
-        payload["txHash"] =
-            serde_json::to_value(alloy_consensus::proofs::ordered_trie_root_encoded(&txs))?;
-        payload["withdrawalsHash"] = serde_json::to_value(alloy_consensus::EMPTY_ROOT_HASH)?;
-        use alethia_reth_chainspec::hardfork::TaikoHardforks;
-        let difficulty = if spec.is_unzen_active(attrs.payload_attributes.timestamp) {
-            u64::try_from(envelope.block_value)?
-        } else {
-            0
-        };
-        payload["headerDifficulty"] = difficulty.into();
-        payload["taikoBlock"] = true.into();
-        let data: TaikoExecutionData = serde_json::from_value(payload.clone())?;
-        (payload, data)
-    };
+    let envelope: ExecutionPayloadEnvelopeV5 = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.request("engine_getPayloadV5", rpc_params![id]),
+    )
+    .await??;
+    let payload = normalize_v5(envelope);
+    let wire: TaikoExecutionPayloadV3 = serde_json::from_value(payload.clone())?;
+    let data = wire.into_execution_data(vec![], root, vec![])?;
     let validator = alethia_reth_rpc::engine::validator::TaikoEngineValidator::new(spec);
     let block =
         <_ as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(&validator, data)?;
@@ -314,24 +280,18 @@ pub async fn import(
     client: &impl ClientT,
     built: &Built,
 ) -> eyre::Result<alloy_rpc_types_engine::PayloadStatus> {
-    let request = if built.block.timestamp >= 100 {
-        client.request(
-            "engine_newPayloadV4",
-            rpc_params![&built.payload, Vec::<B256>::new(), built.root, Vec::<Bytes>::new()],
-        )
-    } else {
-        client.request("engine_newPayloadV2", rpc_params![&built.payload])
-    };
+    let request = client.request(
+        "engine_newPayloadV4",
+        rpc_params![&built.payload, Vec::<B256>::new(), built.root, Vec::<Bytes>::new()],
+    );
     Ok(tokio::time::timeout(Duration::from_secs(30), request).await??)
 }
 
 pub async fn canonicalize(client: &impl ClientT, genesis: B256, built: &Built) -> eyre::Result<()> {
     let status = import(client, built).await?;
     assert!(status.status.is_valid(), "{status:?}");
-    for version in [2, 3] {
-        let status = fcu(client, version, genesis, built.block.hash(), None).await?;
-        assert!(status.payload_status.status.is_valid(), "{status:?}");
-    }
+    let status = fcu(client, genesis, built.block.hash(), None).await?;
+    assert!(status.payload_status.status.is_valid(), "{status:?}");
     Ok(())
 }
 

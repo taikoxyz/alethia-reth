@@ -309,25 +309,6 @@ impl TaikoEvmExtraExecutionCtx {
     pub fn base_fee_share_pctg(&self) -> u64 {
         self.base_fee_share_pctg
     }
-
-    /// Returns the anchor caller address.
-    #[inline]
-    pub fn anchor_caller_address(&self) -> Address {
-        self.anchor_caller_address
-    }
-
-    /// Returns the anchor caller nonce.
-    #[inline]
-    pub fn anchor_caller_nonce(&self) -> u64 {
-        self.anchor_caller_nonce
-    }
-
-    /// Returns whether this context was installed by the authoritative anchor system call
-    /// (as opposed to being derived from database state for replay-style execution).
-    #[inline]
-    pub fn is_from_anchor_system_call(&self) -> bool {
-        self.authoritative_fee_context && self.legacy_anchor_eligible
-    }
 }
 
 #[cfg(test)]

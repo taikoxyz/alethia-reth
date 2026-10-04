@@ -419,9 +419,9 @@ where
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
-        // in this block.
-        if !self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
-            caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+        // in this block. Only the pre-Etna block executor issues this marker; from Etna on it
+        // installs the fee context directly through `TaikoAnchorEvm::set_block_fee_context`.
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
             contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
@@ -776,60 +776,56 @@ mod tests {
         let treasury = get_treasury_address(chain_id);
         let beneficiary = Address::with_last_byte(0xBB);
         let balance = U256::from(100_000_000_000_000u64);
-        let mut outcomes = Vec::new();
-        for (inspected, from_env) in [(false, false), (true, false), (false, true), (true, true)] {
-            let mut env = replay_env(chain_id);
-            env.cfg_env.spec = TaikoSpecId::ETNA;
-            env.block_env.beneficiary = beneficiary;
-            if from_env {
-                env.block_env = env.block_env.with_base_fee_share_pctg(25);
+        // An explicit zero share stays authoritative: the treasury receives the whole base fee.
+        for (percentage, treasury_fee, beneficiary_fee) in
+            [(25, 157_500_000_000u64, 52_500_000_000u64), (0, 210_000_000_000, 0)]
+        {
+            let mut outcomes = Vec::new();
+            for (inspected, from_env) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let mut env = replay_env(chain_id);
+                env.cfg_env.spec = TaikoSpecId::ETNA;
+                env.block_env.beneficiary = beneficiary;
+                if from_env {
+                    env.block_env = env.block_env.with_base_fee_share_pctg(percentage);
+                }
+                let mut db = replay_db(7, treasury);
+                db.insert_account_info(
+                    golden,
+                    AccountInfo { balance, nonce: 7, ..Default::default() },
+                );
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(
+                        db,
+                        env,
+                        reth_revm::inspector::NoOpInspector {},
+                    )
+                } else {
+                    TaikoEvmFactory.create_evm(db, env)
+                };
+                if !from_env {
+                    evm.set_block_fee_context(percentage);
+                }
+                let result = evm.transact(anchor_tx(treasury, 7)).expect("funded ordinary call");
+                assert!(result.result.is_success());
+                assert_eq!(result.result.tx_gas_used(), 21_000);
+                // Upfront debit is 1e13 wei; 979,000 unused gas must be reimbursed.
+                assert_eq!(
+                    result.state[&golden].info.balance,
+                    balance - U256::from(210_000_000_000u64)
+                );
+                assert_eq!(result.state[&treasury].info.balance, U256::from(treasury_fee));
+                assert_eq!(
+                    result.state.get(&beneficiary).map_or(U256::ZERO, |a| a.info.balance),
+                    U256::from(beneficiary_fee)
+                );
+                outcomes.push(result);
             }
-            let mut db = replay_db(7, treasury);
-            db.insert_account_info(golden, AccountInfo { balance, nonce: 7, ..Default::default() });
-            let mut evm = if inspected {
-                TaikoEvmFactory.create_evm_with_inspector(
-                    db,
-                    env,
-                    reth_revm::inspector::NoOpInspector {},
-                )
-            } else {
-                TaikoEvmFactory.create_evm(db, env)
-            };
-            if !from_env {
-                evm.set_block_fee_context(25);
+            for outcome in &outcomes[1..] {
+                assert_eq!(&outcomes[0], outcome);
             }
-            let result = evm.transact(anchor_tx(treasury, 7)).expect("funded ordinary call");
-            assert!(result.result.is_success());
-            assert_eq!(result.result.tx_gas_used(), 21_000);
-            // Upfront debit is 1e13 wei; 979,000 unused gas must be reimbursed.
-            assert_eq!(
-                result.state[&golden].info.balance,
-                balance - U256::from(210_000_000_000u64)
-            );
-            assert_eq!(result.state[&treasury].info.balance, U256::from(157_500_000_000u64));
-            assert_eq!(result.state[&beneficiary].info.balance, U256::from(52_500_000_000u64));
-            outcomes.push(result);
         }
-        for outcome in &outcomes[1..] {
-            assert_eq!(&outcomes[0], outcome);
-        }
-    }
-
-    #[test]
-    fn etna_marker_call_cannot_restore_legacy_anchor_privileges() {
-        let chain_id = 167_000;
-        let treasury = get_treasury_address(chain_id);
-        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
-        let mut env = replay_env(chain_id);
-        env.cfg_env.spec = TaikoSpecId::ETNA;
-        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), env);
-        evm.transact_system_call(golden, treasury, encode_anchor_system_call_data(25, 7)).unwrap();
-        assert!(evm.base_evm().extra_execution_ctx.is_none());
-        let err = evm.transact(anchor_tx(treasury, 7)).expect_err("marker cannot grant exemption");
-        assert!(matches!(
-            err,
-            EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })
-        ));
     }
 
     #[test]

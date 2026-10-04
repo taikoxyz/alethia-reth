@@ -2,7 +2,9 @@
 
 This guide defines alethia-reth's side of the `Etna` fork: the block rules the execution layer
 enforces and the Engine API wire contract that drivers use. Every built-in network still
-configures Etna as `ForkCondition::Never`; this is a handoff, not an activation notice.
+configures Etna as `ForkCondition::Never`, so the Etna rules are a handoff, not an activation
+notice. The Engine API method change is not gated on Etna: it applies to Unzen traffic as soon as a
+node runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
 Derivation rules live in taiko-mono's `packages/protocol/docs/Derivation.md`
 ([taikoxyz/taiko-mono#22189](https://github.com/taikoxyz/taiko-mono/pull/22189), which includes
@@ -96,14 +98,31 @@ pass the same root when importing the payload, never one derived from the curren
 
 ### Breaking at deploy
 
-Dropping V2 takes effect as soon as a node runs this version, not when Etna activates. Release it
-together with both drivers and taiko-geth, and upgrade each node's execution client and driver
-together. Both drivers' CI runs against `alethia-reth:main`, so their switch must merge with this
-change. taiko-geth already serves Unzen through these three methods.
+Dropping V2 takes effect as soon as a node runs this version, not when Etna activates. Every Engine
+call a driver makes moves to the three methods above, including L1 derivation, preconfirmation
+import, set-head FCUs, and beacon sync. For Unzen blocks, FCUv3 attributes carry `withdrawals: []`
+and a zero `parentBeaconBlockRoot`, builds are read with `getPayloadV5` and normalized as described
+below, and imports call `newPayloadV4(payload, [], zeroRoot, [])`. Release this version together
+with both drivers, and upgrade each node's execution client and driver together. Both drivers' CI
+runs against `alethia-reth:main`, so their switches must merge in the same window as this change.
 
-Drivers keep computing `l1Origin.buildPayloadArgsId` for pre-Etna blocks exactly as before (version
-byte 2). The Go driver compares it with stored origins to detect blocks it already inserted, so a
-changed fingerprint would re-insert blocks preconfirmed before the upgrade.
+By inspection taiko-geth needs no change for Unzen: its FCUv3, getPayloadV5, and newPayloadV4
+handlers accept Unzen timestamps, and its Taiko build and import paths carry the header difficulty.
+No driver has run Unzen through these methods against geth yet, so run Unzen round trips against
+both execution clients before the release.
+
+Neither execution client builds or imports a pre-Unzen block through these methods. A node whose
+head is before Unzen can catch up only through P2P sync or a post-Unzen snapshot; L1 derivation
+alone stops with `-38005`. A devnet whose `--devnet-unzen-timestamp` lies in the future cannot build
+blocks before that time.
+
+Drivers keep computing the pre-Etna `l1Origin.buildPayloadArgsId` exactly as before: version byte 2
+and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Select the Etna fingerprint
+by a nonzero root or the Etna timestamp, never by the presence of a root. Both drivers compare the
+fingerprint with stored origins to detect blocks they already inserted, so a changed fingerprint
+would re-insert blocks preconfirmed before the upgrade. alethia-reth ignores a zero root in pre-Etna
+payload IDs, so its FCUv3 IDs for Unzen jobs keep their V2-era values; taiko-geth's FCUv3 IDs carry
+version byte 3.
 
 ### V5 normalization and V4 import
 

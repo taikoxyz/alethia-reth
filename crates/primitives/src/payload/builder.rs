@@ -15,7 +15,7 @@ use tracing::debug;
 
 use crate::{extra_data::ETNA_EXTRA_DATA_LEN, payload::attributes::TaikoPayloadAttributes};
 
-/// Version byte of payload identifiers that use the pre-Etna (zero-root) preimage.
+/// Version byte of payload identifiers that use the pre-Etna preimage (zero or absent root).
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
 
 /// Version byte for payload identifiers that bind all Etna execution and persistence inputs.
@@ -119,7 +119,9 @@ impl TaikoPayloadBuilderAttributes {
     ///
     /// Etna jobs require matching full-width timestamps, a non-zero beacon root, 13-byte
     /// extraData, empty withdrawals, and no anchor transaction. Pre-Etna jobs pass `false`, as
-    /// [`Self::try_new`] does, and only reject a nonzero root.
+    /// [`Self::try_new`] does, and of these rules keep only the root check: a nonzero root is
+    /// rejected. Every job also rejects a base fee above `u64::MAX` and an anchor transaction that
+    /// fails to decode or recover its signer.
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,
@@ -164,9 +166,9 @@ impl TaikoPayloadBuilderAttributes {
             .parent_beacon_block_root
             .is_some_and(|root| !root.is_zero())
         {
-            // Legacy Engine conversion reconstructs the Unzen zero-root convention. Although
+            // Pre-Etna payload conversion reconstructs the Unzen zero-root convention. Although
             // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
-            // root here would build a header that legacy import rejects. Re-check at job creation
+            // root here would build a header that pre-Etna import rejects. Re-check at job creation
             // so callers outside the Engine RPC validation path retain the same invariant.
             return Err(alloy_rlp::Error::Custom(
                 "non-zero parent_beacon_block_root is unsupported on Taiko",

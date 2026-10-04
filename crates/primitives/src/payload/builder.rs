@@ -354,8 +354,12 @@ pub fn payload_id_taiko(
             hasher.update(buf);
         }
 
-        if let Some(parent_beacon_block) = attributes.payload_attributes.parent_beacon_block_root {
-            hasher.update(parent_beacon_block);
+        // A zero root builds the same pre-Etna block as an absent one. Hashing neither keeps
+        // FCUv3 IDs equal to V2-era IDs and to the drivers' stored fingerprints.
+        if let Some(root) =
+            attributes.payload_attributes.parent_beacon_block_root.filter(|root| !root.is_zero())
+        {
+            hasher.update(root);
         }
 
         // Include tx_list hash if provided (legacy mode), otherwise use zero hash (new mode)
@@ -545,12 +549,13 @@ mod test {
 
     #[test]
     fn v2_payload_id_bytes_remain_stable() {
-        let attributes = create_payload_attrs(1000, None, 100_000_000);
-
-        assert_eq!(
-            payload_id_taiko(&B256::ZERO, &attributes, PAYLOAD_ID_VERSION_V2),
-            PayloadId::new([0x02, 0x0f, 0xa3, 0xf7, 0xc3, 0xdd, 0xe6, 0xe3])
-        );
+        // V2-era drivers sent no root; FCUv3 sends a zero root. Both must keep the V2-era ID.
+        let mut attributes = create_payload_attrs(1000, None, 100_000_000);
+        attributes.payload_attributes.parent_beacon_block_root = None;
+        let expected = PayloadId::new([0x02, 0x84, 0xe3, 0x12, 0x99, 0xa2, 0xad, 0x9e]);
+        assert_eq!(payload_id_taiko(&B256::ZERO, &attributes, PAYLOAD_ID_VERSION_V2), expected);
+        attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO);
+        assert_eq!(payload_id_taiko(&B256::ZERO, &attributes, PAYLOAD_ID_VERSION_V2), expected);
     }
 
     #[test]

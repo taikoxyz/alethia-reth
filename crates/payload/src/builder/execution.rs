@@ -137,14 +137,13 @@ where
 {
     let chain_spec = client.chain_spec();
     if chain_spec.is_etna_active(ctx.block_timestamp) {
-        if ctx.anchor_tx.is_some() {
-            return Err(PayloadBuilderError::Internal(RethError::msg(
-                "Etna pool execution must not include an anchor transaction",
-            )));
-        }
+        // Etna attribute normalization already rejects an anchor, so selection starts directly.
         debug!(target: "payload_builder", id=%ctx.payload_id, "selecting anchorless Etna transactions");
     } else {
-        let anchor_tx = ctx.anchor_tx.ok_or(PayloadBuilderError::MissingPayload)?;
+        let anchor_tx = ctx.anchor_tx.ok_or_else(|| {
+            warn!(target: "payload_builder", id=%ctx.payload_id, "missing prebuilt anchor transaction in new mode");
+            PayloadBuilderError::MissingPayload
+        })?;
         debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
 
         validate_anchor_transaction(

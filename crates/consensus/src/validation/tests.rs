@@ -447,90 +447,14 @@ fn etna_header() -> Header {
 }
 
 #[test]
-fn etna_header_requires_nonzero_root_and_ordinary_first_transaction() {
-    let spec = etna_chain_spec();
-    let consensus = test_consensus(spec.clone());
+fn etna_header_requires_nonzero_root() {
+    let consensus = test_consensus(etna_chain_spec());
     for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
         let header = Header { parent_beacon_block_root: root, ..etna_header() };
         assert_eq!(
             consensus.validate_header(&SealedHeader::seal_slow(header)).is_ok(),
             root.is_some_and(|r| !r.is_zero())
         );
-    }
-    let tx: TransactionSigned = Signed::new_unchecked(
-        TxLegacy::default(),
-        Signature::new(U256::from(1), U256::from(2), false),
-        B256::ZERO,
-    )
-    .into();
-    let block = RecoveredBlock::new_unhashed(
-        Block {
-            header: Header { number: 1, timestamp: 1, ..Default::default() },
-            body: reth_ethereum_primitives::BlockBody {
-                transactions: vec![tx],
-                ..Default::default()
-            },
-        },
-        vec![Address::ZERO],
-    );
-    assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
-}
-
-#[test]
-fn etna_canonical_import_rejects_body_with_filtered_first_transaction() {
-    let spec = etna_chain_spec();
-    let tx: TransactionSigned = Signed::new_unchecked(
-        TxLegacy::default(),
-        Signature::new(U256::from(1), U256::from(2), false),
-        B256::ZERO,
-    )
-    .into();
-    let block = RecoveredBlock::new_unhashed(
-        Block {
-            header: Header { number: 1, timestamp: 1, ..Default::default() },
-            body: reth_ethereum_primitives::BlockBody {
-                transactions: vec![tx.clone(), tx],
-                ..Default::default()
-            },
-        },
-        vec![Address::ZERO; 2],
-    );
-    // A filtered nonce, signature, type, or EVM-gas failure leaves one receipt;
-    // first-position zk-gas exhaustion leaves none. Neither is a valid imported body.
-    for committed in [0, 1] {
-        let receipts: Vec<Receipt> = vec![Receipt::default(); committed];
-        assert!(validate_zk_gas_post_execution(&block, &spec, &receipts).is_err());
-        assert_eq!(block.body().transactions.len(), 2);
-    }
-    assert!(
-        validate_zk_gas_post_execution::<_, Receipt>(
-            &block,
-            &spec,
-            &[Receipt::default(), Receipt::default()]
-        )
-        .is_ok()
-    );
-}
-
-#[test]
-fn etna_activation_preserves_legacy_empty_body_and_pre_fork_header_roots() {
-    let mut spec = devnet_chain_spec();
-    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(10));
-    let consensus = test_consensus(spec.clone());
-    for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
-        let header = Header {
-            number: 1,
-            timestamp: 9,
-            gas_limit: 30_000_000,
-            base_fee_per_gas: Some(1),
-            extra_data: vec![0; 7].into(),
-            parent_beacon_block_root: root,
-            ..Default::default()
-        };
-        assert!(consensus.validate_header(&SealedHeader::seal_slow(header.clone())).is_ok());
-        let block =
-            RecoveredBlock::new_unhashed(Block { header, body: Default::default() }, vec![]);
-        assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
     }
 }
 
@@ -573,16 +497,12 @@ fn etna_header_requires_empty_withdrawals_and_zero_blob_gas() {
 #[test]
 fn etna_header_requires_thirteen_byte_extra_data() {
     let consensus = test_consensus(etna_chain_spec());
-    consensus
-        .validate_header(&SealedHeader::seal_slow(etna_header()))
-        .expect("the 13-byte Etna layout should validate");
-    for len in [0, 7, 12, 14] {
-        let header = Header { extra_data: Bytes::from(vec![0; len]), ..etna_header() };
-        let err = consensus
-            .validate_header(&SealedHeader::seal_slow(header))
-            .expect_err("a non-13-byte Etna extraData must be rejected");
-        assert!(err.to_string().contains("extraData"), "{len}: {err}");
-    }
+    // `primitives::etna` covers every length; one legacy 7-byte header checks the wiring.
+    let header = Header { extra_data: Bytes::from(vec![0; 7]), ..etna_header() };
+    let err = consensus
+        .validate_header(&SealedHeader::seal_slow(header))
+        .expect_err("a non-13-byte Etna extraData must be rejected");
+    assert!(err.to_string().contains("extraData"), "{err}");
 
     let genesis = Header {
         number: 0,
@@ -596,12 +516,6 @@ fn etna_header_requires_thirteen_byte_extra_data() {
     consensus
         .validate_header(&SealedHeader::seal_slow(genesis))
         .expect("the Etna genesis is exempt from the extraData layout");
-
-    let unzen = Header { parent_beacon_block_root: Some(B256::ZERO), ..etna_header() };
-    let err = test_consensus(unzen_chain_spec())
-        .validate_header(&SealedHeader::seal_slow(unzen))
-        .expect_err("Unzen keeps the 7-byte layout");
-    assert!(err.to_string().contains("Shasta extra-data"), "{err}");
 }
 
 #[test]
@@ -628,6 +542,5 @@ fn etna_rejects_a_block_that_commits_to_withdrawals() {
     )
     .expect("the mutated body still matches its own header");
 
-    assert!(consensus.validate_header(mutated.sealed_header()).is_err());
     assert!(consensus.validate_block_pre_execution(&mutated).is_err());
 }

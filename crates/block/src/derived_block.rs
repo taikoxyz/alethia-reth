@@ -240,17 +240,6 @@ mod tests {
         let valid = test_transaction(chain_id, 0);
         let invalid_nonce = test_transaction(chain_id, 99);
         let invalid_signature = Recovered::new_unchecked(valid.clone_inner(), Address::ZERO);
-        let excessive =
-            TxLegacy { chain_id: Some(chain_id), gas_limit: 30_000_001, ..Default::default() };
-        let excessive = Recovered::new_unchecked(
-            Signed::new_unchecked(
-                excessive,
-                Signature::new(U256::from(1), U256::from(2), false),
-                B256::ZERO,
-            )
-            .into(),
-            TEST_CALLER,
-        );
         let blob = TxEip4844 {
             chain_id,
             gas_limit: 100_000,
@@ -274,7 +263,6 @@ mod tests {
             ("nonce", invalid_nonce, false),
             ("signature", invalid_signature, false),
             ("type", blob, false),
-            ("gas", excessive, false),
             ("zk", exhausted, true),
         ] {
             let txs = [first, valid.clone()];

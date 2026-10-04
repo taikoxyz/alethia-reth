@@ -91,23 +91,6 @@ pub fn etna_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
     ctx
 }
 
-/// Creates a test database with the deployed standard beacon-root and history-storage contracts.
-pub fn db_with_system_contracts(accounts: &[(Address, u64)]) -> InMemoryDB {
-    use alloy_eips::{eip2935, eip4788};
-    let mut db = db_with_contracts(accounts);
-    insert_contract(
-        &mut db,
-        eip4788::BEACON_ROOTS_ADDRESS,
-        Bytecode::new_raw(eip4788::BEACON_ROOTS_CODE.clone()),
-    );
-    insert_contract(
-        &mut db,
-        eip2935::HISTORY_STORAGE_ADDRESS,
-        Bytecode::new_raw(eip2935::HISTORY_STORAGE_CODE.clone()),
-    );
-    db
-}
-
 /// Builds a recovered legacy transaction targeting `to` from `caller`, defaulting to the
 /// Devnet chain id (`167`).
 pub fn recovered_tx(

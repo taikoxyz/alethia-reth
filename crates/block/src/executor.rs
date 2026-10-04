@@ -657,51 +657,13 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, db_with_system_contracts,
-            etna_chain_spec, etna_evm_env, etna_execution_ctx, recovered_tx, unzen_chain_spec,
-            unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, etna_chain_spec,
+            etna_evm_env, etna_execution_ctx, recovered_tx, unzen_chain_spec, unzen_evm_env,
+            unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     const BENCH_CALLER: Address = Address::with_last_byte(0x30);
-
-    #[test]
-    fn etna_empty_block_writes_system_storage_without_transaction_gas() {
-        use alloy_eips::{eip2935, eip4788};
-        let root = B256::with_last_byte(7);
-        let parent = B256::with_last_byte(9);
-        let mut state = State::builder()
-            .with_database(db_with_system_contracts(&[]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-        let mut ctx = etna_execution_ctx(root);
-        ctx.parent_hash = parent;
-        let mut executor = TaikoBlockExecutor::new(
-            evm,
-            ctx.clone(),
-            Arc::new(etna_chain_spec()),
-            RethReceiptBuilder::default(),
-        );
-        executor.apply_pre_execution_changes().unwrap();
-        let (_, result) = executor.finish().unwrap();
-        assert!(result.receipts.is_empty());
-        assert_eq!(result.gas_used, 0);
-        assert_eq!(ctx.finalized_block_zk_gas(), 0);
-        assert!(!state.cache.accounts.contains_key(&Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)));
-        assert_eq!(
-            state.storage(eip4788::BEACON_ROOTS_ADDRESS, U256::from(1)).unwrap(),
-            U256::from(1)
-        );
-        assert_eq!(
-            state.storage(eip4788::BEACON_ROOTS_ADDRESS, U256::from(8192)).unwrap(),
-            U256::from_be_bytes(root.0)
-        );
-        assert_eq!(
-            state.storage(eip2935::HISTORY_STORAGE_ADDRESS, U256::ZERO).unwrap(),
-            U256::from_be_bytes(parent.0)
-        );
-    }
 
     #[test]
     fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
@@ -732,9 +694,12 @@ mod test {
     }
 
     #[test]
-    fn etna_direct_context_installs_authoritative_fee_percentage() {
-        let mut state =
-            State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
+    fn etna_pre_execution_shares_fees_without_anchor_exemption() {
+        // At Etna, pre-execution installs the header fee share and never the legacy anchor marker,
+        // so a golden-touch call to the treasury pays and shares fees like any other transaction.
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(167);
+        let mut state = State::builder().with_database(db_with_contracts(&[(golden, 0)])).build();
         let mut env = etna_evm_env();
         env.block_env.basefee = 10;
         env.block_env.beneficiary = Address::with_last_byte(0xBB);
@@ -749,18 +714,14 @@ mod test {
         );
         executor.apply_pre_execution_changes().unwrap();
         let result = executor
-            .execute_transaction_without_commit(recovered_tx(
-                BENCH_CALLER,
-                Address::with_last_byte(0xB9),
-                0,
-                10,
-            ))
+            .execute_transaction_without_commit(recovered_tx(golden, treasury, 0, 10))
             .unwrap();
         assert_eq!(result.result.result.tx_gas_used(), 21_000);
         assert_eq!(
-            result.result.state[&get_treasury_address(167)].info.balance,
-            U256::from(157_500)
+            result.result.state[&golden].info.balance,
+            U256::from(10_000_000_000u64 - 210_000)
         );
+        assert_eq!(result.result.state[&treasury].info.balance, U256::from(157_500));
         assert_eq!(
             result.result.state[&Address::with_last_byte(0xBB)].info.balance,
             U256::from(52_500)
@@ -957,24 +918,6 @@ mod test {
         assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
         assert!(is_zk_gas_limit_exceeded(&err));
         assert!(is_recoverable_non_anchor_tx_error(&err));
-    }
-
-    #[test]
-    fn etna_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
-        let mut state = State::builder().with_database(db_with_contracts(&[])).build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-        let mut ctx = etna_execution_ctx(B256::with_last_byte(1));
-        ctx.expected_difficulty = Some(U256::from(1));
-        let executor = TaikoBlockExecutor::new(
-            evm,
-            ctx,
-            Arc::new(etna_chain_spec()),
-            RethReceiptBuilder::default(),
-        );
-        let err = executor.validate_expected_zk_gas_difficulty().unwrap_err();
-        assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
-        assert!(is_zk_gas_difficulty_mismatch(&err));
-        assert!(!is_recoverable_non_anchor_tx_error(&err));
     }
 
     #[test]

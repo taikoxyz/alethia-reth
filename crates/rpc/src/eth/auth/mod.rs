@@ -31,7 +31,7 @@ use tracing::info;
 use crate::eth::{builder::etna_simulation_extra_data, error::internal_eth_error};
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
-    config::{TaikoNextBlockEnvAttributes, simulation_context_for_next_block},
+    config::TaikoNextBlockEnvAttributes,
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
     tx_selection::{
@@ -419,7 +419,9 @@ where
             EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
         })?;
         let evm = self.evm_config.evm_with_env(&mut db, evm_env);
-        let ctx = simulation_context_for_next_block(chain_spec.as_ref(), parent, attributes);
+        let ctx = self.evm_config.context_for_next_block(parent, attributes).map_err(|_| {
+            EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
+        })?;
         let mut builder = self.evm_config.create_block_builder(evm, parent, ctx);
 
         prepare_tx_pool_executor(builder.executor_mut(), chain_spec.as_ref(), parent.timestamp())

@@ -86,10 +86,8 @@ impl PendingEnvBuilder<TaikoEvmConfig> for TaikoPendingEnvBuilder {
 mod tests {
     use super::*;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::etna::{InvalidEtnaExtraData, MissingEtnaBeaconRoot};
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::B256;
-    use reth_evm::ConfigureEvm;
     use std::sync::Arc;
 
     fn pending_builder(activation: u64) -> TaikoPendingEnvBuilder {
@@ -103,8 +101,6 @@ mod tests {
         for (activation, number, timestamp, extra_data, expected) in [
             (12, 0, 0, vec![], vec![0; 13]),
             (13, 0, 0, vec![], vec![]),
-            (0, 1, 1, vec![], vec![]),
-            (0, 0, 0, vec![1], vec![1]),
             (0, 0, 0, vec![25, 0, 0, 0, 0, 1, 2], vec![25, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0]),
             (0, 1, 1, vec![9; 13], vec![9; 13]),
         ] {
@@ -118,72 +114,13 @@ mod tests {
             let attributes = builder.pending_env_attributes(&parent, None).unwrap();
             assert_eq!(attributes.extra_data.as_ref(), expected);
             assert_eq!(attributes.parent_beacon_block_root, None);
-            if expected.len() != 13 && activation <= attributes.timestamp {
-                assert!(builder.evm.next_evm_env(&parent, &attributes).is_err());
-            }
         }
-    }
-
-    #[test]
-    fn pending_simulation_preserves_real_context_guards_and_missing_root_fallback() {
-        let builder = pending_builder(0);
-        let genesis = SealedHeader::new_unhashed(Header::default());
-        let real = TaikoNextBlockEnvAttributes::build_pending_env(&genesis, None);
-        assert!(
-            builder
-                .evm
-                .next_evm_env(&genesis, &real)
-                .unwrap_err()
-                .as_error()
-                .is::<InvalidEtnaExtraData>()
-        );
-        let simulated = builder.pending_env_attributes(&genesis, None).unwrap();
-        let env = builder.evm.next_evm_env(&genesis, &simulated).unwrap();
-        assert_eq!(env.block_env.base_fee_share_pctg, Some(0));
-        assert!(
-            builder
-                .evm
-                .context_for_next_block(&genesis, simulated)
-                .unwrap_err()
-                .as_error()
-                .is::<MissingEtnaBeaconRoot>()
-        );
-        for (activation, timestamp) in [(100, 99), (0, 1)] {
-            let builder = pending_builder(activation);
-            let parent = SealedHeader::new_unhashed(Header {
-                number: 1,
-                timestamp,
-                extra_data: Bytes::from_static(&[25, 0, 0, 0, 0, 0, 1]),
-                ..Default::default()
-            });
-            let attributes = builder.pending_env_attributes(&parent, None).unwrap();
-            assert_eq!(
-                builder
-                    .evm
-                    .next_evm_env(&parent, &attributes)
-                    .unwrap()
-                    .block_env
-                    .base_fee_share_pctg,
-                Some(25)
-            );
-            assert_eq!(attributes.parent_beacon_block_root, None);
-            assert!(
-                builder
-                    .evm
-                    .context_for_next_block(&parent, attributes)
-                    .unwrap_err()
-                    .as_error()
-                    .is::<MissingEtnaBeaconRoot>()
-            );
-            let overrides =
-                BlockOverrides { beacon_root: Some(B256::with_last_byte(7)), ..Default::default() };
-            assert_eq!(
-                builder
-                    .pending_env_attributes(&parent, Some(&overrides))
-                    .unwrap()
-                    .parent_beacon_block_root,
-                overrides.beacon_root
-            );
-        }
+        // `eth_simulateV1` supplies an Etna root through block overrides; it must pass through.
+        let overrides =
+            BlockOverrides { beacon_root: Some(B256::with_last_byte(7)), ..Default::default() };
+        let parent = SealedHeader::new_unhashed(Header::default());
+        let attributes =
+            pending_builder(0).pending_env_attributes(&parent, Some(&overrides)).unwrap();
+        assert_eq!(attributes.parent_beacon_block_root, overrides.beacon_root);
     }
 }

@@ -428,7 +428,7 @@ mod tests {
         let api_spec = spec.clone();
         let (payload_tx, mut payload_rx) =
             tokio::sync::mpsc::unbounded_channel::<PayloadServiceCommand<TaikoEngineTypes>>();
-        // The store adapter supplies deterministic already-built jobs. Real wrapper routing,
+        // The store adapter supplies deterministic already-built jobs. Real RPC handling,
         // normalization and database transactions are exercised around the adapter.
         tokio::spawn(async move {
             while let Some(command) = payload_rx.recv().await {
@@ -769,7 +769,10 @@ mod tests {
     #[tokio::test]
     async fn invalid_etna_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
-        for case in 0..7 {
+        // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
+        // remaining cases fail Taiko's rules (-32602).
+        let expected = [-38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003];
+        for (case, code) in expected.into_iter().enumerate() {
             let mut attrs = fcu_attributes(100, false);
             match case {
                 0 => attrs.payload_attributes.parent_beacon_block_root = None,
@@ -778,7 +781,8 @@ mod tests {
                 3 => attrs.block_metadata.timestamp = U256::from(99),
                 4 => attrs.block_metadata.extra_data = Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
                 5 => attrs.payload_attributes.slot_number = Some(1),
-                _ => attrs.payload_attributes.target_gas_limit = Some(1),
+                6 => attrs.payload_attributes.target_gas_limit = Some(1),
+                _ => attrs.payload_attributes.withdrawals = None,
             }
             let response = rpc_call(
                 &module,
@@ -786,7 +790,7 @@ mod tests {
                 serde_json::json!([fcu_state(1), attrs]),
             )
             .await;
-            assert!(response.get("error").is_some(), "case {case}: {response}");
+            assert_eq!(response["error"]["code"], code, "case {case}: {response}");
         }
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
         let db = provider.provider().unwrap();

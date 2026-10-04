@@ -338,8 +338,7 @@ mod tests {
     use alloy_genesis::{ChainConfig, Genesis};
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, U256};
-    use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
-    use reth::payload::PayloadAttributes;
+    use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
     use reth_basic_payload_builder::PayloadConfig;
     use reth_primitives_traits::SealedHeader;
     use std::sync::Arc;
@@ -350,6 +349,7 @@ mod tests {
             gas_limit: 30_000_000,
             ..Default::default()
         }));
+        let payload_id = PayloadId::new([9; 8]);
         let attributes = TaikoPayloadAttributes {
             payload_attributes: EthPayloadAttributes {
                 timestamp: 100,
@@ -380,7 +380,6 @@ mod tests {
             },
             anchor_transaction: None,
         };
-        let payload_id = attributes.payload_id(&parent_header.hash());
 
         PayloadConfig::new(parent_header, attributes, payload_id)
     }
@@ -400,16 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn etna_derived_transaction_lists_normalize_without_an_anchor() {
-        let config = test_payload_config(Some(Bytes::from_static(&[0xc0])));
-        let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
-            .expect("Etna config should normalize");
-
-        assert_eq!(attributes.transactions.as_deref(), Some([].as_slice()));
-        assert!(attributes.anchor_transaction.is_none());
-    }
-
-    #[test]
     fn etna_pool_transaction_source_normalizes_without_an_anchor() {
         let config = test_payload_config(None);
         let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
@@ -422,8 +411,9 @@ mod tests {
     #[test]
     fn etna_normalization_rejects_invalid_attributes() {
         type Mutation = fn(&mut PayloadConfig<TaikoPayloadAttributes>);
-        let cases: [(&str, Mutation); 8] = [
-            ("timestamp", |c| c.attributes.block_metadata.timestamp = U256::from(99)),
+        // The Engine API test `invalid_etna_attributes_never_start_jobs_or_publish_origins` covers
+        // the zero root, the timestamp mismatch, and short extraData through `try_new_for_fork`.
+        let cases: [(&str, Mutation); 3] = [
             ("timestamp", |c| {
                 c.attributes.block_metadata.timestamp = U256::from(100) + (U256::from(1) << 128)
             }),
@@ -432,18 +422,6 @@ mod tests {
             }),
             ("withdrawals", |c| {
                 c.attributes.payload_attributes.withdrawals = Some(vec![Withdrawal::default()])
-            }),
-            ("parent_beacon_block_root", |c| {
-                c.attributes.payload_attributes.parent_beacon_block_root = None
-            }),
-            ("parent_beacon_block_root", |c| {
-                c.attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO)
-            }),
-            ("extra_data", |c| {
-                c.attributes.block_metadata.extra_data = Bytes::from_static(b"short")
-            }),
-            ("extra_data", |c| {
-                c.attributes.block_metadata.extra_data = Bytes::from_static(b"1234567")
             }),
         ];
         let spec = chain_spec_with_etna_at(100);

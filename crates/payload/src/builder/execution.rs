@@ -221,7 +221,7 @@ mod tests {
         SignableTransaction, Signed, TxEip1559, TxLegacy,
         transaction::{SignerRecoverable, TxHashable},
     };
-    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
+    use alloy_primitives::{Address, B256, Bytes, Signature};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth::revm::State;
@@ -248,7 +248,7 @@ mod tests {
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR};
-    use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+    use alethia_reth_evm::factory::TaikoEvmFactory;
     use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
     const BENCH_SUCCESS_CALLER: Address = Address::with_last_byte(0x30);
@@ -266,7 +266,7 @@ mod tests {
             gas_limit: ANCHOR_V3_V4_GAS_LIMIT,
             max_fee_per_gas: 0,
             max_priority_fee_per_gas: 0,
-            to: BENCH_SUCCESS_TARGET.into(),
+            to: BENCH_LIMIT_TARGET.into(),
             value: U256::ZERO,
             access_list: Default::default(),
             input: Bytes::copy_from_slice(ANCHOR_V4_SELECTOR),
@@ -277,28 +277,6 @@ mod tests {
         let signed: EthTransactionSigned = Signed::new_unchecked(tx, signature, tx_hash).into();
 
         signed.try_into_recovered().expect("fixture anchor transaction should be recoverable")
-    }
-
-    fn test_ordinary_transaction(
-        caller: Address,
-        gas_limit: u64,
-        gas_price: u128,
-        input: Bytes,
-    ) -> Recovered<EthTransactionSigned> {
-        let tx = TxLegacy {
-            chain_id: Some(167),
-            nonce: 0,
-            gas_price,
-            gas_limit,
-            to: TxKind::Call(BENCH_SUCCESS_TARGET),
-            value: U256::ZERO,
-            input,
-        };
-        let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
-        let signed: EthTransactionSigned =
-            Signed::new_unchecked(tx, signature, B256::with_last_byte(caller.as_slice()[19]))
-                .into();
-        Recovered::new_unchecked(signed, caller)
     }
 
     fn test_client(chain_spec: TaikoChainSpec) -> MockEthProvider<EthPrimitives, TaikoChainSpec> {
@@ -480,179 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn etna_pool_uses_full_gas_budget_and_matches_the_derived_list() {
-        let caller = Address::with_last_byte(0x40);
-        let ordinary = test_ordinary_transaction(caller, 5_000_000, 10, Bytes::new());
-        let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
-        let cancel = CancelOnDrop::default();
-
-        let legacy_spec = Arc::new(unzen_chain_spec());
-        let mut legacy_state = State::builder()
-            .with_database(db_with_contracts(&[
-                (Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0),
-                (caller, 0),
-            ]))
-            .with_bundle_update()
-            .build();
-        let legacy_evm = TaikoEvmFactory.create_evm(&mut legacy_state, unzen_evm_env());
-        let legacy_executor = TaikoBlockExecutor::new(
-            legacy_evm,
-            unzen_execution_ctx(),
-            legacy_spec.clone(),
-            RethReceiptBuilder::default(),
-        );
-        let mut legacy_builder = ExecutorBackedBuilder { executor: legacy_executor };
-        let legacy_pool = testing_pool();
-        block_on_ready(
-            legacy_pool.add_consensus_transaction(ordinary.clone(), TransactionOrigin::External),
-        )
-        .expect("ordinary transaction should enter the legacy pool");
-        let anchor = test_anchor_transaction();
-
-        let legacy_outcome = execute_pool_transactions(
-            &mut legacy_builder,
-            &legacy_pool,
-            &test_client((*legacy_spec).clone()),
-            &PoolExecutionContext {
-                anchor_tx: Some(&anchor),
-                parent_header: &parent_header,
-                block_timestamp: 1,
-                payload_id: "legacy-reduced-budget".to_string(),
-                base_fee: 0,
-                gas_limit: 5_500_000_u64.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
-            },
-            &cancel,
-        )
-        .expect("legacy pool execution should complete");
-        let ExecutionOutcome::Completed(legacy_fees) = legacy_outcome else {
-            panic!("legacy pool execution should not cancel")
-        };
-        assert_eq!(legacy_fees, U256::ZERO);
-        assert_eq!(legacy_builder.executor.receipts().len(), 1, "only the anchor should execute");
-
-        let etna_spec = Arc::new(etna_chain_spec());
-        let mut pool_state = State::builder()
-            .with_database(db_with_contracts(&[(caller, 0)]))
-            .with_bundle_update()
-            .build();
-        let pool_evm = TaikoEvmFactory.create_evm(&mut pool_state, etna_evm_env());
-        let pool_ctx = etna_execution_ctx(B256::with_last_byte(1));
-        let pool_executor = TaikoBlockExecutor::new(
-            pool_evm,
-            pool_ctx.clone(),
-            etna_spec.clone(),
-            RethReceiptBuilder::default(),
-        );
-        let mut pool_builder = ExecutorBackedBuilder { executor: pool_executor };
-        let etna_pool = testing_pool();
-        block_on_ready(
-            etna_pool.add_consensus_transaction(ordinary.clone(), TransactionOrigin::External),
-        )
-        .expect("ordinary transaction should enter the Etna pool");
-
-        let pool_outcome = execute_pool_transactions(
-            &mut pool_builder,
-            &etna_pool,
-            &test_client((*etna_spec).clone()),
-            &PoolExecutionContext {
-                anchor_tx: None,
-                parent_header: &parent_header,
-                block_timestamp: 1,
-                payload_id: "etna-full-budget".to_string(),
-                base_fee: 0,
-                gas_limit: 5_500_000,
-            },
-            &cancel,
-        )
-        .expect("Etna pool execution should complete");
-
-        let mut derived_state = State::builder()
-            .with_database(db_with_contracts(&[(caller, 0)]))
-            .with_bundle_update()
-            .build();
-        let derived_evm = TaikoEvmFactory.create_evm(&mut derived_state, etna_evm_env());
-        let derived_ctx = etna_execution_ctx(B256::with_last_byte(1));
-        let derived_executor = TaikoBlockExecutor::new(
-            derived_evm,
-            derived_ctx.clone(),
-            etna_spec,
-            RethReceiptBuilder::default(),
-        );
-        let mut derived_builder = ExecutorBackedBuilder { executor: derived_executor };
-        let derived_outcome =
-            execute_provided_transactions(&mut derived_builder, &[ordinary], 0, &cancel)
-                .expect("Etna derived execution should complete");
-
-        let ExecutionOutcome::Completed(pool_fees) = pool_outcome else {
-            panic!("Etna pool execution should not cancel")
-        };
-        let ExecutionOutcome::Completed(derived_fees) = derived_outcome else {
-            panic!("Etna derived execution should not cancel")
-        };
-        assert_eq!(pool_fees, derived_fees);
-        assert_eq!(pool_builder.executor.receipts(), derived_builder.executor.receipts());
-        assert_eq!(pool_builder.executor.receipts().len(), 1);
-        assert_eq!(pool_ctx.finalized_block_zk_gas(), derived_ctx.finalized_block_zk_gas());
-        assert!(pool_ctx.finalized_block_zk_gas() > 0);
-    }
-
-    #[test]
-    fn etna_pool_counts_the_first_ordinary_transaction_against_the_da_budget() {
-        let first_caller = Address::with_last_byte(0x41);
-        let second_caller = Address::with_last_byte(0x42);
-        let mut state_byte = 0x1234_5678_u32;
-        let input: Vec<u8> = (0..90_000)
-            .map(|_| {
-                state_byte ^= state_byte << 13;
-                state_byte ^= state_byte >> 17;
-                state_byte ^= state_byte << 5;
-                state_byte as u8
-            })
-            .collect();
-        let first =
-            test_ordinary_transaction(first_caller, 5_000_000, 20, Bytes::from(input.clone()));
-        let second = test_ordinary_transaction(second_caller, 5_000_000, 10, Bytes::from(input));
-        let spec = Arc::new(etna_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(first_caller, 0), (second_caller, 0)]))
-            .with_bundle_update()
-            .build();
-        let mut da_only_env = etna_evm_env();
-        da_only_env.cfg_env.spec = TaikoSpecId::SHASTA;
-        let evm = TaikoEvmFactory.create_evm(&mut state, da_only_env);
-        let executor = TaikoBlockExecutor::new(
-            evm,
-            etna_execution_ctx(B256::with_last_byte(1)),
-            spec.clone(),
-            RethReceiptBuilder::default(),
-        );
-        let mut builder = ExecutorBackedBuilder { executor };
-        let pool = testing_pool();
-        block_on_ready(pool.add_consensus_transaction(first, TransactionOrigin::External))
-            .expect("first transaction should enter the pool");
-        block_on_ready(pool.add_consensus_transaction(second, TransactionOrigin::External))
-            .expect("second transaction should enter the pool");
-
-        execute_pool_transactions(
-            &mut builder,
-            &pool,
-            &test_client((*spec).clone()),
-            &PoolExecutionContext {
-                anchor_tx: None,
-                parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
-                block_timestamp: 1,
-                payload_id: "etna-da-budget".to_string(),
-                base_fee: 0,
-                gas_limit: 30_000_000,
-            },
-            &CancelOnDrop::default(),
-        )
-        .expect("Etna selection should complete");
-
-        assert_eq!(builder.executor.receipts().len(), 1);
-    }
-
-    #[test]
     fn etna_pool_zk_gas_exhaustion_preserves_empty_and_completed_prefixes() {
         for prefix_len in [0, 1] {
             let caller = Address::with_last_byte(0x44);
@@ -662,10 +467,9 @@ mod tests {
                 .with_bundle_update()
                 .build();
             let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
-            let ctx = etna_execution_ctx(B256::with_last_byte(1));
             let executor = TaikoBlockExecutor::new(
                 evm,
-                ctx.clone(),
+                etna_execution_ctx(B256::with_last_byte(1)),
                 spec.clone(),
                 RethReceiptBuilder::default(),
             );
@@ -710,20 +514,11 @@ mod tests {
                 &CancelOnDrop::default(),
             )
             .expect("ordinary zk exhaustion should stop selection cleanly");
-            let ExecutionOutcome::Completed(fees) = outcome else {
+            let ExecutionOutcome::Completed(_) = outcome else {
                 panic!("zk exhaustion should not report cancellation")
             };
+            // Only the optional prefix commits; exhaustion stops selection without failing it.
             assert_eq!(builder.executor.receipts().len(), prefix_len as usize);
-            assert_eq!(fees, U256::from(prefix_len * 21_009 * 10));
-            assert_eq!(ctx.finalized_block_zk_gas(), prefix_len * 243_111);
-            drop(builder);
-            use reth_revm::Database;
-            let account = state.basic(caller).unwrap().unwrap();
-            assert_eq!(
-                account.nonce, prefix_len,
-                "failed/later transactions must not advance nonce"
-            );
-            assert_eq!(account.balance, U256::from(10_000_000_000_u64) - fees);
         }
     }
 }

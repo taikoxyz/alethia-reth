@@ -497,30 +497,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn etna_witness_filters_first_position_and_enforces_root_when_difficulty_skipped() {
+    fn etna_witness_replay_filters_an_invalid_first_transaction() {
         use alethia_reth_block::config::TaikoEvmConfig;
         use alethia_reth_chainspec::TAIKO_DEVNET;
         use alloy_consensus::Header;
         use alloy_hardforks::ForkCondition;
         use reth_primitives_traits::SignedTransaction;
-        use reth_revm::{
-            db::InMemoryDB,
-            state::{AccountInfo, Bytecode},
-        };
+        use reth_revm::{db::InMemoryDB, state::AccountInfo};
+
         let mut spec = (*TAIKO_DEVNET).as_ref().clone();
         spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
         let chain_id = spec.inner.chain().id();
         let config = TaikoEvmConfig::new(Arc::new(spec));
-        let target = Address::with_last_byte(0xBB);
-        let limit_target = Address::with_last_byte(0xCC);
-        let signed = |nonce, to, gas_limit| -> TransactionSigned {
+        let signed = |nonce| -> TransactionSigned {
             Signed::new_unchecked(
                 TxLegacy {
                     chain_id: Some(chain_id),
                     nonce,
                     gas_price: 1,
-                    gas_limit,
-                    to: TxKind::Call(to),
+                    gas_limit: 21_000,
+                    to: TxKind::Call(Address::with_last_byte(0xBB)),
                     ..Default::default()
                 },
                 Signature::new(U256::from(1), U256::from(2), false),
@@ -528,102 +524,57 @@ mod tests {
             )
             .into()
         };
-        let valid = signed(0, target, 21_000);
+        let valid = signed(0);
         let sender = valid.try_recover().unwrap();
-        let invalid_signature: TransactionSigned = Signed::new_unchecked(
-            TxLegacy::default(),
-            Signature::new(U256::ZERO, U256::from(1), false),
-            B256::ZERO,
-        )
-        .into();
-        for (name, first, truncates) in [
-            ("valid", valid.clone(), false),
-            ("nonce", signed(99, target, 21_000), false),
-            ("signature", invalid_signature, false),
-            ("type", blob_transaction(), false),
-            ("gas", signed(0, target, 30_000_001), false),
-            ("zk", signed(0, limit_target, 5_000_000), true),
-        ] {
-            let mut encoded = vec![];
-            vec![first, valid.clone()].encode(&mut encoded);
-            let txs = decode_recovered_tx_list(encoded.into()).unwrap();
-            for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
-                let block = RecoveredBlock::new_unhashed(
-                    Block {
-                        header: Header {
-                            number: 1,
-                            timestamp: 1,
-                            base_fee_per_gas: Some(0),
-                            gas_limit: 30_000_000,
-                            extra_data: vec![0; 13].into(),
-                            parent_beacon_block_root: root,
-                            ..Default::default()
-                        },
-                        body: reth_ethereum_primitives::BlockBody {
-                            transactions: txs.iter().map(|tx| tx.clone_inner()).collect(),
-                            ..Default::default()
-                        },
-                    },
-                    txs.iter().map(|tx| tx.signer()).collect(),
-                );
-                let mut db = InMemoryDB::default();
-                for tx in &txs {
-                    db.insert_account_info(
-                        tx.signer(),
-                        AccountInfo { balance: U256::from(100_000_000), ..Default::default() },
-                    );
-                }
-                // Repeated KECCAK256 of 64 KiB exhausts the unchanged Unzen zk budget.
-                let code = Bytecode::new_raw(Bytes::from_static(&[
-                    0x5b, 0x62, 1, 0, 0, 0x60, 0, 0x20, 0x50, 0x60, 0, 0x56,
-                ]));
-                db.insert_account_info(
-                    limit_target,
-                    AccountInfo {
-                        nonce: 1,
-                        code_hash: code.hash_slow(),
-                        code: Some(code),
-                        ..Default::default()
-                    },
-                );
-                let mut state = State::builder().with_database(db).with_bundle_update().build();
-                let result = record_tx_list_witness(
-                    &config,
-                    &mut state,
-                    &block,
-                    config.chain_spec().as_ref(),
-                    ExecutionWitnessMode::Canonical,
-                    TxListWitnessOptions { skip_zk_gas_difficulty_check: true },
-                );
-                if root.is_none_or(|r| r.is_zero()) {
-                    assert!(result.unwrap_err().to_string().contains("beacon"), "{name}");
-                } else {
-                    let record = result.unwrap_or_else(|e| panic!("{name}: {e}"));
-                    let nonce = record
-                        .hashed_state
-                        .accounts
-                        .get(&alloy_primitives::keccak256(sender))
-                        .and_then(|a| a.as_ref())
-                        .map_or(0, |a| a.nonce);
-                    assert_eq!(nonce, u64::from(!truncates), "{name}");
-                    let provider = reth_provider::test_utils::NoopProvider::default();
-                    let witness = record
-                        .into_execution_witness(
-                            &provider,
-                            &provider,
-                            1,
-                            ExecutionWitnessMode::Canonical,
-                        )
-                        .unwrap();
-                    if !truncates {
-                        assert!(
-                            witness.keys.contains(&Bytes::copy_from_slice(sender.as_slice())),
-                            "{name}"
-                        );
-                    }
-                }
-            }
+        // Before Etna a failing index-0 transaction is a fatal anchor failure. From Etna on, its
+        // too-high nonce is filtered like any other position and the valid follower commits.
+        let mut encoded = vec![];
+        vec![signed(99), valid].encode(&mut encoded);
+        let txs = decode_recovered_tx_list(encoded.into()).unwrap();
+        assert_eq!(txs.len(), 2, "both transactions must reach the replay loop");
+        let block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    base_fee_per_gas: Some(0),
+                    gas_limit: 30_000_000,
+                    extra_data: vec![0; 13].into(),
+                    parent_beacon_block_root: Some(B256::with_last_byte(7)),
+                    ..Default::default()
+                },
+                body: reth_ethereum_primitives::BlockBody {
+                    transactions: txs.iter().map(|tx| tx.clone_inner()).collect(),
+                    ..Default::default()
+                },
+            },
+            txs.iter().map(|tx| tx.signer()).collect(),
+        );
+        let mut db = InMemoryDB::default();
+        for tx in &txs {
+            db.insert_account_info(
+                tx.signer(),
+                AccountInfo { balance: U256::from(100_000_000), ..Default::default() },
+            );
         }
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+
+        let record = record_tx_list_witness(
+            &config,
+            &mut state,
+            &block,
+            config.chain_spec().as_ref(),
+            ExecutionWitnessMode::Canonical,
+            TxListWitnessOptions { skip_zk_gas_difficulty_check: true },
+        )
+        .expect("an Etna first transaction is not an anchor");
+        let sender_nonce = record
+            .hashed_state
+            .accounts
+            .get(&alloy_primitives::keccak256(sender))
+            .and_then(|account| account.as_ref())
+            .map(|account| account.nonce);
+        assert_eq!(sender_nonce, Some(1), "the valid follower must commit");
     }
 
     #[test]

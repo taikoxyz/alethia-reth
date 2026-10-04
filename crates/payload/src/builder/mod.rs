@@ -427,7 +427,9 @@ mod tests {
             ("timestamp", |c| {
                 c.attributes.block_metadata.timestamp = U256::from(100) + (U256::from(1) << 128)
             }),
-            ("anchor", |c| c.attributes.anchor_transaction = Some(Bytes::from_static(&[0x01]))),
+            ("must not include anchor", |c| {
+                c.attributes.anchor_transaction = Some(Bytes::from_static(&[0x01]))
+            }),
             ("withdrawals", |c| {
                 c.attributes.payload_attributes.withdrawals = Some(vec![Withdrawal::default()])
             }),
@@ -442,11 +444,15 @@ mod tests {
             }),
         ];
         let spec = chain_spec_with_etna_at(100);
-        for (expected, mutate) in cases {
+        for (index, (expected, mutate)) in cases.into_iter().enumerate() {
             let mut config = test_payload_config(None);
             mutate(&mut config);
-            let err = normalize_payload_config(&config, &spec).expect_err(expected);
-            assert!(err.to_string().contains(expected), "{expected}: {err}");
+            match normalize_payload_config(&config, &spec) {
+                Ok(_) => panic!("case {index} ({expected}) must be rejected"),
+                Err(err) => {
+                    assert!(err.to_string().contains(expected), "case {index}: {err}")
+                }
+            }
         }
     }
 

@@ -225,7 +225,6 @@ pub fn with_txs(
 pub struct Built {
     pub id: alloy_rpc_types_engine::PayloadId,
     pub payload: Value,
-    pub response: Value,
     pub root: B256,
     pub block: reth_primitives_traits::SealedBlock<reth_ethereum_primitives::Block>,
     pub attrs: TaikoPayloadAttributes,
@@ -263,23 +262,21 @@ pub async fn build(
     assert!(status.payload_status.status.is_valid(), "{status:?}");
     let id = status.payload_id.unwrap();
     let root = attrs.payload_attributes.parent_beacon_block_root.unwrap();
-    let (payload, data, response) = if etna {
+    let (payload, data) = if etna {
         let envelope: ExecutionPayloadEnvelopeV5 = tokio::time::timeout(
             Duration::from_secs(30),
             client.request("engine_getPayloadV5", rpc_params![id]),
         )
         .await??;
-        let response = serde_json::to_value(&envelope)?;
         let payload = normalize_v5(envelope);
         let wire: TaikoExecutionPayloadV3 = serde_json::from_value(payload.clone())?;
-        (payload, wire.into_execution_data(vec![], root, vec![])?, response)
+        (payload, wire.into_execution_data(vec![], root, vec![])?)
     } else {
         let envelope: alloy_rpc_types_engine::ExecutionPayloadEnvelopeV2 = tokio::time::timeout(
             Duration::from_secs(30),
             client.request("engine_getPayloadV2", rpc_params![id]),
         )
         .await??;
-        let response = serde_json::to_value(&envelope)?;
         let mut payload = serde_json::to_value(envelope.execution_payload)?;
         let txs: Vec<Bytes> = serde_json::from_value(payload["transactions"].clone())?;
         payload["txHash"] =
@@ -294,12 +291,12 @@ pub async fn build(
         payload["headerDifficulty"] = difficulty.into();
         payload["taikoBlock"] = true.into();
         let data: TaikoExecutionData = serde_json::from_value(payload.clone())?;
-        (payload, data, response)
+        (payload, data)
     };
     let validator = alethia_reth_rpc::engine::validator::TaikoEngineValidator::new(spec);
     let block =
         <_ as PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(&validator, data)?;
-    Ok(Built { id, payload, response, root, block, attrs })
+    Ok(Built { id, payload, root, block, attrs })
 }
 
 pub async fn import(
@@ -464,165 +461,6 @@ pub fn run_live_test(
     }
     eyre::ensure!(shut_down, "node shutdown timed out");
     result
-}
-
-fn vector_capture_path(path: &std::path::Path) -> eyre::Result<PathBuf> {
-    // Resolve parents and existing outputs so symlinks/.. cannot escape the temporary tree.
-    let parent = path.parent().ok_or_else(|| eyre::eyre!("capture needs a parent directory"))?;
-    let resolved = parent
-        .canonicalize()?
-        .join(path.file_name().ok_or_else(|| eyre::eyre!("capture needs a file name"))?);
-    let resolved = match std::fs::symlink_metadata(&resolved) {
-        Ok(_) => resolved.canonicalize()?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => resolved,
-        Err(error) => return Err(error.into()),
-    };
-    let temp = std::env::temp_dir().canonicalize()?;
-    let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
-    eyre::ensure!(
-        resolved.starts_with(temp),
-        "capture must stay in the platform temporary directory"
-    );
-    eyre::ensure!(!resolved.starts_with(checkout), "capture must not overwrite checkout files");
-    Ok(resolved)
-}
-
-#[test]
-fn vector_capture_guard_accepts_temp_and_rejects_checkout_and_non_temp() -> eyre::Result<()> {
-    let dir = tempfile::tempdir()?;
-    let output = dir.path().join("capture.json");
-    assert_eq!(
-        vector_capture_path(&output)?,
-        output.parent().unwrap().canonicalize()?.join("capture.json")
-    );
-    std::fs::write(&output, b"{}")?;
-    assert_eq!(vector_capture_path(&output)?, output.canonicalize()?);
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/etna-cases.json");
-    assert!(vector_capture_path(&fixture).is_err());
-    let current = std::env::current_dir()?;
-    let filesystem_root = current.ancestors().last().unwrap();
-    assert!(vector_capture_path(&filesystem_root.join("capture.json")).is_err());
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn vector_capture_guard_rejects_symlink_and_parent_traversal_escape() -> eyre::Result<()> {
-    let dir = tempfile::tempdir()?;
-    let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).canonicalize()?;
-    std::os::unix::fs::symlink(&checkout, dir.path().join("checkout"))?;
-    assert!(
-        vector_capture_path(&dir.path().join("checkout/tests/fixtures/etna-cases.json")).is_err()
-    );
-    std::os::unix::fs::symlink(
-        checkout.join("tests/fixtures/etna-cases.json"),
-        dir.path().join("capture.json"),
-    )?;
-    assert!(vector_capture_path(&dir.path().join("capture.json")).is_err());
-    std::os::unix::fs::symlink(
-        checkout.join("nonexistent-capture.json"),
-        dir.path().join("dangling.json"),
-    )?;
-    assert!(vector_capture_path(&dir.path().join("dangling.json")).is_err());
-    let temp = std::env::temp_dir().canonicalize()?;
-    assert!(vector_capture_path(&temp.join("../capture.json")).is_err());
-    Ok(())
-}
-
-pub fn verify_vector(name: &str, actual: Value) -> eyre::Result<()> {
-    if let Ok(path) = std::env::var("ETNA_VECTOR_OUTPUT") {
-        // Explicit fixture capture writes outside the source tree. Normal test runs only read
-        // the checked-in commitments. Capture is not independent historical evidence.
-        let path = vector_capture_path(std::path::Path::new(&path))?;
-        let mut vectors: Value = std::fs::read(&path)
-            .ok()
-            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
-            .unwrap_or_else(|| serde_json::json!({}));
-        vectors[name] = actual;
-        std::fs::write(path, serde_json::to_vec_pretty(&vectors)?)?;
-    } else {
-        let vectors: Value = serde_json::from_str(include_str!("../fixtures/etna-cases.json"))?;
-        assert_eq!(actual, vectors[name], "vector {name}");
-    }
-    Ok(())
-}
-
-pub fn vector(
-    node: &NodeHelperType<TaikoNode>,
-    built: &Built,
-    parent: &alloy_consensus::Header,
-) -> eyre::Result<Value> {
-    use alloy_eips::Encodable2718;
-    use reth_storage_api::{ReceiptProvider, StateProvider, StateProviderFactory};
-    let state = node.inner.provider.history_by_block_hash(built.block.hash())?;
-    let sender = Address::from(alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS);
-    Ok(serde_json::json!({
-        "parentHeader": parent,
-        "attributes": built.attrs,
-        "inputTxList": built.attrs.block_metadata.tx_list,
-        "signedTransactions": built.block.body().transactions.iter().map(|tx| Bytes::from(tx.encoded_2718())).collect::<Vec<_>>(),
-        "newPayloadRequest": {"method": if built.block.timestamp >= 100 {"engine_newPayloadV4"} else {"engine_newPayloadV2"}, "params": if built.block.timestamp >= 100 {serde_json::json!([built.payload, [], built.root, []])} else {serde_json::json!([built.payload])}},
-        "getPayloadResponse": built.response,
-        "expected": {"status":"VALID", "blockHash":built.block.hash(), "stateRoot":built.block.state_root,"receiptsRoot":built.block.receipts_root,"difficulty":built.block.difficulty,"gasUsed":built.block.gas_used,"baseFeePerGas":built.block.base_fee_per_gas,"receipts": node.inner.provider.receipts_by_block(built.block.hash().into())?,"senderBalance":state.account_balance(&sender)?,"beneficiaryBalance":state.account_balance(&built.block.beneficiary)?,"beaconRoot":built.root}
-    }))
-}
-
-pub fn assert_origin(
-    node: &NodeHelperType<TaikoNode>,
-    built: &Built,
-    expected_head: u64,
-) -> eyre::Result<()> {
-    use alethia_reth_db::model::{
-        BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
-    };
-    use reth_db::transaction::DbTx;
-    use reth_provider::DatabaseProviderFactory;
-    let db = node.inner.provider.database_provider_ro()?;
-    let origin = db.tx_ref().get::<StoredL1OriginTable>(built.block.number)?.unwrap();
-    assert_eq!(origin.l2_block_hash, built.block.hash());
-    assert_eq!(origin.is_forced_inclusion, built.attrs.l1_origin.is_forced_inclusion);
-    assert_eq!(origin.signature, built.attrs.l1_origin.signature);
-    assert_eq!(origin.build_payload_args_id, built.attrs.l1_origin.build_payload_args_id);
-    assert_eq!(
-        db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY)?,
-        Some(expected_head)
-    );
-    assert_eq!(db.tx_ref().get::<BatchToLastBlock>(0)?, Some(expected_head));
-    Ok(())
-}
-
-pub fn historical_chain_spec(stage: usize) -> Arc<TaikoChainSpec> {
-    use alloy_hardforks::EthereumHardfork;
-    let fixture = fixture_chain_spec();
-    let mut forks = fixture.inner.hardforks.clone();
-    forks.insert(TaikoHardfork::Etna, ForkCondition::Never);
-    for (index, fork) in
-        [TaikoHardfork::Ontake, TaikoHardfork::Pacaya, TaikoHardfork::Shasta, TaikoHardfork::Unzen]
-            .into_iter()
-            .enumerate()
-    {
-        let condition = if stage < index + 1 {
-            ForkCondition::Never
-        } else if index < 2 {
-            ForkCondition::Block(0)
-        } else {
-            ForkCondition::Timestamp(0)
-        };
-        forks.insert(fork, condition);
-    }
-    for fork in [EthereumHardfork::Cancun, EthereumHardfork::Prague, EthereumHardfork::Osaka] {
-        forks.insert(
-            fork,
-            if stage == 4 { ForkCondition::Timestamp(0) } else { ForkCondition::Never },
-        );
-    }
-    let mut inner = ChainSpec::builder()
-        .chain(fixture.inner.chain)
-        .genesis(fixture.inner.genesis.clone())
-        .with_forks(forks)
-        .build();
-    inner.paris_block_and_final_difficulty = Some((0, U256::ZERO));
-    Arc::new(TaikoChainSpec { inner })
 }
 
 pub fn assert_no_origin(node: &NodeHelperType<TaikoNode>, block_number: u64) -> eyre::Result<()> {

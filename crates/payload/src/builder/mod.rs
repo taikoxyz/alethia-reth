@@ -138,6 +138,16 @@ fn normalize_payload_config(
     Ok(attributes)
 }
 
+/// Returns the gas available to pool transactions: the full block limit from Etna on, and the
+/// limit minus the legacy anchor reservation before it.
+fn pool_gas_limit(chain_spec: &TaikoChainSpec, timestamp: u64, gas_limit: u64) -> u64 {
+    if chain_spec.is_etna_active(timestamp) {
+        gas_limit
+    } else {
+        gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT)
+    }
+}
+
 /// Returns the legacy missing-payload behavior for Taiko payload jobs.
 fn missing_payload_behaviour() -> MissingPayloadBehaviour<EthBuiltPayload> {
     MissingPayloadBehaviour::AwaitInProgress
@@ -261,12 +271,8 @@ where
         }
         None => {
             debug!(target: "payload_builder", id=%payload_id, "selecting transactions from mempool");
-            let is_etna_active = chain_spec.is_etna_active(attributes.timestamp());
-            let gas_limit = if is_etna_active {
-                attributes.gas_limit
-            } else {
-                attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT)
-            };
+            let gas_limit =
+                pool_gas_limit(chain_spec.as_ref(), attributes.timestamp(), attributes.gas_limit);
 
             let ctx = PoolExecutionContext {
                 anchor_tx: attributes.anchor_transaction.as_ref(),
@@ -383,6 +389,14 @@ mod tests {
         let mut spec = TaikoChainSpec::default();
         spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
         spec
+    }
+
+    #[test]
+    fn pool_gas_limit_keeps_the_anchor_reserve_only_before_etna() {
+        let spec = chain_spec_with_etna_at(100);
+        assert_eq!(pool_gas_limit(&spec, 99, 1_500_000), 500_000);
+        assert_eq!(pool_gas_limit(&spec, 99, 999_999), 0);
+        assert_eq!(pool_gas_limit(&spec, 100, 1_500_000), 1_500_000);
     }
 
     #[test]

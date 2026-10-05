@@ -28,7 +28,7 @@ use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
 use reth_rpc_eth_types::EthApiError;
 use tracing::info;
 
-use crate::eth::{builder::etna_simulation_extra_data, error::internal_eth_error};
+use crate::eth::error::internal_eth_error;
 use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::TaikoNextBlockEnvAttributes,
@@ -70,33 +70,17 @@ const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 fn reserve_anchor_zk_gas_for_tx_pool_selection<Evm, Spec, R>(
     executor: &mut TaikoBlockExecutor<'_, Evm, Spec, R>,
     chain_spec: &TaikoChainSpec,
-    parent_timestamp: u64,
+    parent: &alloy_consensus::Header,
 ) -> Result<(), BlockExecutionError>
 where
     Evm: TaikoZkGasEvm,
     Spec: Clone,
     R: ReceiptBuilder,
 {
-    if chain_spec.is_etna_active(parent_timestamp) {
+    if chain_spec.is_etna_active(parent.timestamp()) {
         return Ok(());
     }
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
-}
-
-/// Returns the `extraData` that tx-pool preselection simulates the parent's child with.
-///
-/// An Etna parent's 13-byte fee metadata carries over and an Etna genesis gets simulation-only
-/// zeros, so simulated base fees still reach the treasury as on the pending path. A pre-Etna
-/// parent's bytes pass through.
-fn tx_pool_simulation_extra_data(
-    chain_spec: &TaikoChainSpec,
-    parent: &alloy_consensus::Header,
-) -> Bytes {
-    if chain_spec.is_etna_active(parent.timestamp()) {
-        etna_simulation_extra_data(parent)
-    } else {
-        parent.extra_data().clone()
-    }
 }
 
 #[cfg(test)]
@@ -394,7 +378,7 @@ where
                     suggested_fee_recipient: beneficiary,
                     prev_randao: parent.mix_hash().unwrap_or_default(),
                     gas_limit: combined_gas_limit,
-                    extra_data: tx_pool_simulation_extra_data(chain_spec.as_ref(), parent),
+                    extra_data: parent.extra_data().clone(),
                     base_fee_per_gas: base_fee,
                     parent_beacon_block_root: None,
                 },
@@ -406,7 +390,7 @@ where
         reserve_anchor_zk_gas_for_tx_pool_selection(
             builder.executor_mut(),
             chain_spec.as_ref(),
-            parent.timestamp(),
+            parent,
         )
         .map_err(|err| EthApiError::Internal(err.into()))?;
 

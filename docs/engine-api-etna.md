@@ -172,10 +172,10 @@ the transaction pool.
 ## `taikoAuth` preselection
 
 `taikoAuth_txPoolContent` and `taikoAuth_txPoolContentWithMinTip` keep their existing parameters.
-Preselection simulates the next block under the parent's fork rules and never applies pre-execution
-system calls. On an Etna parent it uses the parent's `extraData` (13 zero bytes for an Etna genesis
-with empty `extraData`) and drops the legacy 2,000,000 zk-gas anchor reserve. At the boundary the
-parent is still pre-Etna, so the first Etna block is selected with that reserve. Results are
+Preselection simulates the next block under the parent's fork rules and `extraData`, and never
+applies pre-execution system calls. On an Etna parent it drops the legacy 2,000,000 zk-gas anchor
+reserve. At the boundary the parent is still pre-Etna, so the first Etna block is selected with that
+reserve. Results are
 estimates; the builder enforces the actual gas and zk-gas limits. A driver that still sends the
 removed trailing `blockContext` argument gets no error, because extra positional parameters are
 ignored; it then simulates under the parent's rules.

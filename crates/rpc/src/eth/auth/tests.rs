@@ -252,24 +252,15 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
     let chain_spec = chain_spec_with_etna_at_100();
 
     // An Etna parent is followed by no anchor, so preselection reserves nothing.
-    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, 100)
+    let parent = |timestamp| Header { timestamp, ..Default::default() };
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, &parent(100))
         .expect("an Etna parent reserves nothing");
     assert_eq!(ctx.finalized_block_zk_gas(), 0);
 
-    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, 99)
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, &parent(99))
         .expect("tx-pool anchor reserve should fit");
 
     assert_eq!(ctx.finalized_block_zk_gas(), super::TX_POOL_ANCHOR_ZK_GAS_RESERVE);
-}
-
-#[test]
-/// Ensures preselection on an Etna genesis parent simulates with zero fee metadata.
-fn tx_pool_simulation_extra_data_zero_fills_an_etna_genesis() {
-    let genesis = Header { number: 0, timestamp: 100, ..Default::default() };
-    assert_eq!(
-        super::tx_pool_simulation_extra_data(&chain_spec_with_etna_at_100(), &genesis),
-        Bytes::from(vec![0; 13])
-    );
 }
 
 // ---------------------------------------------------------------------------

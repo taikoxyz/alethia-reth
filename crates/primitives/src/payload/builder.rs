@@ -101,23 +101,23 @@ impl TaikoPayloadBuilderAttributes {
 
     /// Normalizes payload attributes under the rules active at the target timestamp.
     ///
-    /// Etna jobs require matching full-width timestamps, a non-zero beacon root, 13-byte
-    /// extraData, empty withdrawals, and no anchor transaction. Pre-Etna jobs pass `false`, as
-    /// [`Self::try_new`] does, and of these rules keep only the root check: a nonzero root is
-    /// rejected. Every job also rejects a base fee above `u64::MAX` and an anchor transaction that
-    /// fails to decode or recover its signer.
+    /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp, because the
+    /// fork is chosen from the latter and the block is built at the former. Etna jobs also require
+    /// a non-zero beacon root, 13-byte extraData, empty withdrawals, and no anchor transaction.
+    /// Pre-Etna jobs pass `false`, as [`Self::try_new`] does, and of these rules keep only the root
+    /// check: a nonzero root is rejected. Every job also rejects a base fee above `u64::MAX` and an
+    /// anchor transaction that fails to decode or recover its signer.
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,
         is_etna_active: bool,
     ) -> Result<Self, alloy_rlp::Error> {
-        let payload_timestamp = U256::from(attributes.payload_attributes.timestamp);
+        if !block_metadata_timestamp_matches(&attributes) {
+            return Err(alloy_rlp::Error::Custom(
+                "block metadata timestamp must match payload attributes timestamp",
+            ));
+        }
         if is_etna_active {
-            if attributes.block_metadata.timestamp != payload_timestamp {
-                return Err(alloy_rlp::Error::Custom(
-                    "block metadata timestamp must match payload attributes timestamp",
-                ));
-            }
             if attributes
                 .payload_attributes
                 .parent_beacon_block_root
@@ -300,6 +300,12 @@ pub fn payload_id_taiko(
     let mut id_bytes = [0u8; 8];
     id_bytes.copy_from_slice(&out[..8]);
     PayloadId::new(id_bytes)
+}
+
+/// Returns whether `blockMetadata.timestamp` equals the attributes' timestamp, as every job
+/// requires.
+pub fn block_metadata_timestamp_matches(attributes: &TaikoPayloadAttributes) -> bool {
+    attributes.block_metadata.timestamp == U256::from(attributes.payload_attributes.timestamp)
 }
 
 /// Decode RLP-encoded bytes into signed transactions.
@@ -489,6 +495,16 @@ mod test {
                 "the Etna root and extraData must change the payload id"
             );
         }
+    }
+
+    #[test]
+    fn try_new_rejects_a_block_metadata_timestamp_mismatch() {
+        // Before Etna too, the job must build at the timestamp its fork was chosen from.
+        let mut payload_attrs = create_payload_attrs(1000, None, 100_000_000);
+        payload_attrs.block_metadata.timestamp = U256::MAX;
+
+        TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
+            .expect_err("a mismatched or over-wide metadata timestamp must fail closed");
     }
 
     #[test]

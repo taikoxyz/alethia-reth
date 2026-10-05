@@ -4,7 +4,10 @@ use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::{
     engine::{TaikoEngineTypes, types::TaikoExecutionData},
     etna::validate_etna_root,
-    payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes},
+    payload::{
+        attributes::TaikoPayloadAttributes,
+        builder::{TaikoPayloadBuilderAttributes, block_metadata_timestamp_matches},
+    },
     transaction::is_allowed_tx_type,
 };
 use alloy_consensus::{BlockHeader, EMPTY_ROOT_HASH};
@@ -49,6 +52,10 @@ enum TaikoPayloadValidationError {
     /// Taiko payload construction does not consume the post-Amsterdam target-gas-limit attribute.
     #[error("target gas limit is unsupported on Taiko")]
     TargetGasLimitUnsupported,
+    /// The fork is chosen from the attributes' timestamp but the block is built at
+    /// `blockMetadata.timestamp`, so the two must be equal.
+    #[error("block metadata timestamp must match payload attributes timestamp")]
+    BlockMetadataTimestampMismatch,
     /// Before Etna, payload conversion rebuilds Unzen headers with the zero root, so a nonzero
     /// build root would disagree with the reconstructed header commitment.
     #[error("non-zero parent beacon block roots are unsupported on Taiko")]
@@ -373,6 +380,13 @@ where
         if payload_or_attrs.target_gas_limit().is_some() {
             return Err(EngineObjectValidationError::InvalidParams(Box::new(
                 TaikoPayloadValidationError::TargetGasLimitUnsupported,
+            )));
+        }
+        if let PayloadOrAttributes::PayloadAttributes(attributes) = &payload_or_attrs &&
+            !block_metadata_timestamp_matches(attributes)
+        {
+            return Err(EngineObjectValidationError::InvalidParams(Box::new(
+                TaikoPayloadValidationError::BlockMetadataTimestampMismatch,
             )));
         }
         if self.chain_spec.is_etna_active(payload_or_attrs.timestamp()) {

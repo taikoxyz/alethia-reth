@@ -148,6 +148,7 @@ internal payload ranking still uses actual fees.
 | FCUv3 attributes without `withdrawals` or `parentBeaconBlockRoot`, or with `slotNumber` | JSON-RPC `-38003` |
 | Malformed V4 arguments or unsupported payload properties | JSON-RPC `-32602` |
 | A nonzero root before Etna | JSON-RPC `-32602` |
+| FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp` | JSON-RPC `-32602` |
 | Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current) |
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
 | An Unzen payload with withdrawals, blob gas, or nonempty side arrays | Payload status `INVALID` |
@@ -162,10 +163,10 @@ activation.
 
 ### FCU attributes
 
-Every FCUv3 request with attributes sends `withdrawals: []` and a `parentBeaconBlockRoot`: zero for
-Unzen and the nonzero anchor state root for Etna. For an Etna target, also send no
-`anchorTransaction`, set `blockMetadata.timestamp` equal to `payloadAttributes.timestamp`, and send
-exactly 13 bytes of `blockMetadata.extraData`. That field keeps its Base64 encoding; do not send hex.
+Every FCUv3 request with attributes sends `withdrawals: []`, a `parentBeaconBlockRoot` (zero for
+Unzen and the nonzero anchor state root for Etna), and a `blockMetadata.timestamp` equal to
+`payloadAttributes.timestamp`. For an Etna target, also send no `anchorTransaction` and exactly 13
+bytes of `blockMetadata.extraData`. That field keeps its Base64 encoding; do not send hex.
 An explicit transaction list, including an empty one, is derived input; an absent list selects from
 the transaction pool.
 

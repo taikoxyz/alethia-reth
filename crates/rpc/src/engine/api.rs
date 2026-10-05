@@ -706,11 +706,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_etna_attributes_never_start_jobs_or_publish_origins() {
+    async fn invalid_fcu_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
         // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
-        // remaining cases fail Taiko's rules (-32602).
-        let expected = [-38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003];
+        // remaining cases fail Taiko's rules (-32602). The last two target Unzen.
+        let expected =
+            [-38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003, -32602, -32602];
         for (case, code) in expected.into_iter().enumerate() {
             let mut attrs = fcu_attributes(100, false);
             match case {
@@ -721,7 +722,13 @@ mod tests {
                 4 => attrs.block_metadata.extra_data = Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
                 5 => attrs.payload_attributes.slot_number = Some(1),
                 6 => attrs.payload_attributes.target_gas_limit = Some(1),
-                _ => attrs.payload_attributes.withdrawals = None,
+                7 => attrs.payload_attributes.withdrawals = None,
+                // An Unzen target building at an Etna timestamp, or at one wider than `u64`.
+                _ => {
+                    attrs = fcu_attributes(99, false);
+                    attrs.block_metadata.timestamp =
+                        if case == 8 { U256::from(100) } else { U256::MAX };
+                }
             }
             let response = rpc_call(
                 &module,
@@ -733,7 +740,9 @@ mod tests {
         }
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
         let db = provider.provider().unwrap();
-        assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(100).unwrap(), None);
+        for block_id in [99, 100] {
+            assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(block_id).unwrap(), None);
+        }
         assert_eq!(
             db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
             None

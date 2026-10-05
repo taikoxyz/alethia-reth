@@ -895,6 +895,8 @@ mod test {
             Ok(_) => panic!("imported Unzen blocks must reject difficulty mismatches"),
             Err(err) => err,
         };
+        // Before Etna, zk-gas failures keep the internal mapping (JSON-RPC -32603), not INVALID.
+        assert!(matches!(err, BlockExecutionError::Internal(_)), "{err:?}");
         assert!(is_zk_gas_difficulty_mismatch(&err));
         assert!(err.to_string().contains("difficulty"));
     }

@@ -464,4 +464,18 @@ mod test {
             "non-devnet chains ignore the devnet overrides"
         );
     }
+
+    #[test]
+    fn built_in_and_overridden_chains_have_a_latest_fork_id() {
+        // reth's `latest_fork_id` unwraps the last fork's ID, so a trailing `Never` row panics.
+        for spec in [&*TAIKO_MAINNET, &*crate::TAIKO_HOODI, &*TAIKO_DEVNET] {
+            spec.inner.latest_fork_id();
+        }
+        TAIKO_DEVNET
+            .clone_with_devnet_fork_timestamps(0, Some(0))
+            .unwrap()
+            .unwrap()
+            .inner
+            .latest_fork_id();
+    }
 }

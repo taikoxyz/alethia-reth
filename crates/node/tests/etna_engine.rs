@@ -145,6 +145,14 @@ fn cross_fork_lifecycle_checks_inputs_traces_and_rolls_back_system_storage() -> 
                     .unwrap_or_default(),
                 U256::ZERO
             );
+            // `alternative` is an Unzen block: EIP-4788 stores its timestamp with the zero root.
+            assert_eq!(
+                state.storage(
+                    alloy_eips::eip4788::BEACON_ROOTS_ADDRESS,
+                    B256::from(U256::from(98))
+                )?,
+                Some(U256::from(98))
+            );
             assert_eq!(
                 state
                     .storage(

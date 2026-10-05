@@ -206,6 +206,7 @@ fn shasta_header_requires_exact_extra_data_len() {
         ("2 bytes", Bytes::from_static(&[75, 0])),
         ("3 bytes", Bytes::from_static(&[75, 0, 1])),
         ("12 bytes", Bytes::from_static(&[0; 12])),
+        ("13 bytes", Bytes::from_static(&[0; 13])),
     ] {
         let err = consensus
             .validate_header(&SealedHeader::new_unhashed(Header {

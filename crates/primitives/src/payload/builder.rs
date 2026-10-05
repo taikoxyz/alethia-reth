@@ -458,22 +458,30 @@ mod test {
     }
 
     #[test]
-    fn etna_payload_id_binds_root_and_extra_data() {
-        // Etna jobs share the pre-Etna preimage, so the nonzero root and the 13-byte extraData
-        // (proposalId and anchorBlockNumber) must still give distinct jobs distinct IDs.
+    fn payload_id_pins_every_preimage_field() {
+        // Every hashed field is nonzero, so dropping, reordering, or re-encoding any term changes
+        // the pinned ID. taiko-client-rs uses this ID as its `buildPayloadArgsId` fingerprint.
         let parent = B256::repeat_byte(0xaa);
-        let mut etna = create_payload_attrs(1000, None, 100_000_000);
-        etna.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
-        etna.block_metadata.extra_data =
+        let mut full = create_payload_attrs(1000, Some(Bytes::from_static(&[0xc1, 0x80])), 1);
+        full.payload_attributes.prev_randao = B256::repeat_byte(0x11);
+        full.payload_attributes.suggested_fee_recipient = Address::repeat_byte(0x22);
+        full.payload_attributes.withdrawals = Some(vec![Withdrawal {
+            index: 1,
+            validator_index: 2,
+            address: Address::repeat_byte(0x44),
+            amount: 3,
+        }]);
+        full.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+        full.block_metadata.extra_data =
             Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
         let id = |attributes: &TaikoPayloadAttributes| {
             reth_payload_primitives::PayloadAttributes::payload_id(attributes, &parent)
         };
-        let base = id(&etna);
-        assert_eq!(base, payload_id_taiko(&parent, &etna, PAYLOAD_ID_VERSION_V2));
+        let base = id(&full);
+        assert_eq!(base, PayloadId::new([0x02, 0x34, 0xc1, 0x7f, 0x9e, 0xfa, 0x03, 0x8e]));
+        assert_eq!(base, payload_id_taiko(&parent, &full, PAYLOAD_ID_VERSION_V2));
 
         let mutations: &[fn(&mut TaikoPayloadAttributes)] = &[
-            |a| a.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x34)),
             // A zero root is the pre-Etna shape and must not alias an Etna job.
             |a| a.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
             // proposalId is bytes 1..=6 and anchorBlockNumber bytes 7..=12.
@@ -485,15 +493,15 @@ mod test {
                 a.block_metadata.extra_data =
                     Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 10])
             },
+            // An absent list selects from the pool, an empty one is derived input.
+            |a| a.block_metadata.tx_list = None,
+            |a| a.block_metadata.tx_list = Some(Bytes::new()),
         ];
+        let mut ids = std::collections::HashSet::from([base]);
         for mutate in mutations {
-            let mut changed = etna.clone();
+            let mut changed = full.clone();
             mutate(&mut changed);
-            assert_ne!(
-                base,
-                id(&changed),
-                "the Etna root and extraData must change the payload id"
-            );
+            assert!(ids.insert(id(&changed)), "each change must give a distinct payload id");
         }
     }
 

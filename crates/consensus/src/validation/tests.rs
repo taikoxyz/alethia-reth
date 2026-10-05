@@ -448,8 +448,9 @@ fn etna_header() -> Header {
 }
 
 #[test]
-fn etna_header_requires_nonzero_root() {
-    let consensus = test_consensus(etna_chain_spec());
+fn etna_header_requires_nonzero_root_and_ordinary_first_transaction() {
+    let spec = etna_chain_spec();
+    let consensus = test_consensus(spec.clone());
     for root in [None, Some(B256::ZERO), Some(B256::with_last_byte(7))] {
         let header = Header { parent_beacon_block_root: root, ..etna_header() };
         assert_eq!(
@@ -457,6 +458,24 @@ fn etna_header_requires_nonzero_root() {
             root.is_some_and(|r| !r.is_zero())
         );
     }
+    // An Etna block's first transaction is ordinary, so the legacy anchor check must skip it.
+    let tx: TransactionSigned = Signed::new_unchecked(
+        TxLegacy::default(),
+        Signature::new(U256::from(1), U256::from(2), false),
+        B256::ZERO,
+    )
+    .into();
+    let block = RecoveredBlock::new_unhashed(
+        Block {
+            header: Header { number: 1, timestamp: 1, ..Default::default() },
+            body: reth_ethereum_primitives::BlockBody {
+                transactions: vec![tx],
+                ..Default::default()
+            },
+        },
+        vec![Address::ZERO],
+    );
+    assert!(validate_anchor_transaction_in_block(&block, &spec).is_ok());
 }
 
 #[test]

@@ -923,6 +923,24 @@ mod test {
     }
 
     #[test]
+    fn etna_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
+        let mut state = State::builder().with_database(db_with_contracts(&[])).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut ctx = etna_execution_ctx(B256::with_last_byte(1));
+        ctx.expected_difficulty = Some(U256::from(1));
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        let err = executor.validate_expected_zk_gas_difficulty().unwrap_err();
+        assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
+        assert!(is_zk_gas_difficulty_mismatch(&err));
+        assert!(!is_recoverable_non_anchor_tx_error(&err));
+    }
+
+    #[test]
     fn is_recoverable_non_anchor_tx_error_classifies_recoverable_set() {
         let gas_err = BlockExecutionError::Validation(
             BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {

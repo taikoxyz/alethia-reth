@@ -850,27 +850,42 @@ mod tests {
     #[test]
     fn replayed_anchor_transaction_executes_without_prior_system_call() {
         // RPC trace/replay paths (`debug_trace*`, `trace_*`) create the EVM straight from the
-        // factory and never issue the anchor system call, so the anchor exemption must be
-        // derivable from the transaction itself plus database state.
+        // factory, through the inspector variant for traces, and never issue the anchor system
+        // call, so the anchor exemption must be derivable from the transaction itself plus
+        // database state on every pre-Etna fork.
         let chain_id = 167_000;
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let treasury = get_treasury_address(chain_id);
 
-        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
+        for spec in [TaikoSpecId::PACAYA, TaikoSpecId::SHASTA, TaikoSpecId::UNZEN] {
+            for inspected in [false, true] {
+                let mut env = replay_env(chain_id);
+                env.cfg_env.spec = spec;
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(
+                        replay_db(7, treasury),
+                        env,
+                        reth_revm::inspector::NoOpInspector {},
+                    )
+                } else {
+                    TaikoEvmFactory.create_evm(replay_db(7, treasury), env)
+                };
 
-        let result = evm
-            .transact(anchor_tx(treasury, 7))
-            .expect("anchor must execute during replay without a prior anchor system call");
-        assert!(result.result.is_success(), "anchor replay must succeed: {:?}", result.result);
+                let result = evm.transact(anchor_tx(treasury, 7)).unwrap_or_else(|err| {
+                    panic!("{spec:?} inspected={inspected}: anchor replay must execute: {err:?}")
+                });
+                assert!(result.result.is_success(), "{spec:?}: {:?}", result.result);
 
-        let golden_touch_state =
-            result.state.get(&golden_touch).expect("golden touch must appear in the state");
-        assert_eq!(
-            golden_touch_state.info.balance,
-            U256::from(GOLDEN_TOUCH_DUST_BALANCE),
-            "anchor must not pay fees during replay"
-        );
-        assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the golden touch nonce");
+                let golden_touch_state =
+                    result.state.get(&golden_touch).expect("golden touch must appear in the state");
+                assert_eq!(
+                    golden_touch_state.info.balance,
+                    U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+                    "{spec:?}: anchor must not pay fees during replay"
+                );
+                assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the nonce");
+            }
+        }
     }
 
     #[test]

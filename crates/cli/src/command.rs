@@ -84,6 +84,22 @@ impl<C: ChainSpecParser, Ext: clap::Args + fmt::Debug> TaikoNodeCommand<C, Ext> 
     }
 }
 
+/// Applies `--devnet-etna-timestamp` to `chain`.
+///
+/// Only the canonical Taiko devnet accepts the override. Any other chain keeps its schedule and
+/// logs a warning, so a misconfigured node does not silently start with Etna off.
+fn apply_devnet_etna_override<S: TaikoDevnetConfigExt>(chain: &mut Arc<S>, timestamp: Option<u64>) {
+    let Some(timestamp) = timestamp else { return };
+    match chain.clone_with_devnet_etna_timestamp(timestamp) {
+        Some(overridden) => *chain = Arc::new(overridden),
+        None => tracing::warn!(
+            target: "reth::taiko::cli",
+            timestamp,
+            "Ignoring --devnet-etna-timestamp: it applies only to the canonical Taiko devnet"
+        ),
+    }
+}
+
 impl<C, Ext> TaikoNodeCommand<C, Ext>
 where
     C: ChainSpecParser,
@@ -145,12 +161,7 @@ where
             jit,
         };
 
-        // Apply the Taiko devnet Etna activation override if specified.
-        if let Some(overridden_chain) = ext.devnet_etna_timestamp().and_then(|timestamp| {
-            node_config.chain.as_ref().clone_with_devnet_etna_timestamp(timestamp)
-        }) {
-            node_config.chain = Arc::new(overridden_chain);
-        }
+        apply_devnet_etna_override(&mut node_config.chain, ext.devnet_etna_timestamp());
 
         let data_dir = node_config.datadir();
         let db_path = data_dir.db();
@@ -170,5 +181,32 @@ where
             .with_launch_context(ctx.task_executor);
 
         launcher.entrypoint(builder, ext).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use alethia_reth_node::chainspec::{
+        TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoExecutorSpec,
+    };
+    use alloy_hardforks::ForkCondition;
+
+    use super::apply_devnet_etna_override;
+
+    #[test]
+    fn devnet_etna_override_applies_only_to_the_canonical_devnet() {
+        let mut devnet = TAIKO_DEVNET.clone();
+        apply_devnet_etna_override(&mut devnet, Some(0));
+        assert_eq!(devnet.taiko_fork_activation(TaikoHardfork::Etna), ForkCondition::Timestamp(0));
+
+        // An omitted flag and a non-devnet chain keep the original spec.
+        let mut devnet = TAIKO_DEVNET.clone();
+        apply_devnet_etna_override(&mut devnet, None);
+        assert!(Arc::ptr_eq(&devnet, &TAIKO_DEVNET));
+        let mut mainnet = TAIKO_MAINNET.clone();
+        apply_devnet_etna_override(&mut mainnet, Some(0));
+        assert!(Arc::ptr_eq(&mainnet, &TAIKO_MAINNET));
     }
 }

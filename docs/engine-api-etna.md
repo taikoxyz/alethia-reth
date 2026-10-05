@@ -104,10 +104,11 @@ cannot build blocks before that time.
 Drivers keep computing the pre-Etna `l1Origin.buildPayloadArgsId` exactly as before: version byte 2
 and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Both drivers compare the
 fingerprint with stored origins to detect blocks they already inserted, so a changed fingerprint
-would re-insert blocks preconfirmed before the upgrade. alethia-reth derives every payload ID from
-that same preimage, Etna jobs included, and hashes the root only when it is nonzero: its FCUv3 IDs
-for Unzen jobs keep their V2-era values, and an Etna job is told apart by its nonzero root and
-13-byte `extraData`. taiko-geth's FCUv3 IDs carry version byte 3.
+would re-insert blocks preconfirmed before the upgrade. alethia-reth stamps every payload ID, Etna
+jobs included, with version byte 2 over that same preimage and adds `parentBeaconBlockRoot` only
+when it is nonzero. Its FCUv3 IDs for Unzen jobs therefore keep their V2-era values, while an Etna
+job's ID also covers its nonzero root; `extraData` is hashed for every job. taiko-geth's FCUv3 IDs
+carry version byte 3.
 
 ### V5 normalization and V4 import
 
@@ -168,12 +169,12 @@ the transaction pool.
 
 `taikoAuth_txPoolContent` and `taikoAuth_txPoolContentWithMinTip` keep their existing parameters.
 Preselection simulates the next block under the parent's fork rules and never applies pre-execution
-system calls. On an Etna parent it uses the parent's `extraData` (13 zero bytes for an Etna genesis)
-and drops the legacy 2,000,000 zk-gas anchor reserve. At the boundary the parent is still pre-Etna,
-so the first Etna block is selected with that reserve. Results are estimates; the builder enforces
-the actual gas and zk-gas limits. A driver that still sends the removed trailing `blockContext`
-argument gets no error, because extra positional parameters are ignored; it then simulates under
-the parent's rules.
+system calls. On an Etna parent it uses the parent's `extraData` (13 zero bytes for an Etna genesis
+with empty `extraData`) and drops the legacy 2,000,000 zk-gas anchor reserve. At the boundary the
+parent is still pre-Etna, so the first Etna block is selected with that reserve. Results are
+estimates; the builder enforces the actual gas and zk-gas limits. A driver that still sends the
+removed trailing `blockContext` argument gets no error, because extra positional parameters are
+ignored; it then simulates under the parent's rules.
 
 ## Devnet activation override
 

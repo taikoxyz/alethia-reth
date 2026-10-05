@@ -4,6 +4,7 @@
 //! `alethia_reth_payload::builder::execution` tests to avoid duplicating EVM
 //! setup, chain spec creation, and bytecode generation.
 
+use alethia_reth_evm::env::TaikoEvmEnv;
 use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_evm::EvmEnv;
 use alloy_hardforks::ForkCondition;
@@ -42,8 +43,8 @@ pub fn unzen_chain_spec() -> TaikoChainSpec {
 }
 
 /// Returns an [`EvmEnv`] configured for Unzen execution.
-pub fn unzen_evm_env() -> EvmEnv<TaikoSpecId> {
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+pub fn unzen_evm_env() -> TaikoEvmEnv {
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
     env.cfg_env.chain_id = 167;
     env.block_env.number = U256::from(1_u64);
@@ -65,6 +66,29 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
         expected_difficulty: None,
         finalized_block_zk_gas: Default::default(),
     }
+}
+
+/// Returns the Unzen test chain with Etna active from timestamp zero.
+pub fn etna_chain_spec() -> TaikoChainSpec {
+    let mut spec = unzen_chain_spec();
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+    spec
+}
+
+/// Returns an Etna environment with authoritative zero base-fee sharing.
+pub fn etna_evm_env() -> TaikoEvmEnv {
+    let mut env = unzen_evm_env();
+    env.cfg_env.spec = TaikoSpecId::ETNA;
+    env.block_env.base_fee_share_pctg = Some(0);
+    env
+}
+
+/// Returns an Etna execution context with 13-byte extraData and the supplied beacon root.
+pub fn etna_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
+    let mut ctx = unzen_execution_ctx();
+    ctx.extra_data = vec![0; 13].into();
+    ctx.parent_beacon_block_root = Some(root);
+    ctx
 }
 
 /// Builds a recovered legacy transaction targeting `to` from `caller`, defaulting to the

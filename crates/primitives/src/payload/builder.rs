@@ -1,5 +1,5 @@
 //! Taiko payload-builder attribute normalization and payload-id derivation.
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
 #[cfg(feature = "net")]
@@ -13,9 +13,9 @@ use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use tracing::debug;
 
-use crate::payload::attributes::TaikoPayloadAttributes;
+use crate::{extra_data::ETNA_EXTRA_DATA_LEN, payload::attributes::TaikoPayloadAttributes};
 
-/// Version byte stamped into Taiko payload identifiers for the `engine_*V2` surface.
+/// Version byte stamped into every Taiko payload identifier, before and after Etna.
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
 
 /// Taiko Payload Builder Attributes.
@@ -49,12 +49,12 @@ pub struct TaikoPayloadBuilderAttributes {
     pub base_fee_per_gas: u64,
     /// The transactions inside the L2 block.
     ///
-    /// - `None`: Transactions should be selected from the mempool (new mode).
-    /// - `Some(vec)`: Use the provided transaction list (legacy mode).
+    /// - `None`: Transactions are selected from the mempool.
+    /// - `Some(vec)`: The decoded provided transaction list is executed in order.
     pub transactions: Option<Vec<Recovered<TransactionSigned>>>,
     /// The extra data for the L2 block.
     pub extra_data: Bytes,
-    /// Prebuilt anchor transaction for new mode, decoded and recovered.
+    /// Optional prebuilt anchor transaction required for pre-Etna pool selection.
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
 }
 
@@ -89,24 +89,71 @@ impl PayloadAttributes for TaikoPayloadBuilderAttributes {
 impl TaikoPayloadBuilderAttributes {
     /// Creates a new payload builder for the given parent block and the attributes.
     ///
-    /// Derives the unique [`PayloadId`] for the given parent and attributes, stamped with the
-    /// [`PAYLOAD_ID_VERSION_V2`] byte to match the `engine_*V2` surface this client exposes.
-    /// Callers that want a different version byte should invoke [`payload_id_taiko`] directly.
+    /// Normalizes the attributes under the pre-Etna rules and stamps the payload ID with
+    /// [`PAYLOAD_ID_VERSION_V2`]; callers that want a different version byte should invoke
+    /// [`payload_id_taiko`] directly.
     pub fn try_new(
         parent: B256,
         attributes: TaikoPayloadAttributes,
     ) -> Result<Self, alloy_rlp::Error> {
-        // A non-zero caller root cannot survive the engine round-trip: `block_to_payload` emits
-        // a V1 payload plus a sidecar with no beacon-root field, and `convert_payload_to_block`
-        // rebuilds Unzen headers with the zero root, so a block built from one would be rejected
-        // with a block-hash mismatch on every `newPayload` re-import. Engine validation already
-        // rejects it (`validate_version_specific_fields`); this re-check covers every other route
-        // into a payload job, since the committed header is what makes the invariant load-bearing.
-        if attributes
+        Self::try_new_for_fork(parent, attributes, false)
+    }
+
+    /// Normalizes payload attributes under the rules active at the target timestamp.
+    ///
+    /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp, because the
+    /// fork is chosen from the latter and the block is built at the former. Etna jobs also require
+    /// a non-zero beacon root, 13-byte extraData, empty withdrawals, and no anchor transaction.
+    /// Pre-Etna jobs pass `false`, as [`Self::try_new`] does, and of these rules keep only the root
+    /// check: a nonzero root is rejected. Every job also rejects a base fee above `u64::MAX` and an
+    /// anchor transaction that fails to decode or recover its signer.
+    pub fn try_new_for_fork(
+        parent: B256,
+        attributes: TaikoPayloadAttributes,
+        is_etna_active: bool,
+    ) -> Result<Self, alloy_rlp::Error> {
+        if !block_metadata_timestamp_matches(&attributes) {
+            return Err(alloy_rlp::Error::Custom(
+                "block metadata timestamp must match payload attributes timestamp",
+            ));
+        }
+        if is_etna_active {
+            if attributes
+                .payload_attributes
+                .parent_beacon_block_root
+                .is_none_or(|root| root.is_zero())
+            {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload requires a non-zero parent_beacon_block_root",
+                ));
+            }
+            if attributes.anchor_transaction.is_some() {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload must not include anchor_transaction",
+                ));
+            }
+            if attributes
+                .payload_attributes
+                .withdrawals
+                .as_ref()
+                .is_some_and(|withdrawals| !withdrawals.is_empty())
+            {
+                return Err(alloy_rlp::Error::Custom("Etna payload withdrawals must be empty"));
+            }
+            if attributes.block_metadata.extra_data.len() != ETNA_EXTRA_DATA_LEN {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload extra_data must contain exactly 13 bytes",
+                ));
+            }
+        } else if attributes
             .payload_attributes
             .parent_beacon_block_root
             .is_some_and(|root| !root.is_zero())
         {
+            // Pre-Etna payload conversion reconstructs the Unzen zero-root convention. Although
+            // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
+            // root here would build a header that pre-Etna import rejects. Re-check at job creation
+            // so callers outside the Engine RPC validation path retain the same invariant.
             return Err(alloy_rlp::Error::Custom(
                 "non-zero parent_beacon_block_root is unsupported on Taiko",
             ));
@@ -212,7 +259,12 @@ impl TaikoPayloadBuilderAttributes {
 
 /// Generates the payload id for the configured payload from the [`TaikoPayloadAttributes`].
 ///
-/// Returns an 8-byte identifier by hashing the payload components with sha256 hash.
+/// Returns an 8-byte identifier: the sha256 of the payload components with `payload_version`
+/// stamped into the first byte. Pre-Etna and Etna jobs share one preimage: the parent hash,
+/// timestamp, `prev_randao`, suggested fee recipient, RLP withdrawals when present, a nonzero
+/// parent beacon block root, the transaction-list keccak (zero when absent), and the raw
+/// `extraData`. Etna jobs are therefore told apart by their nonzero root and their 13-byte
+/// `extraData` (`proposalId` and `anchorBlockNumber`).
 pub fn payload_id_taiko(
     parent: &B256,
     attributes: &TaikoPayloadAttributes,
@@ -229,8 +281,13 @@ pub fn payload_id_taiko(
         hasher.update(buf);
     }
 
-    if let Some(parent_beacon_block) = attributes.payload_attributes.parent_beacon_block_root {
-        hasher.update(parent_beacon_block);
+    // A zero root builds the same pre-Etna block as an absent one. Hashing neither keeps
+    // FCUv3 IDs equal to V2-era IDs and to the drivers' stored fingerprints. Etna build roots
+    // are nonzero, so they are always hashed.
+    if let Some(root) =
+        attributes.payload_attributes.parent_beacon_block_root.filter(|root| !root.is_zero())
+    {
+        hasher.update(root);
     }
 
     // Include tx_list hash if provided (legacy mode), otherwise use zero hash (new mode)
@@ -243,6 +300,12 @@ pub fn payload_id_taiko(
     let mut id_bytes = [0u8; 8];
     id_bytes.copy_from_slice(&out[..8]);
     PayloadId::new(id_bytes)
+}
+
+/// Returns whether `blockMetadata.timestamp` equals the attributes' timestamp, as every job
+/// requires.
+pub fn block_metadata_timestamp_matches(attributes: &TaikoPayloadAttributes) -> bool {
+    attributes.block_metadata.timestamp == U256::from(attributes.payload_attributes.timestamp)
 }
 
 /// Decode RLP-encoded bytes into signed transactions.
@@ -362,6 +425,17 @@ mod test {
     }
 
     #[test]
+    fn malformed_tx_list_yields_an_empty_transaction_list() {
+        let payload_attrs = create_payload_attrs(1000, Some(Bytes::from_static(&[1])), 100_000_000);
+
+        let attrs = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
+            .expect("an undecodable tx list still creates builder attributes");
+
+        assert_eq!(attrs.transactions.as_deref(), Some([].as_slice()));
+        assert_eq!(attrs.tx_list_hash, keccak256([1u8]));
+    }
+
+    #[test]
     fn test_taiko_payload_builder_attributes_new_mode() {
         let payload_attrs = create_payload_attrs(1000, None, 100_000_000);
 
@@ -370,6 +444,75 @@ mod test {
 
         assert!(attrs.transactions.is_none(), "New mode should use mempool selection");
         assert_eq!(attrs.tx_list_hash, B256::ZERO, "tx_list_hash should be zero without tx_list");
+    }
+
+    #[test]
+    fn v2_payload_id_bytes_remain_stable() {
+        // V2-era drivers sent no root; FCUv3 sends a zero root. Both must keep the V2-era ID.
+        let mut attributes = create_payload_attrs(1000, None, 100_000_000);
+        attributes.payload_attributes.parent_beacon_block_root = None;
+        let expected = PayloadId::new([0x02, 0x84, 0xe3, 0x12, 0x99, 0xa2, 0xad, 0x9e]);
+        assert_eq!(payload_id_taiko(&B256::ZERO, &attributes, PAYLOAD_ID_VERSION_V2), expected);
+        attributes.payload_attributes.parent_beacon_block_root = Some(B256::ZERO);
+        assert_eq!(payload_id_taiko(&B256::ZERO, &attributes, PAYLOAD_ID_VERSION_V2), expected);
+    }
+
+    #[test]
+    fn payload_id_pins_every_preimage_field() {
+        // Every hashed field is nonzero, so dropping, reordering, or re-encoding any term changes
+        // the pinned ID. taiko-client-rs uses this ID as its `buildPayloadArgsId` fingerprint.
+        let parent = B256::repeat_byte(0xaa);
+        let mut full = create_payload_attrs(1000, Some(Bytes::from_static(&[0xc1, 0x80])), 1);
+        full.payload_attributes.prev_randao = B256::repeat_byte(0x11);
+        full.payload_attributes.suggested_fee_recipient = Address::repeat_byte(0x22);
+        full.payload_attributes.withdrawals = Some(vec![Withdrawal {
+            index: 1,
+            validator_index: 2,
+            address: Address::repeat_byte(0x44),
+            amount: 3,
+        }]);
+        full.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+        full.block_metadata.extra_data =
+            Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+        let id = |attributes: &TaikoPayloadAttributes| {
+            reth_payload_primitives::PayloadAttributes::payload_id(attributes, &parent)
+        };
+        let base = id(&full);
+        assert_eq!(base, PayloadId::new([0x02, 0x34, 0xc1, 0x7f, 0x9e, 0xfa, 0x03, 0x8e]));
+        assert_eq!(base, payload_id_taiko(&parent, &full, PAYLOAD_ID_VERSION_V2));
+
+        let mutations: &[fn(&mut TaikoPayloadAttributes)] = &[
+            // A zero root is the pre-Etna shape and must not alias an Etna job.
+            |a| a.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
+            // proposalId is bytes 1..=6 and anchorBlockNumber bytes 7..=12.
+            |a| {
+                a.block_metadata.extra_data =
+                    Bytes::from_static(&[50, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 9])
+            },
+            |a| {
+                a.block_metadata.extra_data =
+                    Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 10])
+            },
+            // An absent list selects from the pool, an empty one is derived input.
+            |a| a.block_metadata.tx_list = None,
+            |a| a.block_metadata.tx_list = Some(Bytes::new()),
+        ];
+        let mut ids = std::collections::HashSet::from([base]);
+        for mutate in mutations {
+            let mut changed = full.clone();
+            mutate(&mut changed);
+            assert!(ids.insert(id(&changed)), "each change must give a distinct payload id");
+        }
+    }
+
+    #[test]
+    fn try_new_rejects_a_block_metadata_timestamp_mismatch() {
+        // Before Etna too, the job must build at the timestamp its fork was chosen from.
+        let mut payload_attrs = create_payload_attrs(1000, None, 100_000_000);
+        payload_attrs.block_metadata.timestamp = U256::MAX;
+
+        TaikoPayloadBuilderAttributes::try_new(B256::ZERO, payload_attrs)
+            .expect_err("a mismatched or over-wide metadata timestamp must fail closed");
     }
 
     #[test]

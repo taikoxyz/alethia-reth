@@ -83,6 +83,10 @@ Use `--chain` with one of the supported presets:
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
+For the Engine API driver contract (only `engine_forkchoiceUpdatedV3`, `engine_getPayloadV5`, and
+`engine_newPayloadV4`, for Unzen and Etna), payload normalization, the Etna fork rules, devnet
+configuration, and release prerequisites, see the [Etna Engine API guide](docs/engine-api-etna.md).
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

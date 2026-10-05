@@ -420,8 +420,10 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block. Only the pre-Etna block executor issues this marker; from Etna on it
-        // installs the fee context directly through `TaikoAnchorEvm::set_block_fee_context`.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+        // installs the fee context through `TaikoAnchorEvm::set_block_fee_context`, and an Etna
+        // EVM ignores the marker so it can never restore legacy anchor privileges.
+        if !self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
+            caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
             contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
@@ -826,6 +828,23 @@ mod tests {
                 assert_eq!(&outcomes[0], outcome);
             }
         }
+    }
+
+    #[test]
+    fn etna_marker_call_cannot_restore_legacy_anchor_privileges() {
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let mut env = replay_env(chain_id);
+        env.cfg_env.spec = TaikoSpecId::ETNA;
+        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), env);
+        evm.transact_system_call(golden, treasury, encode_anchor_system_call_data(25, 7)).unwrap();
+        assert!(evm.base_evm().extra_execution_ctx.is_none());
+        let err = evm.transact(anchor_tx(treasury, 7)).expect_err("marker cannot grant exemption");
+        assert!(matches!(
+            err,
+            EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })
+        ));
     }
 
     #[test]

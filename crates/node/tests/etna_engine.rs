@@ -200,9 +200,7 @@ fn devnet_etna_genesis_serves_preselection_and_pending_simulation() -> eyre::Res
         use alethia_reth_chainspec::{TAIKO_DEVNET, spec::TaikoDevnetConfigExt};
         use jsonrpsee::{core::client::ClientT, rpc_params};
         use serde_json::{Value, json};
-        let spec = std::sync::Arc::new(
-            TAIKO_DEVNET.clone_with_devnet_fork_timestamps(0, Some(0))?.unwrap(),
-        );
+        let spec = std::sync::Arc::new(TAIKO_DEVNET.clone_with_devnet_etna_timestamp(0).unwrap());
         let node = launch_test_node(spec.clone()).await?;
         let client = node.auth_server_handle().http_client();
         let status = fcu(&client, spec.genesis_hash(), spec.genesis_hash(), None).await?;

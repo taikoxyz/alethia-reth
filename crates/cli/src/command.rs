@@ -15,9 +15,6 @@ use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
 /// Trait implemented by CLI extensions that can tweak Taiko-specific runtime options.
 pub trait TaikoNodeExtArgs {
-    /// Returns the configured devnet Unzen activation timestamp override.
-    fn devnet_unzen_timestamp(&self) -> u64;
-
     /// Returns the optional devnet Etna activation timestamp override.
     fn devnet_etna_timestamp(&self) -> Option<u64>;
 
@@ -26,11 +23,6 @@ pub trait TaikoNodeExtArgs {
 }
 
 impl TaikoNodeExtArgs for NoArgs {
-    /// Returns the default devnet Unzen activation timestamp override.
-    fn devnet_unzen_timestamp(&self) -> u64 {
-        0
-    }
-
     /// Leaves Etna disabled for commands without Taiko options.
     fn devnet_etna_timestamp(&self) -> Option<u64> {
         None
@@ -43,11 +35,6 @@ impl TaikoNodeExtArgs for NoArgs {
 }
 
 impl TaikoNodeExtArgs for TaikoCliExtArgs {
-    /// Returns the configured devnet Unzen activation timestamp override.
-    fn devnet_unzen_timestamp(&self) -> u64 {
-        self.devnet_unzen_timestamp
-    }
-
     /// Returns the optional devnet Etna activation timestamp override.
     fn devnet_etna_timestamp(&self) -> Option<u64> {
         self.devnet_etna_timestamp
@@ -158,14 +145,10 @@ where
             jit,
         };
 
-        // Apply Taiko-specific devnet fork timestamp overrides; the override rejects an Etna
-        // timestamp earlier than Unzen.
-        if let Some(overridden_chain) =
-            node_config.chain.as_ref().clone_with_devnet_fork_timestamps(
-                ext.devnet_unzen_timestamp(),
-                ext.devnet_etna_timestamp(),
-            )?
-        {
+        // Apply the Taiko devnet Etna activation override if specified.
+        if let Some(overridden_chain) = ext.devnet_etna_timestamp().and_then(|timestamp| {
+            node_config.chain.as_ref().clone_with_devnet_etna_timestamp(timestamp)
+        }) {
             node_config.chain = Arc::new(overridden_chain);
         }
 

@@ -100,8 +100,8 @@ both execution clients before the release.
 
 Neither execution client builds or imports a pre-Unzen block through these methods. A node whose
 head is before Unzen can catch up only through P2P sync or a post-Unzen snapshot; L1 derivation
-alone stops at the pre-Unzen rejection. A devnet whose `--devnet-unzen-timestamp` lies in the future
-cannot build blocks before that time.
+alone stops at the pre-Unzen rejection. The `--devnet-unzen-timestamp` override is removed, so the
+devnet always activates Unzen at genesis.
 
 Drivers keep computing the pre-Etna `l1Origin.buildPayloadArgsId` exactly as before: version byte 2
 and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Both drivers compare the
@@ -183,8 +183,7 @@ ignored; it then simulates under the parent's rules.
 ## Devnet activation override
 
 `--devnet-etna-timestamp <TIMESTAMP>` or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP=<TIMESTAMP>` applies only
-to the canonical Taiko devnet chain spec. Omitted keeps `ForkCondition::Never`, `0` activates Etna at
-genesis, and a nonzero value activates it at that timestamp. Startup rejects an Etna timestamp
-earlier than the Unzen timestamp; equal timestamps are valid. Do not rewrite an existing chain's
-genesis to activate the fork. Offline commands such as `stage run` and `re-execute` cannot reproduce
-an overridden schedule.
+to the canonical Taiko devnet chain spec, which activates Unzen at genesis. Omitted keeps
+`ForkCondition::Never`, `0` activates Etna at genesis, and a nonzero value activates it at that
+timestamp. Do not rewrite an existing chain's genesis to activate the fork. Offline commands such as
+`stage run` and `re-execute` cannot reproduce an overridden schedule.

@@ -1,10 +1,10 @@
 # Etna fork and Engine API driver guide
 
 This guide defines alethia-reth's side of the `Etna` fork: the block rules the execution layer
-enforces and the Engine API wire contract that drivers use. Every built-in network still
-configures Etna as `ForkCondition::Never`, so the Etna rules are a handoff, not an activation
-notice. The Engine API method change is not gated on Etna: it applies to Unzen traffic as soon as a
-node runs this version (see [Breaking at deploy](#breaking-at-deploy)).
+enforces and the Engine API wire contract that drivers use. Every built-in network leaves Etna
+unscheduled (`ForkCondition::Never`), so the Etna rules are a handoff, not an activation notice.
+The Engine API method change is not gated on Etna: it applies to Unzen traffic as soon as a node
+runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
 Derivation rules live in taiko-mono's `packages/protocol/docs/Derivation.md`
 ([taikoxyz/taiko-mono#22189](https://github.com/taikoxyz/taiko-mono/pull/22189), which includes
@@ -51,8 +51,10 @@ Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2
 a zero root, is exempt from the `extraData` and body rules, and performs no EIP-4788 call.
 
 Shared consensus enforces these rules, so P2P downloads, backfill, staged sync, and
-`engine_newPayloadV4` reject the same blocks. Taiko execution ignores the withdrawals and blob-gas
-commitments, so other clients must enforce them at import too.
+`engine_newPayloadV4` reject the same blocks. alethia-reth's execution ignores the withdrawals and
+blob-gas commitments, while taiko-geth's Taiko `Finalize` credits `body.Withdrawals` and its header
+check requires only a non-nil `withdrawalsHash`, so every client must reject these commitments at
+import.
 
 ### Gas limits and base fee
 
@@ -150,7 +152,9 @@ internal payload ranking still uses actual fees.
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
 | An Unzen payload with withdrawals, blob gas, or nonempty side arrays | Payload status `INVALID` |
 | Wrong Etna `extraData` length on import | Payload status `INVALID` |
-| Block-hash mismatch, zk-gas/difficulty mismatch, zk-gas exhaustion | Payload status `INVALID` |
+| Block-hash mismatch | Payload status `INVALID` |
+| Etna zk-gas exhaustion or zk-gas/difficulty mismatch | Payload status `INVALID` |
+| Unzen zk-gas exhaustion or zk-gas/difficulty mismatch | JSON-RPC `-32603` (historical internal-error mapping) |
 | A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before

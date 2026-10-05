@@ -167,6 +167,9 @@ fn cross_fork_lifecycle_checks_inputs_traces_and_rolls_back_system_storage() -> 
         for client in [&ca, &cb] {
             canonicalize(client, genesis, &forward).await?;
         }
+        // An empty Etna block runs EIP-2935/4788 without gas or zk gas.
+        assert_eq!((forward.block.gas_used, forward.block.difficulty), (0, U256::ZERO));
+        assert_eq!(forward.payload["headerDifficulty"], 0);
         let state = b.provider.latest()?;
         assert_eq!(
             state

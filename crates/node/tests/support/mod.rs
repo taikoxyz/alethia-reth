@@ -244,6 +244,7 @@ pub async fn build(
     use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
     use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
+    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
     // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,

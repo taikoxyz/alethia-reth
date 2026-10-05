@@ -106,11 +106,13 @@ devnet always activates Unzen at genesis.
 Drivers keep computing the pre-Etna `l1Origin.buildPayloadArgsId` exactly as before: version byte 2
 and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Both drivers compare the
 fingerprint with stored origins to detect blocks they already inserted, so a changed fingerprint
-would re-insert blocks preconfirmed before the upgrade. alethia-reth stamps every payload ID, Etna
-jobs included, with version byte 2 over that same preimage and adds `parentBeaconBlockRoot` only
-when it is nonzero. Its FCUv3 IDs for Unzen jobs therefore keep their V2-era values, while an Etna
-job's ID also covers its nonzero root; `extraData` is hashed for every job. taiko-geth's FCUv3 IDs
-carry version byte 3.
+would re-insert blocks preconfirmed before the upgrade. An Etna job's fingerprint is the same
+preimage with version byte 2 plus its nonzero `parentBeaconBlockRoot`, hashed between the withdrawals
+and the transaction-list hash; `extraData` is hashed for every job. alethia-reth stamps every payload
+ID this way, so its FCUv3 IDs for Unzen jobs keep their V2-era values. taiko-client-rs computes the
+fingerprint with alethia-reth's `payload_id_taiko`, so it must move to this alethia-reth version
+together with its FCUv3 switch: earlier versions also hash a zero root, which changes every Unzen
+fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
 
 ### V5 normalization and V4 import
 
@@ -146,6 +148,7 @@ internal payload ranking still uses actual fees.
 | A target before Unzen | JSON-RPC `-38005` |
 | Unknown or evicted payload ID | JSON-RPC `-38001` |
 | FCUv3 attributes without `withdrawals` or `parentBeaconBlockRoot`, or with `slotNumber` | JSON-RPC `-38003` |
+| FCUv3 attributes with `targetGasLimit` | JSON-RPC `-32602` |
 | Malformed V4 arguments or unsupported payload properties | JSON-RPC `-32602` |
 | A nonzero root before Etna | JSON-RPC `-32602` |
 | FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp` | JSON-RPC `-32602` |
@@ -156,6 +159,7 @@ internal payload ranking still uses actual fees.
 | Block-hash mismatch | Payload status `INVALID` |
 | Etna zk-gas exhaustion or zk-gas/difficulty mismatch | Payload status `INVALID` |
 | Unzen zk-gas exhaustion or zk-gas/difficulty mismatch | JSON-RPC `-32603` (historical internal-error mapping) |
+| A started payload job whose build fails, from `getPayloadV5` or the FCU that started it | JSON-RPC `-32603` (`missing payload`) |
 | A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
@@ -176,10 +180,10 @@ the transaction pool.
 Preselection simulates the next block under the parent's fork rules and `extraData`, and never
 applies pre-execution system calls. On an Etna parent it drops the legacy 2,000,000 zk-gas anchor
 reserve. At the boundary the parent is still pre-Etna, so the first Etna block is selected with that
-reserve. Results are
-estimates; the builder enforces the actual gas and zk-gas limits. A driver that still sends the
-removed trailing `blockContext` argument gets no error, because extra positional parameters are
-ignored; it then simulates under the parent's rules.
+reserve. Results are estimates; the builder enforces the actual gas and zk-gas limits. Drivers' Etna
+branches that send a trailing `blockContext` argument get no error from alethia-reth, which ignores
+extra positional parameters and simulates under the parent's rules. taiko-geth rejects the extra
+argument, so drivers must stop sending it.
 
 ## Devnet activation override
 
@@ -188,3 +192,7 @@ to the canonical Taiko devnet chain spec, which activates Unzen at genesis. Omit
 `ForkCondition::Never`, `0` activates Etna at genesis, and a nonzero value activates it at that
 timestamp. Do not rewrite an existing chain's genesis to activate the fork. Offline commands such as
 `stage run` and `re-execute` cannot reproduce an overridden schedule.
+
+No built-in genesis, the devnet's included, predeploys the EIP-2935 or EIP-4788 contracts. On a
+devnet with the Etna override, both system calls are no-ops until the keyless deployments run, and
+until then no contract can read the Etna root.

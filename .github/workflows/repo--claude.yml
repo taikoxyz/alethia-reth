@@ -6,36 +6,74 @@ on:
     types: [created]
 
 jobs:
+  gate:
+    # SECURITY: only owners/members/collaborators can trigger this: issue_comment runs with repo
+    # secrets and bypasses the fork-PR approval gate. The PR is resolved and forks are refused in
+    # this job, which has no secrets and read-only access, so nothing runs next to the write token
+    # or ANTHROPIC_API_KEY before the check passes.
+    if: >-
+      github.event_name == 'issue_comment'
+      && contains(github.event.comment.body, '@claude')
+      && github.event.issue.pull_request != null
+      && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+    steps:
+      - name: Resolve PR head and refuse forks
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.issue.pull_request.url }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "$PR_URL")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr")
+          head_sha=$(jq -r '.head.sha // ""' <<<"$pr")
+          # Owner/repo names are case-insensitive; a deleted head repo (null) is refused too.
+          if [ "${head_repo,,}" != "${BASE_REPO,,}" ]; then
+            echo "Refusing to run: PR head is '${head_repo}', not ${BASE_REPO} (fork PRs are not supported)." >&2
+            exit 1
+          fi
+          # Fail closed: an empty SHA would make checkout fall back to the default branch.
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Refusing to run: unexpected PR head SHA '${head_sha}'." >&2
+            exit 1
+          fi
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
   claude:
-    if: (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
-    runs-on: [arc-runner-set]
+    needs: gate
+    # Explicit, so a future change to the gate (e.g. continue-on-error) can never let this job run unchecked.
+    if: needs.gate.result == 'success'
+    # GitHub-hosted: fresh VM per job; never run PR code on shared self-hosted runners.
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
+      id-token: write # required by claude-code-action to obtain its GitHub App token
     steps:
-      - name: Fetch owner/repo of pull request
-        uses: alessbell/pull-request-comment-branch@v2.1.0
-        id: comment-branch
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # SECURITY: Pin to exact commit at comment time to prevent TOCTOU attacks
-          ref: ${{ steps.comment-branch.outputs.head_sha }}
-          repository: ${{ steps.comment-branch.outputs.head_owner }}/${{ steps.comment-branch.outputs.head_repo }}
+          ref: ${{ needs.gate.outputs.head_sha }}
           # Fetch more history for better git operations
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@28f83620103c48a57093dcc2837eec89e036bb9f # beta
         env:
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: "30000" # any safe value < 32000 to avoid reaching token limit
         with:

@@ -188,11 +188,18 @@ argument, so drivers must stop sending it.
 ## Devnet activation override
 
 `--devnet-etna-timestamp <TIMESTAMP>` or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP=<TIMESTAMP>` applies only
-to the canonical Taiko devnet chain spec, which activates Unzen at genesis. Omitted keeps
-`ForkCondition::Never`, `0` activates Etna at genesis, and a nonzero value activates it at that
-timestamp. Do not rewrite an existing chain's genesis to activate the fork. Offline commands such as
-`stage run` and `re-execute` cannot reproduce an overridden schedule.
+to canonical Taiko devnet and custom Genesis JSON whose parsed fields outside `alloc` all match
+canonical devnet, including the complete chain config and its extra fields. It restores canonical
+devnet's Taiko/Ethereum fork table (Unzen/Osaka at genesis), rebuilds the genesis header from the
+custom allocation, and schedules Etna at the requested timestamp. `0` activates Etna at genesis;
+a nonzero value activates it at that timestamp. Other chains log a warning and keep their schedule.
+
+Omitting the flag leaves built-in devnet Etna unscheduled. Custom JSON without the flag uses the
+generic Ethereum parser and does not gain Taiko forks implicitly. See the
+[custom genesis recipe](../README.md#custom-devnet-genesis-with-etna) for predeploys. Use a fresh data
+directory when changing genesis. Offline commands such as `stage run` and `re-execute` cannot
+reproduce an overridden schedule.
 
 No built-in genesis, the devnet's included, predeploys the EIP-2935 or EIP-4788 contracts. On a
-devnet with the Etna override, both system calls are no-ops until the keyless deployments run, and
-until then no contract can read the Etna root.
+devnet with the Etna override, both system calls are no-ops until the keyless deployments run or
+an alloc-only custom genesis predeploys the canonical runtimes. Storage writes start in block 1.

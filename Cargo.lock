@@ -156,6 +156,8 @@ dependencies = [
  "reth-node-builder",
  "reth-storage-api",
  "reth-tracing",
+ "serde_json",
+ "tempfile",
  "tracing",
 ]
 

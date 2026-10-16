@@ -51,7 +51,9 @@ pub struct TaikoCliExtArgs {
     #[command(flatten)]
     pub proof_history: TaikoProofHistoryArgs,
 
-    /// Optionally activate the devnet Etna hardfork at this Unix timestamp.
+    /// Activate Etna at this Unix timestamp on canonical devnet or an alloc-only Genesis variant.
+    ///
+    /// All fields outside alloc must match canonical devnet. Zero activates Etna at genesis.
     #[arg(
         long,
         env = "ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP",
@@ -299,7 +301,7 @@ mod tests {
         TaikoNodeExtArgs, disable_state_masking_by_default, validate_engine_args,
     };
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock should not be poisoned")
     }

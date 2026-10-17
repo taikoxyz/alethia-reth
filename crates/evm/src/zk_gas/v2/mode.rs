@@ -13,17 +13,87 @@ use core::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ZkGasV2KnownBlockBreakdown {
     /// Block fixed-cost contribution in fixed-point units.
-    pub fixed_scaled: i128,
+    fixed_scaled: i128,
     /// Block operation contribution in fixed-point units.
-    pub operations_scaled: i128,
+    operations_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
-    pub feature_error_scaled: i128,
+    feature_error_scaled: i128,
     /// Block unique-resource contribution in fixed-point units.
-    pub resources_scaled: i128,
+    resources_scaled: i128,
     /// Known-component subtotal in fixed-point units, excluding all MPT work.
-    pub known_subtotal_scaled: i128,
+    known_subtotal_scaled: i128,
     /// Ceiling of the known-component subtotal in PGU, excluding all MPT work.
-    pub known_subtotal_pgu: u128,
+    known_subtotal_pgu: u128,
+}
+
+impl ZkGasV2KnownBlockBreakdown {
+    /// Constructs the immutable report inside the sealed evaluator boundary.
+    pub(super) const fn new(
+        fixed_scaled: i128,
+        operations_scaled: i128,
+        feature_error_scaled: i128,
+        resources_scaled: i128,
+        known_subtotal_scaled: i128,
+        known_subtotal_pgu: u128,
+    ) -> Self {
+        Self {
+            fixed_scaled,
+            operations_scaled,
+            feature_error_scaled,
+            resources_scaled,
+            known_subtotal_scaled,
+            known_subtotal_pgu,
+        }
+    }
+
+    /// Block fixed-cost contribution in fixed-point units.
+    pub const fn fixed_scaled(self) -> i128 {
+        self.fixed_scaled
+    }
+
+    /// Block operation contribution in fixed-point units.
+    pub const fn operations_scaled(self) -> i128 {
+        self.operations_scaled
+    }
+
+    /// Explicit feature-error attribution included in the operation contribution.
+    pub const fn feature_error_scaled(self) -> i128 {
+        self.feature_error_scaled
+    }
+
+    /// Block unique-resource contribution in fixed-point units.
+    pub const fn resources_scaled(self) -> i128 {
+        self.resources_scaled
+    }
+
+    /// Known-component subtotal in fixed-point units, excluding all MPT work.
+    pub const fn known_subtotal_scaled(self) -> i128 {
+        self.known_subtotal_scaled
+    }
+
+    /// Ceiling of the known-component subtotal in PGU, excluding all MPT work.
+    pub const fn known_subtotal_pgu(self) -> u128 {
+        self.known_subtotal_pgu
+    }
+
+    #[cfg(test)]
+    pub(in crate::zk_gas) const fn from_parts_for_test(
+        fixed_scaled: i128,
+        operations_scaled: i128,
+        feature_error_scaled: i128,
+        resources_scaled: i128,
+        known_subtotal_scaled: i128,
+        known_subtotal_pgu: u128,
+    ) -> Self {
+        Self::new(
+            fixed_scaled,
+            operations_scaled,
+            feature_error_scaled,
+            resources_scaled,
+            known_subtotal_scaled,
+            known_subtotal_pgu,
+        )
+    }
 }
 
 /// Runtime collection mode for the accepted zk gas V2 model.
@@ -140,21 +210,50 @@ impl ZkGasV2ShadowStatus {
 }
 
 /// Block-local non-enforcing output published by Shadow mode.
+///
+/// External callers can inspect reports but cannot forge one from public fields.
+///
+/// ```compile_fail
+/// use alethia_reth_evm::zk_gas::v2::{RUNTIME_SPEC_SHA256, ZkGasV2ShadowDiagnostic,
+///     ZkGasV2ShadowReport, ZkGasV2ShadowStatus};
+/// let _ = ZkGasV2ShadowReport {
+///     model_id: RUNTIME_SPEC_SHA256,
+///     status: ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::CollectorUnavailable),
+/// };
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ZkGasV2ShadowReport {
     /// Content-addressed runtime model identifier.
-    pub model_id: &'static str,
+    model_id: &'static str,
     /// Incomplete known-component subtotal or a typed diagnostic.
-    pub status: ZkGasV2ShadowStatus,
+    status: ZkGasV2ShadowStatus,
 }
 
 impl ZkGasV2ShadowReport {
+    /// Returns the content-addressed runtime model identifier.
+    pub const fn model_id(self) -> &'static str {
+        self.model_id
+    }
+
+    /// Returns the typed non-enforcing report status.
+    pub const fn status(self) -> ZkGasV2ShadowStatus {
+        self.status
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
             model_id: RUNTIME_SPEC_SHA256,
             status: ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::CollectorUnavailable),
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::zk_gas) const fn from_parts_for_test(
+        model_id: &'static str,
+        status: ZkGasV2ShadowStatus,
+    ) -> Self {
+        Self { model_id, status }
     }
 }
 

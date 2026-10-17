@@ -64,13 +64,13 @@ fn zk_gas_v2_shadow_report_marks_exact_mpt_as_missing() {
     accumulator.commit_transaction().expect("transaction commits");
 
     let report = accumulator.committed_snapshot().shadow_report();
-    assert_eq!(report.model_id, RUNTIME_SPEC_SHA256);
-    let ZkGasV2ShadowStatus::Incomplete { known, missing } = report.status else {
+    assert_eq!(report.model_id(), RUNTIME_SPEC_SHA256);
+    let ZkGasV2ShadowStatus::Incomplete { known, missing } = report.status() else {
         panic!("a snapshot without exact MPT selectors must never become a complete quote")
     };
     assert_eq!(missing, ZkGasV2Incompleteness::ExactMptSelectorsUnavailable);
-    assert!(known.operations_scaled > 0);
-    assert!(known.known_subtotal_pgu > 0);
+    assert!(known.operations_scaled() > 0);
+    assert!(known.known_subtotal_pgu() > 0);
 }
 
 #[test]
@@ -126,7 +126,8 @@ fn zk_gas_v2_complete_shadow_report_rejects_diagnostics_and_wrong_identity() {
         ))
     );
 
-    let wrong_identity = ZkGasV2ShadowReport { model_id: "wrong-model", status: diagnostic.status };
+    let wrong_identity =
+        ZkGasV2ShadowReport::from_parts_for_test("wrong-model", diagnostic.status());
     assert_eq!(
         ZkGasV2Model.complete_block_shadow_report(&wrong_identity, MptSelectors::default()),
         Err(ZkGasV2CompletionError::ModelIdentity)
@@ -135,40 +136,69 @@ fn zk_gas_v2_complete_shadow_report_rejects_diagnostics_and_wrong_identity() {
 
 #[test]
 fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
-    let report = |known| ZkGasV2ShadowReport {
-        model_id: RUNTIME_SPEC_SHA256,
-        status: ZkGasV2ShadowStatus::Incomplete {
-            known,
-            missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
-        },
+    let report = |known| {
+        ZkGasV2ShadowReport::from_parts_for_test(
+            RUNTIME_SPEC_SHA256,
+            ZkGasV2ShadowStatus::Incomplete {
+                known,
+                missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
+            },
+        )
     };
-    let valid = ZkGasV2KnownBlockBreakdown {
-        fixed_scaled: FIXED_POINT_SCALE,
-        operations_scaled: 2 * FIXED_POINT_SCALE,
-        feature_error_scaled: FIXED_POINT_SCALE,
-        resources_scaled: 3 * FIXED_POINT_SCALE,
-        known_subtotal_scaled: 6 * FIXED_POINT_SCALE,
-        known_subtotal_pgu: 6,
+    let known = |fixed, operations, feature_error, resources, subtotal, pgu| {
+        ZkGasV2KnownBlockBreakdown::from_parts_for_test(
+            fixed,
+            operations,
+            feature_error,
+            resources,
+            subtotal,
+            pgu,
+        )
     };
+    let valid = known(
+        FIXED_POINT_SCALE,
+        2 * FIXED_POINT_SCALE,
+        FIXED_POINT_SCALE,
+        3 * FIXED_POINT_SCALE,
+        6 * FIXED_POINT_SCALE,
+        6,
+    );
 
-    let mut tampered_total = valid;
-    tampered_total.known_subtotal_scaled += 1;
+    let tampered_total = known(
+        valid.fixed_scaled(),
+        valid.operations_scaled(),
+        valid.feature_error_scaled(),
+        valid.resources_scaled(),
+        valid.known_subtotal_scaled() + 1,
+        valid.known_subtotal_pgu(),
+    );
     assert_eq!(
         ZkGasV2Model.complete_block_shadow_report(&report(tampered_total), MptSelectors::default()),
         Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("known_subtotal_scaled"))
     );
 
-    let mut tampered_ceiling = valid;
-    tampered_ceiling.known_subtotal_pgu += 1;
+    let tampered_ceiling = known(
+        valid.fixed_scaled(),
+        valid.operations_scaled(),
+        valid.feature_error_scaled(),
+        valid.resources_scaled(),
+        valid.known_subtotal_scaled(),
+        valid.known_subtotal_pgu() + 1,
+    );
     assert_eq!(
         ZkGasV2Model
             .complete_block_shadow_report(&report(tampered_ceiling), MptSelectors::default()),
         Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("known_subtotal_pgu"))
     );
 
-    let mut invalid_feature_attribution = valid;
-    invalid_feature_attribution.feature_error_scaled =
-        invalid_feature_attribution.operations_scaled + 1;
+    let invalid_feature_attribution = known(
+        valid.fixed_scaled(),
+        valid.operations_scaled(),
+        valid.operations_scaled() + 1,
+        valid.resources_scaled(),
+        valid.known_subtotal_scaled(),
+        valid.known_subtotal_pgu(),
+    );
     assert_eq!(
         ZkGasV2Model.complete_block_shadow_report(
             &report(invalid_feature_attribution),
@@ -177,14 +207,7 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("feature_error_scaled"))
     );
 
-    let overflow = ZkGasV2KnownBlockBreakdown {
-        fixed_scaled: i128::MAX,
-        operations_scaled: 1,
-        feature_error_scaled: 0,
-        resources_scaled: 0,
-        known_subtotal_scaled: 0,
-        known_subtotal_pgu: 0,
-    };
+    let overflow = known(i128::MAX, 1, 0, 0, 0, 0);
     assert_eq!(
         ZkGasV2Model.complete_block_shadow_report(&report(overflow), MptSelectors::default()),
         Err(ZkGasV2CompletionError::Pricing(ZkGasV2Error::ArithmeticOverflow))
@@ -230,10 +253,10 @@ fn zk_gas_v2_shadow_report_preserves_typed_collector_diagnostic() {
 
     let report = accumulator.committed_snapshot().shadow_report();
     assert_eq!(
-        report.status,
+        report.status(),
         ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(error))
     );
-    assert_eq!(report.status.label(), "collector_unknown_route");
+    assert_eq!(report.status().label(), "collector_unknown_route");
 }
 
 #[test]
@@ -316,10 +339,10 @@ fn zk_gas_v2_accumulator_preserves_feature_error_attribution() {
     assert_eq!(snapshot.operation_routes.len(), 1);
     assert_eq!(snapshot.operation_routes[0].accepted_absolute_scaled, 0);
     assert!(snapshot.operation_routes[0].feature_error_scaled > 0);
-    let ZkGasV2ShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status else {
+    let ZkGasV2ShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
         panic!("runtime snapshot must produce only an incomplete shadow subtotal")
     };
-    assert_eq!(known.feature_error_scaled, snapshot.operation_routes[0].feature_error_scaled);
+    assert_eq!(known.feature_error_scaled(), snapshot.operation_routes[0].feature_error_scaled);
 }
 
 #[test]

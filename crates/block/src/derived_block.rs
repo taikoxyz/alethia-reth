@@ -230,7 +230,7 @@ mod tests {
             outcome
                 .zk_gas_v2_shadow_report
                 .expect("shadow execution publishes a typed report")
-                .status,
+                .status(),
             ZkGasV2ShadowStatus::Incomplete {
                 missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
                 ..
@@ -314,7 +314,7 @@ mod tests {
 
         assert!(disabled.zk_gas_v2_shadow_report.is_none());
         assert!(matches!(
-            shadow.zk_gas_v2_shadow_report.expect("shadow report").status,
+            shadow.zk_gas_v2_shadow_report.expect("shadow report").status(),
             ZkGasV2ShadowStatus::Incomplete {
                 missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
                 ..

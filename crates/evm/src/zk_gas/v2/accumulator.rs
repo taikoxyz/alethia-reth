@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    BlockPricingInput, MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,
-    OperationRoutePricingInput, ResourceSelectors, ZkGasV2Error, ZkGasV2Model,
+    OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
+    ResourceSelectors, ZkGasV2Error, ZkGasV2Model,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -319,6 +319,15 @@ impl From<OperationRoute> for RouteKey {
 }
 
 /// Owned committed block-local selector snapshot.
+///
+/// Runtime execution snapshots deliberately cannot be converted into complete block pricing
+/// inputs until the production state-root pipeline supplies an exact MPT snapshot.
+///
+/// ```compile_fail
+/// use alethia_reth_evm::zk_gas::v2::ZkGasV2BlockSnapshot;
+/// let snapshot = ZkGasV2BlockSnapshot::default();
+/// let complete_input = snapshot.block_input();
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ZkGasV2BlockSnapshot {
     /// Committed non-anchor transaction count.
@@ -329,26 +338,11 @@ pub struct ZkGasV2BlockSnapshot {
     pub operation_routes: Vec<OperationRoutePricingInput>,
     /// Committed unique-resource selectors.
     pub resources: ResourceSelectors,
-    /// Exact block MPT selectors, populated by the Task-5 trie collector.
-    pub mpt: MptSelectors,
     /// First diagnostic committed by an included transaction, if any.
     ///
     /// Selectors remain available for shadow-mode analysis, but a snapshot with a diagnostic is
     /// not a trustworthy admission quote.
     pub diagnostic: Option<ZkGasV2AccumulatorError>,
-}
-
-impl ZkGasV2BlockSnapshot {
-    /// Borrows this owned snapshot as the pure model input.
-    pub fn block_input(&self) -> BlockPricingInput<'_> {
-        BlockPricingInput {
-            started_non_anchor_transactions: self.started_non_anchor_transactions,
-            native_value_transfers: self.native_value_transfers,
-            operation_routes: &self.operation_routes,
-            resources: self.resources,
-            mpt: self.mpt,
-        }
-    }
 }
 
 /// Transactional V2 collector. In-flight selectors are invisible until commit.
@@ -533,7 +527,6 @@ impl ZkGasV2Accumulator {
             native_value_transfers: self.committed_native_value_transfers,
             operation_routes: self.committed_operation_routes.values().copied().collect(),
             resources: self.committed_resources.selectors(),
-            mpt: MptSelectors::default(),
             diagnostic: self.committed_diagnostic,
         }
     }

@@ -78,6 +78,15 @@ fn zk_gas_v2_shadow_report_preserves_typed_collector_diagnostic() {
 
     let mut accumulator = ZkGasV2Accumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(0x01),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
+            feature_error: false,
+        })
+        .expect("known operation prices before the diagnostic");
     let error = accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(0x0c),
@@ -177,11 +186,10 @@ fn zk_gas_v2_accumulator_preserves_feature_error_attribution() {
     assert_eq!(snapshot.operation_routes.len(), 1);
     assert_eq!(snapshot.operation_routes[0].accepted_absolute_scaled, 0);
     assert!(snapshot.operation_routes[0].feature_error_scaled > 0);
-    let block = snapshot.block_input();
-    assert_eq!(
-        ZkGasV2Model.price_block(&block).expect("block prices").feature_error_scaled,
-        snapshot.operation_routes[0].feature_error_scaled
-    );
+    let ZkGasV2ShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status else {
+        panic!("runtime snapshot must produce only an incomplete shadow subtotal")
+    };
+    assert_eq!(known.feature_error_scaled, snapshot.operation_routes[0].feature_error_scaled);
 }
 
 #[test]

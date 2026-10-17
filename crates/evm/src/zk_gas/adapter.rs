@@ -184,15 +184,18 @@ where
         inputs: &CallInputs,
         outcome: &mut CallOutcome,
     ) {
-        let was_precompile_called = outcome.was_precompile_called;
+        // Snapshot completed precompile work before the wrapped inspector can rewrite the outcome
+        // (for example, a tracer callback failure can replace it with a zero-gas revert).
+        let precompile_gas_used = outcome
+            .was_precompile_called
+            .then(|| inputs.gas_limit.saturating_sub(outcome.result.gas.remaining()));
         self.inner.call_end(context, inputs, outcome);
 
         if let Some(metering) = &mut self.metering &&
-            was_precompile_called
+            let Some(gas_used) = precompile_gas_used
         {
             // Precompile usage is charged separately from the CALL opcode itself, keyed by the
             // full precompile address.
-            let gas_used = inputs.gas_limit.saturating_sub(outcome.result.gas.remaining());
             if let Err(ZkGasOutcome::LimitExceeded) =
                 metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
             {

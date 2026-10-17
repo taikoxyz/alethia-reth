@@ -27,10 +27,16 @@ use crate::{alloy::TaikoZkGasEvm, factory::TaikoEvmFactory, spec::TaikoSpecId};
 
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
-    meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
+    meter::{ZkGasMeter, ZkGasOutcome},
     schedule::{FAILSAFE_MULTIPLIER, ZkGasSchedule, schedule_for},
     unzen::{TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE},
 };
+
+const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
+
+fn expected_is_spawn_opcode(opcode: u8) -> bool {
+    EXPECTED_SPAWN_OPCODES.contains(&opcode)
+}
 
 #[test]
 fn unzen_schedule_is_selected_only_for_unzen() {
@@ -302,6 +308,20 @@ impl<CTX> Inspector<CTX, EthInterpreter> for StepGasProbeInspector {
     }
 }
 
+#[derive(Default)]
+struct PrecompileGasMutatingInspector {
+    observed_precompile: bool,
+}
+
+impl<CTX> Inspector<CTX, EthInterpreter> for PrecompileGasMutatingInspector {
+    fn call_end(&mut self, _context: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
+        if outcome.was_precompile_called {
+            self.observed_precompile = true;
+            outcome.result.gas.set_remaining(0);
+        }
+    }
+}
+
 #[test]
 fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
@@ -366,6 +386,33 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
         inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
 
     assert_eq!(production_zk_gas, inspector_zk_gas);
+}
+
+#[test]
+fn precompile_metering_snapshots_gas_before_inner_call_end_mutation() {
+    let mut baseline_evm = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(staticcall_identity_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector {},
+    );
+    baseline_evm.transact(tx_env(100_000)).expect("baseline precompile call should execute");
+    let baseline_zk_gas =
+        baseline_evm.meter().expect("baseline path should install a meter").tx_zk_gas_used();
+
+    let mut mutating_evm = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(staticcall_identity_bytecode()),
+        evm_env(TaikoSpecId::UNZEN),
+        PrecompileGasMutatingInspector::default(),
+    );
+    mutating_evm.transact(tx_env(100_000)).expect("mutating inspector path should execute");
+    let mutated_zk_gas =
+        mutating_evm.meter().expect("mutating path should install a meter").tx_zk_gas_used();
+
+    assert!(mutating_evm.inspector().observed_precompile, "test must mutate a precompile result");
+    assert_eq!(
+        mutated_zk_gas, baseline_zk_gas,
+        "inner inspector output mutation must not rewrite completed precompile work"
+    );
 }
 
 #[test]
@@ -531,7 +578,7 @@ fn spawn_case_db(family: SpawnFamily, child: Address) -> InMemoryDB {
 
 fn expected_probe_zk_gas(probe: &StepGasProbeInspector, schedule: &ZkGasSchedule) -> u64 {
     let opcode_total = probe.steps.iter().fold(0_u64, |total, step| {
-        let raw_gas = if step.selected_new_frame && is_spawn_opcode(step.opcode) {
+        let raw_gas = if step.selected_new_frame && expected_is_spawn_opcode(step.opcode) {
             SpawnFamily::ALL
                 .into_iter()
                 .find(|family| family.opcode() == step.opcode)
@@ -546,6 +593,17 @@ fn expected_probe_zk_gas(probe: &StepGasProbeInspector, schedule: &ZkGasSchedule
         native_gas * u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04)))
     });
     opcode_total + precompile_total
+}
+
+#[test]
+fn spawn_opcode_classifier_matches_independent_protocol_set() {
+    for opcode in u8::MIN..=u8::MAX {
+        assert_eq!(
+            super::meter::is_spawn_opcode(opcode),
+            expected_is_spawn_opcode(opcode),
+            "unexpected spawn classification for opcode {opcode:#04x}"
+        );
+    }
 }
 
 #[test]

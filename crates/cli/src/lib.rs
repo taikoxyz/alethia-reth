@@ -25,6 +25,7 @@ use alethia_reth_node::{
     TaikoNode,
     components::{ProviderTaikoBlockReader, reject_jit_args},
     consensus::validation::TaikoBeaconConsensus,
+    evm::zk_gas::v2::ZkGasV2Mode,
     proof_history::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
@@ -60,6 +61,26 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_unzen_timestamp: u64,
+
+    /// Non-consensus zk gas V2 runtime mode; admission is unavailable without exact MPT input.
+    #[arg(
+        long = "zkgas-v2-mode",
+        env = "ALETHIA_RETH_ZKGAS_V2_MODE",
+        value_name = "MODE",
+        default_value = "disabled",
+        value_parser = parse_zkgas_v2_mode,
+        help_heading = "Taiko"
+    )]
+    pub zk_gas_v2_mode: ZkGasV2Mode,
+}
+
+/// Parses the deliberately restricted zk gas V2 runtime-mode surface.
+fn parse_zkgas_v2_mode(value: &str) -> Result<ZkGasV2Mode, String> {
+    match value {
+        "disabled" => Ok(ZkGasV2Mode::Disabled),
+        "shadow" => Ok(ZkGasV2Mode::Shadow),
+        _ => Err(format!("unsupported zk gas V2 mode `{value}`; expected `disabled` or `shadow`")),
+    }
 }
 
 /// CLI arguments controlling the optional proof-history sidecar.
@@ -294,7 +315,7 @@ mod tests {
     use super::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
-        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
+        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs, ZkGasV2Mode,
     };
     use crate::command::{
         TaikoNodeExtArgs, disable_state_masking_by_default, validate_engine_args,
@@ -319,6 +340,32 @@ mod tests {
             .expect("flag should parse");
 
         assert_eq!(cli.ext.devnet_unzen_timestamp, 42);
+    }
+
+    #[test]
+    fn test_zkgas_v2_mode_defaults_to_disabled() {
+        let _lock = env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_ZKGAS_V2_MODE") };
+        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
+
+        assert_eq!(cli.ext.zk_gas_v2_mode, ZkGasV2Mode::Disabled);
+        assert_eq!(cli.ext.zk_gas_v2_mode(), ZkGasV2Mode::Disabled);
+    }
+
+    #[test]
+    fn test_zkgas_v2_shadow_mode_parses() {
+        let cli = TestCli::try_parse_from(["alethia-reth", "--zkgas-v2-mode", "shadow"])
+            .expect("shadow mode should parse");
+
+        assert_eq!(cli.ext.zk_gas_v2_mode(), ZkGasV2Mode::Shadow);
+    }
+
+    #[test]
+    fn test_zkgas_v2_admission_mode_is_unavailable() {
+        let err = TestCli::try_parse_from(["alethia-reth", "--zkgas-v2-mode", "admission"])
+            .expect_err("admission must remain unavailable without exact MPT selectors");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]

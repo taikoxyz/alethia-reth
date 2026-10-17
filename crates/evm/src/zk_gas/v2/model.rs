@@ -1,6 +1,7 @@
 //! Handwritten checked arithmetic for the generated pricing model.
 
 use super::{
+    ZkGasV2KnownBlockBreakdown,
     generated::{
         BLOB_SOURCE_TARIFFS, BLOCK_FIXED, FIXED_POINT_SCALE, MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS,
         OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP,
@@ -244,6 +245,32 @@ impl ZkGasV2Model {
         self,
         input: &BlockPricingInput<'_>,
     ) -> Result<PricingBreakdown, ZkGasV2Error> {
+        let known = self.price_block_without_mpt(input)?;
+        let mpt = price_mpt(input.mpt, MPT_TARIFFS)?;
+        let total = checked_add(known.known_subtotal_scaled, mpt)?;
+        ensure_nonnegative(total, "block")?;
+        Ok(PricingBreakdown {
+            fixed_scaled: known.fixed_scaled,
+            operations_scaled: known.operations_scaled,
+            feature_error_scaled: known.feature_error_scaled,
+            resources_scaled: known.resources_scaled,
+            mpt_scaled: mpt,
+            total_scaled: total,
+            total_pgu: Some(ceil_scaled(total)?),
+            ..Default::default()
+        })
+    }
+
+    /// Prices the known block fixed, operation, and resource components for Shadow mode.
+    ///
+    /// The result is a subtotal, not a complete block quote: the exact absolute MPT snapshot for
+    /// the canonically aggregated post-state is deliberately excluded until the production
+    /// state-root pipeline exposes it. Callers must retain that incompleteness in their public type
+    /// rather than using this value for admission.
+    pub(crate) fn price_block_without_mpt(
+        self,
+        input: &BlockPricingInput<'_>,
+    ) -> Result<ZkGasV2KnownBlockBreakdown, ZkGasV2Error> {
         let block_term_count = input
             .operation_routes
             .len()
@@ -284,18 +311,15 @@ impl ZkGasV2Model {
         }
 
         let resources = price_resources(input.resources)?;
-        let mpt = price_mpt(input.mpt, MPT_TARIFFS)?;
-        let total = checked_sum(&[fixed, operations, resources, mpt])?;
-        ensure_nonnegative(total, "block")?;
-        Ok(PricingBreakdown {
+        let known_subtotal = checked_sum(&[fixed, operations, resources])?;
+        ensure_nonnegative(known_subtotal, "known_block_subtotal")?;
+        Ok(ZkGasV2KnownBlockBreakdown {
             fixed_scaled: fixed,
             operations_scaled: operations,
             feature_error_scaled: feature_errors,
             resources_scaled: resources,
-            mpt_scaled: mpt,
-            total_scaled: total,
-            total_pgu: Some(ceil_scaled(total)?),
-            ..Default::default()
+            known_subtotal_scaled: known_subtotal,
+            known_subtotal_pgu: ceil_scaled(known_subtotal)?,
         })
     }
 

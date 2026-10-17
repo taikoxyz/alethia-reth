@@ -34,9 +34,68 @@ use super::{
         AccessClass, BlockPricingInput, CalldataAccessClass, FIXED_POINT_SCALE, MemorySelectors,
         MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,
         OperationRoutePricingInput, ProposalPricingInput, RUNTIME_SPEC_SHA256, ResourceSelectors,
-        StorageBranch, ZkGasV2AccumulatorError, ZkGasV2Error, ZkGasV2Model,
+        StorageBranch, ZkGasV2AccumulatorError, ZkGasV2Error, ZkGasV2Incompleteness, ZkGasV2Mode,
+        ZkGasV2Model, ZkGasV2ShadowDiagnostic, ZkGasV2ShadowStatus,
     },
 };
+
+#[test]
+fn zk_gas_v2_mode_defaults_to_disabled_and_has_no_admission_variant() {
+    assert_eq!(ZkGasV2Mode::default(), ZkGasV2Mode::Disabled);
+    assert_eq!(ZkGasV2Mode::ALL, [ZkGasV2Mode::Disabled, ZkGasV2Mode::Shadow]);
+}
+
+#[test]
+fn zk_gas_v2_shadow_report_marks_exact_mpt_as_missing() {
+    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+
+    let mut accumulator = ZkGasV2Accumulator::default();
+    accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(0x01),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
+            feature_error: false,
+        })
+        .expect("operation prices");
+    accumulator.commit_transaction().expect("transaction commits");
+
+    let report = accumulator.committed_snapshot().shadow_report();
+    assert_eq!(report.model_id, RUNTIME_SPEC_SHA256);
+    let ZkGasV2ShadowStatus::Incomplete { known, missing } = report.status else {
+        panic!("a snapshot without exact MPT selectors must never become a complete quote")
+    };
+    assert_eq!(missing, ZkGasV2Incompleteness::ExactMptSelectorsUnavailable);
+    assert!(known.operations_scaled > 0);
+    assert!(known.known_subtotal_pgu > 0);
+}
+
+#[test]
+fn zk_gas_v2_shadow_report_preserves_typed_collector_diagnostic() {
+    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+
+    let mut accumulator = ZkGasV2Accumulator::default();
+    accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    let error = accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(0x0c),
+            interpreter_raw_gas: Some(0),
+            native_gas: None,
+            model_input: OperationModelInput::None,
+            feature_error: false,
+        })
+        .expect_err("undefined opcode has no sealed route");
+    accumulator.commit_transaction().expect("diagnostic transaction commits");
+
+    let report = accumulator.committed_snapshot().shadow_report();
+    assert_eq!(
+        report.status,
+        ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(error))
+    );
+    assert_eq!(report.status.label(), "collector_unknown_route");
+}
 
 #[test]
 fn zk_gas_v2_accumulator_commits_only_finished_transactions() {

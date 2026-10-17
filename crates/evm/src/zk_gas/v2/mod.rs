@@ -2,6 +2,7 @@
 
 mod accumulator;
 mod generated;
+mod mode;
 mod model;
 mod types;
 
@@ -10,6 +11,10 @@ pub use accumulator::{
     ZkGasV2BlockSnapshot,
 };
 pub use generated::{FIXED_POINT_SCALE, RUNTIME_SPEC_SHA256};
+pub use mode::{
+    ZkGasV2Incompleteness, ZkGasV2KnownBlockBreakdown, ZkGasV2Mode, ZkGasV2ShadowDiagnostic,
+    ZkGasV2ShadowReport, ZkGasV2ShadowStatus,
+};
 pub use model::ZkGasV2Model;
 pub use types::{
     AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,

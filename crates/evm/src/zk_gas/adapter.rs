@@ -90,19 +90,6 @@ impl<I> ZkGasInspector<I> {
         }
     }
 
-    /// Enables schema-9 selector collection on the inspected execution path.
-    pub(crate) fn enable_v2(&mut self, enabled: bool) {
-        if enabled {
-            self.metering.get_or_insert_with(|| ZkGasMeteringState::new(None)).v2 =
-                Some(ZkGasV2Accumulator::default());
-        } else if let Some(metering) = &mut self.metering {
-            metering.v2 = None;
-            if metering.meter.is_none() {
-                self.metering = None;
-            }
-        }
-    }
-
     /// Returns the inspected-path V2 collector, when enabled.
     pub(crate) fn v2(&self) -> Option<&ZkGasV2Accumulator> {
         self.metering.as_ref()?.v2.as_ref()
@@ -111,6 +98,21 @@ impl<I> ZkGasInspector<I> {
     /// Returns the mutable inspected-path V2 collector, when enabled.
     pub(crate) fn v2_mut(&mut self) -> Option<&mut ZkGasV2Accumulator> {
         self.metering.as_mut()?.v2.as_mut()
+    }
+
+    /// Removes and returns the inspected-path collector without resetting its block prefix.
+    pub(crate) fn take_v2(&mut self) -> Option<ZkGasV2Accumulator> {
+        let metering = self.metering.as_mut()?;
+        let accumulator = metering.v2.take();
+        if metering.meter.is_none() {
+            self.metering = None;
+        }
+        accumulator
+    }
+
+    /// Installs an existing collector on the inspected execution path.
+    pub(crate) fn install_v2(&mut self, accumulator: ZkGasV2Accumulator) {
+        self.metering.get_or_insert_with(|| ZkGasMeteringState::new(None)).v2 = Some(accumulator);
     }
 }
 

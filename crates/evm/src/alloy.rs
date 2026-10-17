@@ -61,7 +61,8 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
-    /// Task-4 collection switch. Task 6 promotes this boolean to Disabled/Shadow/Admission modes.
+    /// Task-4 collection switch. Disabled by default; Task 6 promotes this boolean to
+    /// Disabled/Shadow/Admission modes and owns production activation.
     collect_zk_gas_v2: bool,
     /// Temporary guard used by pre-block system calls, which are outside the block transaction
     /// workload calibrated by schema 9.
@@ -76,7 +77,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
             inspect,
             derive_anchor_ctx: true,
             reset_zk_gas_per_transact: true,
-            collect_zk_gas_v2: true,
+            collect_zk_gas_v2: false,
             suspend_zk_gas_v2: false,
         }
     }
@@ -319,12 +320,21 @@ where
 
     fn set_zk_gas_v2_enabled(&mut self, enabled: bool) {
         self.collect_zk_gas_v2 = enabled;
+        let plain = self.base_evm_mut().take_zk_gas_v2();
+        let inspected = self.base_evm_mut().inner.inspector.take_v2();
+        debug_assert!(
+            plain.is_none() || inspected.is_none(),
+            "only one V2 collector may be active"
+        );
+        if !enabled {
+            return;
+        }
+        let accumulator = if self.inspect { inspected.or(plain) } else { plain.or(inspected) }
+            .unwrap_or_default();
         if self.inspect {
-            self.base_evm_mut().set_zk_gas_v2_enabled(false);
-            self.base_evm_mut().inner.inspector.enable_v2(enabled);
+            self.base_evm_mut().inner.inspector.install_v2(accumulator);
         } else {
-            self.base_evm_mut().inner.inspector.enable_v2(false);
-            self.base_evm_mut().set_zk_gas_v2_enabled(enabled);
+            self.base_evm_mut().install_zk_gas_v2(accumulator);
         }
     }
 
@@ -453,8 +463,9 @@ where
                 context.anchor_caller_nonce() == tx.nonce &&
                 tx.kind.to() == Some(&get_treasury_address(self.chain_id()))
         });
-        let metadata =
-            TransactionMetadata { is_anchor, native_value_transfer: !tx.value.is_zero() };
+        let native_value_transfer_candidate =
+            !is_anchor && !tx.value.is_zero() && matches!(tx.kind, TxKind::Call(_));
+        let metadata = TransactionMetadata { is_anchor, native_value_transfer: false };
         if !self.suspend_zk_gas_v2 &&
             let Some(accumulator) = self.zk_gas_v2_mut()
         {
@@ -503,6 +514,11 @@ where
         if !self.suspend_zk_gas_v2 &&
             let Some(accumulator) = self.zk_gas_v2_mut()
         {
+            if let Err(error) = accumulator.finalize_native_value_transfer(
+                native_value_transfer_candidate && result.is_success(),
+            ) {
+                accumulator.retain_diagnostic(Some(error));
+            }
             for (address, account) in &state {
                 let _ = accumulator.observe_state_access(StateAccess::Account(*address));
                 if let Some(code) = &account.info.code {
@@ -669,7 +685,13 @@ where
         if enabled && self.base_evm().zk_gas_meter().is_some() {
             return;
         }
+        if self.inspect == enabled {
+            return;
+        }
         self.inspect = enabled;
+        if self.collect_zk_gas_v2 {
+            self.set_zk_gas_v2_enabled(true);
+        }
     }
 
     /// Getter of precompiles.

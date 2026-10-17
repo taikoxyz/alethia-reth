@@ -87,6 +87,12 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
         self.zk_gas_v2.as_mut()
     }
 
+    /// Removes and returns the schema-9 collector without changing its committed prefix.
+    pub(crate) fn take_zk_gas_v2(&mut self) -> Option<ZkGasV2Accumulator> {
+        self.zk_gas_v2_hooks = None;
+        self.zk_gas_v2.take()
+    }
+
     #[inline]
     /// Set extra execution context derived from the anchor system call.
     pub fn with_extra_execution_context(
@@ -108,6 +114,12 @@ impl<DB, I, P>
 where
     DB: Database,
 {
+    /// Installs an existing schema-9 collector on the plain execution path.
+    pub(crate) fn install_zk_gas_v2(&mut self, accumulator: ZkGasV2Accumulator) {
+        self.zk_gas_v2 = Some(accumulator);
+        self.zk_gas_v2_hooks = Some(V2ExecutionHooks::TAIKO);
+    }
+
     /// Enables schema-9 transactional selector collection on the concrete Taiko runtime.
     pub fn with_zk_gas_v2(mut self, enabled: bool) -> Self {
         self.set_zk_gas_v2_enabled(enabled);
@@ -116,8 +128,13 @@ where
 
     /// Enables or disables schema-9 transactional selector collection in place.
     pub(crate) fn set_zk_gas_v2_enabled(&mut self, enabled: bool) {
-        self.zk_gas_v2 = enabled.then(ZkGasV2Accumulator::default);
-        self.zk_gas_v2_hooks = enabled.then_some(V2ExecutionHooks::TAIKO);
+        if enabled {
+            if self.zk_gas_v2.is_none() {
+                self.install_zk_gas_v2(ZkGasV2Accumulator::default());
+            }
+        } else {
+            self.take_zk_gas_v2();
+        }
     }
 }
 

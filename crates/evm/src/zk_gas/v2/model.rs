@@ -9,11 +9,23 @@ use super::{
     },
     types::{
         AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,
-        OperationModelInput, OperationPricingInput, OperationRoute, PricingBreakdown,
-        ProposalPricingInput, ResourceSelectors, SELECTOR_BOUND, StorageBranch, ValueClass,
-        ZkGasV2Error,
+        OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
+        PricingBreakdown, ProposalPricingInput, ResourceSelectors, SELECTOR_BOUND, StorageBranch,
+        ValueClass, ZkGasV2Error,
     },
 };
+
+/// Block components known to runtime execution before an exact MPT snapshot is available.
+pub(super) struct KnownBlockPricingInput<'a> {
+    /// Included non-anchor transaction count.
+    pub(super) started_non_anchor_transactions: u64,
+    /// Included nonzero native-value transfer count.
+    pub(super) native_value_transfers: u64,
+    /// Committed operation aggregates in canonical route order.
+    pub(super) operation_routes: &'a [OperationRoutePricingInput],
+    /// Block-global unique execution resources.
+    pub(super) resources: ResourceSelectors,
+}
 
 /// Generated route-composition mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,7 +257,12 @@ impl ZkGasV2Model {
         self,
         input: &BlockPricingInput<'_>,
     ) -> Result<PricingBreakdown, ZkGasV2Error> {
-        let known = self.price_block_without_mpt(input)?;
+        let known = self.price_block_without_mpt(&KnownBlockPricingInput {
+            started_non_anchor_transactions: input.started_non_anchor_transactions,
+            native_value_transfers: input.native_value_transfers,
+            operation_routes: input.operation_routes,
+            resources: input.resources,
+        })?;
         let mpt = price_mpt(input.mpt, MPT_TARIFFS)?;
         let total = checked_add(known.known_subtotal_scaled, mpt)?;
         ensure_nonnegative(total, "block")?;
@@ -267,9 +284,9 @@ impl ZkGasV2Model {
     /// the canonically aggregated post-state is deliberately excluded until the production
     /// state-root pipeline exposes it. Callers must retain that incompleteness in their public type
     /// rather than using this value for admission.
-    pub(crate) fn price_block_without_mpt(
+    pub(super) fn price_block_without_mpt(
         self,
-        input: &BlockPricingInput<'_>,
+        input: &KnownBlockPricingInput<'_>,
     ) -> Result<ZkGasV2KnownBlockBreakdown, ZkGasV2Error> {
         let block_term_count = input
             .operation_routes

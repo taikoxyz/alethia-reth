@@ -2,6 +2,7 @@
 
 use super::{
     RUNTIME_SPEC_SHA256, ZkGasV2AccumulatorError, ZkGasV2BlockSnapshot, ZkGasV2Error, ZkGasV2Model,
+    model::KnownBlockPricingInput,
 };
 
 /// Priced block components that are observable without the production MPT interface.
@@ -125,7 +126,12 @@ impl ZkGasV2BlockSnapshot {
             Some(error) => {
                 ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(error))
             }
-            None => match ZkGasV2Model.price_block_without_mpt(&self.block_input()) {
+            None => match ZkGasV2Model.price_block_without_mpt(&KnownBlockPricingInput {
+                started_non_anchor_transactions: self.started_non_anchor_transactions,
+                native_value_transfers: self.native_value_transfers,
+                operation_routes: &self.operation_routes,
+                resources: self.resources,
+            }) {
                 Ok(known) => ZkGasV2ShadowStatus::Incomplete {
                     known,
                     missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,

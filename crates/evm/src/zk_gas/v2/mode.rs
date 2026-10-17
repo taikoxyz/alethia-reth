@@ -6,10 +6,11 @@ use super::{
 };
 use core::fmt;
 
-/// Priced block components that are observable without the production MPT interface.
+/// Priced block components observable from EVM-local hooks before block-end reconciliation.
 ///
-/// There is deliberately no MPT field and no complete-block total in this type. The subtotal is
-/// useful for Shadow analysis only and cannot be interpreted as an MPT measurement of zero.
+/// The resource term is only the EVM-local subset: pre-block system calls and validation can load
+/// additional state directly into the block database cache. There is deliberately no exact
+/// block-end resource term, MPT field, or complete-block total in this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ZkGasV2KnownBlockBreakdown {
     /// Block fixed-cost contribution in fixed-point units.
@@ -18,12 +19,12 @@ pub struct ZkGasV2KnownBlockBreakdown {
     operations_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
     feature_error_scaled: i128,
-    /// Block unique-resource contribution in fixed-point units.
-    resources_scaled: i128,
-    /// Known-component subtotal in fixed-point units, excluding all MPT work.
-    known_subtotal_scaled: i128,
-    /// Ceiling of the known-component subtotal in PGU, excluding all MPT work.
-    known_subtotal_pgu: u128,
+    /// EVM-local unique-resource contribution in fixed-point units.
+    evm_local_resources_scaled: i128,
+    /// EVM-local subtotal in fixed-point units, excluding exact block-end resources and MPT work.
+    evm_local_known_subtotal_scaled: i128,
+    /// Ceiling of the EVM-local subtotal, excluding exact block-end resources and MPT work.
+    evm_local_known_subtotal_pgu: u128,
 }
 
 impl ZkGasV2KnownBlockBreakdown {
@@ -32,17 +33,17 @@ impl ZkGasV2KnownBlockBreakdown {
         fixed_scaled: i128,
         operations_scaled: i128,
         feature_error_scaled: i128,
-        resources_scaled: i128,
-        known_subtotal_scaled: i128,
-        known_subtotal_pgu: u128,
+        evm_local_resources_scaled: i128,
+        evm_local_known_subtotal_scaled: i128,
+        evm_local_known_subtotal_pgu: u128,
     ) -> Self {
         Self {
             fixed_scaled,
             operations_scaled,
             feature_error_scaled,
-            resources_scaled,
-            known_subtotal_scaled,
-            known_subtotal_pgu,
+            evm_local_resources_scaled,
+            evm_local_known_subtotal_scaled,
+            evm_local_known_subtotal_pgu,
         }
     }
 
@@ -61,19 +62,19 @@ impl ZkGasV2KnownBlockBreakdown {
         self.feature_error_scaled
     }
 
-    /// Block unique-resource contribution in fixed-point units.
-    pub const fn resources_scaled(self) -> i128 {
-        self.resources_scaled
+    /// EVM-local unique-resource contribution in fixed-point units.
+    pub const fn evm_local_resources_scaled(self) -> i128 {
+        self.evm_local_resources_scaled
     }
 
-    /// Known-component subtotal in fixed-point units, excluding all MPT work.
-    pub const fn known_subtotal_scaled(self) -> i128 {
-        self.known_subtotal_scaled
+    /// EVM-local subtotal excluding exact block-end resources and MPT work.
+    pub const fn evm_local_known_subtotal_scaled(self) -> i128 {
+        self.evm_local_known_subtotal_scaled
     }
 
-    /// Ceiling of the known-component subtotal in PGU, excluding all MPT work.
-    pub const fn known_subtotal_pgu(self) -> u128 {
-        self.known_subtotal_pgu
+    /// Ceiling of the EVM-local subtotal excluding exact block-end resources and MPT work.
+    pub const fn evm_local_known_subtotal_pgu(self) -> u128 {
+        self.evm_local_known_subtotal_pgu
     }
 
     #[cfg(test)]
@@ -119,8 +120,8 @@ impl ZkGasV2Mode {
 /// Exact selector group that prevents a shadow subtotal from being a complete block quote.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZkGasV2Incompleteness {
-    /// The exact absolute block/prefix MPT snapshot is unavailable from the state-root pipeline.
-    ExactMptSelectorsUnavailable,
+    /// Exact block-end resources and the absolute block/prefix MPT snapshot are unavailable.
+    ExactBlockResourcesAndMptSelectorsUnavailable,
 }
 
 /// Typed failure that prevents publication of even the known-component subtotal.
@@ -134,14 +135,14 @@ pub enum ZkGasV2ShadowDiagnostic {
     Pricing(ZkGasV2Error),
 }
 
-/// Typed failure while completing a Shadow report with an exact external MPT snapshot.
+/// Typed failure while completing a Shadow report with exact external block resources and MPT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZkGasV2CompletionError {
     /// The report did not identify the sealed runtime model.
     ModelIdentity,
     /// The report named an incompleteness that this completion input cannot satisfy.
     UnexpectedIncompleteness(ZkGasV2Incompleteness),
-    /// The public known-component fields were internally inconsistent.
+    /// The sealed known-component fields were internally inconsistent.
     InconsistentKnownBreakdown(&'static str),
     /// Shadow execution reported a collector or pricing diagnostic.
     ShadowDiagnostic(ZkGasV2ShadowDiagnostic),
@@ -178,9 +179,9 @@ impl std::error::Error for ZkGasV2CompletionError {}
 /// Status of one block-local shadow evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZkGasV2ShadowStatus {
-    /// Known execution/resource components were priced, but the result is not a complete quote.
+    /// EVM-local execution/resource components were priced, but the result is incomplete.
     Incomplete {
-        /// Non-enforcing subtotal containing fixed, operation, and resource components only.
+        /// Non-enforcing fixed, operation, and EVM-local resource subtotal only.
         known: ZkGasV2KnownBlockBreakdown,
         /// Exact selector group that remains unavailable.
         missing: ZkGasV2Incompleteness,
@@ -193,7 +194,7 @@ impl ZkGasV2ShadowStatus {
     /// Returns a bounded-cardinality label suitable for logs and metrics.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Incomplete { .. } => "incomplete_missing_mpt",
+            Self::Incomplete { .. } => "incomplete_missing_block_resources_and_mpt",
             Self::Diagnostic(ZkGasV2ShadowDiagnostic::CollectorUnavailable) => {
                 "collector_unavailable"
             }
@@ -230,6 +231,14 @@ pub struct ZkGasV2ShadowReport {
 }
 
 impl ZkGasV2ShadowReport {
+    /// Constructs one immutable report inside the sealed evaluator boundary.
+    pub(super) const fn from_status(status: ZkGasV2ShadowStatus) -> Self {
+        Self {
+            model_id: RUNTIME_SPEC_SHA256,
+            status,
+        }
+    }
+
     /// Returns the content-addressed runtime model identifier.
     pub const fn model_id(self) -> &'static str {
         self.model_id
@@ -275,13 +284,14 @@ impl ZkGasV2BlockSnapshot {
             }) {
                 Ok(known) => ZkGasV2ShadowStatus::Incomplete {
                     known,
-                    missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
+                    missing:
+                        ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
                 },
                 Err(error) => {
                     ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Pricing(error))
                 }
             },
         };
-        ZkGasV2ShadowReport { model_id: RUNTIME_SPEC_SHA256, status }
+        ZkGasV2ShadowReport::from_status(status)
     }
 }

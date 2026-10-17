@@ -430,6 +430,7 @@ impl ZkGasV2Model {
     }
 }
 
+/// Validates the sealed identity and every internally derived EVM-local subtotal field.
 fn validate_shadow_report(
     report: &ZkGasV2ShadowReport,
 ) -> Result<ZkGasV2KnownBlockBreakdown, ZkGasV2CompletionError> {
@@ -475,6 +476,7 @@ fn validate_shadow_report(
     Ok(known)
 }
 
+/// Rejects an alleged block-end resource snapshot that omits any EVM-local observation.
 fn validate_exact_resources_cover_local(
     exact: ResourceSelectors,
     local: ResourceSelectors,

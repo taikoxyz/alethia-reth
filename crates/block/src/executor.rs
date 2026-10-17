@@ -728,8 +728,8 @@ mod test {
                     assert!(matches!(
                         report.status(),
                         ZkGasV2ShadowStatus::Incomplete {
-                            missing: ZkGasV2Incompleteness::
-                                ExactBlockResourcesAndMptSelectorsUnavailable,
+                            missing:
+                                ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
                             ..
                         }
                     ));

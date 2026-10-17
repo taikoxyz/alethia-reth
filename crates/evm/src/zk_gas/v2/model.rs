@@ -304,12 +304,8 @@ impl ZkGasV2Model {
         validate_exact_resources_cover_local(exact_resources, known.evm_local_resources())?;
         let resources = price_resources(exact_resources)?;
         let mpt = price_mpt(exact_mpt, MPT_TARIFFS)?;
-        let total = checked_sum(&[
-            known.fixed_scaled(),
-            known.operations_scaled(),
-            resources,
-            mpt,
-        ])?;
+        let total =
+            checked_sum(&[known.fixed_scaled(), known.operations_scaled(), resources, mpt])?;
         ensure_nonnegative(total, "block")?;
         Ok(PricingBreakdown {
             fixed_scaled: known.fixed_scaled(),

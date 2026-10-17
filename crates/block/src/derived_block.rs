@@ -21,6 +21,7 @@ use crate::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
 };
+use alethia_reth_evm::zk_gas::v2::ZkGasV2ShadowReport;
 
 /// Execution artifacts produced by prover-mode derived block execution.
 #[derive(Debug)]
@@ -33,6 +34,8 @@ pub struct DerivedBlockExecutionOutcome {
     pub hashed_state: HashedPostState,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,
+    /// Non-enforcing block-local V2 report when Shadow mode is enabled.
+    pub zk_gas_v2_shadow_report: Option<ZkGasV2ShadowReport>,
 }
 
 /// Derives next-block environment attributes from a candidate derived block header.
@@ -74,11 +77,12 @@ where
         .context_for_next_block(parent_header, attributes)
         .map_err(BlockExecutionError::other)?;
     let finalized_zk_gas = execution_ctx.finalized_block_zk_gas.clone();
-    let executor = TaikoBlockExecutor::new(
+    let executor = TaikoBlockExecutor::new_with_zk_gas_v2_mode(
         evm,
         execution_ctx,
         evm_config.executor_factory.spec().clone(),
         evm_config.executor_factory.receipt_builder(),
+        evm_config.zk_gas_v2_mode(),
     );
 
     let execution_outcome = executor
@@ -93,6 +97,7 @@ where
         execution_result: execution_outcome.execution_result,
         hashed_state,
         finalized_block_zk_gas: finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed),
+        zk_gas_v2_shadow_report: execution_outcome.zk_gas_v2_shadow_report,
     })
 }
 
@@ -150,6 +155,7 @@ mod tests {
         testutil::{BENCH_SUCCESS_TARGET, db_with_contracts},
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
+    use alethia_reth_evm::zk_gas::v2::{ZkGasV2Incompleteness, ZkGasV2Mode, ZkGasV2ShadowStatus};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
 
@@ -175,7 +181,7 @@ mod tests {
     fn execute_derived_block_skips_invalid_nonce_transaction_and_records_committed_txs() {
         let chain_spec = Arc::new(TaikoChainSpec::default());
         let chain_id = chain_spec.inner.chain().id();
-        let config = TaikoEvmConfig::new(chain_spec);
+        let config = TaikoEvmConfig::new_with_zk_gas_v2_mode(chain_spec, ZkGasV2Mode::Shadow);
         let parent_header = SealedHeader::seal_slow(Header::default());
         let anchor_transaction = test_transaction(chain_id, 0);
         let valid_transaction = test_transaction(chain_id, 1);
@@ -214,6 +220,16 @@ mod tests {
         .expect("derived block execution should skip invalid nonce tx");
 
         assert_eq!(outcome.committed_transactions.len(), 2);
+        assert!(matches!(
+            outcome
+                .zk_gas_v2_shadow_report
+                .expect("shadow execution publishes a typed report")
+                .status,
+            ZkGasV2ShadowStatus::Incomplete {
+                missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
+                ..
+            }
+        ));
 
         let filtered_block = assemble_filtered_block(
             &config,

@@ -19,7 +19,7 @@ use reth_revm::Inspector;
 
 use crate::executor::TaikoBlockExecutor;
 use alethia_reth_chainspec::spec::{TaikoChainSpec, TaikoExecutorSpec};
-use alethia_reth_evm::factory::TaikoEvmFactory;
+use alethia_reth_evm::{factory::TaikoEvmFactory, zk_gas::v2::ZkGasV2Mode};
 
 /// Context for Taiko block execution.
 #[derive(Debug, Clone)]
@@ -74,13 +74,26 @@ pub struct TaikoBlockExecutorFactory<
     spec: Spec,
     /// EVM factory.
     evm_factory: EvmFactory,
+    /// Non-consensus zk gas V2 collection mode.
+    zk_gas_v2_mode: ZkGasV2Mode,
 }
 
 impl<R, Spec, EvmFactory> TaikoBlockExecutorFactory<R, Spec, EvmFactory> {
     /// Creates a new [`EthBlockExecutorFactory`] with the given spec, [`EvmFactory`], and
     /// [`ReceiptBuilder`].
     pub const fn new(receipt_builder: R, spec: Spec, evm_factory: EvmFactory) -> Self {
-        Self { receipt_builder, spec, evm_factory }
+        Self { receipt_builder, spec, evm_factory, zk_gas_v2_mode: ZkGasV2Mode::Disabled }
+    }
+
+    /// Returns this factory configured with a non-consensus V2 collection mode.
+    pub const fn with_zk_gas_v2_mode(mut self, mode: ZkGasV2Mode) -> Self {
+        self.zk_gas_v2_mode = mode;
+        self
+    }
+
+    /// Returns the configured non-consensus V2 collection mode.
+    pub const fn zk_gas_v2_mode(&self) -> ZkGasV2Mode {
+        self.zk_gas_v2_mode
     }
 
     /// Exposes the receipt builder.
@@ -145,13 +158,20 @@ where
         DB: StateDB,
         I: Inspector<<TaikoEvmFactory as EvmFactory>::Context<DB>>,
     {
-        TaikoBlockExecutor::new(evm, ctx, self.spec.clone(), &self.receipt_builder)
+        TaikoBlockExecutor::new_with_zk_gas_v2_mode(
+            evm,
+            ctx,
+            self.spec.clone(),
+            &self.receipt_builder,
+            self.zk_gas_v2_mode,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_evm::zk_gas::v2::ZkGasV2Mode;
     use reth_evm_ethereum::RethReceiptBuilder;
     use std::sync::Arc;
 
@@ -161,6 +181,10 @@ mod tests {
         let spec = Arc::new(TaikoChainSpec::default());
         let evm_factory = TaikoEvmFactory;
 
-        TaikoBlockExecutorFactory::new(receipt_builder, spec.clone(), evm_factory);
+        let factory = TaikoBlockExecutorFactory::new(receipt_builder, spec.clone(), evm_factory);
+        assert_eq!(factory.zk_gas_v2_mode(), ZkGasV2Mode::Disabled);
+
+        let shadow = factory.with_zk_gas_v2_mode(ZkGasV2Mode::Shadow);
+        assert_eq!(shadow.zk_gas_v2_mode(), ZkGasV2Mode::Shadow);
     }
 }

@@ -125,6 +125,34 @@ fn zk_gas_v2_accumulator_preserves_feature_error_attribution() {
     );
 }
 
+#[test]
+fn zk_gas_v2_resource_overflow_is_diagnostic_and_keeps_committed_prefix_atomic() {
+    use alloy_primitives::B256;
+
+    use super::v2::{StateAccess, TransactionMetadata, ZkGasV2Accumulator};
+
+    let mut accumulator = ZkGasV2Accumulator::default();
+    accumulator.begin_transaction(TransactionMetadata::default()).expect("first transaction");
+    accumulator
+        .observe_state_access(StateAccess::Code {
+            hash: B256::with_last_byte(1),
+            byte_length: u64::MAX,
+        })
+        .expect("maximum representable code-byte prefix");
+    accumulator.commit_transaction().expect("first transaction commits");
+
+    accumulator.begin_transaction(TransactionMetadata::default()).expect("second transaction");
+    accumulator
+        .observe_state_access(StateAccess::Code { hash: B256::with_last_byte(2), byte_length: 1 })
+        .expect("one-byte transaction delta is valid alone");
+    accumulator.commit_transaction().expect("overflow is retained as a non-fatal diagnostic");
+
+    let snapshot = accumulator.committed_snapshot();
+    assert_eq!(snapshot.diagnostic, Some(ZkGasV2AccumulatorError::CountOverflow));
+    assert_eq!(snapshot.resources.unique_code_hash_count, 1);
+    assert_eq!(snapshot.resources.unique_code_bytes, u64::MAX);
+}
+
 fn zk_gas_v2_path_snapshots(
     bytecode: Bytecode,
     gas_limit: u64,
@@ -164,6 +192,7 @@ fn zk_gas_v2_collects_without_an_unzen_schedule_on_both_execution_paths() {
     let mut plain = TaikoEvmFactory
         .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
     assert!(plain.meter().is_none(), "Shasta must not install the legacy meter");
+    plain.set_zk_gas_v2_enabled(true);
     plain.transact(tx_env(100_000)).expect("plain V2-only execution");
     plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
     let plain = plain.zk_gas_v2_snapshot().expect("plain collector is active");
@@ -174,6 +203,7 @@ fn zk_gas_v2_collects_without_an_unzen_schedule_on_both_execution_paths() {
         NoOpInspector,
     );
     assert!(inspected.meter().is_none(), "Shasta must not install the legacy meter");
+    inspected.set_zk_gas_v2_enabled(true);
     inspected.transact(tx_env(100_000)).expect("inspected V2-only execution");
     inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
     let inspected = inspected.zk_gas_v2_snapshot().expect("inspected collector is active");
@@ -183,12 +213,154 @@ fn zk_gas_v2_collects_without_an_unzen_schedule_on_both_execution_paths() {
 }
 
 #[test]
+fn zk_gas_v2_factory_default_is_disabled_until_explicitly_enabled() {
+    let mut evm = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+
+    assert!(evm.zk_gas_v2_snapshot().is_none());
+    evm.transact(tx_env(100_000)).expect("ordinary execution remains available");
+    assert!(evm.zk_gas_v2_snapshot().is_none(), "Task 4 must not activate collection implicitly");
+
+    evm.set_zk_gas_v2_enabled(true);
+    evm.transact(tx_env(100_000)).expect("explicit V2-only execution");
+    evm.commit_transaction_zk_gas_v2().expect("explicit V2 commit");
+    assert_eq!(
+        evm.zk_gas_v2_snapshot().expect("explicit collector").started_non_anchor_transactions,
+        1
+    );
+}
+
+#[test]
+fn zk_gas_v2_repeated_enable_and_execution_mode_switch_preserve_committed_prefix() {
+    let mut evm = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    evm.set_zk_gas_v2_enabled(true);
+    evm.transact(tx_env(100_000)).expect("first plain transaction");
+    evm.commit_transaction_zk_gas_v2().expect("first commit");
+
+    evm.set_zk_gas_v2_enabled(true);
+    assert_eq!(
+        evm.zk_gas_v2_snapshot().expect("idempotent enable").started_non_anchor_transactions,
+        1
+    );
+
+    evm.set_inspector_enabled(true);
+    assert_eq!(
+        evm.zk_gas_v2_snapshot()
+            .expect("collector moved to inspector")
+            .started_non_anchor_transactions,
+        1
+    );
+    evm.transact(tx_env(100_000)).expect("inspected transaction");
+    evm.commit_transaction_zk_gas_v2().expect("second commit");
+    assert_eq!(
+        evm.zk_gas_v2_snapshot().expect("inspected prefix").started_non_anchor_transactions,
+        2
+    );
+
+    evm.set_inspector_enabled(false);
+    evm.transact(tx_env(100_000)).expect("plain transaction after switch back");
+    evm.commit_transaction_zk_gas_v2().expect("third commit");
+    assert_eq!(
+        evm.zk_gas_v2_snapshot().expect("plain prefix restored").started_non_anchor_transactions,
+        3
+    );
+}
+
+#[test]
+fn zk_gas_v2_native_transfer_matches_calibrated_eoa_only_selector() {
+    let mut eoa_db = InMemoryDB::default();
+    eoa_db.insert_account_info(
+        BENCH_CALLER,
+        AccountInfo { nonce: 0, balance: BENCH_CALLER_BALANCE, ..Default::default() },
+    );
+    eoa_db.insert_account_info(
+        BENCH_TARGET,
+        AccountInfo { balance: BENCH_TARGET_BALANCE, ..Default::default() },
+    );
+    let mut eoa = TaikoEvmFactory.create_evm(eoa_db, evm_env(TaikoSpecId::SHASTA));
+    eoa.set_zk_gas_v2_enabled(true);
+    let mut value_call = tx_env(100_000);
+    value_call.value = U256::from(1);
+    assert!(eoa.transact(value_call.clone()).expect("EOA transfer executes").result.is_success());
+    eoa.commit_transaction_zk_gas_v2().expect("EOA transfer commits");
+    assert_eq!(eoa.zk_gas_v2_snapshot().expect("EOA snapshot").native_value_transfers, 1);
+
+    let mut contract = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    contract.set_zk_gas_v2_enabled(true);
+    assert!(
+        contract.transact(value_call).expect("contract value call executes").result.is_success()
+    );
+    contract.commit_transaction_zk_gas_v2().expect("contract call commits");
+    assert_eq!(
+        contract.zk_gas_v2_snapshot().expect("contract snapshot").native_value_transfers,
+        0,
+        "an operation-owning contract call is not the native EOA-transfer marker"
+    );
+}
+
+#[test]
+fn zk_gas_v2_create_revert_and_halt_never_count_as_native_transfer() {
+    let mut create = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
+    create.set_zk_gas_v2_enabled(true);
+    let create_tx = TxEnv::builder()
+        .caller(BENCH_CALLER)
+        .kind(TxKind::Create)
+        .chain_id(Some(167))
+        .gas_limit(100_000)
+        .value(U256::from(1))
+        .data(Bytes::from(vec![opcode::STOP]))
+        .build()
+        .unwrap();
+    assert!(create.transact(create_tx).expect("create executes").result.is_success());
+    create.commit_transaction_zk_gas_v2().expect("create commits");
+    assert_eq!(create.zk_gas_v2_snapshot().expect("create snapshot").native_value_transfers, 0);
+
+    for (bytecode, expected, label) in [
+        (
+            Bytecode::new_raw(Bytes::from(vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT])),
+            "revert",
+            "revert",
+        ),
+        (stack_underflow_bytecode(), "halt", "halt"),
+    ] {
+        let mut evm =
+            TaikoEvmFactory.create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::SHASTA));
+        evm.set_zk_gas_v2_enabled(true);
+        let mut tx = tx_env(100_000);
+        tx.value = U256::from(1);
+        let result = evm.transact(tx).expect("valid failed execution is included");
+        assert!(
+            matches!(
+                (&result.result, expected),
+                (ExecutionResult::Revert { .. }, "revert") | (ExecutionResult::Halt { .. }, "halt")
+            ),
+            "{label}: {:?}",
+            result.result
+        );
+        evm.commit_transaction_zk_gas_v2().expect("failed execution commits workload");
+        assert_eq!(
+            evm.zk_gas_v2_snapshot().expect("failed snapshot").native_value_transfers,
+            0,
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn zk_gas_v2_does_not_collect_pre_block_system_calls() {
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    evm.set_zk_gas_v2_enabled(true);
     evm.transact_system_call(BENCH_CALLER, BENCH_TARGET, Bytes::new())
         .expect("system call executes");
-    assert!(evm.zk_gas_v2_snapshot().is_none(), "system call must not instantiate V2");
+    assert_eq!(
+        evm.zk_gas_v2_snapshot().expect("explicit collector remains installed"),
+        super::v2::ZkGasV2BlockSnapshot::default(),
+        "system call must not collect into V2"
+    );
 }
 
 #[test]
@@ -208,6 +380,7 @@ fn zk_gas_v2_unknown_route_is_a_shadow_diagnostic_not_an_evm_error() {
         db_with_contract(Bytecode::new_raw(Bytes::from(vec![0x0c]))),
         evm_env(TaikoSpecId::UNZEN),
     );
+    evm.set_zk_gas_v2_enabled(true);
     let result = evm.transact(tx_env(100_000)).expect("V2 diagnostic must not alter execution");
     assert!(matches!(result.result, ExecutionResult::Halt { .. }));
     evm.commit_transaction_zk_gas_v2().expect("diagnostic transaction still commits");
@@ -223,6 +396,7 @@ fn zk_gas_v2_unknown_route_is_a_shadow_diagnostic_not_an_evm_error() {
 fn zk_gas_v2_included_halt_commits_executed_workload() {
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(stack_underflow_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    evm.set_zk_gas_v2_enabled(true);
     let result = evm.transact(tx_env(100_000)).expect("valid halting transaction is included");
     assert!(matches!(result.result, ExecutionResult::Halt { .. }));
     evm.commit_transaction_zk_gas_v2().expect("included halt commits V2");
@@ -252,6 +426,7 @@ fn zk_gas_v2_discarded_transactions_do_not_leak_into_block_snapshot() {
     // Invalid nonce is rejected before inclusion.
     let mut invalid_nonce = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    invalid_nonce.set_zk_gas_v2_enabled(true);
     let mut tx = tx_env(100_000);
     tx.nonce = 1;
     assert!(invalid_nonce.transact(tx).is_err());
@@ -261,6 +436,7 @@ fn zk_gas_v2_discarded_transactions_do_not_leak_into_block_snapshot() {
     let mut db = db_with_contract(simple_arithmetic_bytecode());
     db.insert_account_info(BENCH_CALLER, AccountInfo::default());
     let mut insufficient = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
+    insufficient.set_zk_gas_v2_enabled(true);
     let mut tx = tx_env(100_000);
     tx.value = U256::from(1);
     assert!(insufficient.transact(tx).is_err());
@@ -271,12 +447,14 @@ fn zk_gas_v2_discarded_transactions_do_not_leak_into_block_snapshot() {
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
+    rejected.set_zk_gas_v2_enabled(true);
     assert_eq!(rejected.transact(tx_env(5_000_000)).unwrap_err().to_string(), ZK_GAS_LIMIT_ERR);
     assert_reset!(rejected);
 
     // A successfully executed transaction rejected by a commit predicate follows the same reset.
     let mut commit_false = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    commit_false.set_zk_gas_v2_enabled(true);
     commit_false.transact(tx_env(100_000)).expect("execution succeeds before predicate");
     assert_reset!(commit_false);
 
@@ -1504,6 +1682,7 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
     let mut production_evm = TaikoEvmFactory
         .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
+    production_evm.set_zk_gas_v2_enabled(true);
     production_evm.transact(tx_env(100_000)).expect("production path should execute");
     let production_zk_gas =
         production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
@@ -1513,6 +1692,7 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
     );
+    inspector_evm.set_zk_gas_v2_enabled(true);
     inspector_evm.transact(tx_env(100_000)).expect("inspector path should execute");
     let inspector_zk_gas =
         inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
@@ -1548,6 +1728,7 @@ fn precompile_metering_snapshots_gas_before_inner_call_end_mutation() {
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
     );
+    baseline_evm.set_zk_gas_v2_enabled(true);
     baseline_evm.transact(tx_env(100_000)).expect("baseline precompile call should execute");
     let baseline_zk_gas =
         baseline_evm.meter().expect("baseline path should install a meter").tx_zk_gas_used();
@@ -1557,6 +1738,7 @@ fn precompile_metering_snapshots_gas_before_inner_call_end_mutation() {
         evm_env(TaikoSpecId::UNZEN),
         PrecompileGasMutatingInspector::default(),
     );
+    mutating_evm.set_zk_gas_v2_enabled(true);
     mutating_evm.transact(tx_env(100_000)).expect("mutating inspector path should execute");
     let mutated_zk_gas =
         mutating_evm.meter().expect("mutating path should install a meter").tx_zk_gas_used();
@@ -1580,6 +1762,7 @@ fn zk_gas_v2_finalizes_executed_step_before_inner_step_end_mutation() {
     let code = Bytecode::new_raw(Bytes::from(vec![opcode::STOP]));
     let mut plain =
         TaikoEvmFactory.create_evm(db_with_contract(code.clone()), evm_env(TaikoSpecId::UNZEN));
+    plain.set_zk_gas_v2_enabled(true);
     plain.transact(tx_env(100_000)).expect("plain STOP");
     plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
 
@@ -1588,6 +1771,7 @@ fn zk_gas_v2_finalizes_executed_step_before_inner_step_end_mutation() {
         evm_env(TaikoSpecId::UNZEN),
         StepEndGasMutatingInspector,
     );
+    inspected.set_zk_gas_v2_enabled(true);
     inspected.transact(tx_env(100_000)).expect("mutated STOP remains included");
     inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
 
@@ -1789,6 +1973,7 @@ fn zk_gas_v2_attempted_sstore_resources_match_on_static_and_oog_halts() {
         };
 
         let mut plain = TaikoEvmFactory.create_evm(make_db(), evm_env(TaikoSpecId::UNZEN));
+        plain.set_zk_gas_v2_enabled(true);
         plain.transact(tx_env(200_000)).expect("plain included outer transaction");
         plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
         let plain = plain.zk_gas_v2_snapshot().expect("plain V2 snapshot");
@@ -1798,6 +1983,7 @@ fn zk_gas_v2_attempted_sstore_resources_match_on_static_and_oog_halts() {
             evm_env(TaikoSpecId::UNZEN),
             NoOpInspector,
         );
+        inspected.set_zk_gas_v2_enabled(true);
         inspected.transact(tx_env(200_000)).expect("inspected included outer transaction");
         inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
         let inspected = inspected.zk_gas_v2_snapshot().expect("inspected V2 snapshot");
@@ -1851,6 +2037,7 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
     for family in SpawnFamily::ALL {
         let mut plain =
             TaikoEvmFactory.create_evm(spawn_case_db(family, child), evm_env(TaikoSpecId::UNZEN));
+        plain.set_zk_gas_v2_enabled(true);
         let plain_result = plain
             .transact(tx_env(500_000))
             .unwrap_or_else(|err| panic!("{} plain spawn failed: {err}", family.name()));
@@ -1861,6 +2048,7 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
             evm_env(TaikoSpecId::UNZEN),
             StepGasProbeInspector::default(),
         );
+        inspected.set_zk_gas_v2_enabled(true);
         let inspected_result = inspected
             .transact(tx_env(500_000))
             .unwrap_or_else(|err| panic!("{} inspected spawn failed: {err}", family.name()));
@@ -1909,6 +2097,7 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
         let failing = Bytecode::new_raw(Bytes::from(vec![family.opcode()]));
         let mut plain = TaikoEvmFactory
             .create_evm(db_with_contract(failing.clone()), evm_env(TaikoSpecId::UNZEN));
+        plain.set_zk_gas_v2_enabled(true);
         let plain_result = plain
             .transact(tx_env(100_000))
             .unwrap_or_else(|err| panic!("{} plain nonspawn errored: {err}", family.name()));
@@ -1919,6 +2108,7 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
             evm_env(TaikoSpecId::UNZEN),
             StepGasProbeInspector::default(),
         );
+        inspected.set_zk_gas_v2_enabled(true);
         let inspected_result = inspected
             .transact(tx_env(100_000))
             .unwrap_or_else(|err| panic!("{} inspected nonspawn errored: {err}", family.name()));

@@ -605,11 +605,13 @@ mod test {
     use reth_revm::{
         State,
         db::{CacheDB, EmptyDB},
-        state::AccountInfo,
+        state::{AccountInfo, Bytecode, bytecode::opcode},
     };
 
     use alethia_reth_evm::{
-        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
+        alloy::{TaikoZkGasEvm, decode_anchor_system_call_data},
+        factory::TaikoEvmFactory,
+        spec::TaikoSpecId,
         zk_gas::unzen::TX_INTRINSIC_ZK_GAS,
     };
 
@@ -617,8 +619,8 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
-            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, insert_contract,
+            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -690,7 +692,8 @@ mod test {
             .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
             .with_bundle_update()
             .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let mut evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        evm.set_zk_gas_v2_enabled(true);
         assert_eq!(evm.block_zk_gas_used(), Some(0));
         let ctx = unzen_execution_ctx();
         let mut executor = TaikoBlockExecutor::new(
@@ -705,21 +708,68 @@ mod test {
             .expect("first transaction should commit");
         let finalized_after_first = ctx.finalized_block_zk_gas();
         assert!(finalized_after_first > 0);
+        let v2_after_first = executor.evm.zk_gas_v2_snapshot().expect("V2 enabled");
+        assert_eq!(v2_after_first.started_non_anchor_transactions, 1);
 
         let err = executor
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 1, 1))
             .expect_err("second transaction should be discarded");
         assert!(is_zk_gas_limit_exceeded(&err));
         assert_eq!(ctx.finalized_block_zk_gas(), finalized_after_first);
+        assert_eq!(executor.evm.zk_gas_v2_snapshot(), Some(v2_after_first.clone()));
 
         let repeated_err = executor
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1))
             .expect_err("later transactions should not execute after zk gas exhaustion");
         assert!(is_zk_gas_limit_exceeded(&repeated_err));
+        assert_eq!(executor.evm.zk_gas_v2_snapshot(), Some(v2_after_first));
 
         let (_, result) = executor.finish().expect("executor should finish after truncation");
         assert_eq!(result.receipts.len(), 1);
         assert_eq!(result.gas_used, gas_used.tx_gas_used());
+    }
+
+    #[test]
+    fn executor_v2_commits_included_halt_and_discards_predicate_and_invalid_transactions() {
+        let halt_target = Address::with_last_byte(0x24);
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut db = db_with_contracts(&[(BENCH_CALLER, 0)]);
+        insert_contract(&mut db, halt_target, Bytecode::new_raw(Bytes::from(vec![opcode::ADD])));
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let mut evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        evm.set_zk_gas_v2_enabled(true);
+        let ctx = unzen_execution_ctx();
+        let mut executor =
+            TaikoBlockExecutor::new(evm, ctx, chain_spec, RethReceiptBuilder::default());
+
+        let omitted = executor
+            .execute_transaction_with_commit_condition(
+                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
+                |_| CommitChanges::No,
+            )
+            .expect("predicate rejection is not an execution error");
+        assert!(omitted.is_none());
+        assert_eq!(
+            executor.evm.zk_gas_v2_snapshot().expect("V2 enabled").started_non_anchor_transactions,
+            0
+        );
+
+        executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1))
+            .expect_err("invalid nonce is discarded");
+        assert_eq!(
+            executor.evm.zk_gas_v2_snapshot().expect("V2 enabled").started_non_anchor_transactions,
+            0
+        );
+
+        executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, halt_target, 0, 1))
+            .expect("valid HALT yields an included receipt");
+        let snapshot = executor.evm.zk_gas_v2_snapshot().expect("V2 enabled");
+        assert_eq!(snapshot.started_non_anchor_transactions, 1);
+        assert!(snapshot.operation_routes.iter().any(|row| {
+            row.route == alethia_reth_evm::zk_gas::v2::OperationRoute::Opcode(opcode::ADD)
+        }));
     }
 
     #[test]

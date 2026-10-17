@@ -192,6 +192,65 @@ fn zk_gas_v2_resource_reconciliation_fails_closed_on_diagnostic() {
 }
 
 #[test]
+fn zk_gas_v2_completion_rejects_exact_resources_below_any_evm_local_dimension() {
+    use alloy_primitives::{Address, B256, U256};
+
+    use super::v2::{StateAccess, TransactionMetadata, ZkGasV2Accumulator};
+
+    let mut accumulator = ZkGasV2Accumulator::default();
+    accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    accumulator
+        .observe_state_access(StateAccess::StorageWrite {
+            address: Address::with_last_byte(0xaa),
+            slot: U256::from(7),
+        })
+        .expect("storage resource is observed");
+    accumulator
+        .observe_state_access(StateAccess::Code {
+            hash: B256::with_last_byte(0xbb),
+            byte_length: 32,
+        })
+        .expect("code resource is observed");
+    accumulator.commit_transaction().expect("transaction commits");
+    let snapshot = accumulator.committed_snapshot();
+    let report = snapshot.shadow_report();
+    let local = snapshot.resources;
+    let cases = [
+        (
+            "unique_account_count",
+            ResourceSelectors { unique_account_count: 0, ..local },
+        ),
+        (
+            "unique_storage_slot_access_count",
+            ResourceSelectors { unique_storage_slot_access_count: 0, ..local },
+        ),
+        (
+            "unique_storage_slot_write_count",
+            ResourceSelectors { unique_storage_slot_write_count: 0, ..local },
+        ),
+        (
+            "unique_code_hash_count",
+            ResourceSelectors { unique_code_hash_count: 0, ..local },
+        ),
+        (
+            "unique_code_bytes",
+            ResourceSelectors { unique_code_bytes: 31, ..local },
+        ),
+    ];
+    for (field, exact) in cases {
+        assert_eq!(
+            ZkGasV2Model.complete_block_shadow_report(
+                &report,
+                exact,
+                MptSelectors::default(),
+            ),
+            Err(ZkGasV2CompletionError::ExactResourcesBelowEvmLocal(field)),
+            "{field} must not shrink below the sealed EVM-local subset",
+        );
+    }
+}
+
+#[test]
 fn zk_gas_v2_complete_shadow_report_rejects_diagnostics_and_wrong_identity() {
     let diagnostic = ZkGasV2ShadowReport::collector_unavailable();
     assert_eq!(
@@ -234,6 +293,7 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
             fixed,
             operations,
             feature_error,
+            ResourceSelectors::default(),
             resources,
             subtotal,
             pgu,
@@ -243,9 +303,29 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         FIXED_POINT_SCALE,
         2 * FIXED_POINT_SCALE,
         FIXED_POINT_SCALE,
+        0,
         3 * FIXED_POINT_SCALE,
-        6 * FIXED_POINT_SCALE,
-        6,
+        3,
+    );
+
+    let inconsistent_raw_resources = ZkGasV2KnownBlockBreakdown::from_parts_for_test(
+        valid.fixed_scaled(),
+        valid.operations_scaled(),
+        valid.feature_error_scaled(),
+        ResourceSelectors { unique_account_count: 1, ..Default::default() },
+        valid.evm_local_resources_scaled(),
+        valid.evm_local_known_subtotal_scaled(),
+        valid.evm_local_known_subtotal_pgu(),
+    );
+    assert_eq!(
+        ZkGasV2Model.complete_block_shadow_report(
+            &report(inconsistent_raw_resources),
+            ResourceSelectors { unique_account_count: 1, ..Default::default() },
+            MptSelectors::default(),
+        ),
+        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown(
+            "evm_local_resources_scaled"
+        ))
     );
 
     let tampered_total = known(

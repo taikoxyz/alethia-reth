@@ -1,8 +1,8 @@
 //! Runtime mode and typed shadow-report contracts for zk gas V2.
 
 use super::{
-    RUNTIME_SPEC_SHA256, ZkGasV2AccumulatorError, ZkGasV2BlockSnapshot, ZkGasV2Error, ZkGasV2Model,
-    model::KnownBlockPricingInput,
+    RUNTIME_SPEC_SHA256, ResourceSelectors, ZkGasV2AccumulatorError, ZkGasV2BlockSnapshot,
+    ZkGasV2Error, ZkGasV2Model, model::KnownBlockPricingInput,
 };
 use core::fmt;
 
@@ -19,6 +19,8 @@ pub struct ZkGasV2KnownBlockBreakdown {
     operations_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
     feature_error_scaled: i128,
+    /// Raw EVM-local resource subset sealed alongside its priced contribution.
+    evm_local_resources: ResourceSelectors,
     /// EVM-local unique-resource contribution in fixed-point units.
     evm_local_resources_scaled: i128,
     /// EVM-local subtotal in fixed-point units, excluding exact block-end resources and MPT work.
@@ -33,6 +35,7 @@ impl ZkGasV2KnownBlockBreakdown {
         fixed_scaled: i128,
         operations_scaled: i128,
         feature_error_scaled: i128,
+        evm_local_resources: ResourceSelectors,
         evm_local_resources_scaled: i128,
         evm_local_known_subtotal_scaled: i128,
         evm_local_known_subtotal_pgu: u128,
@@ -41,6 +44,7 @@ impl ZkGasV2KnownBlockBreakdown {
             fixed_scaled,
             operations_scaled,
             feature_error_scaled,
+            evm_local_resources,
             evm_local_resources_scaled,
             evm_local_known_subtotal_scaled,
             evm_local_known_subtotal_pgu,
@@ -60,6 +64,11 @@ impl ZkGasV2KnownBlockBreakdown {
     /// Explicit feature-error attribution included in the operation contribution.
     pub const fn feature_error_scaled(self) -> i128 {
         self.feature_error_scaled
+    }
+
+    /// Raw EVM-local resource subset observed by runtime hooks.
+    pub const fn evm_local_resources(self) -> ResourceSelectors {
+        self.evm_local_resources
     }
 
     /// EVM-local unique-resource contribution in fixed-point units.
@@ -82,6 +91,7 @@ impl ZkGasV2KnownBlockBreakdown {
         fixed_scaled: i128,
         operations_scaled: i128,
         feature_error_scaled: i128,
+        evm_local_resources: ResourceSelectors,
         resources_scaled: i128,
         known_subtotal_scaled: i128,
         known_subtotal_pgu: u128,
@@ -90,6 +100,7 @@ impl ZkGasV2KnownBlockBreakdown {
             fixed_scaled,
             operations_scaled,
             feature_error_scaled,
+            evm_local_resources,
             resources_scaled,
             known_subtotal_scaled,
             known_subtotal_pgu,
@@ -144,6 +155,8 @@ pub enum ZkGasV2CompletionError {
     UnexpectedIncompleteness(ZkGasV2Incompleteness),
     /// The sealed known-component fields were internally inconsistent.
     InconsistentKnownBreakdown(&'static str),
+    /// An alleged exact resource dimension was below its sealed EVM-local subset.
+    ExactResourcesBelowEvmLocal(&'static str),
     /// Shadow execution reported a collector or pricing diagnostic.
     ShadowDiagnostic(ZkGasV2ShadowDiagnostic),
     /// Checked model validation or arithmetic rejected the exact completion input.
@@ -165,6 +178,9 @@ impl fmt::Display for ZkGasV2CompletionError {
             }
             Self::InconsistentKnownBreakdown(field) => {
                 write!(formatter, "inconsistent zk gas V2 known breakdown: {field}")
+            }
+            Self::ExactResourcesBelowEvmLocal(field) => {
+                write!(formatter, "exact zk gas V2 resource is below EVM-local {field}")
             }
             Self::ShadowDiagnostic(diagnostic) => {
                 write!(formatter, "zk gas V2 shadow diagnostic: {diagnostic:?}")

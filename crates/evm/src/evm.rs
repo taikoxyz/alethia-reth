@@ -1,24 +1,32 @@
 //! Taiko-specific EVM wrapper and extra execution context.
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use reth_revm::{
     context::{ContextError, ContextTr, Evm as RevmEvm, FrameStack},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameResult, FrameTr, ItemOrResult, PrecompileProvider,
         instructions::{EthInstructions, InstructionProvider},
     },
-    interpreter::{FrameInput, InterpreterResult, interpreter::EthInterpreter},
+    interpreter::{
+        FrameInput, InterpreterResult, interpreter::EthInterpreter,
+        interpreter_types::LegacyBytecode,
+    },
 };
 use revm_database_interface::Database;
 
 use crate::zk_gas::{
     meter::{ZkGasMeter, ZkGasOutcome},
-    runtime::{run_metered_plain, set_custom_error},
+    runtime::{V2ExecutionHooks, run_metered_plain, set_custom_error},
     schedule::ZkGasSchedule,
+    v2::{StateAccess, ZkGasV2Accumulator, ZkGasV2AccumulatorError, ZkGasV2Error},
 };
 
-/// Custom EVM for Taiko, we extend the RevmEvm with
-/// [`TaikoEvmExtraContext`] to provide additional context
-/// for Anchor transaction pre-execution checks and base fee sharing.
+/// Custom EVM for Taiko, extended with Taiko execution context and metering hooks.
+///
+/// Schema-9 transaction scoping is owned by [`crate::alloy::TaikoEvmWrapper`]. Calling revm
+/// handlers directly on this inner type bypasses begin/reset/commit and is therefore unsupported
+/// for V2 quotes; all production, replay, and RPC entry points must use the Alloy
+/// [`alloy_evm::Evm`] wrapper.
+/// Pre-block system calls intentionally use their separate wrapper method and are not collected.
 pub struct TaikoEvm<CTX, INSP, P> {
     /// Inner revm engine with Taiko instruction wiring.
     pub inner:
@@ -27,6 +35,10 @@ pub struct TaikoEvm<CTX, INSP, P> {
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
     /// Production-path zk gas meter used when execution does not need an external inspector.
     zk_gas_meter: Option<ZkGasMeter<'static>>,
+    /// Optional schema-9 selector collector used by shadow/admission integration.
+    zk_gas_v2: Option<ZkGasV2Accumulator>,
+    /// Concrete context hooks installed together with the V2 collector.
+    zk_gas_v2_hooks: Option<V2ExecutionHooks<CTX>>,
 }
 
 impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
@@ -40,7 +52,13 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
-        Self { inner, extra_execution_ctx: None, zk_gas_meter: None }
+        Self {
+            inner,
+            extra_execution_ctx: None,
+            zk_gas_meter: None,
+            zk_gas_v2: None,
+            zk_gas_v2_hooks: None,
+        }
     }
 
     /// Installs a production-path zk gas meter for the provided schedule.
@@ -59,6 +77,16 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
         self.zk_gas_meter.as_mut()
     }
 
+    /// Returns the schema-9 selector collector, when enabled.
+    pub(crate) const fn zk_gas_v2(&self) -> Option<&ZkGasV2Accumulator> {
+        self.zk_gas_v2.as_ref()
+    }
+
+    /// Returns the mutable schema-9 selector collector, when enabled.
+    pub(crate) fn zk_gas_v2_mut(&mut self) -> Option<&mut ZkGasV2Accumulator> {
+        self.zk_gas_v2.as_mut()
+    }
+
     #[inline]
     /// Set extra execution context derived from the anchor system call.
     pub fn with_extra_execution_context(
@@ -72,6 +100,24 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             anchor_caller_address,
             anchor_caller_nonce,
         ));
+    }
+}
+
+impl<DB, I, P>
+    TaikoEvm<crate::alloy::TaikoEvmContext<DB>, crate::zk_gas::adapter::ZkGasInspector<I>, P>
+where
+    DB: Database,
+{
+    /// Enables schema-9 transactional selector collection on the concrete Taiko runtime.
+    pub fn with_zk_gas_v2(mut self, enabled: bool) -> Self {
+        self.set_zk_gas_v2_enabled(enabled);
+        self
+    }
+
+    /// Enables or disables schema-9 transactional selector collection in place.
+    pub(crate) fn set_zk_gas_v2_enabled(&mut self, enabled: bool) {
+        self.zk_gas_v2 = enabled.then(ZkGasV2Accumulator::default);
+        self.zk_gas_v2_hooks = enabled.then_some(V2ExecutionHooks::TAIKO);
     }
 }
 
@@ -139,9 +185,31 @@ where
         ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
         let precompile_metering = match &frame_input.frame_input {
-            FrameInput::Call(inputs) => Some((inputs.gas_limit, inputs.bytecode_address)),
+            FrameInput::Call(inputs) => {
+                let work_units =
+                    (inputs.bytecode_address == Address::with_last_byte(0x07)).then(|| {
+                        super::zk_gas::runtime::bn254_work_units(
+                            &inputs.input.bytes(&self.inner.ctx),
+                        )
+                    });
+                Some((
+                    inputs.gas_limit,
+                    inputs.bytecode_address,
+                    inputs.caller,
+                    inputs.target_address,
+                    work_units,
+                ))
+            }
             FrameInput::Create(_) | FrameInput::Empty => None,
         };
+        // Reaching frame dispatch confirms the deferred spawn wrapper. Record it before frame
+        // initialization so a database/context error cannot leave a stale pending spawn; a
+        // transaction-level error will discard the whole in-flight scope.
+        if let Some(accumulator) = self.zk_gas_v2.as_mut() &&
+            let Err(error) = accumulator.confirm_spawn()
+        {
+            accumulator.retain_diagnostic(Some(error));
+        }
 
         let is_first_init = self.inner.frame_stack.index().is_none();
         let new_frame = if is_first_init {
@@ -157,9 +225,17 @@ where
             frame_input,
         )?;
 
+        if let Some(accumulator) = self.zk_gas_v2.as_mut() &&
+            let Some((_, bytecode_address, caller, target, _)) = precompile_metering
+        {
+            for address in [caller, target, bytecode_address] {
+                let _ = accumulator.observe_state_access(StateAccess::Account(address));
+            }
+        }
+
         if let ItemOrResult::Result(FrameResult::Call(outcome)) = &result &&
             outcome.was_precompile_called &&
-            let Some((gas_limit, bytecode_address)) = precompile_metering &&
+            let Some((gas_limit, bytecode_address, _, _, _)) = precompile_metering &&
             let Some(meter) = self.zk_gas_meter.as_mut()
         {
             let gas_used = gas_limit.saturating_sub(outcome.result.gas.remaining());
@@ -167,6 +243,23 @@ where
                 meter.charge_precompile(&bytecode_address, gas_used)
             {
                 set_custom_error(&mut self.inner.ctx);
+            }
+        }
+
+        if let ItemOrResult::Result(FrameResult::Call(outcome)) = &result &&
+            outcome.was_precompile_called &&
+            let Some((gas_limit, bytecode_address, _, _, work_units)) = precompile_metering &&
+            let Some(accumulator) = self.zk_gas_v2.as_mut()
+        {
+            let native_gas = gas_limit.saturating_sub(outcome.result.gas.remaining());
+            let address = U256::from_be_slice(bytecode_address.as_slice());
+            match u16::try_from(address) {
+                Ok(address) => {
+                    let _ = accumulator.observe_precompile(address, native_gas, work_units);
+                }
+                Err(_) => accumulator.retain_diagnostic(Some(ZkGasV2AccumulatorError::Pricing(
+                    ZkGasV2Error::InvalidInput("precompile_address"),
+                ))),
             }
         }
 
@@ -189,20 +282,37 @@ where
         FrameInitOrResult<Self::Frame>,
         ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
-        let Some(meter) = self.zk_gas_meter.as_mut() else {
+        if self.zk_gas_meter.is_none() && self.zk_gas_v2.is_none() {
             return self.inner.frame_run();
-        };
+        }
 
         let frame = self.inner.frame_stack.get();
         let context = &mut self.inner.ctx;
         let instructions = &mut self.inner.instruction;
+
+        if let Some(accumulator) = self.zk_gas_v2.as_mut() {
+            for address in
+                [frame.interpreter.input.caller_address, frame.interpreter.input.target_address]
+            {
+                let _ = accumulator.observe_state_access(StateAccess::Account(address));
+            }
+            if let Some(address) = frame.interpreter.input.bytecode_address {
+                let _ = accumulator.observe_state_access(StateAccess::Account(address));
+            }
+            let code_hash = frame.interpreter.bytecode.get_or_calculate_hash();
+            let byte_length = frame.interpreter.bytecode.bytecode_slice().len() as u64;
+            let _ = accumulator
+                .observe_state_access(StateAccess::Code { hash: code_hash, byte_length });
+        }
 
         let action = run_metered_plain(
             context,
             &mut frame.interpreter,
             instructions.instruction_table(),
             instructions.gas_table(),
-            meter,
+            self.zk_gas_meter.as_mut(),
+            self.zk_gas_v2.as_mut(),
+            self.zk_gas_v2_hooks,
         );
 
         frame.process_next_action(context, action).inspect(|i| {

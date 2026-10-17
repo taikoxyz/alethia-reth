@@ -1,9 +1,14 @@
 //! Pure fixed-point evaluator for the accepted schema-9 zk gas model.
 
+mod accumulator;
 mod generated;
 mod model;
 mod types;
 
+pub use accumulator::{
+    StateAccess, TransactionMetadata, ZkGasV2Accumulator, ZkGasV2AccumulatorError,
+    ZkGasV2BlockSnapshot,
+};
 pub use generated::{FIXED_POINT_SCALE, RUNTIME_SPEC_SHA256};
 pub use model::ZkGasV2Model;
 pub use types::{

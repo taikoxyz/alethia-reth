@@ -214,10 +214,10 @@ where
                 target: "zkgas_v2",
                 model_id = report.model_id(),
                 status = report.status().label(),
-                known_subtotal_pgu = ?known.known_subtotal_pgu(),
+                evm_local_known_subtotal_pgu = ?known.evm_local_known_subtotal_pgu(),
                 fixed_scaled = ?known.fixed_scaled(),
                 operations_scaled = ?known.operations_scaled(),
-                resources_scaled = ?known.resources_scaled(),
+                evm_local_resources_scaled = ?known.evm_local_resources_scaled(),
                 "zk gas V2 shadow block report"
             ),
             ZkGasV2ShadowStatus::Diagnostic(_) => tracing::warn!(
@@ -728,7 +728,8 @@ mod test {
                     assert!(matches!(
                         report.status(),
                         ZkGasV2ShadowStatus::Incomplete {
-                            missing: ZkGasV2Incompleteness::ExactMptSelectorsUnavailable,
+                            missing: ZkGasV2Incompleteness::
+                                ExactBlockResourcesAndMptSelectorsUnavailable,
                             ..
                         }
                     ));

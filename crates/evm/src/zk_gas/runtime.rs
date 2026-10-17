@@ -254,9 +254,9 @@ impl PendingV2Step {
             } else {
                 0
             },
-            boundary_4k_events: extra_4k_pages(after_words)
-                .saturating_sub(extra_4k_pages(self.memory_words))
-                as u64,
+            boundary_4k_events: u64::from(
+                extra_4k_pages(after_words) > extra_4k_pages(self.memory_words),
+            ),
         };
         Ok(match pending {
             PendingModelInput::Default => {

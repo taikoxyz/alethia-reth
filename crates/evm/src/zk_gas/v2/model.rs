@@ -301,6 +301,7 @@ impl ZkGasV2Model {
         exact_mpt: MptSelectors,
     ) -> Result<PricingBreakdown, ZkGasV2CompletionError> {
         let known = validate_shadow_report(report)?;
+        validate_exact_resources_cover_local(exact_resources, known.evm_local_resources())?;
         let resources = price_resources(exact_resources)?;
         let mpt = price_mpt(exact_mpt, MPT_TARIFFS)?;
         let total = checked_sum(&[
@@ -378,6 +379,7 @@ impl ZkGasV2Model {
             fixed,
             operations,
             feature_errors,
+            input.resources,
             resources,
             known_subtotal,
             ceil_scaled(known_subtotal)?,
@@ -447,6 +449,11 @@ fn validate_shadow_report(
     ensure_nonnegative(known.operations_scaled(), "operations")?;
     ensure_nonnegative(known.feature_error_scaled(), "feature_error")?;
     ensure_nonnegative(known.evm_local_resources_scaled(), "evm_local_resources")?;
+    if price_resources(known.evm_local_resources())? != known.evm_local_resources_scaled() {
+        return Err(ZkGasV2CompletionError::InconsistentKnownBreakdown(
+            "evm_local_resources_scaled",
+        ));
+    }
     if known.feature_error_scaled() > known.operations_scaled() {
         return Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("feature_error_scaled"));
     }
@@ -466,6 +473,32 @@ fn validate_shadow_report(
         ));
     }
     Ok(known)
+}
+
+fn validate_exact_resources_cover_local(
+    exact: ResourceSelectors,
+    local: ResourceSelectors,
+) -> Result<(), ZkGasV2CompletionError> {
+    for (field, exact, local) in [
+        ("unique_account_count", exact.unique_account_count, local.unique_account_count),
+        (
+            "unique_storage_slot_access_count",
+            exact.unique_storage_slot_access_count,
+            local.unique_storage_slot_access_count,
+        ),
+        (
+            "unique_storage_slot_write_count",
+            exact.unique_storage_slot_write_count,
+            local.unique_storage_slot_write_count,
+        ),
+        ("unique_code_hash_count", exact.unique_code_hash_count, local.unique_code_hash_count),
+        ("unique_code_bytes", exact.unique_code_bytes, local.unique_code_bytes),
+    ] {
+        if exact < local {
+            return Err(ZkGasV2CompletionError::ExactResourcesBelowEvmLocal(field));
+        }
+    }
+    Ok(())
 }
 
 /// Finds one authenticated generated route.

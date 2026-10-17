@@ -4,6 +4,7 @@ use super::{
     RUNTIME_SPEC_SHA256, ZkGasV2AccumulatorError, ZkGasV2BlockSnapshot, ZkGasV2Error, ZkGasV2Model,
     model::KnownBlockPricingInput,
 };
+use core::fmt;
 
 /// Priced block components that are observable without the production MPT interface.
 ///
@@ -62,6 +63,47 @@ pub enum ZkGasV2ShadowDiagnostic {
     /// The pure model rejected the committed execution/resource selectors.
     Pricing(ZkGasV2Error),
 }
+
+/// Typed failure while completing a Shadow report with an exact external MPT snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZkGasV2CompletionError {
+    /// The report did not identify the sealed runtime model.
+    ModelIdentity,
+    /// The report named an incompleteness that this completion input cannot satisfy.
+    UnexpectedIncompleteness(ZkGasV2Incompleteness),
+    /// The public known-component fields were internally inconsistent.
+    InconsistentKnownBreakdown(&'static str),
+    /// Shadow execution reported a collector or pricing diagnostic.
+    ShadowDiagnostic(ZkGasV2ShadowDiagnostic),
+    /// Checked model validation or arithmetic rejected the exact completion input.
+    Pricing(ZkGasV2Error),
+}
+
+impl From<ZkGasV2Error> for ZkGasV2CompletionError {
+    fn from(error: ZkGasV2Error) -> Self {
+        Self::Pricing(error)
+    }
+}
+
+impl fmt::Display for ZkGasV2CompletionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModelIdentity => formatter.write_str("zk gas V2 runtime model identity differs"),
+            Self::UnexpectedIncompleteness(missing) => {
+                write!(formatter, "unexpected zk gas V2 incompleteness: {missing:?}")
+            }
+            Self::InconsistentKnownBreakdown(field) => {
+                write!(formatter, "inconsistent zk gas V2 known breakdown: {field}")
+            }
+            Self::ShadowDiagnostic(diagnostic) => {
+                write!(formatter, "zk gas V2 shadow diagnostic: {diagnostic:?}")
+            }
+            Self::Pricing(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ZkGasV2CompletionError {}
 
 /// Status of one block-local shadow evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

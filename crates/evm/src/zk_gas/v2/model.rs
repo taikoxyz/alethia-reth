@@ -1,7 +1,8 @@
 //! Handwritten checked arithmetic for the generated pricing model.
 
 use super::{
-    ZkGasV2KnownBlockBreakdown,
+    ZkGasV2CompletionError, ZkGasV2Incompleteness, ZkGasV2KnownBlockBreakdown, ZkGasV2ShadowReport,
+    ZkGasV2ShadowStatus,
     generated::{
         BLOB_SOURCE_TARIFFS, BLOCK_FIXED, FIXED_POINT_SCALE, MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS,
         OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP,
@@ -265,6 +266,59 @@ impl ZkGasV2Model {
         })?;
         let mpt = price_mpt(input.mpt, MPT_TARIFFS)?;
         let total = checked_add(known.known_subtotal_scaled, mpt)?;
+        ensure_nonnegative(total, "block")?;
+        Ok(PricingBreakdown {
+            fixed_scaled: known.fixed_scaled,
+            operations_scaled: known.operations_scaled,
+            feature_error_scaled: known.feature_error_scaled,
+            resources_scaled: known.resources_scaled,
+            mpt_scaled: mpt,
+            total_scaled: total,
+            total_pgu: Some(ceil_scaled(total)?),
+            ..Default::default()
+        })
+    }
+
+    /// Completes one typed Shadow report with an exact absolute block-local MPT snapshot.
+    ///
+    /// This revalidates every public subtotal field before using it. The report must identify the
+    /// sealed model and must carry the expected exact-MPT incompleteness; diagnostics are preserved
+    /// as typed completion failures. MPT selectors are priced by the sealed model and the final PGU
+    /// ceiling is applied once after combining the fixed-point known and MPT components.
+    pub fn complete_block_shadow_report(
+        self,
+        report: &ZkGasV2ShadowReport,
+        exact_mpt: MptSelectors,
+    ) -> Result<PricingBreakdown, ZkGasV2CompletionError> {
+        if report.model_id != super::RUNTIME_SPEC_SHA256 {
+            return Err(ZkGasV2CompletionError::ModelIdentity);
+        }
+        let (known, missing) = match report.status {
+            ZkGasV2ShadowStatus::Incomplete { known, missing } => (known, missing),
+            ZkGasV2ShadowStatus::Diagnostic(diagnostic) => {
+                return Err(ZkGasV2CompletionError::ShadowDiagnostic(diagnostic));
+            }
+        };
+        if missing != ZkGasV2Incompleteness::ExactMptSelectorsUnavailable {
+            return Err(ZkGasV2CompletionError::UnexpectedIncompleteness(missing));
+        }
+        ensure_nonnegative(known.fixed_scaled, "fixed")?;
+        ensure_nonnegative(known.operations_scaled, "operations")?;
+        ensure_nonnegative(known.feature_error_scaled, "feature_error")?;
+        ensure_nonnegative(known.resources_scaled, "resources")?;
+        if known.feature_error_scaled > known.operations_scaled {
+            return Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("feature_error_scaled"));
+        }
+        let recomputed =
+            checked_sum(&[known.fixed_scaled, known.operations_scaled, known.resources_scaled])?;
+        if recomputed != known.known_subtotal_scaled {
+            return Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("known_subtotal_scaled"));
+        }
+        if ceil_scaled(recomputed)? != known.known_subtotal_pgu {
+            return Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("known_subtotal_pgu"));
+        }
+        let mpt = price_mpt(exact_mpt, MPT_TARIFFS)?;
+        let total = checked_add(recomputed, mpt)?;
         ensure_nonnegative(total, "block")?;
         Ok(PricingBreakdown {
             fixed_scaled: known.fixed_scaled,

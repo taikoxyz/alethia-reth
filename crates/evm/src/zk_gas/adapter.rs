@@ -175,8 +175,11 @@ where
         // NewFrame has been selected but not dispatched yet, so a failed wrapper charge can still
         // replace the action before any child contract or precompile executes.
         if let Err(ZkGasOutcome::LimitExceeded) = metering.charge_finished_step(step) {
-            halt_for_zk_gas_limit(context, interp);
+            // Metering has already sealed the executed action and gas delta. Let observational
+            // inspectors see that original post-step state, then unconditionally replace it with
+            // the zk-gas halt so an inspector cannot cancel the rejection.
             self.inner.step_end(interp, context);
+            halt_for_zk_gas_limit(context, interp);
             return;
         }
         if let Some(v2_step) = step.v2 &&

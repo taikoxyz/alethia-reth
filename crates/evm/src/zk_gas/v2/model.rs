@@ -149,6 +149,40 @@ impl ZkGasV2Model {
         ROUTES.len()
     }
 
+    /// Returns the generated model input for an opcode without a dedicated typed extractor.
+    ///
+    /// Runtime collection handles structured families (EXP, memory, copy, storage, context,
+    /// LOG, and RETURN) explicitly. This method keeps the remaining `None` versus
+    /// `StaticRawGas` decision tied to the authenticated generated route instead of duplicating
+    /// a handwritten opcode table in the execution observer.
+    pub(crate) fn default_opcode_model_input(
+        self,
+        opcode: u8,
+        raw_gas: u64,
+    ) -> Result<OperationModelInput, ZkGasV2Error> {
+        let route = lookup_route(OperationRoute::Opcode(opcode))?;
+        match route.model_kind {
+            ModelKind::Fixed | ModelKind::Linear => Ok(OperationModelInput::None),
+            ModelKind::FixedWithMemory => match route.required_input {
+                RequiredInput::None => Ok(OperationModelInput::None),
+                RequiredInput::StaticRawGas => Ok(OperationModelInput::StaticRawGas { raw_gas }),
+                RequiredInput::Log => Err(ZkGasV2Error::MissingInput("log")),
+            },
+            ModelKind::StaticRawGas | ModelKind::RawGasAffine => {
+                Ok(OperationModelInput::StaticRawGas { raw_gas })
+            }
+            ModelKind::Exp => Err(ZkGasV2Error::MissingInput("exp")),
+            ModelKind::Keccak => Err(ZkGasV2Error::MissingInput("keccak")),
+            ModelKind::MemoryAccess => Err(ZkGasV2Error::MissingInput("memory_access")),
+            ModelKind::MemoryCopy => Err(ZkGasV2Error::MissingInput("memory_copy")),
+            ModelKind::Copy => Err(ZkGasV2Error::MissingInput("copy")),
+            ModelKind::LogPiecewise => Err(ZkGasV2Error::MissingInput("log")),
+            ModelKind::Return => Err(ZkGasV2Error::MissingInput("return")),
+            ModelKind::Storage => Err(ZkGasV2Error::MissingInput("storage")),
+            ModelKind::Context => Err(ZkGasV2Error::MissingInput("declared_context")),
+        }
+    }
+
     /// Prices one operation without applying the block-boundary ceiling.
     pub fn price_operation(
         self,

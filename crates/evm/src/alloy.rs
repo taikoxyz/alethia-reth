@@ -27,6 +27,10 @@ use crate::{
     zk_gas::{
         adapter::ZkGasInspector,
         meter::{ZkGasMeter, ZkGasOutcome},
+        v2::{
+            StateAccess, TransactionMetadata, ZkGasV2Accumulator, ZkGasV2AccumulatorError,
+            ZkGasV2BlockSnapshot,
+        },
     },
 };
 
@@ -57,12 +61,24 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
+    /// Task-4 collection switch. Task 6 promotes this boolean to Disabled/Shadow/Admission modes.
+    collect_zk_gas_v2: bool,
+    /// Temporary guard used by pre-block system calls, which are outside the block transaction
+    /// workload calibrated by schema 9.
+    suspend_zk_gas_v2: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
+        Self {
+            inner: evm,
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+            collect_zk_gas_v2: true,
+            suspend_zk_gas_v2: false,
+        }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -108,6 +124,24 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
             self.base_evm_mut().zk_gas_meter_mut()
         } else {
             self.base_evm_mut().inner.inspector.meter_mut()
+        }
+    }
+
+    /// Returns the V2 collector used by the active execution path.
+    pub fn zk_gas_v2(&self) -> Option<&ZkGasV2Accumulator> {
+        if self.inspect {
+            self.base_evm().inner.inspector.v2()
+        } else {
+            self.base_evm().zk_gas_v2()
+        }
+    }
+
+    /// Returns the mutable V2 collector used by the active execution path.
+    pub fn zk_gas_v2_mut(&mut self) -> Option<&mut ZkGasV2Accumulator> {
+        if self.inspect {
+            self.base_evm_mut().inner.inspector.v2_mut()
+        } else {
+            self.base_evm_mut().zk_gas_v2_mut()
         }
     }
 
@@ -210,6 +244,15 @@ pub trait TaikoZkGasEvm {
     ///
     /// Returns `Ok(())` when the EVM has no meter installed (pre-Unzen specs).
     fn charge_tx_intrinsic_zk_gas(&mut self) -> Result<(), ZkGasOutcome>;
+
+    /// Enables or disables schema-9 selector collection.
+    fn set_zk_gas_v2_enabled(&mut self, enabled: bool);
+
+    /// Commits the active V2 transaction selector scope.
+    fn commit_transaction_zk_gas_v2(&mut self) -> Result<(), ZkGasV2AccumulatorError>;
+
+    /// Returns the committed block-local V2 selector snapshot, when collection is enabled.
+    fn zk_gas_v2_snapshot(&self) -> Option<ZkGasV2BlockSnapshot>;
 }
 
 impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
@@ -233,6 +276,9 @@ where
             meter.reset_transaction();
         }
         self.base_evm_mut().inner.inspector.reset_transaction();
+        if let Some(accumulator) = self.base_evm_mut().zk_gas_v2_mut() {
+            accumulator.reset_transaction();
+        }
     }
 
     /// Commits the current transaction's zk gas into the block total and returns the new total.
@@ -269,6 +315,28 @@ where
             return Ok(());
         };
         meter.charge_tx_intrinsic()
+    }
+
+    fn set_zk_gas_v2_enabled(&mut self, enabled: bool) {
+        self.collect_zk_gas_v2 = enabled;
+        if self.inspect {
+            self.base_evm_mut().set_zk_gas_v2_enabled(false);
+            self.base_evm_mut().inner.inspector.enable_v2(enabled);
+        } else {
+            self.base_evm_mut().inner.inspector.enable_v2(false);
+            self.base_evm_mut().set_zk_gas_v2_enabled(enabled);
+        }
+    }
+
+    fn commit_transaction_zk_gas_v2(&mut self) -> Result<(), ZkGasV2AccumulatorError> {
+        if let Some(accumulator) = self.zk_gas_v2_mut() {
+            accumulator.commit_transaction()?;
+        }
+        Ok(())
+    }
+
+    fn zk_gas_v2_snapshot(&self) -> Option<ZkGasV2BlockSnapshot> {
+        Some(self.zk_gas_v2()?.committed_snapshot())
     }
 }
 
@@ -364,6 +432,12 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Instantiate exactly one collector for the selected execution path. The system-call
+        // wrapper temporarily suspends this bracket, so pre-block/anchor marker work is not
+        // collected even though ordinary system calls reuse `transact` internally.
+        if self.collect_zk_gas_v2 && !self.suspend_zk_gas_v2 && self.zk_gas_v2().is_none() {
+            self.set_zk_gas_v2_enabled(true);
+        }
         // RPC callers that reuse one EVM (`eth_estimateGas`'s repeated runs of one transaction,
         // `eth_callBundle`'s and the intra-block replay helpers' transaction sequences) never
         // commit the meter, so without a reset the in-flight zk gas of previous runs
@@ -374,6 +448,42 @@ where
             self.reset_transaction_zk_gas();
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
+        let is_anchor = self.base_evm().extra_execution_ctx.as_ref().is_some_and(|context| {
+            context.anchor_caller_address() == tx.caller &&
+                context.anchor_caller_nonce() == tx.nonce &&
+                tx.kind.to() == Some(&get_treasury_address(self.chain_id()))
+        });
+        let metadata =
+            TransactionMetadata { is_anchor, native_value_transfer: !tx.value.is_zero() };
+        if !self.suspend_zk_gas_v2 &&
+            let Some(accumulator) = self.zk_gas_v2_mut()
+        {
+            if let Err(error) = accumulator.begin_transaction(metadata) {
+                accumulator.retain_diagnostic(Some(error));
+            }
+            let _ = accumulator.observe_state_access(StateAccess::Account(tx.caller));
+            if let Some(target) = tx.kind.to() {
+                let _ = accumulator.observe_state_access(StateAccess::Account(*target));
+            }
+            for item in &tx.access_list.0 {
+                let _ = accumulator.observe_state_access(StateAccess::Account(item.address));
+                for slot in &item.storage_keys {
+                    let _ = accumulator.observe_state_access(StateAccess::StorageRead {
+                        address: item.address,
+                        slot: U256::from_be_slice(slot.as_slice()),
+                    });
+                }
+            }
+        }
+        let beneficiary = self.ctx().block.beneficiary;
+        let treasury = get_treasury_address(self.chain_id());
+        if !self.suspend_zk_gas_v2 &&
+            let Some(accumulator) = self.zk_gas_v2_mut()
+        {
+            for address in [beneficiary, treasury] {
+                let _ = accumulator.observe_state_access(StateAccess::Account(address));
+            }
+        }
         self.ctx_mut().set_tx(tx);
         // Run [`TaikoEvmHandler`] against the inner EVM directly so Taiko's anchor and
         // fee-share semantics apply on both the plain and the inspected path.
@@ -389,7 +499,29 @@ where
         // building and derived-block execution skip invalid transactions and keep executing on
         // this EVM, and an errored run must not leave the journal for the next transaction.
         let state = self.ctx_mut().journal_mut().finalize();
-        Ok(ResultAndState::new(result?, state))
+        let result = result?;
+        if !self.suspend_zk_gas_v2 &&
+            let Some(accumulator) = self.zk_gas_v2_mut()
+        {
+            for (address, account) in &state {
+                let _ = accumulator.observe_state_access(StateAccess::Account(*address));
+                if let Some(code) = &account.info.code {
+                    let _ = accumulator.observe_state_access(StateAccess::Code {
+                        hash: account.info.code_hash,
+                        byte_length: code.len() as u64,
+                    });
+                }
+                for (slot, value) in &account.storage {
+                    let access = if value.is_changed() {
+                        StateAccess::StorageWrite { address: *address, slot: *slot }
+                    } else {
+                        StateAccess::StorageRead { address: *address, slot: *slot }
+                    };
+                    let _ = accumulator.observe_state_access(access);
+                }
+            }
+        }
+        Ok(ResultAndState::new(result, state))
     }
 
     /// Executes a system call.
@@ -486,7 +618,10 @@ where
         // disable the nonce check
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
 
+        let previous_suspension = self.suspend_zk_gas_v2;
+        self.suspend_zk_gas_v2 = true;
         let mut res = self.transact(tx);
+        self.suspend_zk_gas_v2 = previous_suspension;
 
         // swap back to the previous gas limit
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);

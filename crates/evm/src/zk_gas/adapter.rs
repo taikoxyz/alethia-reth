@@ -15,16 +15,18 @@ use reth_revm::{
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter,
         InterpreterAction,
         interpreter::EthInterpreter,
-        interpreter_types::{Jumps, LoopControl},
+        interpreter_types::{InputsTr, Jumps, LegacyBytecode, LoopControl},
     },
 };
+use std::collections::BTreeMap;
 
 use crate::alloy::TaikoEvmContext;
 
 use super::{
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
-    runtime::{halt_for_zk_gas_limit, set_custom_error},
+    runtime::{PendingV2Step, bn254_work_units, halt_for_zk_gas_limit, set_custom_error},
     schedule::ZkGasSchedule,
+    v2::{StateAccess, ZkGasV2Accumulator, ZkGasV2AccumulatorError, ZkGasV2Error},
 };
 
 /// Dedicated custom error string emitted when zk gas accounting exceeds the block limit.
@@ -50,7 +52,7 @@ pub struct ZkGasInspector<I> {
 impl<I> ZkGasInspector<I> {
     /// Creates a new composite inspector around `inner` and the optional zk gas schedule.
     pub fn new(inner: I, schedule: Option<&'static ZkGasSchedule>) -> Self {
-        let metering = schedule.map(ZkGasMeteringState::new);
+        let metering = schedule.map(|schedule| ZkGasMeteringState::new(Some(schedule)));
         Self { inner, metering }
     }
 
@@ -68,14 +70,14 @@ impl<I> ZkGasInspector<I> {
     ///
     /// Returns `None` when the active spec has no zk gas schedule (pre-Unzen specs).
     pub(crate) fn meter(&self) -> Option<&ZkGasMeter<'static>> {
-        self.metering.as_ref().map(|state| &state.meter)
+        self.metering.as_ref()?.meter.as_ref()
     }
 
     /// Returns a mutable reference to the active zk gas meter, if metering is enabled.
     ///
     /// Returns `None` when the active spec has no zk gas schedule (pre-Unzen specs).
     pub(crate) fn meter_mut(&mut self) -> Option<&mut ZkGasMeter<'static>> {
-        self.metering.as_mut().map(|state| &mut state.meter)
+        self.metering.as_mut()?.meter.as_mut()
     }
 
     /// Discards in-flight transaction metering state, if metering is enabled.
@@ -86,6 +88,29 @@ impl<I> ZkGasInspector<I> {
         if let Some(metering) = &mut self.metering {
             metering.reset_transaction();
         }
+    }
+
+    /// Enables schema-9 selector collection on the inspected execution path.
+    pub(crate) fn enable_v2(&mut self, enabled: bool) {
+        if enabled {
+            self.metering.get_or_insert_with(|| ZkGasMeteringState::new(None)).v2 =
+                Some(ZkGasV2Accumulator::default());
+        } else if let Some(metering) = &mut self.metering {
+            metering.v2 = None;
+            if metering.meter.is_none() {
+                self.metering = None;
+            }
+        }
+    }
+
+    /// Returns the inspected-path V2 collector, when enabled.
+    pub(crate) fn v2(&self) -> Option<&ZkGasV2Accumulator> {
+        self.metering.as_ref()?.v2.as_ref()
+    }
+
+    /// Returns the mutable inspected-path V2 collector, when enabled.
+    pub(crate) fn v2_mut(&mut self) -> Option<&mut ZkGasV2Accumulator> {
+        self.metering.as_mut()?.v2.as_mut()
     }
 }
 
@@ -101,6 +126,18 @@ where
         context: &mut TaikoEvmContext<DB>,
     ) {
         self.inner.initialize_interp(interp, context);
+        if let Some(accumulator) = self.metering.as_mut().and_then(|state| state.v2.as_mut()) {
+            for address in [interp.input.caller_address(), interp.input.target_address()] {
+                let _ = accumulator.observe_state_access(StateAccess::Account(address));
+            }
+            if let Some(address) = interp.input.bytecode_address() {
+                let _ = accumulator.observe_state_access(StateAccess::Account(*address));
+            }
+            let code_hash = interp.bytecode.get_or_calculate_hash();
+            let byte_length = interp.bytecode.bytecode_slice().len() as u64;
+            let _ = accumulator
+                .observe_state_access(StateAccess::Code { hash: code_hash, byte_length });
+        }
     }
 
     /// Captures the opcode and its pre-step EVM gas snapshot.
@@ -109,15 +146,12 @@ where
         interp: &mut Interpreter<EthInterpreter>,
         context: &mut TaikoEvmContext<DB>,
     ) {
-        if let Some(metering) = &mut self.metering {
-            // Snapshot the opcode and remaining gas before the interpreter mutates frame state.
-            metering.begin_step(
-                context.journal().depth(),
-                interp.bytecode.opcode(),
-                interp.gas.remaining(),
-            );
-        }
         self.inner.step(interp, context);
+        if let Some(metering) = &mut self.metering {
+            // Capture after the wrapped inspector's pre-step callback so selectors describe the
+            // state that the interpreter will actually execute.
+            metering.begin_step(context.journal().depth(), interp, context);
+        }
     }
 
     /// Charges every completed opcode from the same post-step action used by the production loop.
@@ -126,9 +160,8 @@ where
         interp: &mut Interpreter<EthInterpreter>,
         context: &mut TaikoEvmContext<DB>,
     ) {
-        self.inner.step_end(interp, context);
-
         let Some(metering) = &mut self.metering else {
+            self.inner.step_end(interp, context);
             return;
         };
         let depth = context.journal().depth();
@@ -139,9 +172,22 @@ where
 
         // NewFrame has been selected but not dispatched yet, so a failed wrapper charge can still
         // replace the action before any child contract or precompile executes.
-        if metering.charge_finished_step(step).is_err() {
+        if let Err(ZkGasOutcome::LimitExceeded) = metering.charge_finished_step(step) {
             halt_for_zk_gas_limit(context, interp);
+            self.inner.step_end(interp, context);
+            return;
         }
+        if let Some(v2_step) = step.v2 &&
+            let Some(accumulator) = metering.v2.as_mut() &&
+            let Err(error) = v2_step.finish(interp, context, accumulator)
+        {
+            accumulator.retain_diagnostic(Some(error));
+        }
+        // Post-step callbacks run after all metering snapshots so a user inspector cannot rewrite
+        // the executed action or gas delta before they are attributed. Selector parity is promised
+        // for observational inspectors; an inspector that mutates execution in `step` is metered
+        // according to the state it leaves for the interpreter.
+        self.inner.step_end(interp, context);
     }
 
     /// Forwards emitted logs to the wrapped inner inspector.
@@ -174,7 +220,21 @@ where
         context: &mut TaikoEvmContext<DB>,
         inputs: &mut CallInputs,
     ) -> Option<CallOutcome> {
-        self.inner.call(context, inputs)
+        let outcome = self.inner.call(context, inputs);
+        if let Some(metering) = &mut self.metering {
+            let work_units = (inputs.bytecode_address == Address::with_last_byte(0x07))
+                .then(|| bn254_work_units(&inputs.input.bytes(context)));
+            metering.pending_precompile_work.push(work_units);
+            if let Some(accumulator) = metering.v2.as_mut() {
+                if let Err(error) = accumulator.confirm_spawn() {
+                    accumulator.retain_diagnostic(Some(error));
+                }
+                for address in [inputs.caller, inputs.target_address, inputs.bytecode_address] {
+                    let _ = accumulator.observe_state_access(StateAccess::Account(address));
+                }
+            }
+        }
+        outcome
     }
 
     /// Charges completed precompile work separately from its already-metered CALL wrapper.
@@ -196,11 +256,28 @@ where
         {
             // Precompile usage is charged separately from the CALL opcode itself, keyed by the
             // full precompile address.
-            if let Err(ZkGasOutcome::LimitExceeded) =
-                metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
+            if let Some(meter) = &mut metering.meter &&
+                let Err(ZkGasOutcome::LimitExceeded) =
+                    meter.charge_precompile(&inputs.bytecode_address, gas_used)
             {
                 set_custom_error(context);
             }
+            let work_units = metering.pending_precompile_work.pop().flatten();
+            if let Some(accumulator) = metering.v2.as_mut() {
+                let address = U256::from_be_slice(inputs.bytecode_address.as_slice());
+                match u16::try_from(address) {
+                    Ok(address) => {
+                        let _ = accumulator.observe_precompile(address, gas_used, work_units);
+                    }
+                    Err(_) => {
+                        accumulator.retain_diagnostic(Some(ZkGasV2AccumulatorError::Pricing(
+                            ZkGasV2Error::InvalidInput("precompile_address"),
+                        )))
+                    }
+                }
+            }
+        } else if let Some(metering) = &mut self.metering {
+            let _ = metering.pending_precompile_work.pop();
         }
     }
 
@@ -210,7 +287,14 @@ where
         context: &mut TaikoEvmContext<DB>,
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
-        self.inner.create(context, inputs)
+        let outcome = self.inner.create(context, inputs);
+        if let Some(accumulator) = self.metering.as_mut().and_then(|state| state.v2.as_mut()) {
+            if let Err(error) = accumulator.confirm_spawn() {
+                accumulator.retain_diagnostic(Some(error));
+            }
+            let _ = accumulator.observe_state_access(StateAccess::Account(inputs.caller()));
+        }
+        outcome
     }
 
     /// Forwards CREATE-family completion to the wrapped inspector.
@@ -242,21 +326,30 @@ where
 /// Per-inspector metering state carried across opcode callbacks.
 struct ZkGasMeteringState {
     /// Owned checked meter that holds the schedule and accumulated usage.
-    meter: ZkGasMeter<'static>,
+    meter: Option<ZkGasMeter<'static>>,
     /// Per-frame in-flight opcode step state keyed by journal depth.
     pending_steps: [PendingStep; MAX_CALL_DEPTH],
+    /// Typed snapshots allocated only for frame depths actually executed with V2 enabled.
+    pending_v2_steps: BTreeMap<usize, PendingV2Step>,
     /// Highest journal depth ever observed in this state's lifetime.
     /// Bounds transaction reset work to the actual call depth reached.
     max_active_depth: usize,
+    /// Optional schema-9 selector collector.
+    v2: Option<ZkGasV2Accumulator>,
+    /// BN254 scalar work captured by nested CALL callbacks.
+    pending_precompile_work: Vec<Option<u64>>,
 }
 
 impl ZkGasMeteringState {
     /// Creates new per-inspector state for the provided schedule.
-    fn new(schedule: &'static ZkGasSchedule) -> Self {
+    fn new(schedule: Option<&'static ZkGasSchedule>) -> Self {
         Self {
-            meter: ZkGasMeter::new(schedule),
+            meter: schedule.map(ZkGasMeter::new),
             pending_steps: [PendingStep::EMPTY; MAX_CALL_DEPTH],
+            pending_v2_steps: BTreeMap::new(),
             max_active_depth: 0,
+            v2: None,
+            pending_precompile_work: Vec::new(),
         }
     }
 
@@ -265,18 +358,38 @@ impl ZkGasMeteringState {
     /// Resetting the per-depth snapshots here keeps aborted execution from leaking into the next
     /// transaction regardless of how REVM unwound its frames.
     fn reset_transaction(&mut self) {
-        self.meter.reset_transaction();
+        if let Some(meter) = &mut self.meter {
+            meter.reset_transaction();
+        }
         for index in 0..=self.max_active_depth {
             self.pending_steps[index] = PendingStep::EMPTY;
         }
         self.max_active_depth = 0;
+        self.pending_v2_steps.clear();
+        if let Some(v2) = &mut self.v2 {
+            v2.reset_transaction();
+        }
+        self.pending_precompile_work.clear();
     }
 
     /// Records the opcode and gas snapshot for the current frame depth.
     #[inline(always)]
-    fn begin_step(&mut self, depth: usize, opcode: u8, gas_remaining: u64) {
+    fn begin_step<DB: reth_revm::Database>(
+        &mut self,
+        depth: usize,
+        interpreter: &Interpreter<EthInterpreter>,
+        context: &TaikoEvmContext<DB>,
+    ) {
         // Any previous pending step at this depth must already have been consumed by `step_end`.
-        self.pending_steps[depth] = PendingStep { opcode, gas_remaining };
+        self.pending_steps[depth] = PendingStep {
+            opcode: interpreter.bytecode.opcode(),
+            gas_remaining: interpreter.gas.remaining(),
+        };
+        if self.v2.is_some() {
+            self.pending_v2_steps.insert(depth, PendingV2Step::capture(interpreter, context));
+        } else {
+            self.pending_v2_steps.remove(&depth);
+        }
         if depth > self.max_active_depth {
             self.max_active_depth = depth;
         }
@@ -290,6 +403,7 @@ impl ZkGasMeteringState {
             opcode: pending.opcode,
             step_gas: pending.gas_remaining.saturating_sub(gas_remaining),
             spawned: false,
+            v2: self.pending_v2_steps.remove(&depth),
         }
     }
 
@@ -298,17 +412,12 @@ impl ZkGasMeteringState {
     fn charge_finished_step(&mut self, step: FinishedStep) -> Result<(), ZkGasOutcome> {
         // Spawn opcodes use the fixed consensus estimate only when they selected a child frame.
         // Otherwise we charge the measured interpreter gas delta from this opcode step.
+        let Some(meter) = &mut self.meter else { return Ok(()) };
         if step.spawned {
-            self.meter.charge_spawn_opcode(step.opcode)
+            meter.charge_spawn_opcode(step.opcode)
         } else {
-            self.charge_opcode(step.opcode, step.step_gas)
+            meter.charge_opcode(step.opcode, step.step_gas)
         }
-    }
-
-    /// Charges a measured opcode against the active meter.
-    #[inline(always)]
-    fn charge_opcode(&mut self, opcode: u8, raw_gas: u64) -> Result<(), ZkGasOutcome> {
-        self.meter.charge_opcode(opcode, raw_gas)
     }
 }
 
@@ -335,6 +444,8 @@ struct FinishedStep {
     step_gas: u64,
     /// Whether the opcode selected `NewFrame` and should use the fixed spawn estimate.
     spawned: bool,
+    /// Typed pre-step V2 snapshot, when collection is enabled.
+    v2: Option<PendingV2Step>,
 }
 
 #[cfg(test)]
@@ -345,13 +456,14 @@ mod tests {
 
     #[test]
     fn reset_transaction_clears_meter_and_step_bookkeeping() {
-        let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
-        metering.begin_step(1, 0x01, 10);
-        metering.meter.charge_opcode(0x01, 3).expect("charge fits");
+        let mut metering = ZkGasMeteringState::new(Some(&UNZEN_ZK_GAS_SCHEDULE));
+        metering.pending_steps[1] = super::PendingStep { opcode: 0x01, gas_remaining: 10 };
+        metering.max_active_depth = 1;
+        metering.meter.as_mut().unwrap().charge_opcode(0x01, 3).expect("charge fits");
 
         metering.reset_transaction();
 
-        assert_eq!(metering.meter.tx_zk_gas_used(), 0);
+        assert_eq!(metering.meter.as_ref().unwrap().tx_zk_gas_used(), 0);
         assert_eq!(metering.pending_steps[1].opcode, 0);
         assert_eq!(metering.pending_steps[1].gas_remaining, 0);
         assert_eq!(metering.max_active_depth, 0);
@@ -359,14 +471,19 @@ mod tests {
 
     #[test]
     fn charge_finished_step_uses_active_meter_schedule_for_spawn_estimate() {
-        let mut metering = ZkGasMeteringState::new(&UNZEN_ZK_GAS_SCHEDULE);
+        let mut metering = ZkGasMeteringState::new(Some(&UNZEN_ZK_GAS_SCHEDULE));
 
         metering
-            .charge_finished_step(FinishedStep { opcode: 0xf0, step_gas: 1, spawned: true })
+            .charge_finished_step(FinishedStep {
+                opcode: 0xf0,
+                step_gas: 1,
+                spawned: true,
+                v2: None,
+            })
             .expect("spawn estimate should fit");
 
         assert_eq!(
-            metering.meter.tx_zk_gas_used(),
+            metering.meter.as_ref().unwrap().tx_zk_gas_used(),
             UNZEN_ZK_GAS_SCHEDULE.spawn_estimates.create *
                 u64::from(UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0xf0])
         );

@@ -222,6 +222,9 @@ where
     where
         Evm: TaikoZkGasEvm,
     {
+        self.evm
+            .commit_transaction_zk_gas_v2()
+            .expect("validated zk gas V2 selectors must commit atomically");
         match self.evm.commit_transaction_zk_gas() {
             Ok(Some(zk_gas)) => self.ctx.set_finalized_block_zk_gas(zk_gas),
             Ok(None) => {}
@@ -434,8 +437,10 @@ where
 
         // Charge the per-transaction intrinsic zk gas before EVM execution begins, as required
         // by the Unzen zk gas spec (taikoxyz/taiko-mono#21669). The intrinsic sits in the
-        // in-flight tx total so it is committed alongside opcode/precompile usage on success
-        // and discarded on revert/failure. A schedule with a zero intrinsic makes this a no-op.
+        // in-flight tx total so it is committed alongside opcode/precompile usage for every valid
+        // included receipt, including REVERT and HALT. It is discarded only when the executor
+        // omits the transaction (validation/execution error, budget rejection, or commit predicate
+        // false). A schedule with a zero intrinsic makes this a no-op.
         // If the intrinsic alone would exceed the remaining block budget, mirror the
         // mid-tx exhaustion path used by the inspector.
         if let Err(ZkGasOutcome::LimitExceeded) = self.evm.charge_tx_intrinsic_zk_gas() {

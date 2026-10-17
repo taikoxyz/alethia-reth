@@ -2591,6 +2591,12 @@ fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
     let inspected_result = inspected.transact(tx_env(500_000));
     let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
     let dispatched = family.was_dispatched(inspected.inspector(), child);
+    let observed_spawn = inspected
+        .inspector()
+        .steps
+        .iter()
+        .find(|step| step.opcode == family.opcode())
+        .unwrap_or_else(|| panic!("{} spawn step must be observed", family.name()));
 
     let mut plain =
         TaikoEvmFactory.create_evm(spawn_case_db(family, child), evm_env(TaikoSpecId::UNZEN));
@@ -2608,6 +2614,11 @@ fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
     let plain_error = plain_result.expect_err("plain wrapper charge must be fatal");
     assert_eq!(inspected_error.to_string(), ZK_GAS_LIMIT_ERR, "{}", family.name());
     assert_eq!(plain_error.to_string(), ZK_GAS_LIMIT_ERR, "{}", family.name());
+    assert!(
+        observed_spawn.selected_new_frame,
+        "{} observer must see the executed NewFrame before the adapter forces a limit halt",
+        family.name()
+    );
     assert!(!dispatched, "{} must not dispatch child work", family.name());
     assert_eq!(inspected_zk_gas, family.prefix_zk_gas(schedule), "{}", family.name());
     assert_eq!(plain_zk_gas, inspected_zk_gas, "{} fatal parity", family.name());

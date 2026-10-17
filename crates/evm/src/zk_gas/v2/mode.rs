@@ -249,10 +249,7 @@ pub struct ZkGasV2ShadowReport {
 impl ZkGasV2ShadowReport {
     /// Constructs one immutable report inside the sealed evaluator boundary.
     pub(super) const fn from_status(status: ZkGasV2ShadowStatus) -> Self {
-        Self {
-            model_id: RUNTIME_SPEC_SHA256,
-            status,
-        }
+        Self { model_id: RUNTIME_SPEC_SHA256, status }
     }
 
     /// Returns the content-addressed runtime model identifier.
@@ -300,8 +297,7 @@ impl ZkGasV2BlockSnapshot {
             }) {
                 Ok(known) => ZkGasV2ShadowStatus::Incomplete {
                     known,
-                    missing:
-                        ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+                    missing: ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
                 },
                 Err(error) => {
                     ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Pricing(error))

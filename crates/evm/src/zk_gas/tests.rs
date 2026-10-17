@@ -68,10 +68,7 @@ fn zk_gas_v2_shadow_report_marks_exact_resources_and_mpt_as_missing() {
     let ZkGasV2ShadowStatus::Incomplete { known, missing } = report.status() else {
         panic!("a snapshot without exact block resources and MPT must remain incomplete")
     };
-    assert_eq!(
-        missing,
-        ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable
-    );
+    assert_eq!(missing, ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable);
     assert!(known.operations_scaled() > 0);
     assert!(known.evm_local_known_subtotal_pgu() > 0);
 }
@@ -151,11 +148,7 @@ fn zk_gas_v2_completion_replaces_evm_local_resources_with_the_authoritative_snap
     };
 
     let completed = ZkGasV2Model
-        .complete_block_shadow_report(
-            &original,
-            authoritative_resources,
-            MptSelectors::default(),
-        )
+        .complete_block_shadow_report(&original, authoritative_resources, MptSelectors::default())
         .expect("authoritative block resource snapshot completes");
     let ZkGasV2ShadowStatus::Incomplete { known: before, .. } = original.status() else {
         panic!("fixture report must be incomplete")
@@ -216,10 +209,7 @@ fn zk_gas_v2_completion_rejects_exact_resources_below_any_evm_local_dimension() 
     let report = snapshot.shadow_report();
     let local = snapshot.resources;
     let cases = [
-        (
-            "unique_account_count",
-            ResourceSelectors { unique_account_count: 0, ..local },
-        ),
+        ("unique_account_count", ResourceSelectors { unique_account_count: 0, ..local }),
         (
             "unique_storage_slot_access_count",
             ResourceSelectors { unique_storage_slot_access_count: 0, ..local },
@@ -228,22 +218,12 @@ fn zk_gas_v2_completion_rejects_exact_resources_below_any_evm_local_dimension() 
             "unique_storage_slot_write_count",
             ResourceSelectors { unique_storage_slot_write_count: 0, ..local },
         ),
-        (
-            "unique_code_hash_count",
-            ResourceSelectors { unique_code_hash_count: 0, ..local },
-        ),
-        (
-            "unique_code_bytes",
-            ResourceSelectors { unique_code_bytes: 31, ..local },
-        ),
+        ("unique_code_hash_count", ResourceSelectors { unique_code_hash_count: 0, ..local }),
+        ("unique_code_bytes", ResourceSelectors { unique_code_bytes: 31, ..local }),
     ];
     for (field, exact) in cases {
         assert_eq!(
-            ZkGasV2Model.complete_block_shadow_report(
-                &report,
-                exact,
-                MptSelectors::default(),
-            ),
+            ZkGasV2Model.complete_block_shadow_report(&report, exact, MptSelectors::default(),),
             Err(ZkGasV2CompletionError::ExactResourcesBelowEvmLocal(field)),
             "{field} must not shrink below the sealed EVM-local subset",
         );
@@ -283,8 +263,7 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
             RUNTIME_SPEC_SHA256,
             ZkGasV2ShadowStatus::Incomplete {
                 known,
-                missing:
-                    ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+                missing: ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
             },
         )
     };
@@ -323,9 +302,7 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
             ResourceSelectors { unique_account_count: 1, ..Default::default() },
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown(
-            "evm_local_resources_scaled"
-        ))
+        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("evm_local_resources_scaled"))
     );
 
     let tampered_total = known(
@@ -342,9 +319,7 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown(
-            "evm_local_known_subtotal_scaled"
-        ))
+        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("evm_local_known_subtotal_scaled"))
     );
 
     let tampered_ceiling = known(
@@ -356,15 +331,12 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         valid.evm_local_known_subtotal_pgu() + 1,
     );
     assert_eq!(
-        ZkGasV2Model
-            .complete_block_shadow_report(
-                &report(tampered_ceiling),
-                ResourceSelectors::default(),
-                MptSelectors::default(),
-            ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown(
-            "evm_local_known_subtotal_pgu"
-        ))
+        ZkGasV2Model.complete_block_shadow_report(
+            &report(tampered_ceiling),
+            ResourceSelectors::default(),
+            MptSelectors::default(),
+        ),
+        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("evm_local_known_subtotal_pgu"))
     );
 
     let invalid_feature_attribution = known(

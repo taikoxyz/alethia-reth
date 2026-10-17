@@ -30,9 +30,667 @@ use super::{
     meter::{ZkGasMeter, ZkGasOutcome},
     schedule::{FAILSAFE_MULTIPLIER, ZkGasSchedule, schedule_for},
     unzen::{TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE},
+    v2::{
+        AccessClass, BlockPricingInput, CalldataAccessClass, FIXED_POINT_SCALE, MemorySelectors,
+        MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,
+        OperationRoutePricingInput, ProposalPricingInput, RUNTIME_SPEC_SHA256, ResourceSelectors,
+        StorageBranch, ZkGasV2Error, ZkGasV2Model,
+    },
 };
 
 const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
+
+#[test]
+fn zk_gas_v2_model_pins_the_sealed_runtime_spec() {
+    assert_eq!(
+        RUNTIME_SPEC_SHA256,
+        "93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046"
+    );
+    assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
+    assert_eq!(ZkGasV2Model.route_count(), 174);
+}
+
+fn assert_zk_gas_v2_operation(
+    input: OperationPricingInput,
+    accepted_absolute_scaled: i128,
+    incremental_scaled: i128,
+    structural_scaled: i128,
+    total_scaled: i128,
+) {
+    let priced = ZkGasV2Model
+        .price_operation(&input)
+        .unwrap_or_else(|error| panic!("golden vector {:?} failed: {error}", input.route));
+    assert_eq!(priced.accepted_absolute_scaled, accepted_absolute_scaled);
+    assert_eq!(priced.incremental_scaled, incremental_scaled);
+    assert_eq!(priced.structural_scaled, structural_scaled);
+    assert_eq!(priced.feature_error_scaled, 0);
+    assert_eq!(priced.total_scaled, total_scaled);
+    assert_eq!(priced.total_pgu, None, "operation scope is not a rounding boundary");
+}
+
+#[test]
+fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
+    let memory = MemorySelectors { growth_events: 1, evm_gas_delta: 5, boundary_4k_events: 1 };
+    let opcode = |opcode, raw_gas, model_input| OperationPricingInput {
+        route: OperationRoute::Opcode(opcode),
+        interpreter_raw_gas: Some(raw_gas),
+        native_gas: None,
+        model_input,
+        feature_error: false,
+    };
+
+    let vectors = [
+        (
+            opcode(0x3d, 5, OperationModelInput::StaticRawGas { raw_gas: 5 }),
+            524_974_884_691_486_860_714,
+            0,
+            0,
+            524_974_884_691_486_860_714,
+        ),
+        (
+            opcode(0x01, 3, OperationModelInput::StaticRawGas { raw_gas: 3 }),
+            42_682_295_930_216_867_992,
+            0,
+            0,
+            42_682_295_930_216_867_992,
+        ),
+        (
+            opcode(0x0a, 260, OperationModelInput::Exp { exponent_byte_length: 5 }),
+            3_534_207_877_640_930_240_549,
+            0,
+            0,
+            3_534_207_877_640_930_240_549,
+        ),
+        (
+            opcode(0x20, 42, OperationModelInput::Keccak { input_length: 1, memory }),
+            4_925_105_575_222_873_875_997,
+            0,
+            0,
+            4_925_105_575_222_873_875_997,
+        ),
+        (
+            opcode(0x51, 8, OperationModelInput::MemoryAccess { memory }),
+            2_366_352_149_092_294_877_149,
+            0,
+            0,
+            2_366_352_149_092_294_877_149,
+        ),
+        (
+            opcode(0x5e, 10, OperationModelInput::MemoryCopy { copy_words: 2, memory }),
+            2_216_774_129_912_161_426_117,
+            0,
+            0,
+            2_216_774_129_912_161_426_117,
+        ),
+        (
+            opcode(0x37, 14, OperationModelInput::Copy { copied_bytes: 33, copy_words: 2, memory }),
+            3_264_846_279_697_633_398_160,
+            84_000_000_000_000_000_000,
+            0,
+            3_264_846_279_697_633_398_160,
+        ),
+        (
+            opcode(
+                0xa1,
+                1_019,
+                OperationModelInput::Log { topic_count: 1, data_bytes: 33, data_words: 2, memory },
+            ),
+            30_784_846_279_697_633_398_160,
+            24_456_000_000_000_000_000_000,
+            0,
+            30_784_846_279_697_633_398_160,
+        ),
+        (
+            opcode(
+                0xf3,
+                5,
+                OperationModelInput::Return { returned_bytes: 33, return_words: 2, memory },
+            ),
+            7_296_846_279_697_633_398_160,
+            0,
+            0,
+            7_296_846_279_697_633_398_160,
+        ),
+        (
+            opcode(
+                0xf3,
+                5,
+                OperationModelInput::Return { returned_bytes: 65_537, return_words: 2_049, memory },
+            ),
+            276_481_692_559_395_266_796_320,
+            0,
+            0,
+            276_481_692_559_395_266_796_320,
+        ),
+        (
+            opcode(0x40, 20, OperationModelInput::None),
+            32_117_684_584_888_432_025,
+            0,
+            0,
+            32_117_684_584_888_432_025,
+        ),
+        (
+            opcode(
+                0xa3,
+                1_769,
+                OperationModelInput::Log { topic_count: 3, data_bytes: 33, data_words: 2, memory },
+            ),
+            5_002_099_871_395_006_146_537_446,
+            42_456_000_000_000_000_000_000,
+            0,
+            5_002_099_871_395_006_146_537_446,
+        ),
+        (
+            opcode(0x31, 100, OperationModelInput::None),
+            33_750_032_583_812_999_927_600,
+            800_000_000_000_000_000_000,
+            0,
+            33_750_032_583_812_999_927_600,
+        ),
+        (
+            opcode(0x54, 100, OperationModelInput::StorageLoad { access: AccessClass::Warm }),
+            3_957_515_207_272_132_022_005,
+            0,
+            0,
+            3_957_515_207_272_132_022_005,
+        ),
+        (
+            opcode(0x54, 2_100, OperationModelInput::StorageLoad { access: AccessClass::Cold }),
+            3_336_318_298_669_981_484_371,
+            0,
+            0,
+            3_336_318_298_669_981_484_371,
+        ),
+        (
+            opcode(
+                0x55,
+                22_100,
+                OperationModelInput::StorageStore {
+                    access: AccessClass::Cold,
+                    branch: StorageBranch::Set,
+                },
+            ),
+            4_032_887_156_573_945_116_245,
+            265_200_000_000_000_000_000_000,
+            0,
+            265_200_000_000_000_000_000_000,
+        ),
+        (
+            opcode(
+                0x35,
+                3,
+                OperationModelInput::CalldataLoad { access: CalldataAccessClass::Partial },
+            ),
+            239_484_054_712_294_439_156,
+            0,
+            0,
+            239_484_054_712_294_439_156,
+        ),
+    ];
+
+    for (input, accepted, incremental, structural, total) in vectors {
+        assert_zk_gas_v2_operation(input, accepted, incremental, structural, total);
+    }
+
+    assert_zk_gas_v2_operation(
+        OperationPricingInput {
+            route: OperationRoute::ConfirmedSpawn(0xf0),
+            interpreter_raw_gas: None,
+            native_gas: None,
+            model_input: OperationModelInput::None,
+            feature_error: false,
+        },
+        3_121_878_014_002_702_493_301_969,
+        44_733_000_000_000_000_000_000,
+        0,
+        3_121_878_014_002_702_493_301_969,
+    );
+    assert_zk_gas_v2_operation(
+        OperationPricingInput {
+            route: OperationRoute::Precompile(0x01),
+            interpreter_raw_gas: None,
+            native_gas: Some(3_000),
+            model_input: OperationModelInput::None,
+            feature_error: false,
+        },
+        20_000_000_000_000_000_000_000_000,
+        60_000_000_000_000_000_000_000,
+        117_000_000_000_000_000_000_000,
+        20_000_000_000_000_000_000_000_000,
+    );
+    assert_zk_gas_v2_operation(
+        OperationPricingInput {
+            route: OperationRoute::Precompile(0x04),
+            interpreter_raw_gas: None,
+            native_gas: Some(144),
+            model_input: OperationModelInput::None,
+            feature_error: false,
+        },
+        72_900_070_381_036_079_843_616,
+        3_744_000_000_000_000_000_000,
+        7_344_000_000_000_000_000_000,
+        72_900_070_381_036_079_843_616,
+    );
+    assert_zk_gas_v2_operation(
+        OperationPricingInput {
+            route: OperationRoute::Precompile(0x07),
+            interpreter_raw_gas: None,
+            native_gas: Some(6_000),
+            model_input: OperationModelInput::WorkUnits { work_units: 254 },
+            feature_error: false,
+        },
+        20_000_000_000_000_000_000_000_000,
+        179_406_000_000_000_000_000_000_000,
+        145_525_744_000_000_000_000_000_000,
+        179_406_000_000_000_000_000_000_000,
+    );
+}
+
+#[test]
+fn zk_gas_v2_model_uses_the_explicit_feature_error_floor() {
+    let priced = ZkGasV2Model
+        .price_operation(&OperationPricingInput {
+            route: OperationRoute::Opcode(0x01),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: OperationModelInput::None,
+            feature_error: true,
+        })
+        .expect("feature error prices");
+    assert_eq!(priced.accepted_absolute_scaled, 0);
+    assert_eq!(priced.incremental_scaled, 0);
+    assert_eq!(priced.structural_scaled, 0);
+    assert_eq!(priced.feature_error_scaled, 5_000_000_000_000_000_000_000_000);
+    assert_eq!(priced.total_scaled, priced.feature_error_scaled);
+
+    let accumulated = [OperationRoutePricingInput {
+        route: OperationRoute::Opcode(0x01),
+        accepted_absolute_scaled: priced.accepted_absolute_scaled,
+        incremental_scaled: priced.incremental_scaled,
+        structural_scaled: priced.structural_scaled,
+        feature_error_scaled: priced.feature_error_scaled,
+    }];
+    let block = ZkGasV2Model
+        .price_block(&BlockPricingInput {
+            started_non_anchor_transactions: 0,
+            native_value_transfers: 0,
+            operation_routes: &accumulated,
+            resources: ResourceSelectors::default(),
+            mpt: MptSelectors::default(),
+        })
+        .expect("feature error accumulates into block pricing");
+    assert_eq!(block.feature_error_scaled, priced.feature_error_scaled);
+    assert_eq!(block.operations_scaled, priced.feature_error_scaled);
+}
+
+#[test]
+fn zk_gas_v2_model_matches_python_block_breakdown_and_single_ceiling() {
+    let operation = OperationPricingInput {
+        route: OperationRoute::Opcode(0x01),
+        interpreter_raw_gas: Some(3),
+        native_gas: None,
+        model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
+        feature_error: false,
+    };
+    let operation = ZkGasV2Model.price_operation(&operation).expect("operation prices");
+    let operation_route = OperationRoutePricingInput {
+        route: OperationRoute::Opcode(0x01),
+        accepted_absolute_scaled: operation.accepted_absolute_scaled,
+        incremental_scaled: operation.incremental_scaled,
+        structural_scaled: operation.structural_scaled,
+        feature_error_scaled: 0,
+    };
+    let priced = ZkGasV2Model
+        .price_block(&BlockPricingInput {
+            started_non_anchor_transactions: 2,
+            native_value_transfers: 1,
+            operation_routes: &[operation_route],
+            resources: ResourceSelectors {
+                unique_account_count: 1,
+                unique_storage_slot_access_count: 2,
+                unique_storage_slot_write_count: 3,
+                unique_code_hash_count: 4,
+                unique_code_bytes: 5,
+            },
+            mpt: MptSelectors {
+                path_node_visits: 1,
+                materialization_work_units: 2,
+                hydration_hash_blocks: 3,
+                dirty_encoded_nodes: 4,
+                dirty_hash_blocks: 5,
+                structural_branch_extension_churn_nodes: 6,
+                dropped_trie_nodes: 7,
+            },
+        })
+        .expect("block golden vector prices");
+
+    assert_eq!(priced.fixed_scaled, 1_630_529_463_688_974_647_719_310);
+    assert_eq!(priced.operations_scaled, 42_682_295_930_216_867_992);
+    assert_eq!(priced.resources_scaled, 103_248_000_000_000_000_000_000);
+    assert_eq!(priced.mpt_scaled, 5_266_256_000_000_000_000_000_000);
+    assert_eq!(priced.total_scaled, 7_000_076_145_984_904_864_587_302);
+    assert_eq!(priced.total_pgu, Some(7_000_077));
+}
+
+#[test]
+fn zk_gas_v2_model_composes_route_aggregates_before_block_sum() {
+    let priced = ZkGasV2Model
+        .price_block(&BlockPricingInput {
+            started_non_anchor_transactions: 0,
+            native_value_transfers: 0,
+            operation_routes: &[OperationRoutePricingInput {
+                route: OperationRoute::Opcode(0x31),
+                accepted_absolute_scaled: 100,
+                incremental_scaled: 120,
+                structural_scaled: 110,
+                feature_error_scaled: 5,
+            }],
+            resources: ResourceSelectors::default(),
+            mpt: MptSelectors::default(),
+        })
+        .expect("aggregate candidates price");
+    assert_eq!(priced.operations_scaled, 125);
+    assert_eq!(priced.feature_error_scaled, 5);
+}
+
+#[test]
+fn zk_gas_v2_model_accepts_the_declared_selector_maximum() {
+    let maximum = 1_000_000_000;
+    let priced = ZkGasV2Model
+        .price_block(&BlockPricingInput {
+            started_non_anchor_transactions: maximum,
+            native_value_transfers: maximum,
+            operation_routes: &[],
+            resources: ResourceSelectors {
+                unique_account_count: maximum,
+                unique_storage_slot_access_count: maximum,
+                unique_storage_slot_write_count: maximum,
+                unique_code_hash_count: maximum,
+                unique_code_bytes: maximum,
+            },
+            mpt: MptSelectors {
+                path_node_visits: maximum,
+                materialization_work_units: maximum,
+                hydration_hash_blocks: maximum,
+                dirty_encoded_nodes: maximum,
+                dirty_hash_blocks: maximum,
+                structural_branch_extension_churn_nodes: maximum,
+                dropped_trie_nodes: maximum,
+            },
+        })
+        .expect("declared selector maximum remains inside i128");
+    assert_eq!(priced.total_scaled, 1_041_285_768_215_445_247_785_283_011_787_524);
+    assert_eq!(priced.total_pgu, Some(1_041_285_768_215_446));
+}
+
+#[test]
+fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
+    let model = ZkGasV2Model;
+    let unknown = OperationPricingInput {
+        route: OperationRoute::Opcode(0x0c),
+        interpreter_raw_gas: Some(1),
+        native_gas: None,
+        model_input: OperationModelInput::StaticRawGas { raw_gas: 1 },
+        feature_error: false,
+    };
+    assert_eq!(model.price_operation(&unknown), Err(ZkGasV2Error::UnknownRoute(unknown.route)));
+
+    let missing = OperationPricingInput {
+        route: OperationRoute::Opcode(0x01),
+        interpreter_raw_gas: None,
+        native_gas: None,
+        model_input: OperationModelInput::None,
+        feature_error: false,
+    };
+    assert_eq!(
+        model.price_operation(&missing),
+        Err(ZkGasV2Error::MissingInput("interpreter_raw_gas"))
+    );
+
+    let out_of_range = OperationPricingInput {
+        route: OperationRoute::Opcode(0x01),
+        interpreter_raw_gas: Some(1_000_000_001),
+        native_gas: None,
+        model_input: OperationModelInput::StaticRawGas { raw_gas: 1_000_000_001 },
+        feature_error: false,
+    };
+    assert!(matches!(
+        model.price_operation(&out_of_range),
+        Err(ZkGasV2Error::SelectorOutOfRange {
+            selector: "interpreter_raw_gas",
+            value: 1_000_000_001
+        })
+    ));
+
+    let opcode_with_native_gas = OperationPricingInput {
+        route: OperationRoute::Opcode(0x40),
+        interpreter_raw_gas: Some(20),
+        native_gas: Some(20),
+        model_input: OperationModelInput::None,
+        feature_error: false,
+    };
+    assert_eq!(
+        model.price_operation(&opcode_with_native_gas),
+        Err(ZkGasV2Error::InvalidInput("operation_namespace"))
+    );
+
+    let precompile_with_interpreter_gas = OperationPricingInput {
+        route: OperationRoute::Precompile(0x04),
+        interpreter_raw_gas: Some(144),
+        native_gas: Some(144),
+        model_input: OperationModelInput::None,
+        feature_error: false,
+    };
+    assert_eq!(
+        model.price_operation(&precompile_with_interpreter_gas),
+        Err(ZkGasV2Error::InvalidInput("operation_namespace"))
+    );
+
+    let spawn_with_raw_gas = OperationPricingInput {
+        route: OperationRoute::ConfirmedSpawn(0xf0),
+        interpreter_raw_gas: Some(32_000),
+        native_gas: None,
+        model_input: OperationModelInput::None,
+        feature_error: false,
+    };
+    assert_eq!(
+        model.price_operation(&spawn_with_raw_gas),
+        Err(ZkGasV2Error::InvalidInput("operation_namespace"))
+    );
+
+    let fixed_with_irrelevant_features = OperationPricingInput {
+        route: OperationRoute::Opcode(0x40),
+        interpreter_raw_gas: Some(20),
+        native_gas: None,
+        model_input: OperationModelInput::WorkUnits { work_units: 1 },
+        feature_error: false,
+    };
+    assert_eq!(
+        model.price_operation(&fixed_with_irrelevant_features),
+        Err(ZkGasV2Error::InvalidInput("model_input"))
+    );
+
+    let negative_route = [OperationRoutePricingInput {
+        route: OperationRoute::Opcode(0x01),
+        accepted_absolute_scaled: -1,
+        incremental_scaled: 0,
+        structural_scaled: 0,
+        feature_error_scaled: 0,
+    }];
+    assert_eq!(
+        model.price_block(&BlockPricingInput {
+            started_non_anchor_transactions: 0,
+            native_value_transfers: 0,
+            operation_routes: &negative_route,
+            resources: ResourceSelectors::default(),
+            mpt: MptSelectors::default(),
+        }),
+        Err(ZkGasV2Error::NegativeComponent("accepted_absolute"))
+    );
+}
+
+#[test]
+fn zk_gas_v2_model_matches_python_proposal_once_golden_vectors_41710_through_41715() {
+    struct Golden {
+        proposal_id: u64,
+        bytes: u64,
+        nonempty: u64,
+        path_visits: u64,
+        materializations: u64,
+        hydration_hash_blocks: u64,
+        transaction_payload_scaled: i128,
+        parent_mpt_scaled: i128,
+        total_scaled: i128,
+        total_pgu: u128,
+    }
+
+    let vectors = [
+        Golden {
+            proposal_id: 41_710,
+            bytes: 42_228,
+            nonempty: 196,
+            path_visits: 15,
+            materializations: 1_088,
+            hydration_hash_blocks: 330,
+            transaction_payload_scaled: 14_021_632_000_000_000_000_000_000,
+            parent_mpt_scaled: 6_433_840_000_000_000_000_000_000,
+            total_scaled: 174_719_342_735_480_402_119_958_866,
+            total_pgu: 174_719_343,
+        },
+        Golden {
+            proposal_id: 41_711,
+            bytes: 45_617,
+            nonempty: 212,
+            path_visits: 15,
+            materializations: 1_087,
+            hydration_hash_blocks: 331,
+            transaction_payload_scaled: 15_151_360_000_000_000_000_000_000,
+            parent_mpt_scaled: 6_431_840_000_000_000_000_000_000,
+            total_scaled: 175_847_070_735_480_402_119_958_866,
+            total_pgu: 175_847_071,
+        },
+        Golden {
+            proposal_id: 41_712,
+            bytes: 51_060,
+            nonempty: 198,
+            path_visits: 15,
+            materializations: 1_073,
+            hydration_hash_blocks: 327,
+            transaction_payload_scaled: 16_315_392_000_000_000_000_000_000,
+            parent_mpt_scaled: 6_349_840_000_000_000_000_000_000,
+            total_scaled: 176_929_102_735_480_402_119_958_866,
+            total_pgu: 176_929_103,
+        },
+        Golden {
+            proposal_id: 41_713,
+            bytes: 46_530,
+            nonempty: 196,
+            path_visits: 15,
+            materializations: 1_089,
+            hydration_hash_blocks: 329,
+            transaction_payload_scaled: 15_122_944_000_000_000_000_000_000,
+            parent_mpt_scaled: 6_435_840_000_000_000_000_000_000,
+            total_scaled: 175_822_654_735_480_402_119_958_866,
+            total_pgu: 175_822_655,
+        },
+        Golden {
+            proposal_id: 41_714,
+            bytes: 48_884,
+            nonempty: 198,
+            path_visits: 15,
+            materializations: 1_089,
+            hydration_hash_blocks: 330,
+            transaction_payload_scaled: 15_758_336_000_000_000_000_000_000,
+            parent_mpt_scaled: 6_438_840_000_000_000_000_000_000,
+            total_scaled: 176_461_046_735_480_402_119_958_866,
+            total_pgu: 176_461_047,
+        },
+        Golden {
+            proposal_id: 41_715,
+            bytes: 46_778,
+            nonempty: 197,
+            path_visits: 15,
+            materializations: 1_085,
+            hydration_hash_blocks: 329,
+            transaction_payload_scaled: 15_202_816_000_000_000_000_000_000,
+            parent_mpt_scaled: 6_415_840_000_000_000_000_000_000,
+            total_scaled: 175_882_526_735_480_402_119_958_866,
+            total_pgu: 175_882_527,
+        },
+    ];
+
+    for golden in vectors {
+        let priced = ZkGasV2Model
+            .price_proposal_once(&ProposalPricingInput {
+                canonical_transaction_bytes: golden.bytes,
+                nonempty_payload_transactions: golden.nonempty,
+                true_unattempted_transactions: 0,
+                source_blob_counts: &[1],
+                proposal_blob_hash_count: 1,
+                provider_blob_count: 1,
+                provider_commitment_count: 1,
+                provider_proof_count: 1,
+                parent_mpt: MptSelectors {
+                    path_node_visits: golden.path_visits,
+                    materialization_work_units: golden.materializations,
+                    hydration_hash_blocks: golden.hydration_hash_blocks,
+                    ..Default::default()
+                },
+            })
+            .unwrap_or_else(|error| panic!("proposal {} failed: {error}", golden.proposal_id));
+        assert_eq!(priced.startup_scaled, 154_263_870_735_480_402_119_958_866);
+        assert_eq!(priced.transaction_payload_scaled, golden.transaction_payload_scaled);
+        assert_eq!(priced.blob_source_scaled, 0);
+        assert_eq!(priced.parent_mpt_scaled, golden.parent_mpt_scaled);
+        assert_eq!(priced.total_scaled, golden.total_scaled);
+        assert_eq!(priced.total_pgu, Some(golden.total_pgu));
+    }
+}
+
+#[test]
+fn zk_gas_v2_model_rejects_invalid_blob_source_topology() {
+    let valid = ProposalPricingInput {
+        canonical_transaction_bytes: 0,
+        nonempty_payload_transactions: 0,
+        true_unattempted_transactions: 0,
+        source_blob_counts: &[1, 1, 3],
+        proposal_blob_hash_count: 5,
+        provider_blob_count: 5,
+        provider_commitment_count: 5,
+        provider_proof_count: 5,
+        parent_mpt: MptSelectors::default(),
+    };
+    let priced = ZkGasV2Model.price_proposal_once(&valid).expect("valid BPO2 topology prices");
+    assert_eq!(priced.blob_source_scaled, 81_788_928_000_000_000_000_000_000);
+    assert_eq!(priced.total_scaled, 236_052_798_735_480_402_119_958_866);
+    assert_eq!(priced.total_pgu, Some(236_052_799));
+
+    let invalid = ProposalPricingInput {
+        canonical_transaction_bytes: 0,
+        nonempty_payload_transactions: 0,
+        true_unattempted_transactions: 0,
+        source_blob_counts: &[2, 1],
+        proposal_blob_hash_count: 3,
+        provider_blob_count: 3,
+        provider_commitment_count: 3,
+        provider_proof_count: 3,
+        parent_mpt: MptSelectors::default(),
+    };
+    assert_eq!(
+        ZkGasV2Model.price_proposal_once(&invalid),
+        Err(ZkGasV2Error::InvalidInput("forced_source_blob_count"))
+    );
+}
+
+#[test]
+fn zk_gas_v2_compilation_does_not_mutate_the_unzen_consensus_schedule() {
+    let before = UNZEN_ZK_GAS_SCHEDULE;
+    let _ = ZkGasV2Model.route_count();
+    let selected = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
+
+    assert!(before == UNZEN_ZK_GAS_SCHEDULE);
+    assert!(before == *selected);
+}
 
 fn expected_is_spawn_opcode(opcode: u8) -> bool {
     EXPECTED_SPAWN_OPCODES.contains(&opcode)

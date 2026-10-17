@@ -10,6 +10,8 @@ pub mod runtime;
 pub mod schedule;
 /// Unzen-specific fixed zk gas schedule data.
 pub mod unzen;
+/// Pure accepted-schema-9 zk gas pricing without runtime collection state.
+pub mod v2;
 
 #[cfg(test)]
 mod tests;

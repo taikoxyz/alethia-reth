@@ -1,0 +1,44 @@
+"""Focused tests for the portable zk gas V2 table generator."""
+
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import unittest
+
+
+MODULE_PATH = pathlib.Path(__file__).with_name("generate.py")
+MODULE_SPEC = importlib.util.spec_from_file_location("zk_gas_v2_generate", MODULE_PATH)
+assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
+GENERATOR = importlib.util.module_from_spec(MODULE_SPEC)
+MODULE_SPEC.loader.exec_module(GENERATOR)
+
+
+class GeneratorTests(unittest.TestCase):
+    """Exercise content addressing and stale-output detection independently of Rust."""
+
+    def test_content_address_excludes_only_the_artifact_field(self) -> None:
+        payload = {"z": 1, "artifact_sha256": "ignored", "a": {"b": 2}}
+        self.assertEqual(
+            GENERATOR.content_address(payload),
+            "13bf451a28599eb77ebb813c6b754a9cb470a7dc848ccf246254095682b78894",
+        )
+
+    def test_validate_artifact_rejects_a_mismatched_content_address(self) -> None:
+        with self.assertRaisesRegex(ValueError, "artifact_sha256"):
+            GENERATOR.validate_artifact({"artifact_sha256": "0" * 64, "schema_version": 1})
+
+    def test_generated_check_ignores_formatting_but_rejects_token_drift(self) -> None:
+        expected = "pub const VALUE: i128 = 123;\n"
+        self.assertTrue(GENERATOR.generated_matches(expected, "pub const VALUE:i128=123;"))
+        self.assertTrue(
+            GENERATOR.generated_matches(
+                "const VALUES: [i128; 2] = [1,2];",
+                "const VALUES: [i128; 2] = [\n    1,\n    2,\n];",
+            )
+        )
+        self.assertFalse(GENERATOR.generated_matches(expected, "pub const VALUE:i128=124;"))
+
+
+if __name__ == "__main__":
+    unittest.main()

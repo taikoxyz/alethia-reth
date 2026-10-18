@@ -145,7 +145,6 @@ reth-tracing = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9
 reth-transaction-pool = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-trie = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false }
 reth-trie-common = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false }
-reth-trie-db = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 
 # Consumed from the Optimism monorepo (path rust/op-reth/crates/trie). The rev is an OP develop
 # commit carrying ethereum-optimism/optimism#23046 (their reth v2.6.0 bump) and #23471: the

@@ -86,7 +86,8 @@ pub struct TaikoProofHistoryArgs {
     )]
     pub window: u64,
 
-    /// Delay empty proof-history initialization until the finalized window start is reached.
+    /// Delay empty proof-history initialization until the finalized window start is reached,
+    /// then initialize at the tip and backfill the retained window from reth changesets.
     #[arg(
         long = "proofs-history.backfill-window-only",
         default_value_t = false,

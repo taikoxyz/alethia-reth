@@ -1,7 +1,6 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
-mod init;
 mod live;
 mod sidecar;
 mod storage_init;
@@ -22,7 +21,7 @@ use alethia_reth_rpc::{
 use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateSubscriptions, DBProvider,
-        DatabaseProviderFactory, HeaderProvider,
+        DatabaseProviderFactory, HeaderProvider, StageCheckpointReader,
     },
     tasks::TaskExecutor,
 };
@@ -83,13 +82,16 @@ where
         + BlockReader
         + CanonStateSubscriptions
         + DatabaseProviderFactory,
-    <T::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
+    <T::Provider as DatabaseProviderFactory>::Provider: BlockHashReader
+        + BlockNumReader
         + ChainStateBlockReader
         + ChangeSetReader
         + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
-        + StorageSettingsCache,
+        + StorageSettingsCache
+        + Send,
     <T::DB as Database>::TX: Sync,
 {
     if !config.enabled {

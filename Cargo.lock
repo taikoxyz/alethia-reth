@@ -253,7 +253,6 @@ dependencies = [
  "reth-storage-api",
  "reth-trie",
  "reth-trie-common",
- "reth-trie-db",
  "serde",
  "tempfile",
  "tokio",

@@ -72,7 +72,7 @@ pub(crate) fn disable_state_masking_by_default() {
 pub(crate) fn ensure_state_masking_disabled(engine: &EngineArgs) -> eyre::Result<()> {
     eyre::ensure!(
         engine.num_state_masking_blocks() == 0,
-        "--engine.num-state-masking-blocks must be 0 on alethia-reth: state masking is not supported"
+        "--engine.num-state-masking-blocks (or RETH_ENGINE_NUM_STATE_MASKING_BLOCKS) must be 0 on alethia-reth: state masking is not supported"
     );
     Ok(())
 }

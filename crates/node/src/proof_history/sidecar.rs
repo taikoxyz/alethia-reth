@@ -336,9 +336,10 @@ where
 
     /// Reconciles storage if possible and spawns the sync and pruner tasks on first success.
     ///
-    /// In window-only mode, storage is first backfilled down to `latest - window` from reth
-    /// changesets; this covers fresh initialization, a restart mid-backfill and a raised window,
-    /// and is a no-op once the window is full.
+    /// In window-only mode, storage is first backfilled from reth changesets down to
+    /// `max(latest_stored, on_disk_best) - window`, the window the pruner keeps once the sync loop
+    /// reaches reth's head; this covers fresh initialization, a restart mid-backfill, a raised
+    /// window and an `UnwindToEarliest` reconciliation, and is a no-op once the window is full.
     async fn try_start(&self) -> eyre::Result<Option<Arc<Notify>>> {
         if !self.reconcile_or_wait().await? {
             return Ok(None);

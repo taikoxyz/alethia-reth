@@ -296,7 +296,9 @@ mod tests {
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
         TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
     };
-    use crate::command::{TaikoNodeExtArgs, ensure_state_masking_disabled};
+    use crate::command::{
+        TaikoNodeExtArgs, disable_state_masking_by_default, ensure_state_masking_disabled,
+    };
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -414,6 +416,7 @@ mod tests {
 
     #[test]
     fn state_masking_launch_check_rejects_nonzero() {
+        disable_state_masking_by_default();
         let mut engine = EngineArgs::default();
         engine.num_state_masking_blocks = 30;
         assert!(ensure_state_masking_disabled(&engine).is_err());

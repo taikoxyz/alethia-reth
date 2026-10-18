@@ -31,10 +31,10 @@ where
         super::opt_block(provider_ro.get_latest_block())?.is_none())
 }
 
-/// Opens the proof-history MDBX store at `path`, emptying the directory and reopening it when the
-/// existing contents cannot be used.
+/// Opens the proof-history MDBX store at `path`, deleting the store's files and reopening it when
+/// the existing store cannot be used.
 ///
-/// The directory is rebuilt in two cases:
+/// The store is rebuilt in two cases:
 /// - It holds only removed v1 proof-history data: [`MdbxProofsStorage`] now reads and writes the v2
 ///   tables, so a v1 directory would otherwise open as an empty store and keep the dead v1 tables
 ///   forever.
@@ -43,9 +43,11 @@ where
 ///   which a live node's moving tip breaks, so a restart would fail on every attempt. Nothing is
 ///   served before initialization completes, so discarding the copy is safe.
 ///
-/// The wipe deletes every entry inside `path` but keeps `path` itself, so a mount point or symlink
-/// survives. A failure to inspect the store or to delete its contents aborts with `path` in the
-/// error; a failed deletion may leave a partially emptied directory, which the next start rebuilds.
+/// The wipe deletes only [`PROOF_HISTORY_STORE_FILES`] inside `path` and keeps `path` itself and
+/// every other entry, so a mount point or symlink survives and a path shared with other data (such
+/// as the reth datadir) loses nothing else. A failure to inspect the store or to delete its files
+/// aborts with `path` in the error; a failed deletion may leave some of those files behind, and the
+/// next start then either rebuilds again or opens an empty store.
 ///
 /// Must run before any other handle to the store exists.
 pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxProofsStorage>> {
@@ -63,8 +65,11 @@ pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxPr
         "discarding proof-history storage and rebuilding it from scratch"
     );
     drop(storage);
-    empty_directory(path).wrap_err_with(|| {
-        format!("failed to empty proof-history storage at {path:?}; delete the directory's contents by hand and restart")
+    remove_proof_history_store_files(path).wrap_err_with(|| {
+        format!(
+            "failed to delete proof-history storage files at {path:?}; delete {} there by hand and restart",
+            PROOF_HISTORY_STORE_FILES.join(", ")
+        )
     })?;
     open_mdbx(path)
 }
@@ -85,15 +90,19 @@ fn rebuild_reason(storage: &MdbxProofsStorage) -> eyre::Result<Option<&'static s
     Ok(None)
 }
 
-/// Deletes every entry inside the directory at `path`, leaving the directory itself in place.
-fn empty_directory(path: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        // `DirEntry::file_type` does not follow symlinks, so a symlink is unlinked, not traversed.
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(entry.path())?;
-        } else {
-            fs::remove_file(entry.path())?;
+/// Files the proof-history store and older alethia releases create inside the storage directory:
+/// the MDBX data and lock files, reth's database version file, and the removed historical-init
+/// marker.
+const PROOF_HISTORY_STORE_FILES: [&str; 4] =
+    ["mdbx.dat", "mdbx.lck", "database.version", "taiko-historical-init-target"];
+
+/// Deletes [`PROOF_HISTORY_STORE_FILES`] inside `path`, skipping missing ones and leaving the
+/// directory and every other entry in place.
+fn remove_proof_history_store_files(path: &Path) -> io::Result<()> {
+    for name in PROOF_HISTORY_STORE_FILES {
+        match fs::remove_file(path.join(name)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
         }
     }
     Ok(())
@@ -225,14 +234,23 @@ where
 /// pages it keeps alive) for the whole window.
 pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 10_000;
 
-/// Extends proof-history storage backward from reth changesets until it retains
-/// `[latest - window, latest]`.
+/// Extends proof-history storage backward from reth changesets until it retains the window the
+/// pruner keeps.
+///
+/// The target is `max(latest_stored, on_disk_best) - window` (saturating), where `on_disk_best` is
+/// reth's persisted best block; both are re-read for every chunk. The pruner keeps
+/// `latest_stored - window`, and the sync loop later raises `latest_stored` to reth's head, so
+/// anchoring on the higher of the two stops the backfill from filling blocks the pruner will drop:
+/// after `UnwindToEarliest` the store is `[E, E]` while reth's head is still far above `E`, and a
+/// target of `E - window` would backfill up to a whole extra window (and need reth changesets for
+/// it). The target never depends on the stored earliest block, so an interrupted backfill
+/// converges on retry.
 ///
 /// Upstream [`BackfillJob`] prepends one block at a time and validates each block's state root
 /// against the reth header, committing in small batches. The stored earliest block is the
-/// progress marker, so an interrupted backfill resumes where it stopped, and the target is
-/// anchored on the stored latest block so retries converge. Returns immediately when the window
-/// is already full. Runs in chunks of `chunk_blocks` blocks, each against a fresh reth provider.
+/// progress marker, so an interrupted backfill resumes where it stopped. Returns immediately when
+/// the window is already full. Runs in chunks of `chunk_blocks` blocks, each against a fresh reth
+/// provider, and logs the overall progress once per chunk.
 pub(super) fn backfill_proof_history_window<Provider, Storage>(
     provider: &Provider,
     storage: Storage,
@@ -251,26 +269,26 @@ where
         + Send,
     Storage: OpProofsBackfillStore + Clone + Send,
 {
-    let mut started = false;
     loop {
         let ProofWindowRange { earliest, latest } = storage.provider_ro()?.get_proof_window()?;
-        let target = latest.number.saturating_sub(window);
+        let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+        let on_disk_best = db_provider.best_block_number()?;
+        let target = latest.number.max(on_disk_best).saturating_sub(window);
         if earliest.number <= target {
             return Ok(());
         }
-        if !started {
-            info!(
-                target: "reth::taiko::proof_history",
-                earliest = earliest.number,
-                latest = latest.number,
-                target,
-                "backfilling proof-history window from reth changesets"
-            );
-            started = true;
-        }
 
         let chunk_target = target.max(earliest.number.saturating_sub(chunk_blocks.max(1)));
-        let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+        info!(
+            target: "reth::taiko::proof_history",
+            earliest = earliest.number,
+            latest = latest.number,
+            on_disk_best,
+            target,
+            chunk_target,
+            remaining = earliest.number - target,
+            "backfilling proof-history window from reth changesets"
+        );
         BackfillJob::new(db_provider, storage.clone()).run(chunk_target).map_err(backfill_error)?;
     }
 }
@@ -282,7 +300,7 @@ fn backfill_error(error: BackfillError) -> eyre::Report {
             "; wipe the proof-history storage directory and restart to rebuild it"
         }
         BackfillError::BlockBodyPruned(_) => {
-            "; proof-history needs unpruned reth changesets for the whole --proofs-history.window, so stop pruning them or lower the window"
+            "; the backfill window is set by --proofs-history.window"
         }
         _ => "",
     };
@@ -302,6 +320,7 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::Header;
+    use alloy_eips::eip1898::BlockWithParent;
     use alloy_primitives::B256;
     use reth_db::mdbx::{DatabaseArguments, DatabaseFlags, init_db_for};
     use reth_ethereum_primitives::EthPrimitives;
@@ -466,8 +485,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn open_wipes_in_place_keeping_the_directory() {
-        // The wipe must empty the directory, not delete it: a mount point cannot be removed and a
-        // symlink would be unlinked, orphaning the data on the real volume.
+        // The wipe must delete the store's files, not the directory: a mount point cannot be
+        // removed and a symlink would be unlinked, orphaning the data on the real volume. Entries
+        // the store did not create survive, in case the path is shared with other data.
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join("real");
         let link = dir.path().join("link");
@@ -478,6 +498,7 @@ mod tests {
         fs::write(&marker, "version=1\n").unwrap();
         fs::create_dir(real.join("stale-dir")).unwrap();
         fs::write(real.join("stale-dir").join("stale-file"), "x").unwrap();
+        fs::write(real.join("jwt.hex"), "x").unwrap();
 
         let storage = open_proof_history_storage(&link).unwrap();
 
@@ -488,7 +509,8 @@ mod tests {
             "the rebuilt store lives in the original directory"
         );
         assert!(!marker.exists());
-        assert!(!real.join("stale-dir").exists());
+        assert!(real.join("stale-dir").join("stale-file").exists());
+        assert!(real.join("jwt.hex").exists());
     }
 
     #[test]
@@ -604,6 +626,39 @@ mod tests {
         assert_eq!(earliest(&storage), 3);
 
         // A larger window resumes from the stored earliest block, one chunk at a time.
+        backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap();
+        assert_eq!(earliest(&storage), 1);
+    }
+
+    #[test]
+    fn backfill_targets_reth_head_after_unwind() {
+        use reth_optimism_trie::api::OpProofsProviderRw;
+
+        let (factory, headers) = chain_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+        initialize_proof_history_storage(&factory, storage.clone()).unwrap();
+        backfill_proof_history_window(&factory, storage.clone(), 2, 1).unwrap();
+        assert_eq!(earliest(&storage), 2);
+
+        // Unwind the store to its earliest block, as the sidecar's `UnwindToEarliest` does.
+        let provider_rw = storage.provider_rw().unwrap();
+        provider_rw
+            .unwind_history(BlockWithParent::new(
+                headers[2].hash(),
+                BlockNumHash::new(3, headers[3].hash()),
+            ))
+            .unwrap();
+        OpProofsProviderRw::commit(provider_rw).unwrap();
+        let ro = storage.provider_ro().unwrap();
+        assert_eq!(ro.get_earliest_block().unwrap().number, 2);
+        assert_eq!(ro.get_latest_block().unwrap().number, 2);
+        drop(ro);
+
+        // Reth's head is still 4: the pruner will keep `[2, 4]`, so nothing below 2 is backfilled.
+        backfill_proof_history_window(&factory, storage.clone(), 2, 1).unwrap();
+        assert_eq!(earliest(&storage), 2);
+
         backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap();
         assert_eq!(earliest(&storage), 1);
     }

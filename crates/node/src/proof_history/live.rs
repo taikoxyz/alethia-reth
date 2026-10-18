@@ -102,8 +102,8 @@ where
 
         operation_durations.execution_duration_seconds = start.elapsed();
 
-        // Reads the proof-history parent state to write explicit zeroes for the storage of
-        // destroyed accounts, so hashing can fail.
+        // Hashing reads proof-history parent state (to zero a destroyed account's slots), so it is
+        // fallible.
         let hashed_state = state_provider.hashed_post_state(&execution_result.state)?;
         let (state_root, trie_updates) =
             state_provider.state_root_with_updates(hashed_state.clone())?;

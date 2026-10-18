@@ -99,7 +99,7 @@ where
     /// whose transaction-pool adapter is private to `reth-node-builder`), with Taiko's payload
     /// validator plugged in through this builder's [`PayloadValidatorBuilder`] impl. The result
     /// runs [`TaikoStateRootStrategy`], which keeps pre-Unzen SELFDESTRUCT storage deletions on
-    /// reth's synchronous state-root path.
+    /// reth's synchronous state-root path and in pre-Unzen payload building.
     async fn build_tree_validator(
         self,
         ctx: &AddOnsContext<'_, N>,
@@ -108,6 +108,7 @@ where
     ) -> eyre::Result<Self::EngineValidator> {
         let state_root_strategy = Arc::new(TaikoStateRootStrategy::new(
             &tree_config,
+            ctx.config.chain.clone(),
             ctx.node.provider().clone(),
             overlay_manager.clone(),
         ));

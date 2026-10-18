@@ -17,11 +17,20 @@
 //!   block that re-creates an account at that address can then fail its root check.
 //!
 //! [`TaikoStateRootStrategy`] replaces that one job. Every other block keeps reth's default
-//! machinery. The sparse-trie task needs no change: its root check against the header falls back
-//! to a serial recomputation that already hashes through the provider.
+//! machinery. The sparse-trie task needs no change when validating: its root check against the
+//! header falls back to a serial recomputation that already hashes through the provider.
 //!
-//! Re-check reth's synchronous job and the lazy hashed state in its `payload_validator.rs` on
-//! every reth bump: once either hashes through the provider, the override can go.
+//! Payload building has no header to check against: with
+//! `--engine.share-sparse-trie-with-payload-builder`, the builder takes the sparse trie's root as
+//! is, and that trie keeps a destroyed account's old storage root. Before Unzen the strategy
+//! therefore hands the builder no sparse trie, so it computes the root through the provider. A
+//! sparse trie carried across the Unzen boundary may still hold the storage trie of a contract a
+//! pre-Unzen block destroyed, so a network that crosses Unzen with that flag on should leave it off
+//! until the boundary is a few blocks behind.
+//!
+//! Re-check both on every reth bump. The synchronous override can go once reth's synchronous job
+//! or the lazy hashed state in its `payload_validator.rs` hashes through the provider. The
+//! payload-builder gate can go once reth's sparse trie wipes a destroyed account's storage.
 //!
 //! [`HashedPostState::from_bundle_state`]: reth_trie_common::HashedPostState::from_bundle_state
 //! [`HashedPostStateProvider::hashed_post_state`]: reth_provider::HashedPostStateProvider::hashed_post_state
@@ -29,6 +38,7 @@
 
 use std::sync::Arc;
 
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use reth_engine_tree::tree::{
     TreeConfig,
     state_root_strategy::{
@@ -47,16 +57,19 @@ use reth_revm::db::BundleState;
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 
 /// Engine-tree state-root strategy that keeps destroyed-account storage deletions on the
-/// synchronous path.
+/// synchronous path and out of pre-Unzen payload building.
 ///
 /// It holds reth's [`DefaultStateRootStrategy`] and forwards every block to it, unless the tree
 /// config selects reth's synchronous job. Those blocks get `SynchronousStateRootJob` instead.
+/// Payload builds before Unzen get no shared sparse trie, so they root through the provider.
 #[derive(Debug)]
 pub struct TaikoStateRootStrategy<P, N: NodePrimitives> {
     /// reth's strategy, used for every block the synchronous override does not cover.
     default: DefaultStateRootStrategy,
     /// Whether the tree config routes blocks to the synchronous state-root job.
     synchronous: bool,
+    /// Chain spec, used to keep the payload builder off the shared sparse trie before Unzen.
+    chain_spec: Arc<TaikoChainSpec>,
     /// Database provider factory the synchronous job reads the parent state from.
     provider: P,
     /// The engine tree's overlay manager, which holds the parent's in-memory ancestors.
@@ -70,13 +83,25 @@ impl<P, N: NodePrimitives> TaikoStateRootStrategy<P, N> {
     /// [`DefaultStateRootStrategy`] would pick, because the strategy context does not expose it.
     /// `provider` and `overlay_manager` must be the ones the validator runs with: the job context
     /// does not expose its state provider factory, so the strategy builds its own from them.
-    pub fn new(config: &TreeConfig, provider: P, overlay_manager: OverlayManager<N>) -> Self {
+    pub fn new(
+        config: &TreeConfig,
+        chain_spec: Arc<TaikoChainSpec>,
+        provider: P,
+        overlay_manager: OverlayManager<N>,
+    ) -> Self {
         Self {
             default: DefaultStateRootStrategy::default(),
             synchronous: !config.skip_state_root() && !config.use_state_root_task(),
+            chain_spec,
             provider,
             overlay_manager,
         }
+    }
+
+    /// Returns whether a payload built at `timestamp` may take its state root from the shared
+    /// sparse trie: only once Unzen's EIP-6780 semantics leave no pre-existing storage to delete.
+    fn payload_builder_may_share_sparse_trie(&self, timestamp: u64) -> bool {
+        self.chain_spec.is_unzen_active(timestamp)
     }
 }
 
@@ -112,12 +137,16 @@ where
         Ok(PreparedStateRootJob::new(Box::new(job), None))
     }
 
-    /// Defers to [`DefaultStateRootStrategy`]. Payload building runs at the tip, where Unzen's
-    /// EIP-6780 semantics leave no pre-existing storage to delete.
+    /// Defers to [`DefaultStateRootStrategy`] once Unzen is active at the payload's timestamp.
+    /// Before that it returns `None`, so the builder roots the block through the provider instead
+    /// of accepting a sparse-trie root that keeps a destroyed account's old storage.
     fn prepare_payload_builder(
         &self,
         ctx: PayloadStateRootJobContext<'_, N, P>,
     ) -> ProviderResult<Option<PayloadStateRootHandle>> {
+        if !self.payload_builder_may_share_sparse_trie(ctx.timestamp()) {
+            return Ok(None);
+        }
         self.default.prepare_payload_builder(ctx)
     }
 }
@@ -178,6 +207,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
+    use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, U256, keccak256};
     use reth_ethereum_primitives::EthPrimitives;
     use reth_primitives_traits::Account;
@@ -361,18 +392,33 @@ mod tests {
 
     #[test]
     fn overrides_only_the_synchronous_job() {
-        let synchronous = |config: &TreeConfig| {
-            TaikoStateRootStrategy::new(
-                config,
-                create_test_provider_factory(),
-                OverlayManager::<EthPrimitives>::default(),
-            )
-            .synchronous
-        };
+        let synchronous = |config: &TreeConfig| strategy(config, TAIKO_DEVNET.clone()).synchronous;
         let task = TreeConfig::default().with_has_enough_parallelism(true);
         assert!(!synchronous(&task));
         assert!(synchronous(&task.clone().with_state_root_fallback(true)));
         assert!(synchronous(&task.clone().with_has_enough_parallelism(false)));
         assert!(!synchronous(&task.with_has_enough_parallelism(false).with_skip_state_root(true)));
+    }
+
+    /// Strategy over a test provider for `config` and `chain_spec`.
+    fn strategy(
+        config: &TreeConfig,
+        chain_spec: Arc<TaikoChainSpec>,
+    ) -> TaikoStateRootStrategy<ProviderFactory<MockNodeTypesWithDB>, EthPrimitives> {
+        TaikoStateRootStrategy::new(
+            config,
+            chain_spec,
+            create_test_provider_factory(),
+            OverlayManager::<EthPrimitives>::default(),
+        )
+    }
+
+    #[test]
+    fn payload_builder_shares_the_sparse_trie_only_from_unzen() {
+        let mut chain_spec = TAIKO_DEVNET.as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(10));
+        let strategy = strategy(&TreeConfig::default(), Arc::new(chain_spec));
+        assert!(!strategy.payload_builder_may_share_sparse_trie(9));
+        assert!(strategy.payload_builder_may_share_sparse_trie(10));
     }
 }

@@ -33,7 +33,7 @@ use alethia_reth_node::{
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
 
-use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
+use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs, disable_state_masking_by_default};
 
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
@@ -144,6 +144,7 @@ where
 {
     /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
+        disable_state_masking_by_default();
         Self { inner: Cli::<C, Ext>::parse() }
     }
 
@@ -153,6 +154,7 @@ where
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
+        disable_state_masking_by_default();
         Cli::<C, Ext>::try_parse_from(itr).map(|inner| Self { inner })
     }
 }
@@ -287,12 +289,14 @@ mod tests {
     };
 
     use clap::Parser;
+    use reth::{args::EngineArgs, cli::Commands};
 
     use super::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
-        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
+        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
     };
-    use crate::command::TaikoNodeExtArgs;
+    use crate::command::{TaikoNodeExtArgs, ensure_state_masking_disabled};
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -394,5 +398,27 @@ mod tests {
             .expect_err("legacy flag should be rejected");
 
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn state_masking_defaults_to_off() {
+        let cli = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_args_from([
+            "alethia-reth",
+            "node",
+        ])
+        .expect("node args should parse");
+        let Commands::Node(node) = cli.inner.command else { panic!("expected node command") };
+
+        assert_eq!(node.engine.num_state_masking_blocks(), 0);
+    }
+
+    #[test]
+    fn state_masking_launch_check_rejects_nonzero() {
+        let mut engine = EngineArgs::default();
+        engine.num_state_masking_blocks = 30;
+        assert!(ensure_state_masking_disabled(&engine).is_err());
+
+        engine.num_state_masking_blocks = 0;
+        assert!(ensure_state_masking_disabled(&engine).is_ok());
     }
 }

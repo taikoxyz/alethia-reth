@@ -8,20 +8,26 @@
 //! on hosts with fewer than five threads.
 //!
 //! Every pre-Unzen fork runs SHANGHAI (pre-EIP-6780) SELFDESTRUCT semantics, so a block can
-//! destroy a contract that already holds storage. reth then gets two things wrong:
+//! destroy a contract that already holds storage. On reth's synchronous path that goes wrong:
 //!
-//! - If the same block re-creates the contract, the synchronous job's root keeps the destroyed
-//!   slots, and a valid block is rejected.
-//! - If it does not, the root is right on both the synchronous and the sparse-trie path, but the
-//!   persisted hashed state keeps the destroyed slots: the sparse task emits a deleted account with
-//!   no storage, and `write_hashed_state` deletes only the `HashedAccounts` row. A later block that
-//!   re-creates an account at that address can then fail its root check.
+//! - If the same block re-creates the contract, the root keeps the destroyed slots, and a valid
+//!   block is rejected.
+//! - If it does not, the root is right but the persisted hashed state keeps the destroyed slots
+//!   (`write_hashed_state` deletes only the `HashedAccounts` row). A later block that re-creates an
+//!   account at that address can then fail its root check.
 //!
-//! [`TaikoStateRootStrategy`] therefore roots every pre-Unzen block, and every block when the tree
-//! runs reth's synchronous mode, with a provider-backed synchronous job whose outcome carries the
-//! provider's hashed state, explicit zeroes included, for validation and persistence. Post-Unzen
-//! blocks keep reth's default machinery: EIP-6780 destroys only accounts created in the same
-//! transaction, which have no parent storage.
+//! reth's sparse-trie task is right only by accident. It emits the destroyed account as deleted
+//! with no storage, but its trie keeps the account's old storage root and encodes a zero-balance
+//! leaf instead of deleting it. The root then mismatches the header, and reth's serial fallback
+//! recomputes it through the provider, whose hashed state (explicit zeroes included) is what gets
+//! persisted. If every slot was zeroed before the destroy, the leaf is deleted correctly and the
+//! zero writes are persisted as well.
+//!
+//! [`TaikoStateRootStrategy`] does not rely on that quirk: it roots every pre-Unzen block, and
+//! every block when the tree runs reth's synchronous mode, with a provider-backed synchronous job
+//! whose outcome carries the provider's hashed state, explicit zeroes included, for validation and
+//! persistence. Post-Unzen blocks keep reth's default machinery: EIP-6780 destroys only accounts
+//! created in the same transaction, which have no parent storage.
 //!
 //! Payload building has no header to check against: with
 //! `--engine.share-sparse-trie-with-payload-builder`, the builder takes the sparse trie's root as
@@ -52,7 +58,7 @@ use reth_engine_tree::tree::{
     },
 };
 use reth_evm::ConfigureEvm;
-use reth_primitives_traits::{NodePrimitives, RecoveredBlock};
+use reth_primitives_traits::{AlloyBlockHeader as _, NodePrimitives, RecoveredBlock};
 use reth_provider::{
     BlockExecutionOutput, DatabaseProviderFactory, DatabaseProviderROFactory,
     HashedPostStateProvider, ProviderResult, StateRootProvider,
@@ -113,10 +119,15 @@ impl<P, N: NodePrimitives> TaikoStateRootStrategy<P, N> {
         !self.skip_state_root && (self.synchronous || !self.chain_spec.is_unzen_active(timestamp))
     }
 
-    /// Returns whether a payload built at `timestamp` may take its state root from the shared
-    /// sparse trie: only once Unzen's EIP-6780 semantics leave no pre-existing storage to delete.
-    fn payload_builder_may_share_sparse_trie(&self, timestamp: u64) -> bool {
-        self.chain_spec.is_unzen_active(timestamp)
+    /// Returns whether a payload on a parent with timestamp `parent_timestamp` may take its state
+    /// root from the shared sparse trie: only once Unzen's EIP-6780 semantics leave no pre-existing
+    /// storage to delete.
+    ///
+    /// It keys on the parent rather than the payload attributes: the block is executed and sealed
+    /// with its block-metadata timestamp, which nothing forces to equal the attributes' one, but is
+    /// never below its parent's, so a pre-Unzen block always has a pre-Unzen parent.
+    fn payload_builder_may_share_sparse_trie(&self, parent_timestamp: u64) -> bool {
+        self.chain_spec.is_unzen_active(parent_timestamp)
     }
 }
 
@@ -153,14 +164,14 @@ where
         Ok(PreparedStateRootJob::new(Box::new(job), None))
     }
 
-    /// Defers to [`DefaultStateRootStrategy`] once Unzen is active at the payload's timestamp.
+    /// Defers to [`DefaultStateRootStrategy`] once Unzen is active at the parent's timestamp.
     /// Before that it returns `None`, so the builder roots the block through the provider instead
     /// of accepting a sparse-trie root that keeps a destroyed account's old storage.
     fn prepare_payload_builder(
         &self,
         ctx: PayloadStateRootJobContext<'_, N, P>,
     ) -> ProviderResult<Option<PayloadStateRootHandle>> {
-        if !self.payload_builder_may_share_sparse_trie(ctx.timestamp()) {
+        if !self.payload_builder_may_share_sparse_trie(ctx.parent_header().timestamp()) {
             return Ok(None);
         }
         self.default.prepare_payload_builder(ctx)
@@ -398,8 +409,8 @@ mod tests {
 
         // Block 1 destroys the contract and block 2 puts one back at its address, reading block
         // 1's hashed state back from the database as a restarted node would. The persisted zeroes
-        // from block 1 are what keep the old slots out of block 2's root; reth's sparse task
-        // persists none, which is why every pre-Unzen block takes this job.
+        // from block 1 are what keep the old slots out of block 2's root; reth's raw conversion
+        // carries none, and its sparse task only reaches them through its serial fallback.
         let factory = parent_state();
         let (root, hashed_state, updates) = fixed_serial_root(&factory, &destroyed);
         assert_eq!(root, expected_root(None));

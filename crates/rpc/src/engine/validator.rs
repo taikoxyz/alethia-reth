@@ -106,7 +106,11 @@ where
         tree_config: TreeConfig,
         overlay_manager: OverlayManager<<N::Types as NodeTypes>::Primitives>,
     ) -> eyre::Result<Self::EngineValidator> {
-        let state_root_strategy = Arc::new(TaikoStateRootStrategy::new(&tree_config));
+        let state_root_strategy = Arc::new(TaikoStateRootStrategy::new(
+            &tree_config,
+            ctx.node.provider().clone(),
+            overlay_manager.clone(),
+        ));
         let validator = BasicEngineValidatorBuilder::new(self)
             .build_tree_validator(ctx, tree_config, overlay_manager)
             .await?;

@@ -53,11 +53,7 @@ impl HistoricalAnchorOverlay {
     /// Returns whether a current hashed storage row must be replaced by the overlay.
     fn has_storage_update(&self, hashed_address: &B256, hashed_slot: &B256) -> bool {
         self.hashed_state.storages.get(hashed_address).is_some_and(|storage| {
-            storage.is_wiped() ||
-                storage
-                    .storage_slots_ref()
-                    .binary_search_by_key(hashed_slot, |(key, _)| *key)
-                    .is_ok()
+            storage.storage_slots_ref().binary_search_by_key(hashed_slot, |(key, _)| *key).is_ok()
         })
     }
 
@@ -77,8 +73,7 @@ impl HistoricalAnchorOverlay {
 
 /// Returns whether a sorted storage trie overlay replaces a given path.
 fn storage_trie_has_path_update(storage: &StorageTrieUpdatesSorted, path: &Nibbles) -> bool {
-    storage.is_deleted() ||
-        storage.storage_nodes_ref().binary_search_by_key(path, |(key, _)| *key).is_ok()
+    storage.storage_nodes_ref().binary_search_by_key(path, |(key, _)| *key).is_ok()
 }
 
 /// Copies the node's current trie and hashed-state tables into proof-history storage.
@@ -609,14 +604,8 @@ mod tests {
             hashed_state: HashedPostStateSorted::new(
                 vec![(account, None)],
                 B256Map::from_iter([
-                    (
-                        storage,
-                        HashedStorageSorted {
-                            storage_slots: vec![(slot, U256::ZERO)],
-                            wiped: false,
-                        },
-                    ),
-                    (wiped_storage, HashedStorageSorted { storage_slots: Vec::new(), wiped: true }),
+                    (storage, HashedStorageSorted { storage_slots: vec![(slot, U256::ZERO)] }),
+                    (wiped_storage, HashedStorageSorted { storage_slots: Vec::new() }),
                 ]),
             ),
             trie_updates: TrieUpdatesSorted::new(
@@ -625,24 +614,18 @@ mod tests {
                     (
                         storage,
                         StorageTrieUpdatesSorted {
-                            is_deleted: false,
                             storage_nodes: vec![(storage_path, Some(branch))],
                         },
                     ),
-                    (
-                        wiped_storage,
-                        StorageTrieUpdatesSorted { is_deleted: true, storage_nodes: Vec::new() },
-                    ),
+                    (wiped_storage, StorageTrieUpdatesSorted { storage_nodes: Vec::new() }),
                 ]),
             ),
         };
 
         assert!(overlay.has_account_update(&account));
         assert!(overlay.has_storage_update(&storage, &slot));
-        assert!(overlay.has_storage_update(&wiped_storage, &B256::with_last_byte(99)));
         assert!(overlay.has_account_trie_update(&account_path));
         assert!(overlay.has_storage_trie_update(&storage, &storage_path));
-        assert!(overlay.has_storage_trie_update(&wiped_storage, &untouched_path));
         assert!(!overlay.has_account_update(&B256::with_last_byte(99)));
         assert!(!overlay.has_storage_trie_update(&storage, &untouched_path));
     }

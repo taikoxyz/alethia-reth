@@ -491,7 +491,7 @@ mod tests {
     use reth_optimism_trie::{
         InMemoryProofsStorage, OpProofsStorage,
         api::OpProofsInitProvider,
-        db::{MdbxProofsStorage, ProofWindow, ProofWindowKey, Tables},
+        db::{MdbxProofsStorage, ProofWindowKey, Tables, V2ProofWindow},
     };
     use reth_provider::test_utils::MockEthProvider;
     use std::sync::Arc;
@@ -674,7 +674,7 @@ mod tests {
             .expect("raw proofs database opens");
         let tx = env.tx_mut().expect("write transaction opens");
         for (key, block) in rows {
-            tx.put::<ProofWindow>(*key, (*block).into()).expect("legacy row writes");
+            tx.put::<V2ProofWindow>(*key, (*block).into()).expect("legacy row writes");
         }
         tx.commit().expect("legacy layout commits");
     }

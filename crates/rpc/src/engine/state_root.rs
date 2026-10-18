@@ -1,10 +1,11 @@
 //! State-root strategy for Taiko engine-tree validation.
 //!
-//! Since reth v2.5, [`HashedPostState::from_bundle_state`] no longer marks a destroyed account's
-//! storage as wiped. The state providers' [`HashedPostStateProvider::hashed_post_state`] writes
-//! explicit zeroes for the destroyed account's parent slots instead. reth's synchronous state-root
-//! job still hashes the bundle with the raw conversion, though. That job runs under
-//! `--engine.state-root-fallback` or on hosts with fewer than five threads.
+//! reth v2.6 has no storage wipe marker: [`HashedPostState::from_bundle_state`] carries only the
+//! slots a block wrote, and the state providers' [`HashedPostStateProvider::hashed_post_state`]
+//! writes explicit zeroes for a destroyed account's parent slots instead. reth's synchronous
+//! state-root job still roots the engine validator's lazy hashed state, which is the raw bundle
+//! conversion whenever no job supplies one. That job runs under `--engine.state-root-fallback` or
+//! on hosts with fewer than five threads.
 //!
 //! Every pre-Unzen fork runs SHANGHAI (pre-EIP-6780) SELFDESTRUCT semantics, so a block can
 //! destroy a contract that already holds storage. On the synchronous path, reth then gets two
@@ -19,6 +20,9 @@
 //! machinery. The sparse-trie task needs no change: its root check against the header falls back
 //! to a serial recomputation that already hashes through the provider.
 //!
+//! Re-check reth's synchronous job and the lazy hashed state in its `payload_validator.rs` on
+//! every reth bump: once either hashes through the provider, the override can go.
+//!
 //! [`HashedPostState::from_bundle_state`]: reth_trie_common::HashedPostState::from_bundle_state
 //! [`HashedPostStateProvider::hashed_post_state`]: reth_provider::HashedPostStateProvider::hashed_post_state
 //! [`TaikoStateRootStrategy`]: crate::engine::state_root::TaikoStateRootStrategy
@@ -26,7 +30,7 @@
 use std::sync::Arc;
 
 use reth_engine_tree::tree::{
-    StateProviderBuilder, TreeConfig,
+    TreeConfig,
     state_root_strategy::{
         DefaultStateRootStrategy, LazyHashedPostState, PayloadStateRootHandle,
         PayloadStateRootJobContext, PreparedStateRootJob, StateRootJob, StateRootJobContext,
@@ -36,11 +40,12 @@ use reth_engine_tree::tree::{
 use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock};
 use reth_provider::{
-    BlockExecutionOutput, BlockNumReader, DatabaseProviderFactory, HashedPostStateProvider,
-    ProviderResult, PruneCheckpointReader, StageCheckpointReader, StateRootProvider,
-    StorageSettingsCache, TryIntoHistoricalStateProvider,
+    BlockExecutionOutput, BlockNumReader, ChangeSetReader, DatabaseProviderFactory,
+    DatabaseProviderROFactory, HashedPostStateProvider, ProviderResult, PruneCheckpointReader,
+    StageCheckpointReader, StateRootProvider, StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_revm::db::BundleState;
+use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 
 /// Engine-tree state-root strategy that keeps destroyed-account storage deletions on the
 /// synchronous path.
@@ -48,36 +53,47 @@ use reth_revm::db::BundleState;
 /// It holds reth's [`DefaultStateRootStrategy`] and forwards every block to it, unless the tree
 /// config selects reth's synchronous job. Those blocks get `SynchronousStateRootJob` instead.
 #[derive(Debug)]
-pub struct TaikoStateRootStrategy {
+pub struct TaikoStateRootStrategy<P, N: NodePrimitives> {
     /// reth's strategy, used for every block the synchronous override does not cover.
     default: DefaultStateRootStrategy,
     /// Whether the tree config routes blocks to the synchronous state-root job.
     synchronous: bool,
+    /// Database provider factory the synchronous job reads the parent state from.
+    provider: P,
+    /// The engine tree's overlay manager, which holds the parent's in-memory ancestors.
+    overlay_manager: OverlayManager<N>,
 }
 
-impl TaikoStateRootStrategy {
+impl<P, N: NodePrimitives> TaikoStateRootStrategy<P, N> {
     /// Creates the strategy for an engine tree validating with `config`.
     ///
     /// `config` must be the tree config the validator runs with. It decides once which job
     /// [`DefaultStateRootStrategy`] would pick, because the strategy context does not expose it.
-    pub fn new(config: &TreeConfig) -> Self {
+    /// `provider` and `overlay_manager` must be the ones the validator runs with: the job context
+    /// does not expose its state provider factory, so the strategy builds its own from them.
+    pub fn new(config: &TreeConfig, provider: P, overlay_manager: OverlayManager<N>) -> Self {
         Self {
             default: DefaultStateRootStrategy::default(),
             synchronous: !config.skip_state_root() && !config.use_state_root_task(),
+            provider,
+            overlay_manager,
         }
     }
 }
 
-impl<N, P, Evm> StateRootStrategy<N, P, Evm> for TaikoStateRootStrategy
+impl<N, P, Evm> StateRootStrategy<N, P, Evm> for TaikoStateRootStrategy<P, N>
 where
     N: NodePrimitives,
     P: DatabaseProviderFactory + Clone + 'static,
     P::Provider: BlockNumReader
         + PruneCheckpointReader
         + StageCheckpointReader
+        + ChangeSetReader
+        + StorageChangeSetReader
         + StorageSettingsCache
-        + TryIntoHistoricalStateProvider
         + 'static,
+    OverlayStateProviderFactory<P, N>:
+        DatabaseProviderROFactory<Provider: StateRootProvider + HashedPostStateProvider>,
     Evm: ConfigureEvm<Primitives = N>,
     DefaultStateRootStrategy: StateRootStrategy<N, P, Evm>,
 {
@@ -86,7 +102,9 @@ where
     ///
     /// This mirrors the mode selection in `DefaultStateRootStrategy::prepare` at the pinned reth
     /// rev: skipped, then synchronous when the state-root task is off, then the sparse-trie task.
-    /// Re-check it on every reth bump.
+    /// The job reads the parent state the way the validator does, through an
+    /// [`OverlayStateProviderFactory`] over the parent's in-memory ancestors. Re-check both on
+    /// every reth bump.
     fn prepare(
         &self,
         ctx: StateRootJobContext<'_, N, P, Evm>,
@@ -94,7 +112,11 @@ where
         if !self.synchronous {
             return self.default.prepare(ctx);
         }
-        let job = SynchronousStateRootJob { provider_builder: ctx.provider_builder() };
+        let state_provider_factory = OverlayStateProviderFactory::new(
+            self.provider.clone(),
+            self.overlay_manager.overlay_builder(ctx.parent_header().hash()),
+        );
+        let job = SynchronousStateRootJob { state_provider_factory };
         Ok(PreparedStateRootJob::new(Box::new(job), None))
     }
 
@@ -114,8 +136,8 @@ where
 /// is that it hashes through the provider; see [`state_root_with_parent_storage`].
 #[derive(Debug)]
 struct SynchronousStateRootJob<N: NodePrimitives, P> {
-    /// Builds the state provider at the block's parent, including in-memory ancestors.
-    provider_builder: StateProviderBuilder<N, P>,
+    /// Opens the state at the block's parent, including in-memory ancestors.
+    state_provider_factory: OverlayStateProviderFactory<P, N>,
 }
 
 impl<N, P> StateRootJob<N> for SynchronousStateRootJob<N, P>
@@ -125,9 +147,12 @@ where
     P::Provider: BlockNumReader
         + PruneCheckpointReader
         + StageCheckpointReader
+        + ChangeSetReader
+        + StorageChangeSetReader
         + StorageSettingsCache
-        + TryIntoHistoricalStateProvider
         + 'static,
+    OverlayStateProviderFactory<P, N>:
+        DatabaseProviderROFactory<Provider: StateRootProvider + HashedPostStateProvider>,
 {
     /// Uses the name of the reth job it replaces, so the engine's state-root logs are unchanged.
     fn name(&self) -> &'static str {
@@ -141,8 +166,8 @@ where
         output: Arc<BlockExecutionOutput<N::Receipt>>,
         _hashed_state: &LazyHashedPostState,
     ) -> ProviderResult<StateRootJobOutcome> {
-        let provider = self.provider_builder.build()?;
-        state_root_with_parent_storage(provider.as_ref(), &output.state)
+        let provider = self.state_provider_factory.database_provider_ro()?;
+        state_root_with_parent_storage(&provider, &output.state)
     }
 }
 
@@ -170,6 +195,7 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{Address, B256, U256, keccak256};
+    use reth_ethereum_primitives::EthPrimitives;
     use reth_primitives_traits::Account;
     use reth_provider::{
         ProviderFactory, StateWriter, TrieWriter,
@@ -182,7 +208,7 @@ mod tests {
         },
         state::AccountInfo,
     };
-    use reth_trie_common::{HashedPostState, HashedStorage, KeccakKeyHasher, updates::TrieUpdates};
+    use reth_trie_common::{HashedPostState, HashedStorage, updates::TrieUpdates};
 
     /// Externally owned account that keeps the state trie non-trivial.
     const CALLER: Address = Address::with_last_byte(0x30);
@@ -280,18 +306,6 @@ mod tests {
         (outcome.state_root, (*hashed_state).clone(), (*outcome.trie_updates).clone())
     }
 
-    /// What reth's synchronous job computes: the root of the raw bundle conversion.
-    fn raw_serial_root(
-        factory: &ProviderFactory<MockNodeTypesWithDB>,
-        bundle: &BundleState,
-    ) -> (B256, HashedPostState, TrieUpdates) {
-        let provider = factory.latest().expect("latest state provider opens");
-        let hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state());
-        let (root, updates) =
-            provider.state_root_with_updates(hashed_state.clone()).expect("state root computes");
-        (root, hashed_state, updates)
-    }
-
     #[test]
     fn parent_state_matches_the_expected_root() {
         let factory = parent_state();
@@ -332,11 +346,6 @@ mod tests {
             ),
             "slot 2 must be zeroed, and the re-created contract's writes must win"
         );
-
-        // Documents the reth behavior the override exists for. If this starts to match, reth
-        // fixed its synchronous job and the override can be reconsidered.
-        let (raw_root, _, _) = raw_serial_root(&factory, &bundle);
-        assert_ne!(raw_root, expected, "reth's raw conversion keeps the destroyed slot 2");
     }
 
     #[test]
@@ -364,33 +373,22 @@ mod tests {
         persist(&factory, hashed_state, updates);
         let (root, _, _) = fixed_serial_root(&factory, &recreated);
         assert_eq!(root, expected);
-
-        // Documents the reth behavior the override exists for. The raw conversion gets block 1's
-        // root right but persists nothing for the destroyed storage, so block 2 inherits it.
-        let factory = parent_state();
-        let (root, hashed_state, updates) = raw_serial_root(&factory, &destroyed);
-        assert_eq!(root, expected_root(None));
-        persist(&factory, hashed_state, updates);
-        let (root, _, _) = raw_serial_root(&factory, &recreated);
-        assert_ne!(root, expected, "the raw conversion leaves the destroyed slots in the database");
     }
 
     #[test]
     fn overrides_only_the_synchronous_job() {
-        let task = TreeConfig::default().with_has_enough_parallelism(true);
-        assert!(!TaikoStateRootStrategy::new(&task).synchronous);
-        assert!(
-            TaikoStateRootStrategy::new(&task.clone().with_state_root_fallback(true)).synchronous
-        );
-        assert!(
-            TaikoStateRootStrategy::new(&task.clone().with_has_enough_parallelism(false))
-                .synchronous
-        );
-        assert!(
-            !TaikoStateRootStrategy::new(
-                &task.with_has_enough_parallelism(false).with_skip_state_root(true)
+        let synchronous = |config: &TreeConfig| {
+            TaikoStateRootStrategy::new(
+                config,
+                create_test_provider_factory(),
+                OverlayManager::<EthPrimitives>::default(),
             )
             .synchronous
-        );
+        };
+        let task = TreeConfig::default().with_has_enough_parallelism(true);
+        assert!(!synchronous(&task));
+        assert!(synchronous(&task.clone().with_state_root_fallback(true)));
+        assert!(synchronous(&task.clone().with_has_enough_parallelism(false)));
+        assert!(!synchronous(&task.with_has_enough_parallelism(false).with_skip_state_root(true)));
     }
 }

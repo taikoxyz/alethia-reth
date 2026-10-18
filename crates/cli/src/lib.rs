@@ -247,9 +247,9 @@ impl<
             Commands::Db(command) => {
                 runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
             }
-            Commands::Download(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
-            }
+            Commands::Download(command) => runner.run_blocking_until_ctrl_c(async move {
+                command.execute::<TaikoNode>().await.map(|_| ())
+            }),
             Commands::Stage(command) => runner
                 .run_command_until_exit(|ctx| command.execute::<TaikoNode, _>(ctx, components)),
             Commands::P2P(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),

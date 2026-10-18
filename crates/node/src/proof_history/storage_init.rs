@@ -358,7 +358,8 @@ mod tests {
     };
     use reth_primitives_traits::SealedHeader;
     use reth_provider::{
-        BlockWriter, ExecutionOutcome, ProviderFactory, StageCheckpointWriter,
+        BlockWriter, ExecutionOutcome, ProviderFactory, StageCheckpointWriter, StateRootProvider,
+        TrieWriter,
         test_utils::{
             MockEthProvider, MockNodeTypesWithDB, blocks::BlockchainTestData,
             create_test_provider_factory,
@@ -617,9 +618,28 @@ mod tests {
         provider_rw.update_pipeline_stages(4, false).unwrap();
         provider_rw.commit().unwrap();
 
-        let headers = std::iter::once(data.genesis.clone_sealed_header())
+        let headers: Vec<SealedHeader> = std::iter::once(data.genesis.clone_sealed_header())
             .chain(data.blocks.iter().map(|(block, _)| block.clone_sealed_header()))
             .collect();
+
+        // Store the tip's trie nodes, in the factory's layout, as a synced node holds them: the
+        // initialization copies them and the backfill rewinds them. Only the storage tries have
+        // any: reth stores no root node and no branch whose children are all leaves, and the
+        // tip's 12 accounts form nothing else.
+        let (root, trie_updates) =
+            factory.latest().unwrap().state_root_with_updates(HashedPostState::default()).unwrap();
+        assert_eq!(root, headers[4].state_root);
+        assert!(
+            trie_updates
+                .storage_tries_ref()
+                .values()
+                .any(|trie| !trie.storage_nodes_ref().is_empty()),
+            "the fixture must store trie nodes, or their layout goes untested"
+        );
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.write_trie_updates(trie_updates).unwrap();
+        provider_rw.commit().unwrap();
+
         (factory, headers)
     }
 

@@ -90,6 +90,7 @@ reth = { git = "https://github.com/ethereum-optimism/reth", package = "reth", re
     "min-trace-logs",
 ] }
 reth-basic-payload-builder = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
+reth-chain-state = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-chainspec = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false }
 reth-cli = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-cli-commands = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }

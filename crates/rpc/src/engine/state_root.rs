@@ -235,12 +235,14 @@ where
 mod tests {
     use super::*;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
+    use alloy_consensus::Header;
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, U256, keccak256};
-    use reth_ethereum_primitives::EthPrimitives;
-    use reth_primitives_traits::Account;
+    use reth_chain_state::ExecutedBlock;
+    use reth_ethereum_primitives::{Block, EthPrimitives};
+    use reth_primitives_traits::{Account, SealedBlock};
     use reth_provider::{
-        ProviderFactory, StateWriter, TrieWriter,
+        BlockWriter, ProviderFactory, StageCheckpointWriter, StateWriter,
         test_utils::{MockNodeTypesWithDB, create_test_provider_factory},
     };
     use reth_revm::{
@@ -250,7 +252,9 @@ mod tests {
         },
         state::AccountInfo,
     };
-    use reth_trie_common::{HashedPostState, HashedStorage, updates::TrieUpdates};
+    use reth_trie_common::{
+        ComputedTrieData, HashedPostState, HashedStorage, KeccakKeyHasher, updates::TrieUpdates,
+    };
 
     /// Externally owned account that keeps the state trie non-trivial.
     const CALLER: Address = Address::with_last_byte(0x30);
@@ -277,32 +281,95 @@ mod tests {
         keccak256(B256::from(U256::from(slot)))
     }
 
-    /// Test database holding [`CALLER`] and [`CONTRACT`] with [`PARENT_SLOTS`].
-    fn parent_state() -> ProviderFactory<MockNodeTypesWithDB> {
-        let factory = create_test_provider_factory();
-        let mut state = HashedPostState::default();
-        state.accounts.insert(keccak256(CALLER), Some(caller_account()));
-        state.accounts.insert(keccak256(CONTRACT), Some(parent_contract().into()));
-        state.storages.insert(
-            keccak256(CONTRACT),
-            HashedStorage::from_iter(
-                PARENT_SLOTS.iter().map(|&(slot, value)| (hashed_slot(slot), U256::from(value))),
-            ),
-        );
-        persist(&factory, state, TrieUpdates::default());
-        factory
+    /// Empty block `number` on top of `parent_hash`.
+    fn block(number: u64, parent_hash: B256) -> RecoveredBlock<Block> {
+        let header = Header { number, parent_hash, ..Default::default() };
+        RecoveredBlock::new_sealed(
+            SealedBlock::seal_slow(Block { header, body: Default::default() }),
+            Vec::new(),
+        )
     }
 
-    /// Writes one block's hashed state and trie updates, as engine persistence does.
-    fn persist(
-        factory: &ProviderFactory<MockNodeTypesWithDB>,
-        hashed_state: HashedPostState,
-        trie_updates: TrieUpdates,
-    ) {
-        let provider_rw = factory.provider_rw().expect("read-write provider opens");
-        provider_rw.write_hashed_state(&hashed_state.into_sorted()).expect("hashed state writes");
-        provider_rw.write_trie_updates(trie_updates).expect("trie updates write");
-        provider_rw.commit().expect("block commits");
+    /// The engine tree's view of a chain: block 0 persisted with the Finish checkpoint on it, and
+    /// every later block held in memory by the overlay manager, as before persistence.
+    struct Chain {
+        factory: ProviderFactory<MockNodeTypesWithDB>,
+        overlay_manager: OverlayManager<EthPrimitives>,
+        tip: RecoveredBlock<Block>,
+    }
+
+    impl Chain {
+        /// Parent state of the tested blocks: [`CALLER`] and [`CONTRACT`] with its first parent
+        /// slot persisted at block 0, and its second slot written by block 1, kept in memory.
+        fn parent_state() -> Self {
+            let factory = create_test_provider_factory();
+            let genesis = block(0, B256::ZERO);
+            let mut state = HashedPostState::default();
+            state.accounts.insert(keccak256(CALLER), Some(caller_account()));
+            state.accounts.insert(keccak256(CONTRACT), Some(parent_contract().into()));
+            let (slot, value) = PARENT_SLOTS[0];
+            state.storages.insert(
+                keccak256(CONTRACT),
+                HashedStorage::from_iter([(hashed_slot(slot), U256::from(value))]),
+            );
+            let provider_rw = factory.provider_rw().expect("read-write provider opens");
+            provider_rw.insert_block(&genesis).expect("block 0 inserts");
+            provider_rw.update_pipeline_stages(0, false).expect("checkpoints write");
+            provider_rw.write_hashed_state(&state.into_sorted()).expect("hashed state writes");
+            provider_rw.commit().expect("block 0 commits");
+
+            let mut chain =
+                Self { factory, overlay_manager: OverlayManager::default(), tip: genesis };
+            let (slot, value) = PARENT_SLOTS[1];
+            let mut block_1 = HashedPostState::default();
+            block_1.storages.insert(
+                keccak256(CONTRACT),
+                HashedStorage::from_iter([(hashed_slot(slot), U256::from(value))]),
+            );
+            chain.push(block_1, TrieUpdates::default());
+            chain
+        }
+
+        /// Appends an in-memory block with `hashed_state` and `trie_updates` on top of the tip.
+        fn push(&mut self, hashed_state: HashedPostState, trie_updates: TrieUpdates) {
+            let block = block(self.tip.number + 1, self.tip.hash());
+            self.overlay_manager.insert_block(ExecutedBlock::new(
+                Arc::new(block.clone()),
+                Arc::default(),
+                ComputedTrieData::new(
+                    Arc::new(hashed_state.into_sorted()),
+                    Arc::new(trie_updates.into_sorted()),
+                ),
+            ));
+            self.tip = block;
+        }
+
+        /// Finishes the synchronous job for a block on top of the tip that wrote `bundle`, handing
+        /// it the raw bundle conversion, as reth's validator does.
+        fn finish(&self, bundle: BundleState) -> StateRootJobOutcome {
+            let raw = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle.state());
+            let mut job = SynchronousStateRootJob {
+                state_provider_factory: OverlayStateProviderFactory::new(
+                    self.factory.clone(),
+                    self.overlay_manager.overlay_builder(self.tip.hash()),
+                ),
+            };
+            job.finish(
+                &block(self.tip.number + 1, self.tip.hash()),
+                Arc::new(BlockExecutionOutput { state: bundle, ..Default::default() }),
+                &LazyHashedPostState::ready(Arc::new(raw)),
+            )
+            .expect("state root computes")
+        }
+    }
+
+    /// Hashed state the outcome hands engine validation in place of the raw conversion.
+    fn outcome_hashed_state(outcome: &StateRootJobOutcome) -> HashedPostState {
+        outcome
+            .hashed_state
+            .as_deref()
+            .expect("the outcome must replace the raw hashed state")
+            .clone()
     }
 
     /// Bundle whose only account is [`CONTRACT`].
@@ -335,34 +402,16 @@ mod tests {
         reth_trie::test_utils::state_root(accounts)
     }
 
-    /// Root and inputs from the fixed job, plus the hashed state engine validation keeps.
-    fn fixed_serial_root(
-        factory: &ProviderFactory<MockNodeTypesWithDB>,
-        bundle: &BundleState,
-    ) -> (B256, HashedPostState, TrieUpdates) {
-        let provider = factory.latest().expect("latest state provider opens");
-        let outcome =
-            state_root_with_parent_storage(provider.as_ref(), bundle).expect("state root computes");
-        let hashed_state =
-            outcome.hashed_state.expect("the outcome must replace the raw hashed state");
-        (outcome.state_root, (*hashed_state).clone(), (*outcome.trie_updates).clone())
-    }
-
     #[test]
     fn parent_state_matches_the_expected_root() {
-        let factory = parent_state();
-        let root = factory
-            .latest()
-            .expect("latest state provider opens")
-            .state_root(HashedPostState::default())
-            .expect("state root computes");
+        let outcome = Chain::parent_state().finish(BundleState::default());
 
-        assert_eq!(root, expected_root(Some((parent_contract(), &PARENT_SLOTS))));
+        assert_eq!(outcome.state_root, expected_root(Some((parent_contract(), &PARENT_SLOTS))));
     }
 
     #[test]
     fn serial_root_drops_the_old_storage_of_a_contract_recreated_in_the_same_block() {
-        let factory = parent_state();
+        let chain = Chain::parent_state();
         // The re-created contract overwrites slot 1, leaves slot 2 alone, and adds slot 3.
         let recreated_slots = [(1, 5), (3, 9)];
         let bundle = contract_bundle(BundleAccount::new(
@@ -371,14 +420,19 @@ mod tests {
             storage_writes(&recreated_slots),
             AccountStatus::DestroyedChanged,
         ));
-        let expected = expected_root(Some((recreated_contract(), &recreated_slots)));
 
-        let (root, hashed_state, _) = fixed_serial_root(&factory, &bundle);
-        assert_eq!(root, expected);
+        let outcome = chain.finish(bundle);
         assert_eq!(
-            hashed_state.storages.get(&keccak256(CONTRACT)).map(|storage| &storage.storage),
+            outcome.state_root,
+            expected_root(Some((recreated_contract(), &recreated_slots)))
+        );
+        assert_eq!(
+            outcome_hashed_state(&outcome)
+                .storages
+                .get(&keccak256(CONTRACT))
+                .map(|storage| storage.storage.clone()),
             Some(
-                &[
+                [
                     (hashed_slot(1), U256::from(5)),
                     (hashed_slot(2), U256::ZERO),
                     (hashed_slot(3), U256::from(9))
@@ -386,7 +440,8 @@ mod tests {
                 .into_iter()
                 .collect()
             ),
-            "slot 2 must be zeroed, and the re-created contract's writes must win"
+            "slot 2, written by an in-memory ancestor, must be zeroed, and the re-created \
+             contract's writes must win"
         );
     }
 
@@ -405,18 +460,21 @@ mod tests {
             storage_writes(&recreated_slots),
             AccountStatus::InMemoryChange,
         ));
-        let expected = expected_root(Some((recreated_contract(), &recreated_slots)));
 
-        // Block 1 destroys the contract and block 2 puts one back at its address, reading block
-        // 1's hashed state back from the database as a restarted node would. The persisted zeroes
-        // from block 1 are what keep the old slots out of block 2's root; reth's raw conversion
-        // carries none, and its sparse task only reaches them through its serial fallback.
-        let factory = parent_state();
-        let (root, hashed_state, updates) = fixed_serial_root(&factory, &destroyed);
-        assert_eq!(root, expected_root(None));
-        persist(&factory, hashed_state, updates);
-        let (root, _, _) = fixed_serial_root(&factory, &recreated);
-        assert_eq!(root, expected);
+        // Block 2 destroys the contract and block 3 puts one back at its address. Block 2 enters
+        // the overlay with the outcome's hashed state, which the engine keeps in memory and later
+        // persists: its zeroes for the persisted slot 1 and the in-memory slot 2 are what keep the
+        // old slots out of block 3's root. reth's raw conversion carries none, and its sparse task
+        // only reaches them through its serial fallback.
+        let mut chain = Chain::parent_state();
+        let outcome = chain.finish(destroyed);
+        assert_eq!(outcome.state_root, expected_root(None));
+        chain.push(outcome_hashed_state(&outcome), (*outcome.trie_updates).clone());
+        let outcome = chain.finish(recreated);
+        assert_eq!(
+            outcome.state_root,
+            expected_root(Some((recreated_contract(), &recreated_slots)))
+        );
     }
 
     #[test]

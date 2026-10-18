@@ -1,7 +1,6 @@
 //! Proof-history sidecar configuration and startup wiring for Taiko nodes.
 
 mod config;
-mod init;
 mod live;
 mod sidecar;
 mod storage_init;
@@ -11,6 +10,7 @@ pub use config::{
     DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
 use sidecar::ProofHistorySidecar;
+use storage_init::open_proof_history_storage;
 
 use crate::TaikoNode;
 use alethia_reth_rpc::{
@@ -18,11 +18,10 @@ use alethia_reth_rpc::{
     eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
     proof_state::ProofHistoryReadiness,
 };
-use eyre::WrapErr;
 use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateSubscriptions, DBProvider,
-        DatabaseProviderFactory, HeaderProvider,
+        DatabaseProviderFactory, HeaderProvider, StageCheckpointReader,
     },
     tasks::TaskExecutor,
 };
@@ -83,24 +82,23 @@ where
         + BlockReader
         + CanonStateSubscriptions
         + DatabaseProviderFactory,
-    <T::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
+    <T::Provider as DatabaseProviderFactory>::Provider: BlockHashReader
+        + BlockNumReader
         + ChainStateBlockReader
         + ChangeSetReader
         + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
-        + StorageSettingsCache,
+        + StorageSettingsCache
+        + Send,
     <T::DB as Database>::TX: Sync,
 {
     if !config.enabled {
         return Ok((node_builder, None));
     }
 
-    let storage_path = config.required_storage_path()?.clone();
-    let mdbx =
-        Arc::new(MdbxProofsStorage::new(&storage_path).wrap_err_with(|| {
-            format!("failed to create proof-history MDBX at {storage_path:?}")
-        })?);
+    let mdbx = open_proof_history_storage(config.required_storage_path()?)?;
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
     let storage_for_sidecar = storage.clone();
     let storage_for_init = Arc::clone(&mdbx);
@@ -131,7 +129,7 @@ where
                 move |shutdown| {
                     Box::pin(async move {
                         if let Err(error) = sidecar.run(shutdown).await {
-                            panic!("proof-history sidecar crashed: {error}");
+                            panic!("proof-history sidecar crashed: {error:#}");
                         }
                     })
                 },

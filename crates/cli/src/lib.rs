@@ -33,7 +33,7 @@ use alethia_reth_node::{
 use reth_ethereum::EthPrimitives;
 use reth_storage_api::noop::NoopProvider;
 
-use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs};
+use crate::command::{TaikoNodeCommand, TaikoNodeExtArgs, disable_state_masking_by_default};
 
 /// Node-command wrappers and extension traits for Taiko runtime options.
 pub mod command;
@@ -86,7 +86,8 @@ pub struct TaikoProofHistoryArgs {
     )]
     pub window: u64,
 
-    /// Delay empty proof-history initialization until the finalized window start is reached.
+    /// Delay empty proof-history initialization until the finalized window start is reached,
+    /// then initialize at the tip and backfill the retained window from reth changesets.
     #[arg(
         long = "proofs-history.backfill-window-only",
         default_value_t = false,
@@ -143,6 +144,7 @@ where
 {
     /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
+        disable_state_masking_by_default();
         Self { inner: Cli::<C, Ext>::parse() }
     }
 
@@ -152,6 +154,7 @@ where
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
+        disable_state_masking_by_default();
         Cli::<C, Ext>::try_parse_from(itr).map(|inner| Self { inner })
     }
 }
@@ -247,9 +250,9 @@ impl<
             Commands::Db(command) => {
                 runner.run_command_until_exit(|ctx| command.execute::<TaikoNode>(ctx))
             }
-            Commands::Download(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<TaikoNode>())
-            }
+            Commands::Download(command) => runner.run_blocking_until_ctrl_c(async move {
+                command.execute::<TaikoNode>().await.map(|_| ())
+            }),
             Commands::Stage(command) => runner
                 .run_command_until_exit(|ctx| command.execute::<TaikoNode, _>(ctx, components)),
             Commands::P2P(command) => runner.run_until_ctrl_c(command.execute::<TaikoNode>()),
@@ -286,12 +289,16 @@ mod tests {
     };
 
     use clap::Parser;
+    use reth::{args::EngineArgs, cli::Commands};
 
     use super::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
-        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW, TaikoCliExtArgs,
+        DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
+        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
     };
-    use crate::command::TaikoNodeExtArgs;
+    use crate::command::{
+        TaikoNodeExtArgs, disable_state_masking_by_default, validate_engine_args,
+    };
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -393,5 +400,32 @@ mod tests {
             .expect_err("legacy flag should be rejected");
 
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn state_masking_defaults_to_off() {
+        let cli = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_args_from([
+            "alethia-reth",
+            "node",
+        ])
+        .expect("node args should parse");
+        let Commands::Node(node) = cli.inner.command else { panic!("expected node command") };
+
+        assert_eq!(node.engine.num_state_masking_blocks(), 0);
+    }
+
+    #[test]
+    fn engine_args_validation_rejects_masking_and_invalid_thresholds() {
+        disable_state_masking_by_default();
+        let mut engine = EngineArgs::default();
+        engine.num_state_masking_blocks = 30;
+        assert!(validate_engine_args(&engine).is_err());
+
+        engine.num_state_masking_blocks = 0;
+        assert!(validate_engine_args(&engine).is_ok());
+
+        engine.persistence_threshold = 10;
+        engine.persistence_backpressure_threshold = Some(5);
+        assert!(validate_engine_args(&engine).is_err());
     }
 }

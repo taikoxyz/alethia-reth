@@ -5,11 +5,10 @@ use super::{
     live::LiveTrieCollector,
     opt_block,
     storage_init::{
-        DelayedProofHistoryStart, ProofHistoryInitializationAction, delayed_proof_history_start,
-        finalized_block_number, initialize_historical_proof_history_storage,
-        initialize_proof_history_storage, migrate_legacy_proof_history_storage,
-        proof_history_historical_init_metadata_path, proof_history_storage_needs_initialization,
-        proof_history_sync_target, read_historical_init_metadata,
+        DelayedProofHistoryStart, PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS,
+        backfill_proof_history_window, delayed_proof_history_start, finalized_block_number,
+        initialize_proof_history_storage, proof_history_storage_needs_initialization,
+        proof_history_sync_target, request_proof_history_rebuild,
     },
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -21,7 +20,7 @@ use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateNotification,
         CanonStateSubscriptions, DBProvider, DatabaseProviderFactory, HeaderProvider,
-        TransactionVariant,
+        StageCheckpointReader, TransactionVariant,
     },
     tasks::{TaskExecutor, shutdown::GracefulShutdown},
 };
@@ -29,14 +28,15 @@ use reth_db::Database;
 use reth_execution_types::Chain;
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    OpProofStoragePruner, OpProofsStorage, OpProofsStorageError, OpProofsStore,
+    OpProofStoragePruner, OpProofsBackfillStore, OpProofsStorage, OpProofsStorageError,
+    OpProofsStore,
     api::{OpProofsProviderRO, OpProofsProviderRw},
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_trie_common::{HashedPostStateSorted, SortedTrieData, updates::TrieUpdatesSorted};
-use std::{panic, path::PathBuf, sync::Arc, time::Duration};
+use std::{panic, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify, broadcast},
     task,
@@ -94,6 +94,12 @@ pub(super) enum ProofHistoryStartupAction {
     Uninitialized,
     /// Stored proof-history bounds match canonical state and can be served as-is.
     Ready,
+    /// The stored earliest block is no longer canonical, so the storage can be neither unwound nor
+    /// extended and must be rebuilt from scratch.
+    RebuildRequired {
+        /// Earliest stored proof-history block number.
+        earliest: u64,
+    },
     /// Stored proof-history must be unwound to its retained earliest block before syncing forward.
     UnwindToEarliest {
         /// Earliest retained proof-history block that still matches canonical state.
@@ -139,16 +145,14 @@ pub(super) fn proof_history_startup_action(
 
     // No canonical header at the earliest height yet: the chain database is (re-)syncing and has
     // not reached the retained range. Failing here would crash the node before it could ever sync
-    // past this point, so wait instead; a *mismatching* hash stays a hard error below.
+    // past this point, so wait instead; a *mismatching* hash requires a rebuild below.
     let Some(canonical_earliest) = canonical_earliest_hash else {
         return Ok(ProofHistoryStartupAction::WaitForCanonicalEarliest {
             earliest: earliest_number,
         });
     };
     if canonical_earliest != earliest_hash {
-        return Err(eyre!(
-            "proof-history earliest stored block {earliest_number} hash {earliest_hash:?} is not canonical; wipe proof-history storage and restart initialization"
-        ));
+        return Ok(ProofHistoryStartupAction::RebuildRequired { earliest: earliest_number });
     }
 
     // The stored head runs ahead of the canonical chain. This is the normal aftermath of an
@@ -194,12 +198,11 @@ where
     task_executor: TaskExecutor,
     /// Proof-history storage populated by the extension.
     storage: OpProofsStorage<Storage>,
-    /// Raw proof-history storage handle used for the initial current-state snapshot.
+    /// Raw proof-history storage handle used for the initial current-state snapshot and the
+    /// window backfill.
     init_storage: Storage,
     /// Runtime settings that govern proof-history retention and startup behavior.
     config: ProofHistoryConfig,
-    /// Sidecar file that records historical initialization target metadata.
-    historical_init_metadata_path: Option<PathBuf>,
     /// Readiness flag consumed by the RPC layer; set only while storage is reconciled.
     readiness: ProofHistoryReadiness,
     /// Serializes proof-history writers across live notifications, background sync, and pruning.
@@ -220,7 +223,7 @@ fn ensure_canonical_update_above_earliest(
 ) -> eyre::Result<()> {
     if first_old.number <= earliest.number {
         return Err(eyre!(
-            "proof-history {update_kind} touches retained earliest block {} hash {:?} with old block {} hash {:?}; wipe proof-history storage and restart initialization",
+            "proof-history {update_kind} touches retained earliest block {} hash {:?} with old block {} hash {:?}; restart the node, which rebuilds proof-history storage once that block is no longer canonical",
             earliest.number,
             earliest.hash,
             first_old.number,
@@ -245,8 +248,6 @@ where
         config: ProofHistoryConfig,
         readiness: ProofHistoryReadiness,
     ) -> Self {
-        let historical_init_metadata_path =
-            config.storage_path.as_deref().map(proof_history_historical_init_metadata_path);
         Self {
             provider,
             evm_config,
@@ -254,7 +255,6 @@ where
             storage,
             init_storage,
             config,
-            historical_init_metadata_path,
             readiness,
             write_lock: Arc::new(Mutex::new(())),
         }
@@ -269,24 +269,23 @@ where
         + BlockReader
         + CanonStateSubscriptions
         + DatabaseProviderFactory,
-    <Node::Provider as DatabaseProviderFactory>::Provider: BlockNumReader
+    <Node::Provider as DatabaseProviderFactory>::Provider: BlockHashReader
+        + BlockNumReader
         + ChainStateBlockReader
         + ChangeSetReader
         + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
-        + StorageSettingsCache,
+        + StorageSettingsCache
+        + Send,
     <Node::Provider as DatabaseProviderFactory>::DB: Database,
     <<Node::Provider as DatabaseProviderFactory>::DB as Database>::TX: Sync,
     Primitives: NodePrimitives,
-    Storage: OpProofsStore + Clone + Send + 'static,
+    Storage: OpProofsBackfillStore + Clone + Send + 'static,
 {
     /// Runs proof-history indexing until the node shuts down.
     pub(super) async fn run(self, mut shutdown: GracefulShutdown) -> eyre::Result<()> {
-        // Databases initialized under the previous storage dependency may lack a `LatestBlock`
-        // row; repair them before any reconciliation reads the storage bounds.
-        migrate_legacy_proof_history_storage(&self.storage)?;
-
         let collector =
             LiveTrieCollector::new(self.evm_config.clone(), self.provider.clone(), &self.storage);
         let mut notifications = self.provider.subscribe_to_canonical_state();
@@ -340,9 +339,41 @@ where
     }
 
     /// Reconciles storage if possible and spawns the sync and pruner tasks on first success.
+    ///
+    /// In window-only mode, storage is first backfilled from reth changesets down to
+    /// `max(latest_stored, on_disk_best) - window`, the window the pruner keeps once the sync loop
+    /// reaches reth's head; this covers fresh initialization, a restart mid-backfill, a raised
+    /// window and an `UnwindToEarliest` reconciliation, and is a no-op once the window is full.
+    /// When the backfill fails because the earliest block was reorged out, the storage is marked
+    /// for a rebuild on the next start.
     async fn try_start(&self) -> eyre::Result<Option<Arc<Notify>>> {
         if !self.reconcile_or_wait().await? {
             return Ok(None);
+        }
+        if self.config.backfill_window_only {
+            let provider = self.provider.clone();
+            let storage = self.init_storage.clone();
+            let window = self.config.window;
+            let backfill_task = task::spawn_blocking(move || {
+                backfill_proof_history_window(
+                    &provider,
+                    storage,
+                    window,
+                    PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS,
+                )
+            });
+            let backfilled =
+                blocking_join_result(backfill_task.await, "proof-history backfill worker")?;
+            if let Err(error) = backfilled {
+                // A reorg that replaced the initialization anchor makes every prepend fail. Any
+                // other outcome, including a failed re-check, keeps the backfill error.
+                if let Ok(ProofHistoryStartupAction::RebuildRequired { earliest }) =
+                    self.startup_action()
+                {
+                    return Err(self.request_rebuild(earliest));
+                }
+                return Err(error);
+            }
         }
         // Storage bounds are now validated against canonical hashes: allow the RPC layer to
         // serve from proof-history. Workers only extend storage consistently from here on.
@@ -377,6 +408,9 @@ where
             ProofHistoryStartupAction::Ready => {
                 self.ensure_initialized()?;
                 Ok(true)
+            }
+            ProofHistoryStartupAction::RebuildRequired { earliest } => {
+                Err(self.request_rebuild(earliest))
             }
             ProofHistoryStartupAction::UnwindToEarliest { earliest } => {
                 self.unwind_to_earliest(earliest).await?;
@@ -430,6 +464,23 @@ where
         )
     }
 
+    /// Asks the next start to rebuild proof-history storage whose earliest block `earliest` is no
+    /// longer canonical, and returns the error that stops this run.
+    fn request_rebuild(&self, earliest: u64) -> eyre::Report {
+        let requested = self
+            .config
+            .required_storage_path()
+            .and_then(|path| request_proof_history_rebuild(path));
+        match requested {
+            Ok(()) => eyre!(
+                "proof-history earliest stored block {earliest} is no longer canonical; the storage is rebuilt from scratch on the next start"
+            ),
+            Err(error) => error.wrap_err(format!(
+                "proof-history earliest stored block {earliest} is no longer canonical; wipe proof-history storage and restart"
+            )),
+        }
+    }
+
     /// Unwinds proof-history storage so its latest retained block is the canonical earliest block.
     async fn unwind_to_earliest(&self, earliest: BlockNumHash) -> eyre::Result<()> {
         let latest = opt_block(self.storage.provider_ro()?.get_latest_block())?
@@ -472,86 +523,26 @@ where
     /// Initializes proof-history storage immediately or waits for the finalized window.
     async fn initialize_or_wait(&self) -> eyre::Result<bool> {
         if proof_history_storage_needs_initialization(&self.storage)? {
-            let action = if let Some(resume) = self.historical_init_resume_action()? {
-                resume
-            } else if self.config.backfill_window_only {
-                self.finalized_window_initialization_action()?
-            } else {
-                ProofHistoryInitializationAction::CurrentState
-            };
-
-            match action {
-                ProofHistoryInitializationAction::Wait => return Ok(false),
-                ProofHistoryInitializationAction::CurrentState => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_proof_history_storage(&provider, storage)
-                    });
-                    blocking_join_result(init_task.await, "proof-history init worker")??;
-                }
-                ProofHistoryInitializationAction::HistoricalWindow {
-                    start_block,
-                    target_block,
-                } => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let metadata_path = self.historical_init_metadata_path.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_historical_proof_history_storage(
-                            &provider,
-                            storage,
-                            metadata_path.as_deref(),
-                            start_block,
-                            target_block,
-                        )
-                    });
-                    blocking_join_result(init_task.await, "proof-history historical init worker")??;
-                }
+            if self.config.backfill_window_only && !self.finalized_window_start_reached()? {
+                return Ok(false);
             }
+            let provider = self.provider.clone();
+            let storage = self.init_storage.clone();
+            let init_task =
+                task::spawn_blocking(move || initialize_proof_history_storage(&provider, storage));
+            blocking_join_result(init_task.await, "proof-history init worker")??;
         }
         self.ensure_initialized()?;
         Ok(true)
     }
 
-    /// Returns the initialization action that resumes an interrupted historical initialization.
-    ///
-    /// The recorded metadata pins the anchor start block of the interrupted attempt; the target is
-    /// recomputed from the current on-disk executed head because the reverse-changeset overlay is
-    /// rebuilt against the current tables (and re-verified against the anchor state root), so an
-    /// interrupted initialization survives node restarts on a live chain.
-    fn historical_init_resume_action(
-        &self,
-    ) -> eyre::Result<Option<ProofHistoryInitializationAction>> {
-        let Some(path) = self.historical_init_metadata_path.as_deref() else {
-            return Ok(None);
-        };
-        let Some(metadata) = read_historical_init_metadata(path)? else {
-            return Ok(None);
-        };
-
-        let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
-        info!(
-            target: "reth::taiko::proof_history",
-            start_block = metadata.start_block.number,
-            executed_head,
-            "resuming interrupted historical proof-history initialization from recorded metadata"
-        );
-        Ok(Some(ProofHistoryInitializationAction::HistoricalWindow {
-            start_block: metadata.start_block.number,
-            target_block: executed_head,
-        }))
-    }
-
-    /// Returns how empty storage should initialize for a finalized proof-history window.
-    fn finalized_window_initialization_action(
-        &self,
-    ) -> eyre::Result<ProofHistoryInitializationAction> {
+    /// Returns whether local execution has reached the finalized window start, so empty storage
+    /// may initialize in window-only mode.
+    fn finalized_window_start_reached(&self) -> eyre::Result<bool> {
         let finalized_block = finalized_block_number(&self.provider)?;
-        // Use the on-disk best block as `executed_head` so that the historical-init target header
-        // and reverse changesets are guaranteed to be persisted. The in-memory canonical tip from
-        // `provider().best_block_number()` can outpace disk by up to `engine.persistence-threshold`
-        // blocks, which previously caused the historical init to panic on a missing target header.
+        // Gate on the on-disk best block: current-state initialization anchors there, while the
+        // in-memory canonical tip from `provider().best_block_number()` can outpace disk by up to
+        // `engine.persistence-threshold` blocks.
         let executed_head = self.provider.database_provider_ro()?.best_block_number()?;
 
         match delayed_proof_history_start(finalized_block, executed_head, self.config.window) {
@@ -561,7 +552,7 @@ where
                     executed_head,
                     "waiting for finalized head before initializing empty proof-history storage"
                 );
-                Ok(ProofHistoryInitializationAction::Wait)
+                Ok(false)
             }
             DelayedProofHistoryStart::WaitForExecution { start_block } => {
                 debug!(
@@ -571,30 +562,18 @@ where
                     start_block,
                     "waiting for local execution to reach proof-history window start"
                 );
-                Ok(ProofHistoryInitializationAction::Wait)
+                Ok(false)
             }
+            DelayedProofHistoryStart::Ready { start_block } |
             DelayedProofHistoryStart::MissedStart { start_block } => {
                 info!(
                     target: "reth::taiko::proof_history",
                     ?finalized_block,
                     executed_head,
                     start_block,
-                    "empty proof-history storage missed the finalized window start; building historical proof-history anchor"
+                    "local execution reached the finalized window start; initializing empty proof-history storage at the on-disk tip, then backfilling the window"
                 );
-                Ok(ProofHistoryInitializationAction::HistoricalWindow {
-                    start_block,
-                    target_block: executed_head,
-                })
-            }
-            DelayedProofHistoryStart::Ready { start_block } => {
-                info!(
-                    target: "reth::taiko::proof_history",
-                    ?finalized_block,
-                    executed_head,
-                    start_block,
-                    "initializing empty proof-history storage from finalized window"
-                );
-                Ok(ProofHistoryInitializationAction::CurrentState)
+                Ok(true)
             }
         }
     }
@@ -1140,7 +1119,7 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("proof-history reorg touches retained earliest block 10"));
-        assert!(message.contains("wipe proof-history storage"));
+        assert!(message.contains("rebuilds proof-history storage"));
     }
 
     #[test]
@@ -1154,7 +1133,7 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("proof-history revert touches retained earliest block 10"));
-        assert!(message.contains("wipe proof-history storage"));
+        assert!(message.contains("rebuilds proof-history storage"));
     }
 
     #[test]
@@ -1182,17 +1161,17 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_latest_canonical_but_earliest_noncanonical() {
-        let error = proof_history_startup_action(
+    fn proof_history_startup_action_rebuilds_when_latest_canonical_but_earliest_noncanonical() {
+        let action = proof_history_startup_action(
             Some((10, hash(11))),
             Some((20, hash(20))),
             20,
             Some(hash(10)),
             Some(hash(20)),
         )
-        .expect_err("noncanonical earliest must fail even when latest is canonical");
+        .unwrap();
 
-        assert!(error.to_string().contains("earliest stored block"));
+        assert_eq!(action, ProofHistoryStartupAction::RebuildRequired { earliest: 10 });
     }
 
     #[test]
@@ -1247,19 +1226,17 @@ mod tests {
     }
 
     #[test]
-    fn proof_history_startup_action_errors_when_earliest_is_noncanonical() {
-        let error = proof_history_startup_action(
+    fn proof_history_startup_action_rebuilds_when_earliest_is_noncanonical() {
+        let action = proof_history_startup_action(
             Some((10, hash(11))),
             Some((20, hash(21))),
             20,
             Some(hash(10)),
             Some(hash(20)),
         )
-        .expect_err("noncanonical earliest must not be served");
+        .unwrap();
 
-        let message = error.to_string();
-        assert!(message.contains("earliest stored block"));
-        assert!(message.contains("wipe proof-history storage"));
+        assert_eq!(action, ProofHistoryStartupAction::RebuildRequired { earliest: 10 });
     }
 
     #[test]

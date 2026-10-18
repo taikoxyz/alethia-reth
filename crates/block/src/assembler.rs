@@ -5,7 +5,7 @@ use alloy_consensus::{
 use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
 use alloy_primitives::U256;
 use alloy_rpc_types_eth::Withdrawals;
-use reth_ethereum_primitives::{Block, Receipt, TransactionSigned, calculate_receipt_root_no_memo};
+use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutorFactory},
     execute::{BlockAssembler, BlockAssemblerInput},
@@ -53,7 +53,9 @@ where
         let timestamp = block_env.timestamp();
 
         let transactions_root = proofs::calculate_transaction_root(&transactions);
-        let receipts_root = calculate_receipt_root_no_memo(receipts);
+        let receipts_root = proofs::calculate_receipt_root(
+            &receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>(),
+        );
         let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| r.logs()));
 
         let withdrawals = Some(Withdrawals::default());

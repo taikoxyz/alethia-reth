@@ -3,7 +3,12 @@ use std::{ffi::OsString, fmt, path::PathBuf, sync::Arc};
 
 use alloy_hardforks::EthereumHardforks;
 use clap::Parser;
-use reth::{CliContext, chainspec::EthChainSpec, core::version};
+use reth::{
+    CliContext,
+    args::{DefaultEngineValues, EngineArgs},
+    chainspec::EthChainSpec,
+    core::version,
+};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{NodeCommand, launcher::Launcher, node::NoArgs};
 use reth_db::mdbx::init_db_for;
@@ -54,6 +59,24 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
     }
 }
 
+/// Defaults reth state masking to zero before clap reads the global engine defaults.
+///
+/// An already-initialized global is ignored here: [`validate_engine_args`] still rejects a nonzero
+/// value at launch.
+pub(crate) fn disable_state_masking_by_default() {
+    let _ = DefaultEngineValues::default().with_num_state_masking_blocks(0).try_init();
+}
+
+/// Validates the engine arguments at launch: refuses state masking, which alethia-reth does not
+/// support, then runs reth's own cross-field checks, as reth's `node` command does.
+pub(crate) fn validate_engine_args(engine: &EngineArgs) -> eyre::Result<()> {
+    eyre::ensure!(
+        engine.num_state_masking_blocks() == 0,
+        "--engine.num-state-masking-blocks (or RETH_ENGINE_NUM_STATE_MASKING_BLOCKS) must be 0 on alethia-reth: state masking is not supported"
+    );
+    engine.validate()
+}
+
 /// Wrapper around `reth` `NodeCommand` that injects Taiko DB initialization and overrides.
 #[derive(Debug)]
 pub struct TaikoNodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs>(
@@ -64,6 +87,7 @@ pub struct TaikoNodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = N
 impl<C: ChainSpecParser> TaikoNodeCommand<C> {
     /// Parsers only the default CLI arguments
     pub fn parse_args() -> Self {
+        disable_state_masking_by_default();
         Self(Box::new(NodeCommand::<C, NoArgs>::parse()))
     }
 
@@ -73,6 +97,7 @@ impl<C: ChainSpecParser> TaikoNodeCommand<C> {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
+        disable_state_masking_by_default();
         NodeCommand::<C, NoArgs>::try_parse_from(itr).map(|inner| Self(Box::new(inner)))
     }
 }
@@ -122,6 +147,8 @@ where
             storage,
             jit,
         } = *self.0;
+
+        validate_engine_args(&engine)?;
 
         // set up node config
         let mut node_config = NodeConfig {

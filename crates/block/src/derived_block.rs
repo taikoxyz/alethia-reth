@@ -30,6 +30,12 @@ pub struct DerivedBlockExecutionOutcome {
     /// Execution result for the committed transactions.
     pub execution_result: BlockExecutionResult<Receipt>,
     /// Hashed post-state derived from the execution bundle.
+    ///
+    /// Built with [`HashedPostState::from_bundle_state`], so it carries only the slots execution
+    /// wrote. The parent storage of a destroyed pre-existing account is not conveyed: reth has no
+    /// storage wipe marker since v2.6, and zeroing those slots needs parent-state access this
+    /// executor does not have. Such a destroy is only reachable before Unzen, since EIP-6780
+    /// limits SELFDESTRUCT to accounts created in the same transaction.
     pub hashed_state: HashedPostState,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,

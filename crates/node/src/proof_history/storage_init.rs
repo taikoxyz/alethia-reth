@@ -1,26 +1,22 @@
-//! Proof-history storage bootstrap, metadata, and window-start state machine.
+//! Proof-history storage bootstrap, window backfill, and window-start state machine.
 
-use super::init::ProofHistoryInitializationJob;
-use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
-use alloy_primitives::B256;
 use eyre::{WrapErr, eyre};
-use reth::providers::{BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider};
+use reth::providers::{
+    BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
+    StageCheckpointReader,
+};
 use reth_db::Database;
 use reth_optimism_trie::{
-    OpProofsStore,
-    api::{InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO},
+    BackfillError, BackfillJob, InitializationJob, OpProofsBackfillStore, OpProofsStore,
+    RethTrieStorageLayout,
+    api::{InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO, ProofWindowRange},
+    db::MdbxProofsStorage,
 };
 use reth_storage_api::{
     ChainStateBlockReader, ChangeSetReader, StorageChangeSetReader, StorageSettingsCache,
 };
-use reth_trie_common::HashedPostStateSorted;
-use reth_trie_db::{DatabaseHashedPostState, LegacyKeyAdapter, PackedKeyAdapter};
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::{fs, io, path::Path, sync::Arc};
 use tracing::{info, warn};
 
 /// Returns whether proof-history storage needs an initial current-state snapshot.
@@ -35,214 +31,112 @@ where
         super::opt_block(provider_ro.get_latest_block())?.is_none())
 }
 
-/// Migrates proof-history storage written before `LatestBlock` was persisted separately.
+/// Opens the proof-history MDBX store at `path`, deleting the store's files and reopening it when
+/// the existing store cannot be used.
 ///
-/// The previous storage dependency recorded only `EarliestBlock` when initialization completed
-/// and fell back to it as the latest block, so a database that finished initializing but never
-/// stored a live block has no `LatestBlock` row. The current dependency reads `LatestBlock`
-/// strictly: such a database looks uninitialized, while its completed anchor makes the
-/// initialization job a no-op, leaving startup permanently failing. Re-committing the completed
-/// anchor rewrites `EarliestBlock` and the missing `LatestBlock` in one transaction, matching
-/// the fallback semantics the database was written under. Returns whether a migration ran.
-pub(super) fn migrate_legacy_proof_history_storage<Storage>(storage: &Storage) -> eyre::Result<bool>
-where
-    Storage: OpProofsStore,
-{
-    let provider_ro = storage.provider_ro()?;
-    let Some((earliest_number, earliest_hash)) =
-        super::opt_block(provider_ro.get_earliest_block())?
+/// The store is rebuilt in three cases:
+/// - A previous start asked for it with [`request_proof_history_rebuild`].
+/// - It holds only removed v1 proof-history data: [`MdbxProofsStorage`] now reads and writes the v2
+///   tables, so a v1 directory would otherwise open as an empty store and keep the dead v1 tables
+///   forever.
+/// - It holds an incomplete current-state initialization (an initial-state anchor but no committed
+///   proof window): upstream resumes such a copy only while the anchor still equals the best block,
+///   which a live node's moving tip breaks, so a restart would fail on every attempt. Nothing is
+///   served before initialization completes, so discarding the copy is safe.
+///
+/// The wipe deletes only [`PROOF_HISTORY_STORE_FILES`] inside `path` and keeps `path` itself and
+/// every other entry, so a mount point or symlink survives and a path shared with other data (such
+/// as the reth datadir) loses nothing else. A failure to inspect the store or to delete its files
+/// aborts with `path` in the error; a failed deletion may leave some of those files behind, and the
+/// next start then either rebuilds again or opens an empty store.
+///
+/// Must run before any other handle to the store exists.
+pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxProofsStorage>> {
+    let storage = open_mdbx(path)?;
+    let Some(reason) = rebuild_reason(path, &storage)
+        .wrap_err_with(|| format!("failed to inspect proof-history storage at {path:?}"))?
     else {
-        return Ok(false);
+        return Ok(storage);
     };
-    if super::opt_block(provider_ro.get_latest_block())?.is_some() {
-        return Ok(false);
-    }
-    drop(provider_ro);
 
-    let init_provider = storage.initialization_provider()?;
-    let anchor = init_provider.initial_state_anchor()?;
-    if !matches!(anchor.status, InitialStateStatus::Completed) {
-        // Not a completed legacy layout; leave it to the initialization state machine.
-        return Ok(false);
-    }
-    let anchor_block = anchor
-        .block
-        .ok_or_else(|| eyre!("completed proof-history initialization has no anchor block"))?;
-    if anchor_block.number != earliest_number || anchor_block.hash != earliest_hash {
-        return Err(eyre!(
-            "legacy proof-history anchor ({}, {:?}) does not match earliest block ({}, {:?}); wipe proof-history storage and restart initialization",
-            anchor_block.number,
-            anchor_block.hash,
-            earliest_number,
-            earliest_hash
-        ));
-    }
-
-    init_provider.commit_initial_state()?;
-    OpProofsInitProvider::commit(init_provider)?;
-    info!(
+    warn!(
         target: "reth::taiko::proof_history",
-        block = anchor_block.number,
-        hash = ?anchor_block.hash,
-        "migrated legacy proof-history storage: recorded the completed anchor as the latest block"
+        ?path,
+        reason,
+        "discarding proof-history storage and rebuilding it from scratch"
     );
-    Ok(true)
-}
-
-/// File stored beside the proof-history MDBX database to validate historical init resume targets.
-pub(super) const PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE: &str = "taiko-historical-init-target";
-
-/// Revert span above which historical initialization warns about its in-memory changeset size.
-const PROOF_HISTORY_REVERT_SPAN_WARN_BLOCKS: u64 = 100_000;
-
-/// Returns the metadata file path used to validate in-progress historical initialization.
-pub(super) fn proof_history_historical_init_metadata_path(storage_path: &Path) -> PathBuf {
-    storage_path.join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE)
-}
-
-/// Metadata that identifies the historical initialization source state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct HistoricalInitMetadata {
-    /// Historical proof-history start block being initialized.
-    pub(super) start_block: BlockNumHash,
-    /// Canonical source block used to rewind the node state into the historical start block.
-    pub(super) target_block: BlockNumHash,
-}
-
-impl HistoricalInitMetadata {
-    /// Encodes metadata as a small line-oriented text file.
-    pub(super) fn encode(self) -> String {
+    drop(storage);
+    remove_proof_history_store_files(path).wrap_err_with(|| {
         format!(
-            "version=1\nstart_number={}\nstart_hash={:?}\ntarget_number={}\ntarget_hash={:?}\n",
-            self.start_block.number,
-            self.start_block.hash,
-            self.target_block.number,
-            self.target_block.hash
+            "failed to delete proof-history storage files at {path:?}; delete {} there by hand and restart",
+            PROOF_HISTORY_STORE_FILES.join(", ")
         )
-    }
-
-    /// Decodes metadata written by [`Self::encode`].
-    pub(super) fn decode(contents: &str) -> eyre::Result<Self> {
-        let mut version = None;
-        let mut start_number = None;
-        let mut start_hash = None;
-        let mut target_number = None;
-        let mut target_hash = None;
-
-        for line in contents.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                return Err(eyre!("invalid historical init metadata line: {line:?}"));
-            };
-
-            match key {
-                "version" => version = Some(value),
-                "start_number" => {
-                    start_number = Some(value.parse::<u64>().wrap_err("invalid start_number")?)
-                }
-                "start_hash" => {
-                    start_hash = Some(B256::from_str(value).wrap_err("invalid start_hash")?)
-                }
-                "target_number" => {
-                    target_number = Some(value.parse::<u64>().wrap_err("invalid target_number")?)
-                }
-                "target_hash" => {
-                    target_hash = Some(B256::from_str(value).wrap_err("invalid target_hash")?)
-                }
-                unknown => {
-                    return Err(eyre!("unknown historical init metadata key: {unknown}"));
-                }
-            }
-        }
-
-        if version != Some("1") {
-            return Err(eyre!("unsupported historical init metadata version"));
-        }
-
-        Ok(Self {
-            start_block: BlockNumHash::new(
-                start_number.ok_or_else(|| eyre!("missing start_number"))?,
-                start_hash.ok_or_else(|| eyre!("missing start_hash"))?,
-            ),
-            target_block: BlockNumHash::new(
-                target_number.ok_or_else(|| eyre!("missing target_number"))?,
-                target_hash.ok_or_else(|| eyre!("missing target_hash"))?,
-            ),
-        })
-    }
+    })?;
+    open_mdbx(path)
 }
 
-/// Writes historical initialization metadata before creating the OP storage anchor.
-pub(super) fn write_historical_init_metadata(
-    path: &Path,
-    metadata: HistoricalInitMetadata,
-) -> eyre::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).wrap_err_with(|| {
-            format!("failed to create historical init metadata directory at {parent:?}")
-        })?;
+/// Returns why `storage`, opened at `path`, must be discarded and rebuilt, or `None` when it is
+/// usable.
+fn rebuild_reason(path: &Path, storage: &MdbxProofsStorage) -> eyre::Result<Option<&'static str>> {
+    if path.join(PROOF_HISTORY_REBUILD_MARKER_FILE).try_exists()? {
+        return Ok(Some("a previous start found its earliest block no longer canonical"));
     }
-    fs::write(path, metadata.encode())
-        .wrap_err_with(|| format!("failed to write historical init metadata at {path:?}"))
+    if storage.holds_only_legacy_v1_data()? {
+        return Ok(Some("it holds only legacy v1 proof-history data"));
+    }
+    if proof_history_storage_needs_initialization(storage)? &&
+        !matches!(
+            storage.initialization_provider()?.initial_state_anchor()?.status,
+            InitialStateStatus::NotStarted
+        )
+    {
+        return Ok(Some("it holds an incomplete current-state initialization"));
+    }
+    Ok(None)
 }
 
-/// Reads historical initialization metadata if it exists.
-pub(super) fn read_historical_init_metadata(
-    path: &Path,
-) -> eyre::Result<Option<HistoricalInitMetadata>> {
-    match fs::read_to_string(path) {
-        Ok(contents) => HistoricalInitMetadata::decode(&contents).map(Some),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .wrap_err_with(|| format!("failed to read historical init metadata at {path:?}")),
-    }
-}
+/// File whose presence asks the next start to rebuild the proof-history store.
+const PROOF_HISTORY_REBUILD_MARKER_FILE: &str = "taiko-proof-history-rebuild";
 
-/// Removes historical initialization metadata after successful initialization.
-pub(super) fn remove_historical_init_metadata(path: &Path) -> eyre::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .wrap_err_with(|| format!("failed to remove historical init metadata at {path:?}")),
-    }
-}
+/// Files the proof-history store and alethia create inside the storage directory: the MDBX data
+/// and lock files, reth's database version file, the removed historical-init marker, and the
+/// rebuild marker. The rebuild marker goes last, so a failed deletion leaves the request in place.
+const PROOF_HISTORY_STORE_FILES: [&str; 5] = [
+    "mdbx.dat",
+    "mdbx.lck",
+    "database.version",
+    "taiko-historical-init-target",
+    PROOF_HISTORY_REBUILD_MARKER_FILE,
+];
 
-/// Validates that in-progress historical initialization is resuming the same anchor state.
+/// Asks the next start to rebuild the proof-history store at `path` from scratch.
 ///
-/// Only the anchor start block must match the recorded metadata: every copied row is the current
-/// table row rewound to the anchor state by the reverse-changeset overlay, so rows copied before
-/// and after an interruption agree as long as the anchor is unchanged (and the recomputed overlay
-/// is re-verified against the anchor state root before any row is written). The target is
-/// expected to move between attempts on a live chain; refresh the recorded target instead of
-/// failing the resume.
-pub(super) fn validate_historical_init_metadata_file(
-    metadata_path: Option<&Path>,
-    expected_metadata: HistoricalInitMetadata,
-) -> eyre::Result<()> {
-    let Some(path) = metadata_path else {
-        return Err(eyre!(
-            "in-progress historical proof-history initialization cannot resume without target metadata"
-        ));
-    };
-    let Some(stored_metadata) = read_historical_init_metadata(path)? else {
-        return Err(eyre!(
-            "missing historical proof-history initialization metadata at {path:?}; wipe proof-history storage and restart initialization"
-        ));
-    };
+/// For a store whose earliest block stopped being canonical, e.g. a reorg replaced the
+/// current-state initialization anchor before the backfill moved the window past it: such a store
+/// can be neither unwound nor extended, and the handles shared with the RPC layer rule out
+/// rebuilding it while the node runs.
+pub(super) fn request_proof_history_rebuild(path: &Path) -> eyre::Result<()> {
+    fs::write(path.join(PROOF_HISTORY_REBUILD_MARKER_FILE), b"")
+        .wrap_err_with(|| format!("failed to mark proof-history storage at {path:?} for rebuild"))
+}
 
-    if stored_metadata.start_block != expected_metadata.start_block {
-        return Err(eyre!(
-            "historical proof-history initialization start block changed: stored={:?} current={:?}; wipe proof-history storage and restart initialization",
-            stored_metadata.start_block,
-            expected_metadata.start_block
-        ));
+/// Deletes [`PROOF_HISTORY_STORE_FILES`] inside `path`, skipping missing ones and leaving the
+/// directory and every other entry in place.
+fn remove_proof_history_store_files(path: &Path) -> io::Result<()> {
+    for name in PROOF_HISTORY_STORE_FILES {
+        match fs::remove_file(path.join(name)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
     }
-
-    if stored_metadata != expected_metadata {
-        write_historical_init_metadata(path, expected_metadata)?;
-    }
-
     Ok(())
+}
+
+/// Opens the proof-history MDBX store at `path`, creating it when missing.
+fn open_mdbx(path: &Path) -> eyre::Result<Arc<MdbxProofsStorage>> {
+    MdbxProofsStorage::new(path)
+        .map(Arc::new)
+        .wrap_err_with(|| format!("failed to create proof-history MDBX at {path:?}"))
 }
 
 /// Returns the next block proof-history should backfill toward, or `None` when caught up.
@@ -275,22 +169,6 @@ pub(super) enum DelayedProofHistoryStart {
     Ready {
         /// First block where proof-history should initialize.
         start_block: u64,
-    },
-}
-
-/// Work that empty proof-history storage must perform before live indexing can start.
-#[derive(Debug)]
-pub(super) enum ProofHistoryInitializationAction {
-    /// Initialization is waiting for a stable window anchor or local execution.
-    Wait,
-    /// Initialize from the node's current canonical state.
-    CurrentState,
-    /// Build an initial state for a missed historical proof-history window.
-    HistoricalWindow {
-        /// First block retained in proof-history storage.
-        start_block: u64,
-        /// Current local execution head used as the source state for reverse changesets.
-        target_block: u64,
     },
 }
 
@@ -330,6 +208,9 @@ where
 }
 
 /// Initializes empty proof-history storage from the node's current canonical state.
+///
+/// Runs upstream [`InitializationJob`] at the on-disk best block, read from the same reth read
+/// transaction the job copies from, so the anchor and the copied tables describe the same block.
 pub(super) fn initialize_proof_history_storage<Provider, Storage>(
     provider: &Provider,
     storage: Storage,
@@ -353,14 +234,13 @@ where
         "initializing proof-history storage from current canonical state"
     );
 
-    let storage_v2 = db_provider.cached_storage_settings().is_v2();
-    let db_tx = db_provider.into_tx();
-    let init_job = ProofHistoryInitializationJob::new(storage, db_tx);
-    if storage_v2 {
-        init_job.run_with_adapter::<PackedKeyAdapter>(anchor.number, anchor.hash)?;
+    let layout = if db_provider.cached_storage_settings().is_v2() {
+        RethTrieStorageLayout::Packed
     } else {
-        init_job.run_with_adapter::<LegacyKeyAdapter>(anchor.number, anchor.hash)?;
-    }
+        RethTrieStorageLayout::Legacy
+    };
+    InitializationJob::new(storage, db_provider.into_tx(), layout)
+        .run(anchor.number, anchor.hash)?;
 
     info!(
         target: "reth::taiko::proof_history",
@@ -372,106 +252,88 @@ where
     Ok(())
 }
 
-/// Initializes empty proof-history storage from a historical canonical state.
-pub(super) fn initialize_historical_proof_history_storage<Provider, Storage>(
+/// Maximum number of blocks one reth read transaction serves while backfilling proof history.
+///
+/// Each chunk opens a fresh reth provider so a long backfill does not pin one MDBX reader (and the
+/// pages it keeps alive) for the whole window. A pinned reader makes reth's unwind of a reorg below
+/// the persisted boundary wait for it, so chunks stay small enough to release it within seconds.
+pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 2_000;
+
+/// Extends proof-history storage backward from reth changesets until it retains the window the
+/// pruner keeps.
+///
+/// The target is `max(latest_stored, on_disk_best) - window` (saturating), where `on_disk_best` is
+/// reth's persisted best block; both are re-read for every chunk. The pruner keeps
+/// `latest_stored - window`, and the sync loop later raises `latest_stored` to reth's head, so
+/// anchoring on the higher of the two stops the backfill from filling blocks the pruner will drop:
+/// after `UnwindToEarliest` the store is `[E, E]` while reth's head is still far above `E`, and a
+/// target of `E - window` would backfill up to a whole extra window (and need reth changesets for
+/// it). The target never depends on the stored earliest block, so an interrupted backfill
+/// converges on retry.
+///
+/// Upstream [`BackfillJob`] prepends one block at a time and validates each block's state root
+/// against the reth header, committing in small batches. The stored earliest block is the
+/// progress marker, so an interrupted backfill resumes where it stopped. Returns immediately when
+/// the window is already full. Runs in chunks of `chunk_blocks` blocks, each against a fresh reth
+/// provider, and logs the overall progress once per chunk.
+///
+/// The backfill does not observe node shutdown: a first backfill over a large window can outlast a
+/// container's termination grace period and be killed. That is safe, since a kill loses at most
+/// the open batch and the next start resumes from the stored earliest block.
+pub(super) fn backfill_proof_history_window<Provider, Storage>(
     provider: &Provider,
     storage: Storage,
-    metadata_path: Option<&Path>,
-    start_block: u64,
-    target_block: u64,
+    window: u64,
+    chunk_blocks: u64,
 ) -> eyre::Result<()>
 where
-    Provider: BlockNumReader + DatabaseProviderFactory,
-    Provider::Provider: BlockNumReader
-        + ChainStateBlockReader
+    Provider: DatabaseProviderFactory,
+    Provider::Provider: BlockHashReader
+        + BlockNumReader
         + ChangeSetReader
-        + DBProvider
         + HeaderProvider
+        + StageCheckpointReader
         + StorageChangeSetReader
-        + StorageSettingsCache,
-    <Provider::DB as Database>::TX: Sync,
-    Storage: OpProofsStore + Send,
+        + StorageSettingsCache
+        + Send,
+    Storage: OpProofsBackfillStore + Clone + Send,
 {
-    if !proof_history_storage_needs_initialization(&storage)? {
-        return Ok(());
-    }
+    loop {
+        let ProofWindowRange { earliest, latest } = storage.provider_ro()?.get_proof_window()?;
+        let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
+        let on_disk_best = db_provider.best_block_number()?;
+        let target = latest.number.max(on_disk_best).saturating_sub(window);
+        if earliest.number <= target {
+            return Ok(());
+        }
 
-    if start_block > target_block {
-        return Err(eyre!(
-            "proof-history historical initialization start block {start_block} is above target block {target_block}"
-        ));
-    }
-
-    let db_provider = provider.database_provider_ro()?.disable_long_read_transaction_safety();
-    let anchor_header = db_provider
-        .sealed_header(start_block)?
-        .ok_or_else(|| eyre!("missing proof-history anchor header {start_block}"))?;
-    let anchor = BlockNumHash::new(start_block, anchor_header.hash());
-    let target_header = db_provider
-        .sealed_header(target_block)?
-        .ok_or_else(|| eyre!("missing proof-history target header {target_block}"))?;
-    let target = BlockNumHash::new(target_block, target_header.hash());
-
-    info!(
-        target: "reth::taiko::proof_history",
-        start_block,
-        target_block,
-        anchor_hash = ?anchor.hash,
-        target_hash = ?target.hash,
-        "initializing proof-history storage from historical canonical state"
-    );
-
-    // The reverse changesets for the whole span are materialized in memory before the copy
-    // starts; call out unusually wide spans (e.g. enabling backfill-window-only on a node that
-    // is already far past the window start) since they can require many GiB of RAM.
-    let revert_span = target_block.saturating_sub(start_block);
-    if revert_span > PROOF_HISTORY_REVERT_SPAN_WARN_BLOCKS {
-        warn!(
+        let chunk_target = target.max(earliest.number.saturating_sub(chunk_blocks.max(1)));
+        info!(
             target: "reth::taiko::proof_history",
-            start_block,
-            target_block,
-            revert_span,
-            "historical proof-history initialization spans many blocks; building its in-memory reverse changesets may require a lot of RAM"
+            earliest = earliest.number,
+            latest = latest.number,
+            on_disk_best,
+            target,
+            chunk_target,
+            remaining = earliest.number - target,
+            "backfilling proof-history window from reth changesets"
         );
+        BackfillJob::new(db_provider, storage.clone()).run(chunk_target).map_err(backfill_error)?;
     }
+}
 
-    let historical_post_state =
-        HashedPostStateSorted::from_reverts(&db_provider, start_block.saturating_add(1)..=target_block)
-            .wrap_err_with(|| {
-                format!(
-                    "failed to build reverse changesets for proof-history anchor {start_block} from target {target_block}"
-                )
-            })?;
-
-    let storage_v2 = db_provider.cached_storage_settings().is_v2();
-    let init_job = ProofHistoryInitializationJob::new(storage, db_provider.into_tx());
-    if storage_v2 {
-        init_job.run_historical_with_adapter::<PackedKeyAdapter>(
-            anchor,
-            target,
-            anchor_header.state_root(),
-            historical_post_state,
-            metadata_path,
-        )?;
-    } else {
-        init_job.run_historical_with_adapter::<LegacyKeyAdapter>(
-            anchor,
-            target,
-            anchor_header.state_root(),
-            historical_post_state,
-            metadata_path,
-        )?;
-    }
-
-    info!(
-        target: "reth::taiko::proof_history",
-        start_block,
-        target_block,
-        anchor_hash = ?anchor.hash,
-        "historical proof-history storage initialized"
-    );
-
-    Ok(())
+/// Converts a backfill failure into an error that tells the operator how to recover.
+fn backfill_error(error: BackfillError) -> eyre::Report {
+    let hint = match &error {
+        BackfillError::StateRootMismatch { .. } => {
+            "; if reth pruned changesets inside the window, lower --proofs-history.window; otherwise delete the proof-history store files (mdbx.dat, mdbx.lck, database.version) and restart to rebuild it"
+        }
+        BackfillError::BlockBodyPruned(_) => {
+            "; the backfill window is set by --proofs-history.window"
+        }
+        _ => "",
+    };
+    eyre!("proof-history backfill failed: {error}{hint}")
 }
 
 /// Returns the latest finalized block number recorded in the node database.
@@ -487,14 +349,23 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::Header;
+    use alloy_eips::eip1898::BlockWithParent;
+    use alloy_primitives::B256;
+    use reth_db::mdbx::{DatabaseArguments, DatabaseFlags, init_db_for};
     use reth_ethereum_primitives::EthPrimitives;
     use reth_optimism_trie::{
-        InMemoryProofsStorage, OpProofsStorage,
-        api::OpProofsInitProvider,
-        db::{MdbxProofsStorage, ProofWindow, ProofWindowKey, Tables},
+        InMemoryProofsStorage, OpProofsStorage, db::Tables, proof::DatabaseStateRoot,
     };
-    use reth_provider::test_utils::MockEthProvider;
-    use std::sync::Arc;
+    use reth_primitives_traits::SealedHeader;
+    use reth_provider::{
+        BlockWriter, ExecutionOutcome, ProviderFactory, StageCheckpointWriter, StateRootProvider,
+        TrieWriter,
+        test_utils::{
+            MockEthProvider, MockNodeTypesWithDB, blocks::BlockchainTestData,
+            create_test_provider_factory,
+        },
+    };
+    use reth_trie::{HashedPostState, KeccakKeyHasher, StateRoot};
 
     #[test]
     fn proof_history_storage_initialization_check_tracks_empty_storage() {
@@ -575,65 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn historical_init_metadata_round_trips() {
-        let metadata = HistoricalInitMetadata {
-            start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
-            target_block: BlockNumHash::new(1_000_000, B256::with_last_byte(2)),
-        };
-
-        assert_eq!(HistoricalInitMetadata::decode(&metadata.encode()).unwrap(), metadata);
-    }
-
-    #[test]
-    fn historical_init_metadata_validation_refreshes_target_on_resume() {
-        // The node executed further while initialization was interrupted, so the recomputed
-        // target differs from the recorded one. The overlay is rebuilt against the current
-        // tables and re-verified against the anchor state root, so the resume is safe: accept
-        // it and refresh the recorded target.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
-
-        let stored = HistoricalInitMetadata {
-            start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
-            target_block: BlockNumHash::new(1_000_000, B256::with_last_byte(2)),
-        };
-        let current = HistoricalInitMetadata {
-            start_block: stored.start_block,
-            target_block: BlockNumHash::new(1_000_123, B256::with_last_byte(3)),
-        };
-
-        write_historical_init_metadata(&path, stored).unwrap();
-        validate_historical_init_metadata_file(Some(&path), current)
-            .expect("moved target must be accepted on resume");
-
-        assert_eq!(read_historical_init_metadata(&path).unwrap(), Some(current));
-    }
-
-    #[test]
-    fn historical_init_metadata_validation_rejects_start_mismatch() {
-        // A different anchor start block means the resumed copy would mix rows rewound to two
-        // different anchor states; that must stay a hard error.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
-
-        let stored = HistoricalInitMetadata {
-            start_block: BlockNumHash::new(650_000, B256::with_last_byte(1)),
-            target_block: BlockNumHash::new(1_000_000, B256::with_last_byte(2)),
-        };
-        let current = HistoricalInitMetadata {
-            start_block: BlockNumHash::new(650_001, B256::with_last_byte(4)),
-            target_block: stored.target_block,
-        };
-
-        write_historical_init_metadata(&path, stored).unwrap();
-        let error =
-            validate_historical_init_metadata_file(Some(&path), current).unwrap_err().to_string();
-
-        assert!(error.contains("start block changed"));
-        assert!(error.contains("wipe proof-history storage"));
-    }
-
-    #[test]
     fn proof_history_sync_target_tracks_executed_head_when_notification_is_stale() {
         // Incident: no live notification arrived after a stall, but the node pipeline-synced
         // ahead. Proof-history must still backfill up to the executed head.
@@ -659,135 +471,256 @@ mod tests {
         assert_eq!(proof_history_sync_target(200, 150), None);
     }
 
-    /// Writes the pre-`LatestBlock` legacy layout into a fresh proof-history MDBX database,
-    /// mimicking storage whose initialization completed under the previous
-    /// `reth-optimism-trie` pin: it recorded the anchor and `EarliestBlock` but never wrote a
-    /// `LatestBlock` row (reads fell back to the earliest block).
-    fn write_legacy_mdbx_layout(path: &Path, rows: &[(ProofWindowKey, BlockNumHash)]) {
-        use reth_db::{
-            Database,
-            mdbx::{DatabaseArguments, init_db_for},
-            transaction::{DbTx, DbTxMut},
-        };
-
+    /// Creates the removed v1 `ProofWindow` table with one row in the proofs database at `path`,
+    /// mirroring what older releases left on disk (OP `create_legacy_tables`).
+    fn write_legacy_v1_table(path: &Path) {
         let env = init_db_for::<_, Tables>(path, DatabaseArguments::default())
             .expect("raw proofs database opens");
-        let tx = env.tx_mut().expect("write transaction opens");
-        for (key, block) in rows {
-            tx.put::<ProofWindow>(*key, (*block).into()).expect("legacy row writes");
+        let tx = env.begin_rw_txn().expect("write transaction opens");
+        let table = tx
+            .create_db(Some("ProofWindow"), DatabaseFlags::default())
+            .expect("legacy table is created");
+        tx.put(table.dbi(), [0u8], [1u8], Default::default()).expect("legacy row writes");
+        tx.commit().expect("legacy table commits");
+    }
+
+    /// Opens `path`, records an initial-state anchor at block 5, and commits the initial state only
+    /// when `complete` is set, leaving an interrupted copy otherwise.
+    fn open_and_initialize(path: &Path, complete: bool) {
+        let storage = open_proof_history_storage(path).unwrap();
+        let initializer = storage.initialization_provider().unwrap();
+        initializer
+            .set_initial_state_anchor(BlockNumHash::new(5, B256::with_last_byte(5)))
+            .unwrap();
+        if complete {
+            initializer.commit_initial_state().unwrap();
         }
-        tx.commit().expect("legacy layout commits");
-    }
-
-    /// MDBX proofs storage opened over a directory prepared by [`write_legacy_mdbx_layout`].
-    fn legacy_mdbx_storage(path: &Path) -> OpProofsStorage<Arc<MdbxProofsStorage>> {
-        Arc::new(MdbxProofsStorage::new(path).expect("mdbx storage opens")).into()
+        initializer.commit().unwrap();
     }
 
     #[test]
-    fn legacy_storage_missing_latest_block_migrates_to_earliest_anchor() {
+    fn open_wipes_v1_only_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let anchor = BlockNumHash::new(42, B256::with_last_byte(7));
-        write_legacy_mdbx_layout(
-            dir.path(),
-            &[
-                (ProofWindowKey::InitialStateAnchor, anchor),
-                (ProofWindowKey::EarliestBlock, anchor),
-            ],
-        );
-        let storage = legacy_mdbx_storage(dir.path());
+        write_legacy_v1_table(dir.path());
+        let marker = dir.path().join("taiko-historical-init-target");
+        fs::write(&marker, "version=1\n").unwrap();
 
-        // The strict `LatestBlock` reads make the completed legacy database look uninitialized.
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+
+        assert!(!storage.holds_only_legacy_v1_data().unwrap());
+        assert!(!marker.exists());
         assert!(proof_history_storage_needs_initialization(&storage).unwrap());
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_wipes_in_place_keeping_the_directory() {
+        // The wipe must delete the store's files, not the directory: a mount point cannot be
+        // removed and a symlink would be unlinked, orphaning the data on the real volume. Entries
+        // the store did not create survive, in case the path is shared with other data.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_legacy_v1_table(&link);
+        let marker = real.join("taiko-historical-init-target");
+        fs::write(&marker, "version=1\n").unwrap();
+        fs::create_dir(real.join("stale-dir")).unwrap();
+        fs::write(real.join("stale-dir").join("stale-file"), "x").unwrap();
+        fs::write(real.join("jwt.hex"), "x").unwrap();
+
+        let storage = open_proof_history_storage(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(!storage.holds_only_legacy_v1_data().unwrap());
         assert!(
-            migrate_legacy_proof_history_storage(&storage).expect("legacy migration succeeds"),
-            "missing latest block must be migrated"
+            real.join("mdbx.dat").exists(),
+            "the rebuilt store lives in the original directory"
         );
-
-        let provider_ro = storage.provider_ro().unwrap();
-        assert_eq!(
-            super::super::opt_block(provider_ro.get_earliest_block()).unwrap(),
-            Some((anchor.number, anchor.hash))
-        );
-        assert_eq!(
-            super::super::opt_block(provider_ro.get_latest_block()).unwrap(),
-            Some((anchor.number, anchor.hash))
-        );
-        drop(provider_ro);
-        assert!(!proof_history_storage_needs_initialization(&storage).unwrap());
-
-        // Re-running the migration is a no-op.
-        assert!(!migrate_legacy_proof_history_storage(&storage).expect("second run is a no-op"));
+        assert!(!marker.exists());
+        assert!(real.join("stale-dir").join("stale-file").exists());
+        assert!(real.join("jwt.hex").exists());
     }
 
     #[test]
-    fn legacy_migration_rejects_anchor_mismatching_earliest_block() {
+    fn open_wipes_incomplete_initialization() {
         let dir = tempfile::tempdir().unwrap();
-        write_legacy_mdbx_layout(
-            dir.path(),
-            &[
-                (
-                    ProofWindowKey::InitialStateAnchor,
-                    BlockNumHash::new(42, B256::with_last_byte(7)),
-                ),
-                (ProofWindowKey::EarliestBlock, BlockNumHash::new(43, B256::with_last_byte(8))),
-            ],
-        );
-        let storage = legacy_mdbx_storage(dir.path());
+        open_and_initialize(dir.path(), false);
 
-        let error = migrate_legacy_proof_history_storage(&storage).unwrap_err().to_string();
+        let storage = open_proof_history_storage(dir.path()).unwrap();
 
-        assert!(error.contains("does not match"), "got {error}");
-        assert!(error.contains("wipe proof-history storage"), "got {error}");
+        let anchor = storage.initialization_provider().unwrap().initial_state_anchor().unwrap();
+        assert!(matches!(anchor.status, InitialStateStatus::NotStarted));
+        assert!(anchor.block.is_none());
     }
 
     #[test]
-    fn legacy_migration_skips_storage_without_recorded_anchor() {
-        // Earliest present but no anchor row: initialization status reads `NotStarted`, so the
-        // migration must leave the database to the initialization state machine.
+    fn open_keeps_initialized_store() {
         let dir = tempfile::tempdir().unwrap();
-        write_legacy_mdbx_layout(
-            dir.path(),
-            &[(ProofWindowKey::EarliestBlock, BlockNumHash::new(42, B256::with_last_byte(7)))],
+        open_and_initialize(dir.path(), true);
+
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+
+        assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 5);
+    }
+
+    #[test]
+    fn open_rebuilds_when_a_rebuild_was_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        open_and_initialize(dir.path(), true);
+        request_proof_history_rebuild(dir.path()).unwrap();
+
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+
+        assert!(proof_history_storage_needs_initialization(&storage).unwrap());
+        assert!(!dir.path().join(PROOF_HISTORY_REBUILD_MARKER_FILE).exists());
+    }
+
+    #[test]
+    fn open_creates_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist");
+
+        let storage = open_proof_history_storage(&path).unwrap();
+
+        assert!(proof_history_storage_needs_initialization(&storage).unwrap());
+    }
+
+    /// Reth database holding blocks 1-4 of reth's test chain (with real changesets) on top of its
+    /// genesis, with the Finish checkpoint at block 4. `headers[n]` is block `n`.
+    ///
+    /// Block 3 only creates accounts and storage; block 4 destroys half of them. The fixture's
+    /// block 5 is left out: its reverts do not record the accounts it recreates, so block 4's
+    /// state cannot be rebuilt from its changesets.
+    fn chain_fixture() -> (ProviderFactory<MockNodeTypesWithDB>, Vec<SealedHeader>) {
+        let mut data = BlockchainTestData::default();
+        data.blocks.truncate(4);
+        let factory = create_test_provider_factory();
+        let provider_rw = factory.provider_rw().unwrap();
+        // Genesis carries an empty receipt list so the receipts static file starts at block 0.
+        provider_rw
+            .append_blocks_with_state(
+                vec![data.genesis.clone().try_recover().unwrap()],
+                &ExecutionOutcome { first_block: 0, receipts: vec![vec![]], ..Default::default() },
+                Default::default(),
+            )
+            .unwrap();
+        for (block, outcome) in &data.blocks {
+            provider_rw
+                .append_blocks_with_state(
+                    vec![block.clone()],
+                    outcome,
+                    outcome.hash_state_slow::<KeccakKeyHasher>().into_sorted(),
+                )
+                .unwrap();
+        }
+        provider_rw.update_pipeline_stages(4, false).unwrap();
+        provider_rw.commit().unwrap();
+
+        let headers: Vec<SealedHeader> = std::iter::once(data.genesis.clone_sealed_header())
+            .chain(data.blocks.iter().map(|(block, _)| block.clone_sealed_header()))
+            .collect();
+
+        // Store the tip's trie nodes, in the factory's layout, as a synced node holds them: the
+        // initialization copies them and the backfill rewinds them. Only the storage tries have
+        // any: reth stores no root node and no branch whose children are all leaves, and the
+        // tip's 12 accounts form nothing else.
+        let (root, trie_updates) =
+            factory.latest().unwrap().state_root_with_updates(HashedPostState::default()).unwrap();
+        assert_eq!(root, headers[4].state_root);
+        assert!(
+            trie_updates
+                .storage_tries_ref()
+                .values()
+                .any(|trie| !trie.storage_nodes_ref().is_empty()),
+            "the fixture must store trie nodes, or their layout goes untested"
         );
-        let storage = legacy_mdbx_storage(dir.path());
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.write_trie_updates(trie_updates).unwrap();
+        provider_rw.commit().unwrap();
 
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
+        (factory, headers)
+    }
+
+    /// Earliest block number retained in `storage`.
+    fn earliest(storage: &Arc<MdbxProofsStorage>) -> u64 {
+        storage.provider_ro().unwrap().get_earliest_block().unwrap().number
     }
 
     #[test]
-    fn legacy_migration_skips_empty_storage() {
-        let storage: OpProofsStorage<InMemoryProofsStorage> =
-            InMemoryProofsStorage::default().into();
+    fn window_only_init_backfills_to_latest_minus_window() {
+        let (factory, headers) = chain_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open_proof_history_storage(dir.path()).unwrap();
 
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
+        initialize_proof_history_storage(&factory, storage.clone()).unwrap();
+        backfill_proof_history_window(
+            &factory,
+            storage.clone(),
+            3,
+            PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS,
+        )
+        .unwrap();
+
+        let ro = storage.provider_ro().unwrap();
+        assert_eq!(ro.get_earliest_block().unwrap(), BlockNumHash::new(1, headers[1].hash()));
+        assert_eq!(ro.get_latest_block().unwrap(), BlockNumHash::new(4, headers[4].hash()));
+        for n in 1..=4 {
+            let root = StateRoot::overlay_root(&ro, n, HashedPostState::default()).unwrap();
+            assert_eq!(root, headers[n as usize].state_root, "state root at block {n}");
+        }
     }
 
     #[test]
-    fn legacy_migration_skips_in_progress_initialization() {
-        let storage: OpProofsStorage<InMemoryProofsStorage> =
-            InMemoryProofsStorage::default().into();
-        let initializer = storage.initialization_provider().expect("initialization provider");
-        initializer
-            .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
-            .expect("set initial state anchor");
-        initializer.commit().expect("commit");
+    fn backfill_resumes_and_extends_after_window_increase() {
+        let (factory, _) = chain_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+        initialize_proof_history_storage(&factory, storage.clone()).unwrap();
 
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
+        backfill_proof_history_window(&factory, storage.clone(), 1, 1).unwrap();
+        assert_eq!(earliest(&storage), 3);
+
+        // The window is already full: a restart must not move it.
+        backfill_proof_history_window(&factory, storage.clone(), 1, 1).unwrap();
+        assert_eq!(earliest(&storage), 3);
+
+        // A larger window resumes from the stored earliest block, one chunk at a time.
+        backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap();
+        assert_eq!(earliest(&storage), 1);
     }
 
     #[test]
-    fn legacy_migration_skips_storage_with_latest_block() {
-        let storage: OpProofsStorage<InMemoryProofsStorage> =
-            InMemoryProofsStorage::default().into();
-        let initializer = storage.initialization_provider().expect("initialization provider");
-        initializer
-            .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
-            .expect("set initial state anchor");
-        initializer.commit_initial_state().expect("commit initial state");
-        initializer.commit().expect("commit");
+    fn backfill_targets_reth_head_after_unwind() {
+        use reth_optimism_trie::api::OpProofsProviderRw;
 
-        assert!(!migrate_legacy_proof_history_storage(&storage).unwrap());
+        let (factory, headers) = chain_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+        initialize_proof_history_storage(&factory, storage.clone()).unwrap();
+        backfill_proof_history_window(&factory, storage.clone(), 2, 1).unwrap();
+        assert_eq!(earliest(&storage), 2);
+
+        // Unwind the store to its earliest block, as the sidecar's `UnwindToEarliest` does.
+        let provider_rw = storage.provider_rw().unwrap();
+        provider_rw
+            .unwind_history(BlockWithParent::new(
+                headers[2].hash(),
+                BlockNumHash::new(3, headers[3].hash()),
+            ))
+            .unwrap();
+        OpProofsProviderRw::commit(provider_rw).unwrap();
+        let ro = storage.provider_ro().unwrap();
+        assert_eq!(ro.get_earliest_block().unwrap().number, 2);
+        assert_eq!(ro.get_latest_block().unwrap().number, 2);
+        drop(ro);
+
+        // Reth's head is still 4: the pruner will keep `[2, 4]`, so nothing below 2 is backfilled.
+        backfill_proof_history_window(&factory, storage.clone(), 2, 1).unwrap();
+        assert_eq!(earliest(&storage), 2);
+
+        backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap();
+        assert_eq!(earliest(&storage), 1);
     }
 }

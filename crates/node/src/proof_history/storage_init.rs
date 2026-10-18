@@ -255,8 +255,9 @@ where
 /// Maximum number of blocks one reth read transaction serves while backfilling proof history.
 ///
 /// Each chunk opens a fresh reth provider so a long backfill does not pin one MDBX reader (and the
-/// pages it keeps alive) for the whole window.
-pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 10_000;
+/// pages it keeps alive) for the whole window. A pinned reader makes reth's unwind of a reorg below
+/// the persisted boundary wait for it, so chunks stay small enough to release it within seconds.
+pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 2_000;
 
 /// Extends proof-history storage backward from reth changesets until it retains the window the
 /// pruner keeps.
@@ -325,7 +326,7 @@ where
 fn backfill_error(error: BackfillError) -> eyre::Report {
     let hint = match &error {
         BackfillError::StateRootMismatch { .. } => {
-            "; wipe the proof-history storage directory and restart to rebuild it"
+            "; if reth pruned changesets inside the window, lower --proofs-history.window; otherwise delete the proof-history store files (mdbx.dat, mdbx.lck, database.version) and restart to rebuild it"
         }
         BackfillError::BlockBodyPruned(_) => {
             "; the backfill window is set by --proofs-history.window"

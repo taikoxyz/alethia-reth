@@ -34,7 +34,8 @@ where
 /// Opens the proof-history MDBX store at `path`, deleting the store's files and reopening it when
 /// the existing store cannot be used.
 ///
-/// The store is rebuilt in two cases:
+/// The store is rebuilt in three cases:
+/// - A previous start asked for it with [`request_proof_history_rebuild`].
 /// - It holds only removed v1 proof-history data: [`MdbxProofsStorage`] now reads and writes the v2
 ///   tables, so a v1 directory would otherwise open as an empty store and keep the dead v1 tables
 ///   forever.
@@ -52,7 +53,7 @@ where
 /// Must run before any other handle to the store exists.
 pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxProofsStorage>> {
     let storage = open_mdbx(path)?;
-    let Some(reason) = rebuild_reason(&storage)
+    let Some(reason) = rebuild_reason(path, &storage)
         .wrap_err_with(|| format!("failed to inspect proof-history storage at {path:?}"))?
     else {
         return Ok(storage);
@@ -74,8 +75,12 @@ pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxPr
     open_mdbx(path)
 }
 
-/// Returns why `storage` must be discarded and rebuilt, or `None` when it is usable.
-fn rebuild_reason(storage: &MdbxProofsStorage) -> eyre::Result<Option<&'static str>> {
+/// Returns why `storage`, opened at `path`, must be discarded and rebuilt, or `None` when it is
+/// usable.
+fn rebuild_reason(path: &Path, storage: &MdbxProofsStorage) -> eyre::Result<Option<&'static str>> {
+    if path.join(PROOF_HISTORY_REBUILD_MARKER_FILE).try_exists()? {
+        return Ok(Some("a previous start found its earliest block no longer canonical"));
+    }
     if storage.holds_only_legacy_v1_data()? {
         return Ok(Some("it holds only legacy v1 proof-history data"));
     }
@@ -90,11 +95,30 @@ fn rebuild_reason(storage: &MdbxProofsStorage) -> eyre::Result<Option<&'static s
     Ok(None)
 }
 
-/// Files the proof-history store and older alethia releases create inside the storage directory:
-/// the MDBX data and lock files, reth's database version file, and the removed historical-init
-/// marker.
-const PROOF_HISTORY_STORE_FILES: [&str; 4] =
-    ["mdbx.dat", "mdbx.lck", "database.version", "taiko-historical-init-target"];
+/// File whose presence asks the next start to rebuild the proof-history store.
+const PROOF_HISTORY_REBUILD_MARKER_FILE: &str = "taiko-proof-history-rebuild";
+
+/// Files the proof-history store and alethia create inside the storage directory: the MDBX data
+/// and lock files, reth's database version file, the removed historical-init marker, and the
+/// rebuild marker. The rebuild marker goes last, so a failed deletion leaves the request in place.
+const PROOF_HISTORY_STORE_FILES: [&str; 5] = [
+    "mdbx.dat",
+    "mdbx.lck",
+    "database.version",
+    "taiko-historical-init-target",
+    PROOF_HISTORY_REBUILD_MARKER_FILE,
+];
+
+/// Asks the next start to rebuild the proof-history store at `path` from scratch.
+///
+/// For a store whose earliest block stopped being canonical, e.g. a reorg replaced the
+/// current-state initialization anchor before the backfill moved the window past it: such a store
+/// can be neither unwound nor extended, and the handles shared with the RPC layer rule out
+/// rebuilding it while the node runs.
+pub(super) fn request_proof_history_rebuild(path: &Path) -> eyre::Result<()> {
+    fs::write(path.join(PROOF_HISTORY_REBUILD_MARKER_FILE), b"")
+        .wrap_err_with(|| format!("failed to mark proof-history storage at {path:?} for rebuild"))
+}
 
 /// Deletes [`PROOF_HISTORY_STORE_FILES`] inside `path`, skipping missing ones and leaving the
 /// directory and every other entry in place.
@@ -533,6 +557,18 @@ mod tests {
         let storage = open_proof_history_storage(dir.path()).unwrap();
 
         assert_eq!(storage.provider_ro().unwrap().get_earliest_block().unwrap().number, 5);
+    }
+
+    #[test]
+    fn open_rebuilds_when_a_rebuild_was_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        open_and_initialize(dir.path(), true);
+        request_proof_history_rebuild(dir.path()).unwrap();
+
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+
+        assert!(proof_history_storage_needs_initialization(&storage).unwrap());
+        assert!(!dir.path().join(PROOF_HISTORY_REBUILD_MARKER_FILE).exists());
     }
 
     #[test]

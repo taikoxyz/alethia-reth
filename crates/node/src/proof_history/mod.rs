@@ -129,7 +129,7 @@ where
                 move |shutdown| {
                     Box::pin(async move {
                         if let Err(error) = sidecar.run(shutdown).await {
-                            panic!("proof-history sidecar crashed: {error}");
+                            panic!("proof-history sidecar crashed: {error:#}");
                         }
                     })
                 },

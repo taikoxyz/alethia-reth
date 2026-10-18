@@ -11,6 +11,7 @@ pub use config::{
     DEFAULT_PROOF_HISTORY_WINDOW, ProofHistoryConfig,
 };
 use sidecar::ProofHistorySidecar;
+use storage_init::open_proof_history_storage;
 
 use crate::TaikoNode;
 use alethia_reth_rpc::{
@@ -18,7 +19,6 @@ use alethia_reth_rpc::{
     eth::proofs::{TaikoEthProofApiServer, TaikoEthProofExt},
     proof_state::ProofHistoryReadiness,
 };
-use eyre::WrapErr;
 use reth::{
     providers::{
         BlockHashReader, BlockNumReader, BlockReader, CanonStateSubscriptions, DBProvider,
@@ -97,10 +97,7 @@ where
     }
 
     let storage_path = config.required_storage_path()?.clone();
-    let mdbx =
-        Arc::new(MdbxProofsStorage::new(&storage_path).wrap_err_with(|| {
-            format!("failed to create proof-history MDBX at {storage_path:?}")
-        })?);
+    let mdbx = open_proof_history_storage(&storage_path)?;
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
     let storage_for_sidecar = storage.clone();
     let storage_for_init = Arc::clone(&mdbx);

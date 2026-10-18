@@ -215,7 +215,7 @@ where
     /// # Panics
     ///
     /// If committing would exceed the block zk gas budget. [`BlockExecutor::commit_transaction`]
-    /// is infallible in alloy-evm 0.37, so `execute_transaction_without_commit` pre-checks the
+    /// is infallible in alloy-evm 0.39, so `execute_transaction_without_commit` pre-checks the
     /// budget while the failure can still be reported; reaching the exceeded branch here means
     /// the executor was driven with a result that skipped that check.
     fn commit_current_transaction_zk_gas(&mut self)
@@ -457,7 +457,7 @@ where
             }
         };
 
-        // The trait's `commit_transaction` is infallible in alloy-evm 0.37, so the block zk gas
+        // The trait's `commit_transaction` is infallible in alloy-evm 0.39, so the block zk gas
         // budget must be checked here, where truncation can still be reported. The in-flight
         // total is final at this point — nothing meters between execution and commit.
         if self.evm.transaction_zk_gas_commit_would_exceed() {

@@ -9,6 +9,7 @@ use alethia_reth_block::{
     },
     tx_selection::zlib_compressed_len,
 };
+use alethia_reth_chainspec::hardfork::TaikoHardfork;
 use alethia_reth_primitives::{
     payload::builder::decode_recovered_transactions, transaction::is_allowed_tx_type,
 };
@@ -18,7 +19,7 @@ use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_debug::ExecutionWitness;
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use reth_ethereum::{EthPrimitives, TransactionSigned};
+use reth_ethereum::{EthPrimitives, TransactionSigned, chainspec::Hardforks};
 use reth_ethereum_primitives::Block;
 use reth_evm::{
     ConfigureEvm,
@@ -26,7 +27,7 @@ use reth_evm::{
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::HeaderProvider;
+use reth_provider::{ChainSpecProvider, HeaderProvider};
 use reth_revm::{
     State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
     witness::ExecutionWitnessRecord,
@@ -245,6 +246,7 @@ where
             .map_err(EthApiError::from)?;
         let factory = self.state_provider_factory.clone();
         let evm_config = self.eth_api.evm_config().clone();
+        let chain_spec = self.eth_api.provider().chain_spec();
         let header_provider = self.provider.clone();
         // Owned permit moved into the closure; see `execution_witness_for_block`.
         let permit = self
@@ -265,52 +267,14 @@ where
                 .map_err(EthApiError::from)?;
             let db = StateProviderDatabase::new(&*state_provider);
             let mut state = State::builder().with_database(db).with_bundle_update().build();
-            let mut witness_record = ExecutionWitnessRecord::default();
-
-            {
-                let mut block_executor = evm_config
-                    .executor_for_block(&mut state, block.sealed_block())
-                    .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
-
-                block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
-
-                for (idx, tx) in block.transactions_recovered().enumerate() {
-                    let is_anchor_transaction = idx == 0;
-
-                    // Taiko blocks never contain blob transactions: the build paths skip
-                    // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
-                    // validation rejects any block that includes one. Keep the same filtering,
-                    // but never silently discard the mandatory anchor transaction.
-                    match should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction) {
-                        Ok(true) => {
-                            continue;
-                        }
-                        Ok(false) => {}
-                        Err(err) => return Err(err),
-                    }
-
-                    match block_executor.execute_transaction(tx) {
-                        Ok(_) => {}
-                        Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
-                            if is_zk_gas_limit_exceeded(&err) {
-                                break;
-                            }
-                        }
-                        Err(err) => return Err(EthApiError::from(err)),
-                    }
-                }
-
-                match block_executor.apply_post_execution_changes() {
-                    Ok(_) => {}
-                    Err(err)
-                        if options.skip_zk_gas_difficulty_check &&
-                            is_zk_gas_difficulty_mismatch(&err) => {}
-                    Err(err) => return Err(EthApiError::from(err)),
-                }
-            }
-
-            state.merge_transitions(BundleRetention::Reverts);
-            witness_record.record_executed_state(&state, mode);
+            let witness_record = record_tx_list_witness(
+                &evm_config,
+                &mut state,
+                &block,
+                chain_spec.as_ref(),
+                mode,
+                options,
+            )?;
 
             witness_record
                 .into_execution_witness(&*state_provider, &header_provider, block_number, mode)
@@ -370,6 +334,65 @@ where
         .await
         .map_err(Into::into)
     }
+}
+
+/// Replays a candidate tx list and records exactly the committed state used to generate its
+/// witness. Difficulty skipping applies only after execution; configuration and pre-execution
+/// remain strict.
+fn record_tx_list_witness<E, DB>(
+    evm_config: &E,
+    state: &mut State<DB>,
+    block: &RecoveredBlock<Block>,
+    chain_spec: &impl Hardforks,
+    mode: ExecutionWitnessMode,
+    options: TxListWitnessOptions,
+) -> Result<ExecutionWitnessRecord, EthApiError>
+where
+    E: ConfigureEvm<Primitives = EthPrimitives>,
+    DB: reth_revm::Database + std::fmt::Debug,
+{
+    let requires_legacy_anchor =
+        !chain_spec.fork(TaikoHardfork::Etna).active_at_timestamp(block.timestamp());
+
+    {
+        let mut block_executor = evm_config
+            .executor_for_block(state, block.sealed_block())
+            .map_err(|err| EthApiError::EvmCustom(err.to_string()))?;
+
+        block_executor.apply_pre_execution_changes().map_err(EthApiError::from)?;
+
+        for (idx, tx) in block.transactions_recovered().enumerate() {
+            let is_anchor_transaction = requires_legacy_anchor && idx == 0;
+
+            // Taiko blocks never contain blob transactions: the build paths skip
+            // non-anchor ones (crates/payload/src/builder/execution.rs) and consensus
+            // validation rejects any block that includes one. Keep the same filtering,
+            // but never silently discard the mandatory anchor transaction.
+            if should_skip_disallowed_tx_type(tx.inner(), is_anchor_transaction)? {
+                continue;
+            }
+
+            match block_executor.execute_transaction(tx) {
+                Ok(_) => {}
+                Err(err) if is_recoverable_tx_list_error(&err, is_anchor_transaction) => {
+                    if is_zk_gas_limit_exceeded(&err) {
+                        break;
+                    }
+                }
+                Err(err) => return Err(EthApiError::from(err)),
+            }
+        }
+
+        match block_executor.apply_post_execution_changes() {
+            Ok(_) => {}
+            Err(err)
+                if options.skip_zk_gas_difficulty_check && is_zk_gas_difficulty_mismatch(&err) => {}
+            Err(err) => return Err(EthApiError::from(err)),
+        }
+    }
+
+    state.merge_transitions(BundleRetention::Reverts);
+    Ok(ExecutionWitnessRecord::from_executed_state(state, mode))
 }
 
 /// Decode an RLP transaction list and recover each transaction signer for EVM execution.
@@ -472,6 +495,87 @@ mod tests {
     use alloy_rlp::Encodable;
     use reth_evm::execute::BlockValidationError;
     use serde_json::json;
+
+    #[test]
+    fn etna_witness_replay_filters_an_invalid_first_transaction() {
+        use alethia_reth_block::config::TaikoEvmConfig;
+        use alethia_reth_chainspec::TAIKO_DEVNET;
+        use alloy_consensus::Header;
+        use alloy_hardforks::ForkCondition;
+        use reth_primitives_traits::SignedTransaction;
+        use reth_revm::{db::InMemoryDB, state::AccountInfo};
+
+        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+        let chain_id = spec.inner.chain().id();
+        let config = TaikoEvmConfig::new(Arc::new(spec));
+        let signed = |nonce| -> TransactionSigned {
+            Signed::new_unchecked(
+                TxLegacy {
+                    chain_id: Some(chain_id),
+                    nonce,
+                    gas_price: 1,
+                    gas_limit: 21_000,
+                    to: TxKind::Call(Address::with_last_byte(0xBB)),
+                    ..Default::default()
+                },
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::ZERO,
+            )
+            .into()
+        };
+        let valid = signed(0);
+        let sender = valid.try_recover().unwrap();
+        // Before Etna a failing index-0 transaction is a fatal anchor failure. From Etna on, its
+        // too-high nonce is filtered like any other position and the valid follower commits.
+        let mut encoded = vec![];
+        vec![signed(99), valid].encode(&mut encoded);
+        let txs = decode_recovered_tx_list(encoded.into()).unwrap();
+        assert_eq!(txs.len(), 2, "both transactions must reach the replay loop");
+        let block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    base_fee_per_gas: Some(0),
+                    gas_limit: 30_000_000,
+                    extra_data: vec![0; 13].into(),
+                    parent_beacon_block_root: Some(B256::with_last_byte(7)),
+                    ..Default::default()
+                },
+                body: reth_ethereum_primitives::BlockBody {
+                    transactions: txs.iter().map(|tx| tx.clone_inner()).collect(),
+                    ..Default::default()
+                },
+            },
+            txs.iter().map(|tx| tx.signer()).collect(),
+        );
+        let mut db = InMemoryDB::default();
+        for tx in &txs {
+            db.insert_account_info(
+                tx.signer(),
+                AccountInfo { balance: U256::from(100_000_000), ..Default::default() },
+            );
+        }
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+
+        let record = record_tx_list_witness(
+            &config,
+            &mut state,
+            &block,
+            config.chain_spec().as_ref(),
+            ExecutionWitnessMode::Canonical,
+            TxListWitnessOptions { skip_zk_gas_difficulty_check: true },
+        )
+        .expect("an Etna first transaction is not an anchor");
+        let sender_nonce = record
+            .hashed_state
+            .accounts
+            .get(&alloy_primitives::keccak256(sender))
+            .and_then(|account| account.as_ref())
+            .map(|account| account.nonce);
+        assert_eq!(sender_nonce, Some(1), "the valid follower must commit");
+    }
 
     #[test]
     fn decode_recovered_tx_list_accepts_empty_rlp_list() {

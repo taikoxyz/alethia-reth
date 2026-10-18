@@ -114,12 +114,12 @@ mod test {
 
     use super::*;
     use crate::factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory};
-    use alethia_reth_evm::spec::TaikoSpecId;
+    use alethia_reth_evm::{env::TaikoEvmEnv, spec::TaikoSpecId};
 
     #[test]
     fn assembled_unzen_block_uses_final_zk_gas_as_difficulty() {
         let assembler = TaikoBlockAssembler;
-        let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut evm_env: TaikoEvmEnv = EvmEnv::default();
         evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
         evm_env.block_env.timestamp = U256::from(1);
@@ -169,7 +169,7 @@ mod test {
     #[test]
     fn assembled_unzen_block_sets_requests_hash() {
         let assembler = TaikoBlockAssembler;
-        let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut evm_env: TaikoEvmEnv = EvmEnv::default();
         evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
         evm_env.block_env.timestamp = U256::from(1);

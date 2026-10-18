@@ -17,7 +17,6 @@ std = [
     "reth-evm/std",
     "reth-network-peers/std",
     "reth-primitives/std",
-    "reth-primitives-traits/std",
     "reth-revm/std",
 ]
 
@@ -34,7 +33,6 @@ reth-ethereum-forks = { workspace = true, default-features = false }
 reth-evm = { workspace = true, default-features = false }
 reth-network-peers = { workspace = true, default-features = false }
 reth-primitives = { workspace = true }
-reth-primitives-traits = { workspace = true }
 reth-revm = { workspace = true, default-features = false }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }

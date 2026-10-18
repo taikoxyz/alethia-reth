@@ -39,7 +39,7 @@ use alethia_reth_block::{
         select_and_execute_pool_transactions,
     },
 };
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
@@ -62,20 +62,29 @@ pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipPara
 /// transactions. Revisit this value if the anchor implementation changes substantially.
 const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 
-/// Applies the anchor zk gas safety margin before tx-pool transaction simulation.
+/// Applies the legacy anchor zk-gas safety margin before tx-pool transaction simulation.
+///
+/// Preselection simulates under the parent's fork rules. A pre-Etna parent keeps the reserve for
+/// the mandatory anchor that preselection cannot execute, which stays conservative for the first
+/// Etna block; an Etna parent reserves nothing because no anchor follows it.
 fn reserve_anchor_zk_gas_for_tx_pool_selection<Evm, Spec, R>(
     executor: &mut TaikoBlockExecutor<'_, Evm, Spec, R>,
+    chain_spec: &TaikoChainSpec,
+    parent: &alloy_consensus::Header,
 ) -> Result<(), BlockExecutionError>
 where
     Evm: TaikoZkGasEvm,
     Spec: Clone,
     R: ReceiptBuilder,
 {
+    if chain_spec.is_etna_active(parent.timestamp()) {
+        return Ok(());
+    }
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Computes the combined gas budget across all requested candidate tx lists, rejecting
 /// parameter combinations whose product does not fit in a `u64`.
@@ -345,6 +354,7 @@ where
             .ok_or(EthApiError::HeaderNotFound(BlockId::Number(BlockNumberOrTag::Latest)))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
+        let chain_spec = self.evm_config.block_executor_factory().spec();
 
         let state_provider = self.provider.state_by_block_hash(parent.hash()).map_err(|_| {
             EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
@@ -356,7 +366,8 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
-        // Create the block builder based on the parent block and the provided attributes.
+        // Preselection simulates under the parent's fork rules and never runs pre-execution system
+        // calls, so it needs no beacon root.
         let mut builder = self
             .evm_config
             .builder_for_next_block(
@@ -376,8 +387,12 @@ where
                 EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
             })?;
 
-        reserve_anchor_zk_gas_for_tx_pool_selection(builder.executor_mut())
-            .map_err(|err| EthApiError::Internal(err.into()))?;
+        reserve_anchor_zk_gas_for_tx_pool_selection(
+            builder.executor_mut(),
+            chain_spec.as_ref(),
+            parent,
+        )
+        .map_err(|err| EthApiError::Internal(err.into()))?;
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 

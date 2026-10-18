@@ -128,7 +128,6 @@ dependencies = [
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-network-peers",
- "reth-primitives-traits",
  "reth-revm",
  "serde",
  "serde_json",
@@ -224,11 +223,19 @@ dependencies = [
  "alethia-reth-rpc",
  "alloy-consensus",
  "alloy-eips",
+ "alloy-genesis",
+ "alloy-hardforks",
  "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-debug",
+ "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
+ "alloy-signer",
+ "alloy-signer-local",
  "derive_more",
  "eyre",
  "futures-util",
+ "jsonrpsee",
  "reth",
  "reth-chainspec",
  "reth-db",
@@ -255,6 +262,7 @@ dependencies = [
  "reth-trie-common",
  "reth-trie-db",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
@@ -2909,7 +2917,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]

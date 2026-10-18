@@ -297,7 +297,7 @@ mod tests {
         TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
     };
     use crate::command::{
-        TaikoNodeExtArgs, disable_state_masking_by_default, ensure_state_masking_disabled,
+        TaikoNodeExtArgs, disable_state_masking_by_default, validate_engine_args,
     };
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -415,13 +415,17 @@ mod tests {
     }
 
     #[test]
-    fn state_masking_launch_check_rejects_nonzero() {
+    fn engine_args_validation_rejects_masking_and_invalid_thresholds() {
         disable_state_masking_by_default();
         let mut engine = EngineArgs::default();
         engine.num_state_masking_blocks = 30;
-        assert!(ensure_state_masking_disabled(&engine).is_err());
+        assert!(validate_engine_args(&engine).is_err());
 
         engine.num_state_masking_blocks = 0;
-        assert!(ensure_state_masking_disabled(&engine).is_ok());
+        assert!(validate_engine_args(&engine).is_ok());
+
+        engine.persistence_threshold = 10;
+        engine.persistence_backpressure_threshold = Some(5);
+        assert!(validate_engine_args(&engine).is_err());
     }
 }

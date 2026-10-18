@@ -61,20 +61,20 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
 
 /// Defaults reth state masking to zero before clap reads the global engine defaults.
 ///
-/// An already-initialized global is ignored here: [`ensure_state_masking_disabled`] still rejects
-/// a nonzero value at launch.
+/// An already-initialized global is ignored here: [`validate_engine_args`] still rejects a nonzero
+/// value at launch.
 pub(crate) fn disable_state_masking_by_default() {
     let _ = DefaultEngineValues::default().with_num_state_masking_blocks(0).try_init();
 }
 
-/// Fails when the effective engine config enables state masking, which alethia-reth does not
-/// support.
-pub(crate) fn ensure_state_masking_disabled(engine: &EngineArgs) -> eyre::Result<()> {
+/// Validates the engine arguments at launch: refuses state masking, which alethia-reth does not
+/// support, then runs reth's own cross-field checks, as reth's `node` command does.
+pub(crate) fn validate_engine_args(engine: &EngineArgs) -> eyre::Result<()> {
     eyre::ensure!(
         engine.num_state_masking_blocks() == 0,
         "--engine.num-state-masking-blocks (or RETH_ENGINE_NUM_STATE_MASKING_BLOCKS) must be 0 on alethia-reth: state masking is not supported"
     );
-    Ok(())
+    engine.validate()
 }
 
 /// Wrapper around `reth` `NodeCommand` that injects Taiko DB initialization and overrides.
@@ -148,7 +148,7 @@ where
             jit,
         } = *self.0;
 
-        ensure_state_masking_disabled(&engine)?;
+        validate_engine_args(&engine)?;
 
         // set up node config
         let mut node_config = NodeConfig {

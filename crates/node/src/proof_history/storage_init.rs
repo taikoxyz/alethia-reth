@@ -275,6 +275,10 @@ pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 10_000;
 /// progress marker, so an interrupted backfill resumes where it stopped. Returns immediately when
 /// the window is already full. Runs in chunks of `chunk_blocks` blocks, each against a fresh reth
 /// provider, and logs the overall progress once per chunk.
+///
+/// The backfill does not observe node shutdown: a first backfill over a large window can outlast a
+/// container's termination grace period and be killed. That is safe, since a kill loses at most
+/// the open batch and the next start resumes from the stored earliest block.
 pub(super) fn backfill_proof_history_window<Provider, Storage>(
     provider: &Provider,
     storage: Storage,

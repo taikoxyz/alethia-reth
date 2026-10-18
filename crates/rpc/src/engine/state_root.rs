@@ -40,9 +40,8 @@ use reth_engine_tree::tree::{
 use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock};
 use reth_provider::{
-    BlockExecutionOutput, BlockNumReader, ChangeSetReader, DatabaseProviderFactory,
-    DatabaseProviderROFactory, HashedPostStateProvider, ProviderResult, PruneCheckpointReader,
-    StageCheckpointReader, StateRootProvider, StorageChangeSetReader, StorageSettingsCache,
+    BlockExecutionOutput, DatabaseProviderFactory, DatabaseProviderROFactory,
+    HashedPostStateProvider, ProviderResult, StateRootProvider,
 };
 use reth_revm::db::BundleState;
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
@@ -85,13 +84,6 @@ impl<N, P, Evm> StateRootStrategy<N, P, Evm> for TaikoStateRootStrategy<P, N>
 where
     N: NodePrimitives,
     P: DatabaseProviderFactory + Clone + 'static,
-    P::Provider: BlockNumReader
-        + PruneCheckpointReader
-        + StageCheckpointReader
-        + ChangeSetReader
-        + StorageChangeSetReader
-        + StorageSettingsCache
-        + 'static,
     OverlayStateProviderFactory<P, N>:
         DatabaseProviderROFactory<Provider: StateRootProvider + HashedPostStateProvider>,
     Evm: ConfigureEvm<Primitives = N>,
@@ -143,14 +135,7 @@ struct SynchronousStateRootJob<N: NodePrimitives, P> {
 impl<N, P> StateRootJob<N> for SynchronousStateRootJob<N, P>
 where
     N: NodePrimitives,
-    P: DatabaseProviderFactory + Clone + 'static,
-    P::Provider: BlockNumReader
-        + PruneCheckpointReader
-        + StageCheckpointReader
-        + ChangeSetReader
-        + StorageChangeSetReader
-        + StorageSettingsCache
-        + 'static,
+    P: DatabaseProviderFactory + 'static,
     OverlayStateProviderFactory<P, N>:
         DatabaseProviderROFactory<Provider: StateRootProvider + HashedPostStateProvider>,
 {
@@ -184,11 +169,10 @@ fn state_root_with_parent_storage<P>(
 where
     P: StateRootProvider + HashedPostStateProvider + ?Sized,
 {
-    let hashed_state = Arc::new(provider.hashed_post_state(bundle_state)?);
-    let (state_root, trie_updates) =
-        provider.state_root_with_updates(hashed_state.as_ref().clone())?;
+    let hashed_state = provider.hashed_post_state(bundle_state)?;
+    let (state_root, trie_updates) = provider.state_root_with_updates(hashed_state.clone())?;
     Ok(StateRootJobOutcome::new(state_root, Arc::new(trie_updates))
-        .with_hashed_state(Some(hashed_state)))
+        .with_hashed_state(Some(Arc::new(hashed_state))))
 }
 
 #[cfg(test)]

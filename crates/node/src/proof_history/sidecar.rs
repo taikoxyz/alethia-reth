@@ -6,9 +6,9 @@ use super::{
     opt_block,
     storage_init::{
         DelayedProofHistoryStart, PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS,
-        ProofHistoryInitializationAction, backfill_proof_history_window,
-        delayed_proof_history_start, finalized_block_number, initialize_proof_history_storage,
-        proof_history_storage_needs_initialization, proof_history_sync_target,
+        backfill_proof_history_window, delayed_proof_history_start, finalized_block_number,
+        initialize_proof_history_storage, proof_history_storage_needs_initialization,
+        proof_history_sync_target,
     },
 };
 use alethia_reth_rpc::proof_state::ProofHistoryReadiness;
@@ -485,32 +485,22 @@ where
     /// Initializes proof-history storage immediately or waits for the finalized window.
     async fn initialize_or_wait(&self) -> eyre::Result<bool> {
         if proof_history_storage_needs_initialization(&self.storage)? {
-            let action = if self.config.backfill_window_only {
-                self.finalized_window_initialization_action()?
-            } else {
-                ProofHistoryInitializationAction::CurrentState
-            };
-
-            match action {
-                ProofHistoryInitializationAction::Wait => return Ok(false),
-                ProofHistoryInitializationAction::CurrentState => {
-                    let provider = self.provider.clone();
-                    let storage = self.init_storage.clone();
-                    let init_task = task::spawn_blocking(move || {
-                        initialize_proof_history_storage(&provider, storage)
-                    });
-                    blocking_join_result(init_task.await, "proof-history init worker")??;
-                }
+            if self.config.backfill_window_only && !self.finalized_window_start_reached()? {
+                return Ok(false);
             }
+            let provider = self.provider.clone();
+            let storage = self.init_storage.clone();
+            let init_task =
+                task::spawn_blocking(move || initialize_proof_history_storage(&provider, storage));
+            blocking_join_result(init_task.await, "proof-history init worker")??;
         }
         self.ensure_initialized()?;
         Ok(true)
     }
 
-    /// Returns how empty storage should initialize for a finalized proof-history window.
-    fn finalized_window_initialization_action(
-        &self,
-    ) -> eyre::Result<ProofHistoryInitializationAction> {
+    /// Returns whether local execution has reached the finalized window start, so empty storage
+    /// may initialize in window-only mode.
+    fn finalized_window_start_reached(&self) -> eyre::Result<bool> {
         let finalized_block = finalized_block_number(&self.provider)?;
         // Gate on the on-disk best block: current-state initialization anchors there, while the
         // in-memory canonical tip from `provider().best_block_number()` can outpace disk by up to
@@ -524,7 +514,7 @@ where
                     executed_head,
                     "waiting for finalized head before initializing empty proof-history storage"
                 );
-                Ok(ProofHistoryInitializationAction::Wait)
+                Ok(false)
             }
             DelayedProofHistoryStart::WaitForExecution { start_block } => {
                 debug!(
@@ -534,7 +524,7 @@ where
                     start_block,
                     "waiting for local execution to reach proof-history window start"
                 );
-                Ok(ProofHistoryInitializationAction::Wait)
+                Ok(false)
             }
             DelayedProofHistoryStart::Ready { start_block } |
             DelayedProofHistoryStart::MissedStart { start_block } => {
@@ -545,7 +535,7 @@ where
                     start_block,
                     "local execution reached the finalized window start; initializing empty proof-history storage at the on-disk tip, then backfilling the window"
                 );
-                Ok(ProofHistoryInitializationAction::CurrentState)
+                Ok(true)
             }
         }
     }

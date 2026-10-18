@@ -139,15 +139,6 @@ pub(super) enum DelayedProofHistoryStart {
     },
 }
 
-/// Work that empty proof-history storage must perform before live indexing can start.
-#[derive(Debug)]
-pub(super) enum ProofHistoryInitializationAction {
-    /// Initialization is waiting for a stable window anchor or local execution.
-    Wait,
-    /// Initialize from the node's current canonical state.
-    CurrentState,
-}
-
 /// Returns the first block retained by a finalized proof-history window.
 pub(super) const fn proof_history_window_start_block(finalized_block: u64, window: u64) -> u64 {
     finalized_block.saturating_sub(window)
@@ -311,7 +302,6 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::Header;
-    use alloy_eips::NumHash;
     use alloy_primitives::B256;
     use reth_db::mdbx::{DatabaseArguments, DatabaseFlags, init_db_for};
     use reth_ethereum_primitives::EthPrimitives;
@@ -591,15 +581,10 @@ mod tests {
         .unwrap();
 
         let ro = storage.provider_ro().unwrap();
-        assert_eq!(ro.get_earliest_block().unwrap(), NumHash::new(1, headers[1].hash()));
-        assert_eq!(ro.get_latest_block().unwrap(), NumHash::new(4, headers[4].hash()));
+        assert_eq!(ro.get_earliest_block().unwrap(), BlockNumHash::new(1, headers[1].hash()));
+        assert_eq!(ro.get_latest_block().unwrap(), BlockNumHash::new(4, headers[4].hash()));
         for n in 1..=4 {
-            let root = StateRoot::overlay_root(
-                &storage.provider_ro().unwrap(),
-                n,
-                HashedPostState::default(),
-            )
-            .unwrap();
+            let root = StateRoot::overlay_root(&ro, n, HashedPostState::default()).unwrap();
             assert_eq!(root, headers[n as usize].state_root, "state root at block {n}");
         }
     }

@@ -98,8 +98,7 @@ where
         return Ok((node_builder, None));
     }
 
-    let storage_path = config.required_storage_path()?.clone();
-    let mdbx = open_proof_history_storage(&storage_path)?;
+    let mdbx = open_proof_history_storage(config.required_storage_path()?)?;
     let storage: ProofHistoryStorage = Arc::clone(&mdbx).into();
     let storage_for_sidecar = storage.clone();
     let storage_for_init = Arc::clone(&mdbx);

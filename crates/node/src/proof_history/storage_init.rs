@@ -37,7 +37,7 @@ where
         super::opt_block(provider_ro.get_latest_block())?.is_none())
 }
 
-/// Opens the proof-history MDBX store at `path`, deleting and recreating the directory when the
+/// Opens the proof-history MDBX store at `path`, emptying the directory and reopening it when the
 /// existing contents cannot be used.
 ///
 /// The directory is rebuilt in two cases:
@@ -49,22 +49,16 @@ where
 ///   which a live node's moving tip breaks, so a restart would fail on every attempt. Nothing is
 ///   served before initialization completes, so discarding the copy is safe.
 ///
+/// The wipe deletes every entry inside `path` but keeps `path` itself, so a mount point or symlink
+/// survives. A failure to inspect the store or to delete its contents aborts with `path` in the
+/// error; a failed deletion may leave a partially emptied directory, which the next start rebuilds.
+///
 /// Must run before any other handle to the store exists.
 pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxProofsStorage>> {
     let storage = open_mdbx(path)?;
-    let reason = if storage
-        .holds_only_legacy_v1_data()
+    let Some(reason) = rebuild_reason(&storage)
         .wrap_err_with(|| format!("failed to inspect proof-history storage at {path:?}"))?
-    {
-        "it holds only legacy v1 proof-history data"
-    } else if proof_history_storage_needs_initialization(&storage)? &&
-        !matches!(
-            storage.initialization_provider()?.initial_state_anchor()?.status,
-            InitialStateStatus::NotStarted
-        )
-    {
-        "it holds an incomplete current-state initialization"
-    } else {
+    else {
         return Ok(storage);
     };
 
@@ -75,10 +69,40 @@ pub(super) fn open_proof_history_storage(path: &Path) -> eyre::Result<Arc<MdbxPr
         "discarding proof-history storage and rebuilding it from scratch"
     );
     drop(storage);
-    fs::remove_dir_all(path).wrap_err_with(|| {
-        format!("failed to delete proof-history storage at {path:?}; delete the directory by hand and restart")
+    empty_directory(path).wrap_err_with(|| {
+        format!("failed to empty proof-history storage at {path:?}; delete the directory's contents by hand and restart")
     })?;
     open_mdbx(path)
+}
+
+/// Returns why `storage` must be discarded and rebuilt, or `None` when it is usable.
+fn rebuild_reason(storage: &MdbxProofsStorage) -> eyre::Result<Option<&'static str>> {
+    if storage.holds_only_legacy_v1_data()? {
+        return Ok(Some("it holds only legacy v1 proof-history data"));
+    }
+    if proof_history_storage_needs_initialization(storage)? &&
+        !matches!(
+            storage.initialization_provider()?.initial_state_anchor()?.status,
+            InitialStateStatus::NotStarted
+        )
+    {
+        return Ok(Some("it holds an incomplete current-state initialization"));
+    }
+    Ok(None)
+}
+
+/// Deletes every entry inside the directory at `path`, leaving the directory itself in place.
+fn empty_directory(path: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        // `DirEntry::file_type` does not follow symlinks, so a symlink is unlinked, not traversed.
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Opens the proof-history MDBX store at `path`, creating it when missing.
@@ -693,6 +717,34 @@ mod tests {
         assert!(!storage.holds_only_legacy_v1_data().unwrap());
         assert!(!marker.exists());
         assert!(proof_history_storage_needs_initialization(&storage).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_wipes_in_place_keeping_the_directory() {
+        // The wipe must empty the directory, not delete it: a mount point cannot be removed and a
+        // symlink would be unlinked, orphaning the data on the real volume.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_legacy_v1_table(&link);
+        let marker = real.join(PROOF_HISTORY_HISTORICAL_INIT_METADATA_FILE);
+        fs::write(&marker, "version=1\n").unwrap();
+        fs::create_dir(real.join("stale-dir")).unwrap();
+        fs::write(real.join("stale-dir").join("stale-file"), "x").unwrap();
+
+        let storage = open_proof_history_storage(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(!storage.holds_only_legacy_v1_data().unwrap());
+        assert!(
+            real.join("mdbx.dat").exists(),
+            "the rebuilt store lives in the original directory"
+        );
+        assert!(!marker.exists());
+        assert!(!real.join("stale-dir").exists());
     }
 
     #[test]

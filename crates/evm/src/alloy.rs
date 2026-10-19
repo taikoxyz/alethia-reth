@@ -318,6 +318,7 @@ where
         meter.charge_tx_intrinsic()
     }
 
+    /// Moves the block-local pricing collector onto the active plain or inspected execution path.
     fn set_zk_gas_pricing_enabled(&mut self, enabled: bool) {
         self.collect_zk_gas_pricing = enabled;
         let plain = self.base_evm_mut().take_zk_gas_pricing();
@@ -338,6 +339,7 @@ where
         }
     }
 
+    /// Commits the active transaction selector scope when Shadow collection is installed.
     fn commit_transaction_zk_gas_pricing(&mut self) -> Result<(), ZkGasAccumulatorError> {
         if let Some(accumulator) = self.zk_gas_pricing_mut() {
             accumulator.commit_transaction()?;
@@ -345,6 +347,7 @@ where
         Ok(())
     }
 
+    /// Returns an owned snapshot of selectors committed by the active Shadow collector.
     fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot> {
         Some(self.zk_gas_pricing()?.committed_snapshot())
     }

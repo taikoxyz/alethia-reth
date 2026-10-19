@@ -116,7 +116,7 @@ impl ZkGasKnownBlockBreakdown {
 /// it is not an additive per-transaction delta.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ZkGasMode {
-    /// Do not collect or price pricing selectors.
+    /// Do not collect or evaluate pricing selectors.
     #[default]
     Disabled,
     /// Collect execution/resource selectors and publish a non-enforcing diagnostic report.
@@ -164,12 +164,14 @@ pub enum ZkGasCompletionError {
 }
 
 impl From<ZkGasError> for ZkGasCompletionError {
+    /// Wraps an exact-completion pricing failure without losing its typed cause.
     fn from(error: ZkGasError) -> Self {
         Self::Pricing(error)
     }
 }
 
 impl fmt::Display for ZkGasCompletionError {
+    /// Formats a stable description of why an incomplete Shadow report could not be completed.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ModelIdentity => {

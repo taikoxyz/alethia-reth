@@ -851,6 +851,24 @@ fn zk_gas_pricing_revert_memory_expansion_uses_feature_error_on_both_paths() {
 }
 
 #[test]
+fn zk_gas_pricing_zero_length_revert_uses_accepted_route_on_both_paths() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT])),
+        100_000,
+    );
+
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.diagnostic, None);
+    let revert = plain
+        .operation_routes
+        .iter()
+        .find(|row| row.route == OperationRoute::Opcode(opcode::REVERT))
+        .expect("REVERT route is collected");
+    assert!(revert.accepted_absolute_scaled > 0);
+    assert_eq!(revert.feature_error_scaled, 0);
+}
+
+#[test]
 fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
     use super::pricing::ZkGasAccumulator;
 
@@ -1297,6 +1315,50 @@ fn disabled_and_shadow_are_execution_equivalent_on_plain_and_inspected_paths() {
             );
         }
     }
+}
+
+#[test]
+fn pre_unzen_shadow_preserves_out_of_gas_on_plain_and_inspected_paths() {
+    let bytecode = simple_arithmetic_bytecode();
+    let gas_limit = 21_007;
+
+    let mut plain_disabled = TaikoEvmFactory
+        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
+    let plain_disabled_result =
+        plain_disabled.transact(tx_env(gas_limit)).expect("plain Disabled execution");
+    assert!(plain_disabled.meter().is_none(), "Shasta must not install the Unzen meter");
+
+    let mut plain_shadow = TaikoEvmFactory
+        .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
+    plain_shadow.set_zk_gas_pricing_enabled(true);
+    let plain_shadow_result =
+        plain_shadow.transact(tx_env(gas_limit)).expect("plain Shadow execution");
+    assert!(plain_shadow.meter().is_none(), "Shasta must not install the Unzen meter");
+
+    let mut inspected_disabled = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(bytecode.clone()),
+        evm_env(TaikoSpecId::SHASTA),
+        NoOpInspector,
+    );
+    let inspected_disabled_result =
+        inspected_disabled.transact(tx_env(gas_limit)).expect("inspected Disabled execution");
+
+    let mut inspected_shadow = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(bytecode),
+        evm_env(TaikoSpecId::SHASTA),
+        NoOpInspector,
+    );
+    inspected_shadow.set_zk_gas_pricing_enabled(true);
+    let inspected_shadow_result =
+        inspected_shadow.transact(tx_env(gas_limit)).expect("inspected Shadow execution");
+
+    assert!(matches!(
+        plain_disabled_result.result,
+        ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. }
+    ));
+    assert_eq!(plain_shadow_result, plain_disabled_result);
+    assert_eq!(inspected_disabled_result, plain_disabled_result);
+    assert_eq!(inspected_shadow_result, plain_disabled_result);
 }
 
 fn push_u64(value: u64) -> Vec<u8> {

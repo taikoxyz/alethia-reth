@@ -184,7 +184,8 @@ pub struct OperationPricingInput {
     pub native_gas: Option<u64>,
     /// Typed accepted-model features.
     pub model_input: OperationModelInput,
-    /// Whether collection failed after identifying a canonical opcode route.
+    /// Whether this event must use the conservative fallback because exact accepted-model inputs
+    /// were unavailable for the executed outcome.
     pub feature_error: bool,
 }
 

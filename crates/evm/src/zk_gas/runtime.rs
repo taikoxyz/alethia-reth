@@ -63,6 +63,7 @@ pub(crate) struct PricingExecutionHooks<CTX> {
 }
 
 impl<CTX> Clone for PricingExecutionHooks<CTX> {
+    /// Copies the immutable function-pointer hook table.
     fn clone(&self) -> Self {
         *self
     }

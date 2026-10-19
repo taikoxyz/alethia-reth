@@ -64,12 +64,14 @@ pub enum ZkGasAccumulatorError {
 }
 
 impl From<ZkGasError> for ZkGasAccumulatorError {
+    /// Wraps a pure-model pricing failure as a collector diagnostic.
     fn from(value: ZkGasError) -> Self {
         Self::Pricing(value)
     }
 }
 
 impl core::fmt::Display for ZkGasAccumulatorError {
+    /// Formats a stable operator-facing description of the retained collector failure.
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Pricing(error) => write!(formatter, "{error}"),
@@ -309,6 +311,7 @@ enum RouteKey {
 }
 
 impl From<OperationRoute> for RouteKey {
+    /// Converts a public authenticated route into its sortable accumulator key.
     fn from(route: OperationRoute) -> Self {
         match route {
             OperationRoute::Opcode(opcode) => Self::Opcode(opcode),

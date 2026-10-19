@@ -233,7 +233,7 @@ impl PendingPricingStep {
             self.opcode == 0xf3 && instruction_result != Some(InstructionResult::Return);
         let storage_halted = matches!(self.opcode, 0x54 | 0x55) && instruction_result.is_some();
         let unexpected_halt = instruction_result.is_some_and(|result| {
-            !result.is_ok() && !(self.opcode == 0xfd && result == InstructionResult::Revert)
+            !(result.is_ok() || self.opcode == 0xfd && result == InstructionResult::Revert)
         });
         let (model_input, feature_error) = match model_input {
             Ok(input) if !return_halted && !storage_halted && !unexpected_halt => (input, false),

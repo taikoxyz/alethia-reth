@@ -28,7 +28,11 @@ fn main() {
 
     if let Err(err) = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::parse_args().run(
         async move |builder, ext_args| {
-            info!(target: "reth::taiko::cli", "Launching Taiko node");
+            info!(
+                target: "reth::taiko::cli",
+                zk_gas_mode = ?ext_args.zk_gas_mode(),
+                "Launching Taiko node"
+            );
             let node_builder = builder.node(TaikoNode::new(ext_args.zk_gas_mode()));
             let (node_builder, proof_history_handles) =
                 install_proof_history(node_builder, ext_args.proof_history_config())?;

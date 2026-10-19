@@ -58,7 +58,8 @@ pub struct MemorySelectors {
     pub growth_events: u64,
     /// Native EVM gas attributed to memory expansion.
     pub evm_gas_delta: u64,
-    /// Number of crossed 4 KiB memory boundaries.
+    /// Whether this event crosses at least one additional 4 KiB memory page, encoded as zero or
+    /// one.
     pub boundary_4k_events: u64,
 }
 

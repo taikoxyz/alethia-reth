@@ -606,7 +606,7 @@ fn zk_gas_pricing_factory_default_is_disabled_until_explicitly_enabled() {
     evm.transact(tx_env(100_000)).expect("ordinary execution remains available");
     assert!(
         evm.zk_gas_pricing_snapshot().is_none(),
-        "Task 4 must not activate collection implicitly"
+        "the factory default must not activate collection implicitly"
     );
 
     evm.set_zk_gas_pricing_enabled(true);
@@ -831,6 +831,26 @@ fn zk_gas_pricing_known_halted_opcode_uses_feature_error_on_both_paths() {
 }
 
 #[test]
+fn zk_gas_pricing_revert_memory_expansion_uses_feature_error_on_both_paths() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH1,
+            0x01,
+            opcode::PUSH1,
+            0x40,
+            opcode::REVERT,
+        ])),
+        100_000,
+    );
+
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.diagnostic, None);
+    assert!(plain.operation_routes.iter().any(|row| {
+        row.route == OperationRoute::Opcode(opcode::REVERT) && row.feature_error_scaled > 0
+    }));
+}
+
+#[test]
 fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
     use super::pricing::ZkGasAccumulator;
 
@@ -839,6 +859,10 @@ fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
     assert_eq!(
         accumulator.committed_snapshot().diagnostic,
         Some(ZkGasAccumulatorError::NoActiveTransaction)
+    );
+    assert_eq!(
+        accumulator.committed_snapshot().shadow_report().status().label(),
+        "collector_no_active_transaction"
     );
 }
 

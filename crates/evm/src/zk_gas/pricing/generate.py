@@ -19,7 +19,7 @@ RUNTIME_SPEC_SHA256 = (
 
 
 def canonical_json(payload: Mapping[str, Any]) -> bytes:
-    """Return the canonical byte representation used by the Task 2 exporter."""
+    """Return the canonical byte representation used by the runtime-spec exporter."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 

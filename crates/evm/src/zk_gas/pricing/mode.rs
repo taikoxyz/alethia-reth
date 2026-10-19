@@ -219,6 +219,9 @@ impl ZkGasShadowStatus {
             Self::Diagnostic(ZkGasShadowDiagnostic::Collector(ZkGasAccumulatorError::Pricing(
                 ZkGasError::UnknownRoute(_),
             ))) => "collector_unknown_route",
+            Self::Diagnostic(ZkGasShadowDiagnostic::Collector(
+                ZkGasAccumulatorError::NoActiveTransaction,
+            )) => "collector_no_active_transaction",
             Self::Diagnostic(ZkGasShadowDiagnostic::Collector(_)) => "collector_error",
             Self::Diagnostic(ZkGasShadowDiagnostic::Pricing(ZkGasError::UnknownRoute(_))) => {
                 "pricing_unknown_route"

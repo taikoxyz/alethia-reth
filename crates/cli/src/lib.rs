@@ -62,14 +62,24 @@ pub struct TaikoCliExtArgs {
     )]
     pub devnet_unzen_timestamp: u64,
 
-    /// Non-consensus zk gas pricing runtime mode; admission is unavailable without exact MPT
-    /// input.
+    /// Non-consensus zk gas pricing runtime mode.
+    ///
+    /// `disabled` is the default and preserves the existing Unzen admission path. `shadow`
+    /// installs a node-wide, non-enforcing observer on every executor, including sync and RPC
+    /// simulation paths. Shadow execution can add substantial CPU overhead on opcode-heavy
+    /// workloads and publishes diagnostics only; it never replaces Unzen admission or rejects
+    /// a block.
     #[arg(
         long = "zkgas-mode",
         env = "ALETHIA_RETH_ZKGAS_MODE",
         value_name = "MODE",
         default_value = "disabled",
         value_parser = parse_zkgas_mode,
+        long_help = "Non-consensus zk gas pricing mode. `disabled` (the default) preserves the \
+existing Unzen admission path. `shadow` enables a node-wide, non-enforcing observer on every \
+executor, including sync and RPC simulation paths. Shadow can add substantial CPU overhead on \
+opcode-heavy workloads and publishes diagnostics only; it never replaces Unzen admission or \
+rejects a block. Accepted values: disabled, shadow.",
         help_heading = "Taiko"
     )]
     pub zk_gas_mode: ZkGasMode,
@@ -312,7 +322,7 @@ mod tests {
         time::Duration,
     };
 
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
     use reth::{args::EngineArgs, cli::Commands};
 
     use super::{
@@ -369,6 +379,15 @@ mod tests {
             .expect_err("admission must remain unavailable without exact MPT selectors");
 
         assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn test_zkgas_help_documents_shadow_scope_and_non_enforcement() {
+        let help = TestCli::command().render_long_help().to_string();
+
+        assert!(help.contains("node-wide, non-enforcing observer"));
+        assert!(help.contains("never replaces Unzen admission or rejects a block"));
+        assert!(help.contains("substantial CPU overhead"));
     }
 
     #[test]

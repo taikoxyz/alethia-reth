@@ -158,7 +158,7 @@ mod tests {
     use super::*;
     use crate::{
         config::TaikoEvmConfig,
-        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts},
+        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts, unzen_chain_spec},
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_evm::zk_gas::pricing::{ZkGasIncompleteness, ZkGasMode, ZkGasShadowStatus};
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn execute_derived_block_skips_invalid_nonce_transaction_and_records_committed_txs() {
-        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let chain_id = chain_spec.inner.chain().id();
         let config = TaikoEvmConfig::new_with_zk_gas_mode(chain_spec, ZkGasMode::Shadow);
         let parent_header = SealedHeader::seal_slow(Header::default());
@@ -280,7 +280,7 @@ mod tests {
             (outcome, assembled)
         }
 
-        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let chain_id = chain_spec.inner.chain().id();
         let parent_header = SealedHeader::seal_slow(Header::default());
         let anchor_transaction = test_transaction(chain_id, 0);

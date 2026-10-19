@@ -61,8 +61,8 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
-    /// Task-4 collection switch. Disabled by default; Task 6 promotes this boolean to
-    /// Disabled/Shadow/Admission modes and owns production activation.
+    /// Runtime collection switch. Disabled by default;
+    /// [`ZkGasMode`](crate::zk_gas::pricing::ZkGasMode) owns explicit activation.
     collect_zk_gas_pricing: bool,
     /// Temporary guard used by pre-block system calls, which are outside the block transaction
     /// workload calibrated by schema 9.

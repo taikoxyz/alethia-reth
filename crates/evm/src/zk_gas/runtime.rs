@@ -229,14 +229,14 @@ impl PendingPricingStep {
             .model_input
             .and_then(|pending| self.finish_model_input(pending, raw_gas, interpreter, context));
         let instruction_result = interpreter.bytecode.instruction_result();
-        let return_halted =
-            self.opcode == 0xf3 && instruction_result != Some(InstructionResult::Return);
-        let storage_halted = matches!(self.opcode, 0x54 | 0x55) && instruction_result.is_some();
         let unexpected_halt = instruction_result.is_some_and(|result| {
             !(result.is_ok() || self.opcode == 0xfd && result == InstructionResult::Revert)
         });
+        let revert_with_unmodeled_gas = self.opcode == 0xfd &&
+            instruction_result == Some(InstructionResult::Revert) &&
+            raw_gas != 0;
         let (model_input, feature_error) = match model_input {
-            Ok(input) if !return_halted && !storage_halted && !unexpected_halt => (input, false),
+            Ok(input) if !unexpected_halt && !revert_with_unmodeled_gas => (input, false),
             Ok(_) | Err(()) => (OperationModelInput::None, true),
         };
         accumulator.observe_step(OperationPricingInput {

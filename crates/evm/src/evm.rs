@@ -35,7 +35,7 @@ pub struct TaikoEvm<CTX, INSP, P> {
     pub extra_execution_ctx: Option<TaikoEvmExtraExecutionCtx>,
     /// Production-path zk gas meter used when execution does not need an external inspector.
     zk_gas_meter: Option<ZkGasMeter<'static>>,
-    /// Optional schema-9 selector collector used by shadow/admission integration.
+    /// Optional schema-9 selector collector used by shadow pricing.
     zk_gas_pricing: Option<ZkGasAccumulator>,
     /// Concrete context hooks installed together with the pricing collector.
     zk_gas_pricing_hooks: Option<PricingExecutionHooks<CTX>>,
@@ -118,23 +118,6 @@ where
     pub(crate) fn install_zk_gas_pricing(&mut self, accumulator: ZkGasAccumulator) {
         self.zk_gas_pricing = Some(accumulator);
         self.zk_gas_pricing_hooks = Some(PricingExecutionHooks::TAIKO);
-    }
-
-    /// Enables schema-9 transactional selector collection on the concrete Taiko runtime.
-    pub fn with_zk_gas_pricing(mut self, enabled: bool) -> Self {
-        self.set_zk_gas_pricing_enabled(enabled);
-        self
-    }
-
-    /// Enables or disables schema-9 transactional selector collection in place.
-    pub(crate) fn set_zk_gas_pricing_enabled(&mut self, enabled: bool) {
-        if enabled {
-            if self.zk_gas_pricing.is_none() {
-                self.install_zk_gas_pricing(ZkGasAccumulator::default());
-            }
-        } else {
-            self.take_zk_gas_pricing();
-        }
     }
 }
 

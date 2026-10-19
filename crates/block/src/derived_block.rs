@@ -21,6 +21,7 @@ use crate::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
 };
+use alethia_reth_evm::zk_gas::pricing::ZkGasShadowReport;
 
 /// Execution artifacts produced by prover-mode derived block execution.
 #[derive(Debug)]
@@ -39,6 +40,8 @@ pub struct DerivedBlockExecutionOutcome {
     pub hashed_state: HashedPostState,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,
+    /// Non-enforcing block-local pricing report when Shadow mode is enabled.
+    pub zk_gas_shadow_report: Option<ZkGasShadowReport>,
 }
 
 /// Derives next-block environment attributes from a candidate derived block header.
@@ -80,11 +83,12 @@ where
         .context_for_next_block(parent_header, attributes)
         .map_err(BlockExecutionError::other)?;
     let finalized_zk_gas = execution_ctx.finalized_block_zk_gas.clone();
-    let executor = TaikoBlockExecutor::new(
+    let executor = TaikoBlockExecutor::new_with_zk_gas_mode(
         evm,
         execution_ctx,
         evm_config.executor_factory.spec().clone(),
         evm_config.executor_factory.receipt_builder(),
+        evm_config.zk_gas_mode(),
     );
 
     let execution_outcome = executor
@@ -99,6 +103,7 @@ where
         execution_result: execution_outcome.execution_result,
         hashed_state,
         finalized_block_zk_gas: finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed),
+        zk_gas_shadow_report: execution_outcome.zk_gas_shadow_report,
     })
 }
 
@@ -153,9 +158,10 @@ mod tests {
     use super::*;
     use crate::{
         config::TaikoEvmConfig,
-        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts},
+        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts, unzen_chain_spec},
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
+    use alethia_reth_evm::zk_gas::pricing::{ZkGasIncompleteness, ZkGasMode, ZkGasShadowStatus};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
 
@@ -179,9 +185,9 @@ mod tests {
 
     #[test]
     fn execute_derived_block_skips_invalid_nonce_transaction_and_records_committed_txs() {
-        let chain_spec = Arc::new(TaikoChainSpec::default());
+        let chain_spec = Arc::new(unzen_chain_spec());
         let chain_id = chain_spec.inner.chain().id();
-        let config = TaikoEvmConfig::new(chain_spec);
+        let config = TaikoEvmConfig::new_with_zk_gas_mode(chain_spec, ZkGasMode::Shadow);
         let parent_header = SealedHeader::seal_slow(Header::default());
         let anchor_transaction = test_transaction(chain_id, 0);
         let valid_transaction = test_transaction(chain_id, 1);
@@ -220,6 +226,16 @@ mod tests {
         .expect("derived block execution should skip invalid nonce tx");
 
         assert_eq!(outcome.committed_transactions.len(), 2);
+        assert!(matches!(
+            outcome
+                .zk_gas_shadow_report
+                .expect("shadow execution publishes a typed report")
+                .status(),
+            ZkGasShadowStatus::Incomplete {
+                missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+                ..
+            }
+        ));
 
         let filtered_block = assemble_filtered_block(
             &config,
@@ -233,5 +249,86 @@ mod tests {
         .expect("filtered block should assemble");
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
+    }
+
+    #[test]
+    fn shadow_mode_preserves_derived_state_and_assembled_header() {
+        fn run(
+            mode: ZkGasMode,
+            chain_spec: Arc<TaikoChainSpec>,
+            parent_header: &SealedHeader,
+            derived_block: &RecoveredBlock<Block>,
+        ) -> (DerivedBlockExecutionOutcome, RecoveredBlock<Block>) {
+            let config = TaikoEvmConfig::new_with_zk_gas_mode(chain_spec, mode);
+            let outcome = execute_derived_block(
+                &config,
+                parent_header,
+                derived_block,
+                db_with_contracts(&[(TEST_CALLER, 0)]),
+            )
+            .expect("derived block executes");
+            let assembled = assemble_filtered_block(
+                &config,
+                parent_header,
+                derived_block,
+                outcome.committed_transactions.clone(),
+                &outcome.execution_result,
+                outcome.finalized_block_zk_gas,
+                B256::with_last_byte(0x55),
+            )
+            .expect("filtered block assembles");
+            (outcome, assembled)
+        }
+
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_id = chain_spec.inner.chain().id();
+        let parent_header = SealedHeader::seal_slow(Header::default());
+        let anchor_transaction = test_transaction(chain_id, 0);
+        let regular_transaction = test_transaction(chain_id, 1);
+        let derived_block = RecoveredBlock::new_unhashed(
+            Block {
+                header: Header {
+                    number: 1,
+                    timestamp: 1,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                body: BlockBody {
+                    transactions: vec![
+                        anchor_transaction.clone_inner(),
+                        regular_transaction.clone_inner(),
+                    ],
+                    ommers: Default::default(),
+                    withdrawals: None,
+                },
+            },
+            vec![anchor_transaction.signer(), regular_transaction.signer()],
+        );
+
+        let (disabled, disabled_block) =
+            run(ZkGasMode::Disabled, chain_spec.clone(), &parent_header, &derived_block);
+        let (shadow, shadow_block) =
+            run(ZkGasMode::Shadow, chain_spec, &parent_header, &derived_block);
+
+        assert!(disabled.zk_gas_shadow_report.is_none());
+        assert!(matches!(
+            shadow.zk_gas_shadow_report.expect("shadow report").status(),
+            ZkGasShadowStatus::Incomplete {
+                missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(shadow.committed_transactions, disabled.committed_transactions);
+        assert_eq!(shadow.execution_result.receipts, disabled.execution_result.receipts);
+        assert_eq!(shadow.execution_result.requests, disabled.execution_result.requests);
+        assert_eq!(shadow.execution_result.gas_used, disabled.execution_result.gas_used);
+        assert_eq!(shadow.execution_result.blob_gas_used, disabled.execution_result.blob_gas_used);
+        assert_eq!(shadow.hashed_state, disabled.hashed_state);
+        assert_eq!(shadow.finalized_block_zk_gas, disabled.finalized_block_zk_gas);
+        assert_eq!(shadow_block.header(), disabled_block.header());
+        assert_eq!(shadow_block.body(), disabled_block.body());
+        assert_eq!(shadow_block.header().state_root, B256::with_last_byte(0x55));
     }
 }

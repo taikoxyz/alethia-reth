@@ -1,4 +1,4 @@
-//! Public typed inputs, outputs, and failures for zk gas V2 pricing.
+//! Public typed inputs, outputs, and failures for zk gas pricing.
 
 use core::fmt;
 
@@ -307,9 +307,9 @@ pub struct PricingBreakdown {
     pub total_pgu: Option<u128>,
 }
 
-/// Fail-closed V2 pricing error.
+/// Fail-closed zk gas pricing error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ZkGasV2Error {
+pub enum ZkGasError {
     /// No generated rule exists for the requested route.
     UnknownRoute(OperationRoute),
     /// A required selector was absent.
@@ -336,25 +336,27 @@ pub enum ZkGasV2Error {
     },
 }
 
-impl fmt::Display for ZkGasV2Error {
+impl fmt::Display for ZkGasError {
     /// Formats a stable operator-facing description without embedding input payloads.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownRoute(route) => write!(formatter, "unknown zk gas V2 route: {route:?}"),
-            Self::MissingInput(name) => write!(formatter, "missing zk gas V2 input: {name}"),
-            Self::InvalidInput(name) => write!(formatter, "invalid zk gas V2 input: {name}"),
-            Self::SelectorOutOfRange { selector, value } => {
-                write!(formatter, "zk gas V2 selector exceeds bound: {selector}={value}")
+            Self::UnknownRoute(route) => {
+                write!(formatter, "unknown zk gas pricing route: {route:?}")
             }
-            Self::ArithmeticOverflow => formatter.write_str("zk gas V2 arithmetic overflow"),
+            Self::MissingInput(name) => write!(formatter, "missing zk gas pricing input: {name}"),
+            Self::InvalidInput(name) => write!(formatter, "invalid zk gas pricing input: {name}"),
+            Self::SelectorOutOfRange { selector, value } => {
+                write!(formatter, "zk gas pricing selector exceeds bound: {selector}={value}")
+            }
+            Self::ArithmeticOverflow => formatter.write_str("zk gas pricing arithmetic overflow"),
             Self::NegativeComponent(name) => {
-                write!(formatter, "negative zk gas V2 component: {name}")
+                write!(formatter, "negative zk gas pricing component: {name}")
             }
             Self::TooManyTerms { actual, maximum } => {
-                write!(formatter, "too many zk gas V2 terms: {actual} > {maximum}")
+                write!(formatter, "too many zk gas pricing terms: {actual} > {maximum}")
             }
         }
     }
 }
 
-impl std::error::Error for ZkGasV2Error {}
+impl std::error::Error for ZkGasError {}

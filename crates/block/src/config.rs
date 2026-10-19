@@ -40,7 +40,7 @@ use alethia_reth_chainspec::{
     hardfork::{TaikoHardfork, TaikoHardforks},
     spec::TaikoChainSpec,
 };
-use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId, zk_gas::v2::ZkGasV2Mode};
+use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId, zk_gas::pricing::ZkGasMode};
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
 
@@ -91,9 +91,10 @@ impl TaikoEvmConfig {
         Self::new_with_evm_factory(chain_spec, TaikoEvmFactory)
     }
 
-    /// Creates a new Taiko EVM configuration with an explicit non-consensus V2 collection mode.
-    pub fn new_with_zk_gas_v2_mode(chain_spec: Arc<TaikoChainSpec>, mode: ZkGasV2Mode) -> Self {
-        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory).with_zk_gas_v2_mode(mode)
+    /// Creates a new Taiko EVM configuration with an explicit non-consensus pricing collection
+    /// mode.
+    pub fn new_with_zk_gas_mode(chain_spec: Arc<TaikoChainSpec>, mode: ZkGasMode) -> Self {
+        Self::new_with_evm_factory(chain_spec, TaikoEvmFactory).with_zk_gas_mode(mode)
     }
 
     /// Creates a new Taiko EVM configuration with the given chain spec and EVM factory.
@@ -121,15 +122,15 @@ impl TaikoEvmConfig {
         self.executor_factory.evm_factory()
     }
 
-    /// Returns this configuration with an explicit non-consensus V2 collection mode.
-    pub fn with_zk_gas_v2_mode(mut self, mode: ZkGasV2Mode) -> Self {
-        self.executor_factory = self.executor_factory.with_zk_gas_v2_mode(mode);
+    /// Returns this configuration with an explicit non-consensus pricing collection mode.
+    pub fn with_zk_gas_mode(mut self, mode: ZkGasMode) -> Self {
+        self.executor_factory = self.executor_factory.with_zk_gas_mode(mode);
         self
     }
 
-    /// Returns the configured non-consensus V2 collection mode.
-    pub const fn zk_gas_v2_mode(&self) -> ZkGasV2Mode {
-        self.executor_factory.zk_gas_v2_mode()
+    /// Returns the configured non-consensus pricing collection mode.
+    pub const fn zk_gas_mode(&self) -> ZkGasMode {
+        self.executor_factory.zk_gas_mode()
     }
 }
 
@@ -467,7 +468,7 @@ impl BuildPendingEnv<Header> for TaikoNextBlockEnvAttributes {
 mod tests {
     use super::*;
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
-    use alethia_reth_evm::zk_gas::v2::ZkGasV2Mode;
+    use alethia_reth_evm::zk_gas::pricing::ZkGasMode;
     use alloy_hardforks::ForkCondition;
     use std::sync::Arc;
 
@@ -630,12 +631,12 @@ mod tests {
     }
 
     #[test]
-    fn zkgas_v2_runtime_mode_defaults_disabled_and_accepts_shadow() {
+    fn zkgas_runtime_mode_defaults_disabled_and_accepts_shadow() {
         let chain_spec = Arc::new(TaikoChainSpec::default());
         let disabled = TaikoEvmConfig::new(chain_spec.clone());
-        assert_eq!(disabled.zk_gas_v2_mode(), ZkGasV2Mode::Disabled);
+        assert_eq!(disabled.zk_gas_mode(), ZkGasMode::Disabled);
 
-        let shadow = TaikoEvmConfig::new_with_zk_gas_v2_mode(chain_spec, ZkGasV2Mode::Shadow);
-        assert_eq!(shadow.zk_gas_v2_mode(), ZkGasV2Mode::Shadow);
+        let shadow = TaikoEvmConfig::new_with_zk_gas_mode(chain_spec, ZkGasMode::Shadow);
+        assert_eq!(shadow.zk_gas_mode(), ZkGasMode::Shadow);
     }
 }

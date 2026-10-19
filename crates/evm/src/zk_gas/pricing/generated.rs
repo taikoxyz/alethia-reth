@@ -1,4 +1,4 @@
-//! Generated constants compiled from `task6-runtime-spec-v1.json`.
+//! Generated constants compiled from the canonical `runtime-spec.json`.
 //! The embedded artifact content address authenticates the canonical payload.
 //! Regenerate with `generate.py --spec <spec.json> --output generated.rs`.
 //! Add `--check` to verify the committed table without rewriting it.

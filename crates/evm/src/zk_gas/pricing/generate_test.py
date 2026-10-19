@@ -1,4 +1,4 @@
-"""Focused tests for the portable zk gas V2 table generator."""
+"""Focused tests for the portable zk gas pricing-table generator."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import unittest
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("generate.py")
-MODULE_SPEC = importlib.util.spec_from_file_location("zk_gas_v2_generate", MODULE_PATH)
+MODULE_SPEC = importlib.util.spec_from_file_location("zk_gas_pricing_generate", MODULE_PATH)
 assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
 GENERATOR = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(GENERATOR)
@@ -38,6 +38,16 @@ class GeneratorTests(unittest.TestCase):
             )
         )
         self.assertFalse(GENERATOR.generated_matches(expected, "pub const VALUE:i128=124;"))
+
+    def test_repository_runtime_spec_renders_the_committed_table(self) -> None:
+        runtime_spec = MODULE_PATH.with_name("runtime-spec.json")
+        generated = MODULE_PATH.with_name("generated.rs")
+        payload = GENERATOR.json.loads(runtime_spec.read_text())
+
+        self.assertEqual(GENERATOR.validate_artifact(payload), GENERATOR.RUNTIME_SPEC_SHA256)
+        self.assertTrue(
+            GENERATOR.generated_matches(GENERATOR.render(payload), generated.read_text())
+        )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate or verify the Rust zk gas V2 table from the sealed runtime JSON."""
+"""Generate or verify the Rust zk gas pricing table from the canonical runtime JSON."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-SEALED_ARTIFACT_SHA256 = (
+RUNTIME_SPEC_SHA256 = (
     "93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046"
 )
 
@@ -31,16 +31,16 @@ def content_address(payload: Mapping[str, Any]) -> str:
 
 
 def validate_artifact(payload: Mapping[str, Any]) -> str:
-    """Validate both the embedded content address and the pinned accepted artifact."""
+    """Validate the embedded content address against the accepted runtime specification."""
     claimed = payload.get("artifact_sha256")
     actual = content_address(payload)
     if claimed != actual:
         raise ValueError(
             f"artifact_sha256 differs: embedded={claimed!r}, recomputed={actual}"
         )
-    if claimed != SEALED_ARTIFACT_SHA256:
+    if claimed != RUNTIME_SPEC_SHA256:
         raise ValueError(
-            "artifact_sha256 is not the accepted Task 2 runtime specification: "
+            "artifact_sha256 is not the accepted runtime specification: "
             f"{claimed!r}"
         )
     return actual
@@ -245,7 +245,7 @@ def render(specification: Mapping[str, Any]) -> str:
     """Render the complete deterministic Rust table from a validated specification."""
     validate_artifact(specification)
     lines = [
-        "//! Generated constants compiled from `task6-runtime-spec-v1.json`.",
+        "//! Generated constants compiled from the canonical `runtime-spec.json`.",
         "//! The embedded artifact content address authenticates the canonical payload.",
         "//! Regenerate with `generate.py --spec <spec.json> --output generated.rs`.",
         "//! Add `--check` to verify the committed table without rewriting it.",
@@ -462,10 +462,11 @@ def generated_matches(expected: str, actual: str) -> bool:
 
 
 def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
-    """Parse explicit portable input and output paths."""
+    """Parse portable input and output paths with repository-local defaults."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--spec", required=True, type=pathlib.Path)
-    parser.add_argument("--output", required=True, type=pathlib.Path)
+    base = pathlib.Path(__file__).resolve().parent
+    parser.add_argument("--spec", default=base / "runtime-spec.json", type=pathlib.Path)
+    parser.add_argument("--output", default=base / "generated.rs", type=pathlib.Path)
     parser.add_argument(
         "--check",
         action="store_true",
@@ -487,7 +488,7 @@ def main(arguments: list[str] | None = None) -> int:
             return 1
         if not generated_matches(generated, options.output.read_text()):
             print(
-                "generated zk gas V2 table is stale; rerun without --check and format Rust",
+                "generated zk gas pricing table is stale; rerun without --check and format Rust",
                 file=sys.stderr,
             )
             return 1

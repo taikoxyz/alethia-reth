@@ -7,18 +7,17 @@ mod model;
 mod types;
 
 pub use accumulator::{
-    StateAccess, TransactionMetadata, ZkGasV2Accumulator, ZkGasV2AccumulatorError,
-    ZkGasV2BlockSnapshot,
+    StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError, ZkGasBlockSnapshot,
 };
 pub use generated::{FIXED_POINT_SCALE, RUNTIME_SPEC_SHA256};
 pub use mode::{
-    ZkGasV2CompletionError, ZkGasV2Incompleteness, ZkGasV2KnownBlockBreakdown, ZkGasV2Mode,
-    ZkGasV2ShadowDiagnostic, ZkGasV2ShadowReport, ZkGasV2ShadowStatus,
+    ZkGasCompletionError, ZkGasIncompleteness, ZkGasKnownBlockBreakdown, ZkGasMode,
+    ZkGasShadowDiagnostic, ZkGasShadowReport, ZkGasShadowStatus,
 };
-pub use model::ZkGasV2Model;
+pub use model::ZkGasModel;
 pub use types::{
     AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,
     OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
     PricingBreakdown, ProposalPricingInput, ResourceSelectors, StorageBranch, ValueClass,
-    ZkGasV2Error,
+    ZkGasError,
 };

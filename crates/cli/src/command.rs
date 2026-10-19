@@ -15,7 +15,7 @@ use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 
 use alethia_reth_node::{
-    chainspec::spec::TaikoDevnetConfigExt, evm::zk_gas::v2::ZkGasV2Mode,
+    chainspec::spec::TaikoDevnetConfigExt, evm::zk_gas::pricing::ZkGasMode,
     proof_history::ProofHistoryConfig,
 };
 
@@ -29,8 +29,8 @@ pub trait TaikoNodeExtArgs {
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
 
-    /// Returns the non-consensus zk gas V2 runtime mode.
-    fn zk_gas_v2_mode(&self) -> ZkGasV2Mode;
+    /// Returns the non-consensus zk gas pricing runtime mode.
+    fn zk_gas_mode(&self) -> ZkGasMode;
 }
 
 impl TaikoNodeExtArgs for NoArgs {
@@ -44,9 +44,9 @@ impl TaikoNodeExtArgs for NoArgs {
         ProofHistoryConfig::disabled()
     }
 
-    /// Returns disabled V2 collection for commands without Taiko options.
-    fn zk_gas_v2_mode(&self) -> ZkGasV2Mode {
-        ZkGasV2Mode::Disabled
+    /// Returns disabled pricing collection for commands without Taiko options.
+    fn zk_gas_mode(&self) -> ZkGasMode {
+        ZkGasMode::Disabled
     }
 }
 
@@ -69,9 +69,9 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
         }
     }
 
-    /// Returns the configured non-consensus zk gas V2 runtime mode.
-    fn zk_gas_v2_mode(&self) -> ZkGasV2Mode {
-        self.zk_gas_v2_mode
+    /// Returns the configured non-consensus zk gas pricing runtime mode.
+    fn zk_gas_mode(&self) -> ZkGasMode {
+        self.zk_gas_mode
     }
 }
 

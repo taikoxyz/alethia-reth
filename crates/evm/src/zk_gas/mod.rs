@@ -4,14 +4,14 @@
 pub mod adapter;
 /// Checked zk gas accounting for a single Unzen block execution.
 pub mod meter;
+/// Pure accepted-schema-9 zk gas pricing without runtime collection state.
+pub mod pricing;
 /// Production interpreter-side zk gas metering.
 pub mod runtime;
 /// Shared schedule types and fork selection helpers.
 pub mod schedule;
 /// Unzen-specific fixed zk gas schedule data.
 pub mod unzen;
-/// Pure accepted-schema-9 zk gas pricing without runtime collection state.
-pub mod v2;
 
 #[cfg(test)]
 mod tests;

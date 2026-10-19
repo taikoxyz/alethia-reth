@@ -24,9 +24,9 @@ use crate::alloy::TaikoEvmContext;
 
 use super::{
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
-    runtime::{PendingV2Step, bn254_work_units, halt_for_zk_gas_limit, set_custom_error},
+    pricing::{StateAccess, ZkGasAccumulator, ZkGasAccumulatorError, ZkGasError},
+    runtime::{PendingPricingStep, bn254_work_units, halt_for_zk_gas_limit, set_custom_error},
     schedule::ZkGasSchedule,
-    v2::{StateAccess, ZkGasV2Accumulator, ZkGasV2AccumulatorError, ZkGasV2Error},
 };
 
 /// Dedicated custom error string emitted when zk gas accounting exceeds the block limit.
@@ -90,20 +90,20 @@ impl<I> ZkGasInspector<I> {
         }
     }
 
-    /// Returns the inspected-path V2 collector, when enabled.
-    pub(crate) fn v2(&self) -> Option<&ZkGasV2Accumulator> {
-        self.metering.as_ref()?.v2.as_ref()
+    /// Returns the inspected-path pricing collector, when enabled.
+    pub(crate) fn pricing(&self) -> Option<&ZkGasAccumulator> {
+        self.metering.as_ref()?.pricing.as_ref()
     }
 
-    /// Returns the mutable inspected-path V2 collector, when enabled.
-    pub(crate) fn v2_mut(&mut self) -> Option<&mut ZkGasV2Accumulator> {
-        self.metering.as_mut()?.v2.as_mut()
+    /// Returns the mutable inspected-path pricing collector, when enabled.
+    pub(crate) fn pricing_mut(&mut self) -> Option<&mut ZkGasAccumulator> {
+        self.metering.as_mut()?.pricing.as_mut()
     }
 
     /// Removes and returns the inspected-path collector without resetting its block prefix.
-    pub(crate) fn take_v2(&mut self) -> Option<ZkGasV2Accumulator> {
+    pub(crate) fn take_pricing(&mut self) -> Option<ZkGasAccumulator> {
         let metering = self.metering.as_mut()?;
-        let accumulator = metering.v2.take();
+        let accumulator = metering.pricing.take();
         if metering.meter.is_none() {
             self.metering = None;
         }
@@ -111,8 +111,9 @@ impl<I> ZkGasInspector<I> {
     }
 
     /// Installs an existing collector on the inspected execution path.
-    pub(crate) fn install_v2(&mut self, accumulator: ZkGasV2Accumulator) {
-        self.metering.get_or_insert_with(|| ZkGasMeteringState::new(None)).v2 = Some(accumulator);
+    pub(crate) fn install_pricing(&mut self, accumulator: ZkGasAccumulator) {
+        self.metering.get_or_insert_with(|| ZkGasMeteringState::new(None)).pricing =
+            Some(accumulator);
     }
 }
 
@@ -128,7 +129,7 @@ where
         context: &mut TaikoEvmContext<DB>,
     ) {
         self.inner.initialize_interp(interp, context);
-        if let Some(accumulator) = self.metering.as_mut().and_then(|state| state.v2.as_mut()) {
+        if let Some(accumulator) = self.metering.as_mut().and_then(|state| state.pricing.as_mut()) {
             for address in [interp.input.caller_address(), interp.input.target_address()] {
                 let _ = accumulator.observe_state_access(StateAccess::Account(address));
             }
@@ -182,9 +183,9 @@ where
             halt_for_zk_gas_limit(context, interp);
             return;
         }
-        if let Some(v2_step) = step.v2 &&
-            let Some(accumulator) = metering.v2.as_mut() &&
-            let Err(error) = v2_step.finish(interp, context, accumulator)
+        if let Some(pricing_step) = step.pricing &&
+            let Some(accumulator) = metering.pricing.as_mut() &&
+            let Err(error) = pricing_step.finish(interp, context, accumulator)
         {
             accumulator.retain_diagnostic(Some(error));
         }
@@ -227,10 +228,15 @@ where
     ) -> Option<CallOutcome> {
         let outcome = self.inner.call(context, inputs);
         if let Some(metering) = &mut self.metering {
-            let work_units = (inputs.bytecode_address == Address::with_last_byte(0x07))
-                .then(|| bn254_work_units(&inputs.input.bytes(context)));
-            metering.pending_precompile_work.push(work_units);
-            if let Some(accumulator) = metering.v2.as_mut() {
+            if metering.pricing.is_some() {
+                let work_units =
+                    (inputs.bytecode_address == Address::with_last_byte(0x07)).then(|| {
+                        let input = inputs.input.as_bytes(context);
+                        bn254_work_units(&input[..input.len().min(96)])
+                    });
+                metering.pending_precompile_work.push(work_units);
+            }
+            if let Some(accumulator) = metering.pricing.as_mut() {
                 if let Err(error) = accumulator.confirm_spawn() {
                     accumulator.retain_diagnostic(Some(error));
                 }
@@ -268,17 +274,15 @@ where
                 set_custom_error(context);
             }
             let work_units = metering.pending_precompile_work.pop().flatten();
-            if let Some(accumulator) = metering.v2.as_mut() {
+            if let Some(accumulator) = metering.pricing.as_mut() {
                 let address = U256::from_be_slice(inputs.bytecode_address.as_slice());
                 match u16::try_from(address) {
                     Ok(address) => {
                         let _ = accumulator.observe_precompile(address, gas_used, work_units);
                     }
-                    Err(_) => {
-                        accumulator.retain_diagnostic(Some(ZkGasV2AccumulatorError::Pricing(
-                            ZkGasV2Error::InvalidInput("precompile_address"),
-                        )))
-                    }
+                    Err(_) => accumulator.retain_diagnostic(Some(ZkGasAccumulatorError::Pricing(
+                        ZkGasError::InvalidInput("precompile_address"),
+                    ))),
                 }
             }
         } else if let Some(metering) = &mut self.metering {
@@ -293,7 +297,7 @@ where
         inputs: &mut CreateInputs,
     ) -> Option<CreateOutcome> {
         let outcome = self.inner.create(context, inputs);
-        if let Some(accumulator) = self.metering.as_mut().and_then(|state| state.v2.as_mut()) {
+        if let Some(accumulator) = self.metering.as_mut().and_then(|state| state.pricing.as_mut()) {
             if let Err(error) = accumulator.confirm_spawn() {
                 accumulator.retain_diagnostic(Some(error));
             }
@@ -334,13 +338,13 @@ struct ZkGasMeteringState {
     meter: Option<ZkGasMeter<'static>>,
     /// Per-frame in-flight opcode step state keyed by journal depth.
     pending_steps: [PendingStep; MAX_CALL_DEPTH],
-    /// Typed snapshots allocated only for frame depths actually executed with V2 enabled.
-    pending_v2_steps: BTreeMap<usize, PendingV2Step>,
+    /// Typed snapshots allocated only for frame depths actually executed with pricing enabled.
+    pending_pricing_steps: BTreeMap<usize, PendingPricingStep>,
     /// Highest journal depth ever observed in this state's lifetime.
     /// Bounds transaction reset work to the actual call depth reached.
     max_active_depth: usize,
     /// Optional schema-9 selector collector.
-    v2: Option<ZkGasV2Accumulator>,
+    pricing: Option<ZkGasAccumulator>,
     /// BN254 scalar work captured by nested CALL callbacks.
     pending_precompile_work: Vec<Option<u64>>,
 }
@@ -351,9 +355,9 @@ impl ZkGasMeteringState {
         Self {
             meter: schedule.map(ZkGasMeter::new),
             pending_steps: [PendingStep::EMPTY; MAX_CALL_DEPTH],
-            pending_v2_steps: BTreeMap::new(),
+            pending_pricing_steps: BTreeMap::new(),
             max_active_depth: 0,
-            v2: None,
+            pricing: None,
             pending_precompile_work: Vec::new(),
         }
     }
@@ -370,9 +374,9 @@ impl ZkGasMeteringState {
             self.pending_steps[index] = PendingStep::EMPTY;
         }
         self.max_active_depth = 0;
-        self.pending_v2_steps.clear();
-        if let Some(v2) = &mut self.v2 {
-            v2.reset_transaction();
+        self.pending_pricing_steps.clear();
+        if let Some(pricing) = &mut self.pricing {
+            pricing.reset_transaction();
         }
         self.pending_precompile_work.clear();
     }
@@ -390,10 +394,11 @@ impl ZkGasMeteringState {
             opcode: interpreter.bytecode.opcode(),
             gas_remaining: interpreter.gas.remaining(),
         };
-        if self.v2.is_some() {
-            self.pending_v2_steps.insert(depth, PendingV2Step::capture(interpreter, context));
+        if self.pricing.is_some() {
+            self.pending_pricing_steps
+                .insert(depth, PendingPricingStep::capture(interpreter, context));
         } else {
-            self.pending_v2_steps.remove(&depth);
+            self.pending_pricing_steps.remove(&depth);
         }
         if depth > self.max_active_depth {
             self.max_active_depth = depth;
@@ -408,7 +413,7 @@ impl ZkGasMeteringState {
             opcode: pending.opcode,
             step_gas: pending.gas_remaining.saturating_sub(gas_remaining),
             spawned: false,
-            v2: self.pending_v2_steps.remove(&depth),
+            pricing: self.pending_pricing_steps.remove(&depth),
         }
     }
 
@@ -449,8 +454,8 @@ struct FinishedStep {
     step_gas: u64,
     /// Whether the opcode selected `NewFrame` and should use the fixed spawn estimate.
     spawned: bool,
-    /// Typed pre-step V2 snapshot, when collection is enabled.
-    v2: Option<PendingV2Step>,
+    /// Typed pre-step pricing snapshot, when collection is enabled.
+    pricing: Option<PendingPricingStep>,
 }
 
 #[cfg(test)]
@@ -483,7 +488,7 @@ mod tests {
                 opcode: 0xf0,
                 step_gas: 1,
                 spawned: true,
-                v2: None,
+                pricing: None,
             })
             .expect("spawn estimate should fit");
 

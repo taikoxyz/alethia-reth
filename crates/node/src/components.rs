@@ -4,7 +4,7 @@ use std::{fmt::Debug, future, sync::Arc};
 use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::{TaikoBeaconConsensus, TaikoBlockReader};
-use alethia_reth_evm::zk_gas::v2::ZkGasV2Mode;
+use alethia_reth_evm::zk_gas::pricing::ZkGasMode;
 use alethia_reth_primitives::engine::TaikoEngineTypes;
 use alloy_primitives::B256;
 use reth::{
@@ -25,19 +25,19 @@ use tracing::info;
 /// A builder for the Taiko block executor.
 #[derive(Debug, Clone, Default)]
 pub struct TaikoExecutorBuilder {
-    /// Non-consensus V2 collection mode propagated into every block executor.
-    zk_gas_v2_mode: ZkGasV2Mode,
+    /// Non-consensus zk gas collection mode propagated into every block executor.
+    zk_gas_mode: ZkGasMode,
 }
 
 impl TaikoExecutorBuilder {
-    /// Creates an executor builder with an explicit non-consensus V2 collection mode.
-    pub const fn new(zk_gas_v2_mode: ZkGasV2Mode) -> Self {
-        Self { zk_gas_v2_mode }
+    /// Creates an executor builder with an explicit non-consensus zk gas collection mode.
+    pub const fn new(zk_gas_mode: ZkGasMode) -> Self {
+        Self { zk_gas_mode }
     }
 
-    /// Returns the configured non-consensus V2 collection mode.
-    pub const fn zk_gas_v2_mode(&self) -> ZkGasV2Mode {
-        self.zk_gas_v2_mode
+    /// Returns the configured non-consensus zk gas collection mode.
+    pub const fn zk_gas_mode(&self) -> ZkGasMode {
+        self.zk_gas_mode
     }
 }
 
@@ -72,11 +72,10 @@ where
         self,
         ctx: &BuilderContext<Node>,
     ) -> impl future::Future<Output = eyre::Result<Self::EVM>> + Send {
-        let zk_gas_v2_mode = self.zk_gas_v2_mode;
+        let zk_gas_mode = self.zk_gas_mode;
         future::ready(
-            reject_jit_args(&ctx.config().jit).map(|()| {
-                TaikoEvmConfig::new_with_zk_gas_v2_mode(ctx.chain_spec(), zk_gas_v2_mode)
-            }),
+            reject_jit_args(&ctx.config().jit)
+                .map(|()| TaikoEvmConfig::new_with_zk_gas_mode(ctx.chain_spec(), zk_gas_mode)),
         )
     }
 }
@@ -157,10 +156,10 @@ mod tests {
     use reth_storage_api::noop::NoopProvider;
 
     #[test]
-    fn taiko_executor_builder_defaults_to_disabled_zkgas_v2() {
+    fn taiko_executor_builder_defaults_to_disabled_zkgas() {
         assert_eq!(
-            TaikoExecutorBuilder::default().zk_gas_v2_mode(),
-            alethia_reth_evm::zk_gas::v2::ZkGasV2Mode::Disabled
+            TaikoExecutorBuilder::default().zk_gas_mode(),
+            alethia_reth_evm::zk_gas::pricing::ZkGasMode::Disabled
         );
     }
 

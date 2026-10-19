@@ -1,8 +1,8 @@
-//! Runtime mode and typed shadow-report contracts for zk gas V2.
+//! Runtime mode and typed shadow-report contracts for zk gas pricing.
 
 use super::{
-    RUNTIME_SPEC_SHA256, ResourceSelectors, ZkGasV2AccumulatorError, ZkGasV2BlockSnapshot,
-    ZkGasV2Error, ZkGasV2Model, model::KnownBlockPricingInput,
+    RUNTIME_SPEC_SHA256, ResourceSelectors, ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError,
+    ZkGasModel, model::KnownBlockPricingInput,
 };
 use core::fmt;
 
@@ -12,7 +12,7 @@ use core::fmt;
 /// additional state directly into the block database cache. There is deliberately no exact
 /// block-end resource term, MPT field, or complete-block total in this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ZkGasV2KnownBlockBreakdown {
+pub struct ZkGasKnownBlockBreakdown {
     /// Block fixed-cost contribution in fixed-point units.
     fixed_scaled: i128,
     /// Block operation contribution in fixed-point units.
@@ -29,7 +29,7 @@ pub struct ZkGasV2KnownBlockBreakdown {
     evm_local_known_subtotal_pgu: u128,
 }
 
-impl ZkGasV2KnownBlockBreakdown {
+impl ZkGasKnownBlockBreakdown {
     /// Constructs the immutable report inside the sealed evaluator boundary.
     pub(super) const fn new(
         fixed_scaled: i128,
@@ -108,120 +108,122 @@ impl ZkGasV2KnownBlockBreakdown {
     }
 }
 
-/// Runtime collection mode for the accepted zk gas V2 model.
+/// Runtime collection mode for the accepted zk gas pricing model.
 ///
 /// Admission is intentionally absent: the production state-root pipeline does not yet expose the
 /// exact absolute candidate-prefix MPT selector snapshot required for a complete quote. That
 /// snapshot describes the canonically aggregated post-state and replaces the prior prefix snapshot;
 /// it is not an additive per-transaction delta.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ZkGasV2Mode {
-    /// Do not collect or price V2 selectors.
+pub enum ZkGasMode {
+    /// Do not collect or price pricing selectors.
     #[default]
     Disabled,
     /// Collect execution/resource selectors and publish a non-enforcing diagnostic report.
     Shadow,
 }
 
-impl ZkGasV2Mode {
+impl ZkGasMode {
     /// Modes accepted by runtime configuration.
     pub const ALL: [Self; 2] = [Self::Disabled, Self::Shadow];
 }
 
 /// Exact selector group that prevents a shadow subtotal from being a complete block quote.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ZkGasV2Incompleteness {
+pub enum ZkGasIncompleteness {
     /// Exact block-end resources and the absolute block/prefix MPT snapshot are unavailable.
     ExactBlockResourcesAndMptSelectorsUnavailable,
 }
 
 /// Typed failure that prevents publication of even the known-component subtotal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ZkGasV2ShadowDiagnostic {
+pub enum ZkGasShadowDiagnostic {
     /// Shadow mode was requested but no selector collector was installed.
     CollectorUnavailable,
     /// Selector collection retained a non-fatal diagnostic from included execution.
-    Collector(ZkGasV2AccumulatorError),
+    Collector(ZkGasAccumulatorError),
     /// The pure model rejected the committed execution/resource selectors.
-    Pricing(ZkGasV2Error),
+    Pricing(ZkGasError),
 }
 
 /// Typed failure while completing a Shadow report with exact external block resources and MPT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ZkGasV2CompletionError {
+pub enum ZkGasCompletionError {
     /// The report did not identify the sealed runtime model.
     ModelIdentity,
     /// The report named an incompleteness that this completion input cannot satisfy.
-    UnexpectedIncompleteness(ZkGasV2Incompleteness),
+    UnexpectedZkGasIncompleteness(ZkGasIncompleteness),
     /// The sealed known-component fields were internally inconsistent.
     InconsistentKnownBreakdown(&'static str),
     /// An alleged exact resource dimension was below its sealed EVM-local subset.
     ExactResourcesBelowEvmLocal(&'static str),
     /// Shadow execution reported a collector or pricing diagnostic.
-    ShadowDiagnostic(ZkGasV2ShadowDiagnostic),
+    ZkGasShadowDiagnostic(ZkGasShadowDiagnostic),
     /// Checked model validation or arithmetic rejected the exact completion input.
-    Pricing(ZkGasV2Error),
+    Pricing(ZkGasError),
 }
 
-impl From<ZkGasV2Error> for ZkGasV2CompletionError {
-    fn from(error: ZkGasV2Error) -> Self {
+impl From<ZkGasError> for ZkGasCompletionError {
+    fn from(error: ZkGasError) -> Self {
         Self::Pricing(error)
     }
 }
 
-impl fmt::Display for ZkGasV2CompletionError {
+impl fmt::Display for ZkGasCompletionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ModelIdentity => formatter.write_str("zk gas V2 runtime model identity differs"),
-            Self::UnexpectedIncompleteness(missing) => {
-                write!(formatter, "unexpected zk gas V2 incompleteness: {missing:?}")
+            Self::ModelIdentity => {
+                formatter.write_str("zk gas pricing runtime model identity differs")
+            }
+            Self::UnexpectedZkGasIncompleteness(missing) => {
+                write!(formatter, "unexpected zk gas pricing incompleteness: {missing:?}")
             }
             Self::InconsistentKnownBreakdown(field) => {
-                write!(formatter, "inconsistent zk gas V2 known breakdown: {field}")
+                write!(formatter, "inconsistent zk gas pricing known breakdown: {field}")
             }
             Self::ExactResourcesBelowEvmLocal(field) => {
-                write!(formatter, "exact zk gas V2 resource is below EVM-local {field}")
+                write!(formatter, "exact zk gas pricing resource is below EVM-local {field}")
             }
-            Self::ShadowDiagnostic(diagnostic) => {
-                write!(formatter, "zk gas V2 shadow diagnostic: {diagnostic:?}")
+            Self::ZkGasShadowDiagnostic(diagnostic) => {
+                write!(formatter, "zk gas pricing shadow diagnostic: {diagnostic:?}")
             }
             Self::Pricing(error) => error.fmt(formatter),
         }
     }
 }
 
-impl std::error::Error for ZkGasV2CompletionError {}
+impl std::error::Error for ZkGasCompletionError {}
 
 /// Status of one block-local shadow evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ZkGasV2ShadowStatus {
+pub enum ZkGasShadowStatus {
     /// EVM-local execution/resource components were priced, but the result is incomplete.
     Incomplete {
         /// Non-enforcing fixed, operation, and EVM-local resource subtotal only.
-        known: ZkGasV2KnownBlockBreakdown,
+        known: ZkGasKnownBlockBreakdown,
         /// Exact selector group that remains unavailable.
-        missing: ZkGasV2Incompleteness,
+        missing: ZkGasIncompleteness,
     },
     /// A typed collector or pricing diagnostic prevented a trustworthy subtotal.
-    Diagnostic(ZkGasV2ShadowDiagnostic),
+    Diagnostic(ZkGasShadowDiagnostic),
 }
 
-impl ZkGasV2ShadowStatus {
+impl ZkGasShadowStatus {
     /// Returns a bounded-cardinality label suitable for logs and metrics.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Incomplete { .. } => "incomplete_missing_block_resources_and_mpt",
-            Self::Diagnostic(ZkGasV2ShadowDiagnostic::CollectorUnavailable) => {
+            Self::Diagnostic(ZkGasShadowDiagnostic::CollectorUnavailable) => {
                 "collector_unavailable"
             }
-            Self::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(
-                ZkGasV2AccumulatorError::Pricing(ZkGasV2Error::UnknownRoute(_)),
-            )) => "collector_unknown_route",
-            Self::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(_)) => "collector_error",
-            Self::Diagnostic(ZkGasV2ShadowDiagnostic::Pricing(ZkGasV2Error::UnknownRoute(_))) => {
+            Self::Diagnostic(ZkGasShadowDiagnostic::Collector(ZkGasAccumulatorError::Pricing(
+                ZkGasError::UnknownRoute(_),
+            ))) => "collector_unknown_route",
+            Self::Diagnostic(ZkGasShadowDiagnostic::Collector(_)) => "collector_error",
+            Self::Diagnostic(ZkGasShadowDiagnostic::Pricing(ZkGasError::UnknownRoute(_))) => {
                 "pricing_unknown_route"
             }
-            Self::Diagnostic(ZkGasV2ShadowDiagnostic::Pricing(_)) => "pricing_error",
+            Self::Diagnostic(ZkGasShadowDiagnostic::Pricing(_)) => "pricing_error",
         }
     }
 }
@@ -231,24 +233,24 @@ impl ZkGasV2ShadowStatus {
 /// External callers can inspect reports but cannot forge one from public fields.
 ///
 /// ```compile_fail
-/// use alethia_reth_evm::zk_gas::v2::{RUNTIME_SPEC_SHA256, ZkGasV2ShadowDiagnostic,
-///     ZkGasV2ShadowReport, ZkGasV2ShadowStatus};
-/// let _ = ZkGasV2ShadowReport {
+/// use alethia_reth_evm::zk_gas::pricing::{RUNTIME_SPEC_SHA256, ZkGasShadowDiagnostic,
+///     ZkGasShadowReport, ZkGasShadowStatus};
+/// let _ = ZkGasShadowReport {
 ///     model_id: RUNTIME_SPEC_SHA256,
-///     status: ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::CollectorUnavailable),
+///     status: ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::CollectorUnavailable),
 /// };
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ZkGasV2ShadowReport {
+pub struct ZkGasShadowReport {
     /// Content-addressed runtime model identifier.
     model_id: &'static str,
     /// Incomplete known-component subtotal or a typed diagnostic.
-    status: ZkGasV2ShadowStatus,
+    status: ZkGasShadowStatus,
 }
 
-impl ZkGasV2ShadowReport {
+impl ZkGasShadowReport {
     /// Constructs one immutable report inside the sealed evaluator boundary.
-    pub(super) const fn from_status(status: ZkGasV2ShadowStatus) -> Self {
+    pub(super) const fn from_status(status: ZkGasShadowStatus) -> Self {
         Self { model_id: RUNTIME_SPEC_SHA256, status }
     }
 
@@ -258,7 +260,7 @@ impl ZkGasV2ShadowReport {
     }
 
     /// Returns the typed non-enforcing report status.
-    pub const fn status(self) -> ZkGasV2ShadowStatus {
+    pub const fn status(self) -> ZkGasShadowStatus {
         self.status
     }
 
@@ -266,44 +268,40 @@ impl ZkGasV2ShadowReport {
     pub const fn collector_unavailable() -> Self {
         Self {
             model_id: RUNTIME_SPEC_SHA256,
-            status: ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::CollectorUnavailable),
+            status: ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::CollectorUnavailable),
         }
     }
 
     #[cfg(test)]
     pub(in crate::zk_gas) const fn from_parts_for_test(
         model_id: &'static str,
-        status: ZkGasV2ShadowStatus,
+        status: ZkGasShadowStatus,
     ) -> Self {
         Self { model_id, status }
     }
 }
 
-impl ZkGasV2BlockSnapshot {
+impl ZkGasBlockSnapshot {
     /// Evaluates the committed execution/resource prefix for Shadow mode.
     ///
     /// This never claims to be a complete block quote. Exact MPT selectors are unavailable, so a
     /// successful evaluation is explicitly tagged as incomplete and cannot drive admission.
-    pub fn shadow_report(&self) -> ZkGasV2ShadowReport {
+    pub fn shadow_report(&self) -> ZkGasShadowReport {
         let status = match self.diagnostic {
-            Some(error) => {
-                ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(error))
-            }
-            None => match ZkGasV2Model.price_block_without_mpt(&KnownBlockPricingInput {
+            Some(error) => ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Collector(error)),
+            None => match ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
                 started_non_anchor_transactions: self.started_non_anchor_transactions,
                 native_value_transfers: self.native_value_transfers,
                 operation_routes: &self.operation_routes,
                 resources: self.resources,
             }) {
-                Ok(known) => ZkGasV2ShadowStatus::Incomplete {
+                Ok(known) => ZkGasShadowStatus::Incomplete {
                     known,
-                    missing: ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+                    missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
                 },
-                Err(error) => {
-                    ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Pricing(error))
-                }
+                Err(error) => ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Pricing(error)),
             },
         };
-        ZkGasV2ShadowReport::from_status(status)
+        ZkGasShadowReport::from_status(status)
     }
 }

@@ -5,3 +5,4 @@
 .idea/
 error.log
 .vscode/
+__pycache__/

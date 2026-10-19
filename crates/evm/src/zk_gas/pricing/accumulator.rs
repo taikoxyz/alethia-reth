@@ -1,4 +1,4 @@
-//! Transactional collection for block-local zk gas V2 selectors.
+//! Transactional collection for block-local zk gas pricing selectors.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -6,7 +6,7 @@ use alloy_primitives::{Address, B256, U256};
 
 use super::{
     OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
-    ResourceSelectors, ZkGasV2Error, ZkGasV2Model,
+    ResourceSelectors, ZkGasError, ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -48,9 +48,9 @@ pub enum StateAccess {
 
 /// Fail-closed transactional collector error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ZkGasV2AccumulatorError {
-    /// An operation could not be priced by the authenticated V2 model.
-    Pricing(ZkGasV2Error),
+pub enum ZkGasAccumulatorError {
+    /// An operation could not be priced by the authenticated pricing model.
+    Pricing(ZkGasError),
     /// A transaction was started while another transaction remained in flight.
     TransactionAlreadyActive,
     /// An observation or commit occurred without an active transaction.
@@ -63,28 +63,32 @@ pub enum ZkGasV2AccumulatorError {
     CodeLengthConflict,
 }
 
-impl From<ZkGasV2Error> for ZkGasV2AccumulatorError {
-    fn from(value: ZkGasV2Error) -> Self {
+impl From<ZkGasError> for ZkGasAccumulatorError {
+    fn from(value: ZkGasError) -> Self {
         Self::Pricing(value)
     }
 }
 
-impl core::fmt::Display for ZkGasV2AccumulatorError {
+impl core::fmt::Display for ZkGasAccumulatorError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Pricing(error) => write!(formatter, "{error}"),
             Self::TransactionAlreadyActive => {
-                formatter.write_str("zk gas V2 transaction already active")
+                formatter.write_str("zk gas pricing transaction already active")
             }
-            Self::NoActiveTransaction => formatter.write_str("zk gas V2 transaction is not active"),
-            Self::ArithmeticOverflow => formatter.write_str("zk gas V2 accumulator overflow"),
-            Self::CountOverflow => formatter.write_str("zk gas V2 resource count overflow"),
-            Self::CodeLengthConflict => formatter.write_str("zk gas V2 code hash length conflict"),
+            Self::NoActiveTransaction => {
+                formatter.write_str("zk gas pricing transaction is not active")
+            }
+            Self::ArithmeticOverflow => formatter.write_str("zk gas pricing accumulator overflow"),
+            Self::CountOverflow => formatter.write_str("zk gas pricing resource count overflow"),
+            Self::CodeLengthConflict => {
+                formatter.write_str("zk gas pricing code hash length conflict")
+            }
         }
     }
 }
 
-impl std::error::Error for ZkGasV2AccumulatorError {}
+impl std::error::Error for ZkGasAccumulatorError {}
 
 #[derive(Debug, Default)]
 /// Exact unique-resource set for one transaction or committed block prefix.
@@ -111,13 +115,13 @@ struct ResourceSet {
 
 impl ResourceSet {
     /// Inserts one exact resource observation.
-    fn observe(&mut self, access: StateAccess) -> Result<(), ZkGasV2AccumulatorError> {
+    fn observe(&mut self, access: StateAccess) -> Result<(), ZkGasAccumulatorError> {
         match access {
             StateAccess::Account(address) => {
                 let next = self
                     .unique_account_count
                     .checked_add(u64::from(!self.accounts.contains(&address)));
-                let next = next.ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                let next = next.ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 self.accounts.insert(address);
                 self.unique_account_count = next;
             }
@@ -125,11 +129,11 @@ impl ResourceSet {
                 let next_accounts = self
                     .unique_account_count
                     .checked_add(u64::from(!self.accounts.contains(&address)))
-                    .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                    .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 let next_accesses = self
                     .unique_storage_slot_access_count
                     .checked_add(u64::from(!self.storage_accesses.contains(&(address, slot))))
-                    .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                    .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 self.accounts.insert(address);
                 self.storage_accesses.insert((address, slot));
                 self.unique_account_count = next_accounts;
@@ -139,15 +143,15 @@ impl ResourceSet {
                 let next_accounts = self
                     .unique_account_count
                     .checked_add(u64::from(!self.accounts.contains(&address)))
-                    .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                    .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 let next_accesses = self
                     .unique_storage_slot_access_count
                     .checked_add(u64::from(!self.storage_accesses.contains(&(address, slot))))
-                    .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                    .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 let next_writes = self
                     .unique_storage_slot_write_count
                     .checked_add(u64::from(!self.storage_writes.contains(&(address, slot))))
-                    .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                    .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 self.accounts.insert(address);
                 self.storage_accesses.insert((address, slot));
                 self.storage_writes.insert((address, slot));
@@ -158,18 +162,18 @@ impl ResourceSet {
             StateAccess::Code { hash, byte_length } => match self.code.get(&hash) {
                 _ if byte_length == 0 => {}
                 Some(previous) if *previous != byte_length => {
-                    return Err(ZkGasV2AccumulatorError::CodeLengthConflict);
+                    return Err(ZkGasAccumulatorError::CodeLengthConflict);
                 }
                 Some(_) => {}
                 None => {
                     let next_hashes = self
                         .unique_code_hash_count
                         .checked_add(1)
-                        .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                        .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                     let next_bytes = self
                         .unique_code_bytes
                         .checked_add(byte_length)
-                        .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                        .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                     self.code.insert(hash, byte_length);
                     self.unique_code_hash_count = next_hashes;
                     self.unique_code_bytes = next_bytes;
@@ -180,14 +184,11 @@ impl ResourceSet {
     }
 
     /// Validates a transaction delta against the committed prefix without copying either set.
-    fn prevalidate_merge(
-        &self,
-        other: &Self,
-    ) -> Result<ResourceSelectors, ZkGasV2AccumulatorError> {
+    fn prevalidate_merge(&self, other: &Self) -> Result<ResourceSelectors, ZkGasAccumulatorError> {
         let added_accounts = u64::try_from(
             other.accounts.iter().filter(|address| !self.accounts.contains(*address)).count(),
         )
-        .map_err(|_| ZkGasV2AccumulatorError::CountOverflow)?;
+        .map_err(|_| ZkGasAccumulatorError::CountOverflow)?;
         let added_accesses = u64::try_from(
             other
                 .storage_accesses
@@ -195,26 +196,25 @@ impl ResourceSet {
                 .filter(|slot| !self.storage_accesses.contains(slot))
                 .count(),
         )
-        .map_err(|_| ZkGasV2AccumulatorError::CountOverflow)?;
+        .map_err(|_| ZkGasAccumulatorError::CountOverflow)?;
         let added_writes = u64::try_from(
             other.storage_writes.iter().filter(|slot| !self.storage_writes.contains(slot)).count(),
         )
-        .map_err(|_| ZkGasV2AccumulatorError::CountOverflow)?;
+        .map_err(|_| ZkGasAccumulatorError::CountOverflow)?;
         let mut added_hashes = 0_u64;
         let mut added_bytes = 0_u64;
         for (hash, byte_length) in &other.code {
             match self.code.get(hash) {
                 Some(previous) if previous != byte_length => {
-                    return Err(ZkGasV2AccumulatorError::CodeLengthConflict);
+                    return Err(ZkGasAccumulatorError::CodeLengthConflict);
                 }
                 Some(_) => {}
                 None => {
-                    added_hashes = added_hashes
-                        .checked_add(1)
-                        .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                    added_hashes =
+                        added_hashes.checked_add(1).ok_or(ZkGasAccumulatorError::CountOverflow)?;
                     added_bytes = added_bytes
                         .checked_add(*byte_length)
-                        .ok_or(ZkGasV2AccumulatorError::CountOverflow)?;
+                        .ok_or(ZkGasAccumulatorError::CountOverflow)?;
                 }
             }
         }
@@ -222,23 +222,23 @@ impl ResourceSet {
             unique_account_count: self
                 .unique_account_count
                 .checked_add(added_accounts)
-                .ok_or(ZkGasV2AccumulatorError::CountOverflow)?,
+                .ok_or(ZkGasAccumulatorError::CountOverflow)?,
             unique_storage_slot_access_count: self
                 .unique_storage_slot_access_count
                 .checked_add(added_accesses)
-                .ok_or(ZkGasV2AccumulatorError::CountOverflow)?,
+                .ok_or(ZkGasAccumulatorError::CountOverflow)?,
             unique_storage_slot_write_count: self
                 .unique_storage_slot_write_count
                 .checked_add(added_writes)
-                .ok_or(ZkGasV2AccumulatorError::CountOverflow)?,
+                .ok_or(ZkGasAccumulatorError::CountOverflow)?,
             unique_code_hash_count: self
                 .unique_code_hash_count
                 .checked_add(added_hashes)
-                .ok_or(ZkGasV2AccumulatorError::CountOverflow)?,
+                .ok_or(ZkGasAccumulatorError::CountOverflow)?,
             unique_code_bytes: self
                 .unique_code_bytes
                 .checked_add(added_bytes)
-                .ok_or(ZkGasV2AccumulatorError::CountOverflow)?,
+                .ok_or(ZkGasAccumulatorError::CountOverflow)?,
         })
     }
 
@@ -279,7 +279,7 @@ struct TransactionSelectors {
     /// Exact resources touched by the transaction.
     resources: ResourceSet,
     /// First observation failure that makes this quote untrusted.
-    diagnostic: Option<ZkGasV2AccumulatorError>,
+    diagnostic: Option<ZkGasAccumulatorError>,
     /// Whether execution emitted any opcode, spawn, or precompile operation event.
     has_operation_trace: bool,
 }
@@ -324,12 +324,12 @@ impl From<OperationRoute> for RouteKey {
 /// inputs until the production state-root pipeline supplies an exact MPT snapshot.
 ///
 /// ```compile_fail
-/// use alethia_reth_evm::zk_gas::v2::ZkGasV2BlockSnapshot;
-/// let snapshot = ZkGasV2BlockSnapshot::default();
+/// use alethia_reth_evm::zk_gas::pricing::ZkGasBlockSnapshot;
+/// let snapshot = ZkGasBlockSnapshot::default();
 /// let complete_input = snapshot.block_input();
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ZkGasV2BlockSnapshot {
+pub struct ZkGasBlockSnapshot {
     /// Committed non-anchor transaction count.
     pub started_non_anchor_transactions: u64,
     /// Committed native value-transfer count.
@@ -342,21 +342,21 @@ pub struct ZkGasV2BlockSnapshot {
     ///
     /// Selectors remain available for shadow-mode analysis, but a snapshot with a diagnostic is
     /// not a trustworthy admission quote.
-    pub diagnostic: Option<ZkGasV2AccumulatorError>,
+    pub diagnostic: Option<ZkGasAccumulatorError>,
 }
 
-/// Transactional V2 collector. In-flight selectors are invisible until commit.
+/// Transactional pricing collector. In-flight selectors are invisible until commit.
 ///
 /// The collector intentionally does not implement `Clone`: transaction commit must prevalidate
 /// and merge only the incoming delta, never copy the full committed resource prefix.
 ///
 /// ```compile_fail
-/// use alethia_reth_evm::zk_gas::v2::ZkGasV2Accumulator;
-/// let accumulator = ZkGasV2Accumulator::default();
+/// use alethia_reth_evm::zk_gas::pricing::ZkGasAccumulator;
+/// let accumulator = ZkGasAccumulator::default();
 /// let duplicated = accumulator.clone();
 /// ```
 #[derive(Debug, Default)]
-pub struct ZkGasV2Accumulator {
+pub struct ZkGasAccumulator {
     /// Included non-anchor transaction count.
     committed_non_anchor_transactions: u64,
     /// Included nonzero native-value transfer count.
@@ -370,17 +370,17 @@ pub struct ZkGasV2Accumulator {
     /// Spawn opcode selected by the interpreter but not yet dispatched.
     pending_spawn: Option<u8>,
     /// First diagnostic committed by an included transaction.
-    committed_diagnostic: Option<ZkGasV2AccumulatorError>,
+    committed_diagnostic: Option<ZkGasAccumulatorError>,
 }
 
-impl ZkGasV2Accumulator {
+impl ZkGasAccumulator {
     /// Starts a fresh transaction selector scope.
     pub fn begin_transaction(
         &mut self,
         metadata: TransactionMetadata,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+    ) -> Result<(), ZkGasAccumulatorError> {
         if self.in_flight.is_some() {
-            return Err(ZkGasV2AccumulatorError::TransactionAlreadyActive);
+            return Err(ZkGasAccumulatorError::TransactionAlreadyActive);
         }
         self.pending_spawn = None;
         self.in_flight = Some(TransactionSelectors::new(metadata));
@@ -391,9 +391,9 @@ impl ZkGasV2Accumulator {
     pub fn observe_step(
         &mut self,
         input: OperationPricingInput,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+    ) -> Result<(), ZkGasAccumulatorError> {
         if matches!(input.route, OperationRoute::Precompile(_)) {
-            return Err(ZkGasV2AccumulatorError::Pricing(ZkGasV2Error::InvalidInput(
+            return Err(ZkGasAccumulatorError::Pricing(ZkGasError::InvalidInput(
                 "observe_step_route",
             )));
         }
@@ -409,7 +409,7 @@ impl ZkGasV2Accumulator {
         address: u16,
         native_gas: u64,
         work_units: Option<u64>,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+    ) -> Result<(), ZkGasAccumulatorError> {
         self.pending_spawn = None;
         let result = self.observe_operation(OperationPricingInput {
             route: OperationRoute::Precompile(address),
@@ -428,11 +428,11 @@ impl ZkGasV2Accumulator {
     pub fn observe_state_access(
         &mut self,
         access: StateAccess,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+    ) -> Result<(), ZkGasAccumulatorError> {
         let result = self
             .in_flight
             .as_mut()
-            .ok_or(ZkGasV2AccumulatorError::NoActiveTransaction)?
+            .ok_or(ZkGasAccumulatorError::NoActiveTransaction)?
             .resources
             .observe(access);
         self.retain_diagnostic(result.err());
@@ -440,9 +440,9 @@ impl ZkGasV2Accumulator {
     }
 
     /// Stages a spawn wrapper selected by the interpreter until frame dispatch confirms it.
-    pub(crate) fn select_spawn(&mut self, opcode: u8) -> Result<(), ZkGasV2AccumulatorError> {
+    pub(crate) fn select_spawn(&mut self, opcode: u8) -> Result<(), ZkGasAccumulatorError> {
         let transaction =
-            self.in_flight.as_mut().ok_or(ZkGasV2AccumulatorError::NoActiveTransaction)?;
+            self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
         transaction.has_operation_trace = true;
         self.pending_spawn = Some(opcode);
         Ok(())
@@ -452,15 +452,15 @@ impl ZkGasV2Accumulator {
     pub(crate) fn finalize_native_value_transfer(
         &mut self,
         eligible: bool,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+    ) -> Result<(), ZkGasAccumulatorError> {
         let transaction =
-            self.in_flight.as_mut().ok_or(ZkGasV2AccumulatorError::NoActiveTransaction)?;
+            self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
         transaction.metadata.native_value_transfer = eligible && !transaction.has_operation_trace;
         Ok(())
     }
 
     /// Converts the last selected spawn wrapper into its authenticated confirmed route.
-    pub(crate) fn confirm_spawn(&mut self) -> Result<(), ZkGasV2AccumulatorError> {
+    pub(crate) fn confirm_spawn(&mut self) -> Result<(), ZkGasAccumulatorError> {
         let Some(opcode) = self.pending_spawn.take() else { return Ok(()) };
         let result = self.observe_operation(OperationPricingInput {
             route: OperationRoute::ConfirmedSpawn(opcode),
@@ -474,9 +474,11 @@ impl ZkGasV2Accumulator {
     }
 
     /// Atomically merges the in-flight selector scope into the block snapshot.
-    pub fn commit_transaction(&mut self) -> Result<(), ZkGasV2AccumulatorError> {
-        let transaction =
-            self.in_flight.take().ok_or(ZkGasV2AccumulatorError::NoActiveTransaction)?;
+    pub fn commit_transaction(&mut self) -> Result<(), ZkGasAccumulatorError> {
+        let Some(transaction) = self.in_flight.take() else {
+            self.committed_diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
+            return Ok(());
+        };
         self.pending_spawn = None;
         let diagnostic = transaction.diagnostic;
         let non_anchor = u64::from(!transaction.metadata.is_anchor);
@@ -488,11 +490,11 @@ impl ZkGasV2Accumulator {
             let next_non_anchor = self
                 .committed_non_anchor_transactions
                 .checked_add(non_anchor)
-                .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?;
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
             let next_native_transfers = self
                 .committed_native_value_transfers
                 .checked_add(native_transfer)
-                .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?;
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
             let mut routes = Vec::with_capacity(transaction.operation_routes.len());
             for (key, row) in &transaction.operation_routes {
                 routes.push((*key, merged_route(self.committed_operation_routes.get(key), *row)?));
@@ -521,8 +523,8 @@ impl ZkGasV2Accumulator {
     }
 
     /// Returns an owned committed block snapshot; in-flight data is excluded.
-    pub fn committed_snapshot(&self) -> ZkGasV2BlockSnapshot {
-        ZkGasV2BlockSnapshot {
+    pub fn committed_snapshot(&self) -> ZkGasBlockSnapshot {
+        ZkGasBlockSnapshot {
             started_non_anchor_transactions: self.committed_non_anchor_transactions,
             native_value_transfers: self.committed_native_value_transfers,
             operation_routes: self.committed_operation_routes.values().copied().collect(),
@@ -532,7 +534,7 @@ impl ZkGasV2Accumulator {
     }
 
     /// Returns the first diagnostic affecting the current block quote.
-    pub const fn diagnostic(&self) -> Option<ZkGasV2AccumulatorError> {
+    pub const fn diagnostic(&self) -> Option<ZkGasAccumulatorError> {
         match &self.in_flight {
             Some(transaction) if transaction.diagnostic.is_some() => transaction.diagnostic,
             _ => self.committed_diagnostic,
@@ -540,7 +542,7 @@ impl ZkGasV2Accumulator {
     }
 
     /// Retains the first typed observer diagnostic without changing EVM execution.
-    pub(crate) fn retain_diagnostic(&mut self, error: Option<ZkGasV2AccumulatorError>) {
+    pub(crate) fn retain_diagnostic(&mut self, error: Option<ZkGasAccumulatorError>) {
         if let Some(error) = error &&
             let Some(transaction) = &mut self.in_flight
         {
@@ -552,11 +554,11 @@ impl ZkGasV2Accumulator {
     fn observe_operation(
         &mut self,
         input: OperationPricingInput,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+    ) -> Result<(), ZkGasAccumulatorError> {
         let transaction =
-            self.in_flight.as_mut().ok_or(ZkGasV2AccumulatorError::NoActiveTransaction)?;
+            self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
         transaction.has_operation_trace = true;
-        let priced = ZkGasV2Model.price_operation(&input)?;
+        let priced = ZkGasModel.price_operation(&input)?;
         let row = OperationRoutePricingInput {
             route: input.route,
             accepted_absolute_scaled: priced.accepted_absolute_scaled,
@@ -572,29 +574,29 @@ impl ZkGasV2Accumulator {
 fn merged_route(
     existing: Option<&OperationRoutePricingInput>,
     row: OperationRoutePricingInput,
-) -> Result<OperationRoutePricingInput, ZkGasV2AccumulatorError> {
+) -> Result<OperationRoutePricingInput, ZkGasAccumulatorError> {
     let Some(existing) = existing else { return Ok(row) };
     if existing.route != row.route {
-        return Err(ZkGasV2AccumulatorError::Pricing(ZkGasV2Error::InvalidInput("operation_route")));
+        return Err(ZkGasAccumulatorError::Pricing(ZkGasError::InvalidInput("operation_route")));
     }
     Ok(OperationRoutePricingInput {
         route: row.route,
         accepted_absolute_scaled: existing
             .accepted_absolute_scaled
             .checked_add(row.accepted_absolute_scaled)
-            .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?,
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
         incremental_scaled: existing
             .incremental_scaled
             .checked_add(row.incremental_scaled)
-            .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?,
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
         structural_scaled: existing
             .structural_scaled
             .checked_add(row.structural_scaled)
-            .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?,
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
         feature_error_scaled: existing
             .feature_error_scaled
             .checked_add(row.feature_error_scaled)
-            .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?,
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
     })
 }
 
@@ -603,7 +605,7 @@ fn merge_route(
     routes: &mut BTreeMap<RouteKey, OperationRoutePricingInput>,
     key: RouteKey,
     row: OperationRoutePricingInput,
-) -> Result<(), ZkGasV2AccumulatorError> {
+) -> Result<(), ZkGasAccumulatorError> {
     let accumulated = routes.entry(key).or_insert(OperationRoutePricingInput {
         route: row.route,
         accepted_absolute_scaled: 0,
@@ -612,23 +614,23 @@ fn merge_route(
         feature_error_scaled: 0,
     });
     if accumulated.route != row.route {
-        return Err(ZkGasV2AccumulatorError::Pricing(ZkGasV2Error::InvalidInput("operation_route")));
+        return Err(ZkGasAccumulatorError::Pricing(ZkGasError::InvalidInput("operation_route")));
     }
     accumulated.accepted_absolute_scaled = accumulated
         .accepted_absolute_scaled
         .checked_add(row.accepted_absolute_scaled)
-        .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?;
+        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
     accumulated.incremental_scaled = accumulated
         .incremental_scaled
         .checked_add(row.incremental_scaled)
-        .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?;
+        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
     accumulated.structural_scaled = accumulated
         .structural_scaled
         .checked_add(row.structural_scaled)
-        .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?;
+        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
     accumulated.feature_error_scaled = accumulated
         .feature_error_scaled
         .checked_add(row.feature_error_scaled)
-        .ok_or(ZkGasV2AccumulatorError::ArithmeticOverflow)?;
+        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
     Ok(())
 }

@@ -14,19 +14,26 @@ use reth_revm::{
 
 use crate::alloy::TaikoEvmContext;
 
+#[cfg(test)]
+std::thread_local! {
+    static BN254_WORK_UNIT_OBSERVATIONS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
+
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
-    v2::{
+    pricing::{
         AccessClass, CalldataAccessClass, MemorySelectors, OperationModelInput,
         OperationPricingInput, OperationRoute, StateAccess, StorageBranch, ValueClass,
-        ZkGasV2Accumulator, ZkGasV2AccumulatorError, ZkGasV2Model,
+        ZkGasAccumulator, ZkGasAccumulatorError, ZkGasModel,
     },
 };
 
 /// Pre-step execution facts shared by production and inspected execution.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PendingV2Step {
+pub(crate) struct PendingPricingStep {
     /// Opcode selected before execution.
     opcode: u8,
     /// Remaining EVM gas before the step.
@@ -43,30 +50,30 @@ pub(crate) struct PendingV2Step {
 
 /// Type-erased hooks let the generic EVM wrapper collect concrete Taiko context facts without
 /// weakening non-Taiko test contexts or duplicating the interpreter loop.
-pub(crate) struct V2ExecutionHooks<CTX> {
+pub(crate) struct PricingExecutionHooks<CTX> {
     /// Captures pre-step typed facts for a concrete context.
-    capture: fn(&Interpreter<EthInterpreter>, &CTX) -> PendingV2Step,
+    capture: fn(&Interpreter<EthInterpreter>, &CTX) -> PendingPricingStep,
     /// Finalizes post-step selectors for a concrete context.
     finish: fn(
-        PendingV2Step,
+        PendingPricingStep,
         &mut Interpreter<EthInterpreter>,
         &CTX,
-        &mut ZkGasV2Accumulator,
-    ) -> Result<(), ZkGasV2AccumulatorError>,
+        &mut ZkGasAccumulator,
+    ) -> Result<(), ZkGasAccumulatorError>,
 }
 
-impl<CTX> Clone for V2ExecutionHooks<CTX> {
+impl<CTX> Clone for PricingExecutionHooks<CTX> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<CTX> Copy for V2ExecutionHooks<CTX> {}
+impl<CTX> Copy for PricingExecutionHooks<CTX> {}
 
-impl<DB: Database> V2ExecutionHooks<TaikoEvmContext<DB>> {
+impl<DB: Database> PricingExecutionHooks<TaikoEvmContext<DB>> {
     /// Hooks for the concrete production Taiko context.
     pub(crate) const TAIKO: Self =
-        Self { capture: PendingV2Step::capture, finish: PendingV2Step::finish };
+        Self { capture: PendingPricingStep::capture, finish: PendingPricingStep::finish };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -124,7 +131,7 @@ struct PendingStorageInput {
     new: Option<U256>,
 }
 
-impl PendingV2Step {
+impl PendingPricingStep {
     /// Captures every typed feature that would be destroyed by opcode execution.
     pub(crate) fn capture<DB: Database>(
         interpreter: &Interpreter<EthInterpreter>,
@@ -160,7 +167,8 @@ impl PendingV2Step {
                 .map(PendingModelInput::StorageStore),
             0x5e => stack_u64(2).map(|bytes| PendingModelInput::MemoryCopy(bytes.div_ceil(32))),
             0x37 | 0x3e => stack_u64(2).map(PendingModelInput::Copy),
-            0xa0..=0xa4 => stack_u64(1).map(|data_bytes| PendingModelInput::Log {
+            0xa0 => Ok(PendingModelInput::Default),
+            0xa1..=0xa4 => stack_u64(1).map(|data_bytes| PendingModelInput::Log {
                 topic_count: u64::from(opcode - 0xa0),
                 data_bytes,
             }),
@@ -186,8 +194,8 @@ impl PendingV2Step {
         self,
         interpreter: &mut Interpreter<EthInterpreter>,
         context: &TaikoEvmContext<DB>,
-        accumulator: &mut ZkGasV2Accumulator,
-    ) -> Result<(), ZkGasV2AccumulatorError> {
+        accumulator: &mut ZkGasAccumulator,
+    ) -> Result<(), ZkGasAccumulatorError> {
         let raw_gas = self.gas_remaining.saturating_sub(interpreter.gas.remaining());
         let selected_spawn = is_spawn_opcode(self.opcode) &&
             matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
@@ -220,12 +228,15 @@ impl PendingV2Step {
         let model_input = self
             .model_input
             .and_then(|pending| self.finish_model_input(pending, raw_gas, interpreter, context));
-        let return_halted = self.opcode == 0xf3 &&
-            interpreter.bytecode.instruction_result() != Some(InstructionResult::Return);
-        let storage_halted = matches!(self.opcode, 0x54 | 0x55) &&
-            interpreter.bytecode.instruction_result().is_some();
+        let instruction_result = interpreter.bytecode.instruction_result();
+        let return_halted =
+            self.opcode == 0xf3 && instruction_result != Some(InstructionResult::Return);
+        let storage_halted = matches!(self.opcode, 0x54 | 0x55) && instruction_result.is_some();
+        let unexpected_halt = instruction_result.is_some_and(|result| {
+            !result.is_ok() && !(self.opcode == 0xfd && result == InstructionResult::Revert)
+        });
         let (model_input, feature_error) = match model_input {
-            Ok(input) if !return_halted && !storage_halted => (input, false),
+            Ok(input) if !return_halted && !storage_halted && !unexpected_halt => (input, false),
             Ok(_) | Err(()) => (OperationModelInput::None, true),
         };
         accumulator.observe_step(OperationPricingInput {
@@ -260,7 +271,7 @@ impl PendingV2Step {
         };
         Ok(match pending {
             PendingModelInput::Default => {
-                ZkGasV2Model.default_opcode_model_input(self.opcode, raw_gas).map_err(|_| ())?
+                ZkGasModel.default_opcode_model_input(self.opcode, raw_gas).map_err(|_| ())?
             }
             PendingModelInput::ContextFixed => OperationModelInput::ContextFixed,
             PendingModelInput::ContextValue(class) => OperationModelInput::ContextValue { class },
@@ -381,7 +392,10 @@ fn finish_storage_store<DB: Database>(
     };
     let new = storage.new.ok_or(())?;
     if current != original {
-        if new == current || storage.access == AccessClass::Cold {
+        if new == current {
+            return Ok(StorageBranch::Noop);
+        }
+        if storage.access == AccessClass::Cold {
             return Err(());
         }
         return Ok(if new == original {
@@ -413,6 +427,8 @@ const BN254_GROUP_ORDER: U256 = U256::from_be_bytes(alloy_primitives::hex!(
 
 /// Returns the authenticated BN254 G1 multiplication scalar work selector.
 pub(crate) fn bn254_work_units(input: &[u8]) -> u64 {
+    #[cfg(test)]
+    BN254_WORK_UNIT_OBSERVATIONS.set(BN254_WORK_UNIT_OBSERVATIONS.get() + 1);
     let mut padded = [0_u8; 96];
     let copied = input.len().min(padded.len());
     padded[..copied].copy_from_slice(&input[..copied]);
@@ -422,6 +438,18 @@ pub(crate) fn bn254_work_units(input: &[u8]) -> u64 {
     }
     scalar.bit_len() as u64 +
         scalar.to_be_bytes::<32>().iter().map(|byte| u64::from(byte.count_ones())).sum::<u64>()
+}
+
+#[cfg(test)]
+/// Resets the thread-local BN254 selector-observation counter used by overhead tests.
+pub(crate) fn reset_bn254_work_unit_observations() {
+    BN254_WORK_UNIT_OBSERVATIONS.set(0);
+}
+
+#[cfg(test)]
+/// Returns and clears the thread-local BN254 selector-observation counter.
+pub(crate) fn take_bn254_work_unit_observations() -> usize {
+    BN254_WORK_UNIT_OBSERVATIONS.replace(0)
 }
 
 /// Runs the interpreter loop while charging zk gas directly in the production path.
@@ -442,12 +470,12 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
     instruction_table: &InstructionTable<EthInterpreter, CTX>,
     gas_table: &GasTable,
     mut meter: Option<&mut ZkGasMeter<'static>>,
-    mut v2: Option<&mut ZkGasV2Accumulator>,
-    v2_hooks: Option<V2ExecutionHooks<CTX>>,
+    mut pricing: Option<&mut ZkGasAccumulator>,
+    pricing_hooks: Option<PricingExecutionHooks<CTX>>,
 ) -> InterpreterAction {
     loop {
-        let v2_step = if v2.is_some() {
-            v2_hooks.map(|hooks| (hooks.capture)(interpreter, context))
+        let pricing_step = if pricing.is_some() {
+            pricing_hooks.map(|hooks| (hooks.capture)(interpreter, context))
         } else {
             None
         };
@@ -479,7 +507,8 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
             }
         }
 
-        if let (Some(step), Some(accumulator), Some(hooks)) = (v2_step, v2.as_deref_mut(), v2_hooks) &&
+        if let (Some(step), Some(accumulator), Some(hooks)) =
+            (pricing_step, pricing.as_deref_mut(), pricing_hooks) &&
             let Err(error) = (hooks.finish)(step, interpreter, context, accumulator)
         {
             accumulator.retain_diagnostic(Some(error));

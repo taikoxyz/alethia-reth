@@ -28,29 +28,29 @@ use crate::{alloy::TaikoZkGasEvm, factory::TaikoEvmFactory, spec::TaikoSpecId};
 use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome},
-    schedule::{FAILSAFE_MULTIPLIER, ZkGasSchedule, schedule_for},
-    unzen::{TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE},
-    v2::{
+    pricing::{
         AccessClass, BlockPricingInput, CalldataAccessClass, FIXED_POINT_SCALE, MemorySelectors,
         MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,
         OperationRoutePricingInput, ProposalPricingInput, RUNTIME_SPEC_SHA256, ResourceSelectors,
-        StorageBranch, ZkGasV2AccumulatorError, ZkGasV2CompletionError, ZkGasV2Error,
-        ZkGasV2Incompleteness, ZkGasV2KnownBlockBreakdown, ZkGasV2Mode, ZkGasV2Model,
-        ZkGasV2ShadowDiagnostic, ZkGasV2ShadowReport, ZkGasV2ShadowStatus,
+        StorageBranch, ZkGasAccumulatorError, ZkGasCompletionError, ZkGasError,
+        ZkGasIncompleteness, ZkGasKnownBlockBreakdown, ZkGasMode, ZkGasModel,
+        ZkGasShadowDiagnostic, ZkGasShadowReport, ZkGasShadowStatus,
     },
+    schedule::{FAILSAFE_MULTIPLIER, ZkGasSchedule, schedule_for},
+    unzen::{TX_INTRINSIC_ZK_GAS, UNZEN_ZK_GAS_SCHEDULE},
 };
 
 #[test]
-fn zk_gas_v2_mode_defaults_to_disabled_and_has_no_admission_variant() {
-    assert_eq!(ZkGasV2Mode::default(), ZkGasV2Mode::Disabled);
-    assert_eq!(ZkGasV2Mode::ALL, [ZkGasV2Mode::Disabled, ZkGasV2Mode::Shadow]);
+fn zk_gas_mode_defaults_to_disabled_and_has_no_admission_variant() {
+    assert_eq!(ZkGasMode::default(), ZkGasMode::Disabled);
+    assert_eq!(ZkGasMode::ALL, [ZkGasMode::Disabled, ZkGasMode::Shadow]);
 }
 
 #[test]
-fn zk_gas_v2_shadow_report_marks_exact_resources_and_mpt_as_missing() {
-    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+fn zk_gas_shadow_report_marks_exact_resources_and_mpt_as_missing() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
         .observe_step(OperationPricingInput {
@@ -65,19 +65,19 @@ fn zk_gas_v2_shadow_report_marks_exact_resources_and_mpt_as_missing() {
 
     let report = accumulator.committed_snapshot().shadow_report();
     assert_eq!(report.model_id(), RUNTIME_SPEC_SHA256);
-    let ZkGasV2ShadowStatus::Incomplete { known, missing } = report.status() else {
+    let ZkGasShadowStatus::Incomplete { known, missing } = report.status() else {
         panic!("a snapshot without exact block resources and MPT must remain incomplete")
     };
-    assert_eq!(missing, ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable);
+    assert_eq!(missing, ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable);
     assert!(known.operations_scaled() > 0);
     assert!(known.evm_local_known_subtotal_pgu() > 0);
 }
 
 #[test]
-fn zk_gas_v2_complete_shadow_report_adds_exact_mpt_once() {
-    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
         .observe_step(OperationPricingInput {
@@ -100,10 +100,10 @@ fn zk_gas_v2_complete_shadow_report_adds_exact_mpt_once() {
         dropped_trie_nodes: 4,
     };
 
-    let completed = ZkGasV2Model
+    let completed = ZkGasModel
         .complete_block_shadow_report(&snapshot.shadow_report(), snapshot.resources, mpt)
         .expect("typed incomplete report plus exact MPT completes");
-    let direct = ZkGasV2Model
+    let direct = ZkGasModel
         .price_block(&BlockPricingInput {
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -117,12 +117,12 @@ fn zk_gas_v2_complete_shadow_report_adds_exact_mpt_once() {
 }
 
 #[test]
-fn zk_gas_v2_completion_replaces_evm_local_resources_with_the_authoritative_snapshot() {
+fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative_snapshot() {
     use alloy_primitives::Address;
 
-    use super::v2::{StateAccess, TransactionMetadata, ZkGasV2Accumulator};
+    use super::pricing::{StateAccess, TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
         .observe_step(OperationPricingInput {
@@ -147,17 +147,17 @@ fn zk_gas_v2_completion_replaces_evm_local_resources_with_the_authoritative_snap
         unique_code_bytes: 20_268,
     };
 
-    let completed = ZkGasV2Model
+    let completed = ZkGasModel
         .complete_block_shadow_report(&original, authoritative_resources, MptSelectors::default())
         .expect("authoritative block resource snapshot completes");
-    let ZkGasV2ShadowStatus::Incomplete { known: before, .. } = original.status() else {
+    let ZkGasShadowStatus::Incomplete { known: before, .. } = original.status() else {
         panic!("fixture report must be incomplete")
     };
     assert_eq!(completed.fixed_scaled, before.fixed_scaled());
     assert_eq!(completed.operations_scaled, before.operations_scaled());
     assert_eq!(completed.feature_error_scaled, before.feature_error_scaled());
     assert!(completed.resources_scaled > before.evm_local_resources_scaled());
-    let direct = ZkGasV2Model
+    let direct = ZkGasModel
         .price_block(&BlockPricingInput {
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -170,27 +170,27 @@ fn zk_gas_v2_completion_replaces_evm_local_resources_with_the_authoritative_snap
 }
 
 #[test]
-fn zk_gas_v2_resource_reconciliation_fails_closed_on_diagnostic() {
-    let diagnostic = ZkGasV2ShadowReport::collector_unavailable();
+fn zk_gas_pricing_resource_reconciliation_fails_closed_on_diagnostic() {
+    let diagnostic = ZkGasShadowReport::collector_unavailable();
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &diagnostic,
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::ShadowDiagnostic(
-            ZkGasV2ShadowDiagnostic::CollectorUnavailable
+        Err(ZkGasCompletionError::ZkGasShadowDiagnostic(
+            ZkGasShadowDiagnostic::CollectorUnavailable
         ))
     );
 }
 
 #[test]
-fn zk_gas_v2_completion_rejects_exact_resources_below_any_evm_local_dimension() {
+fn zk_gas_pricing_completion_rejects_exact_resources_below_any_evm_local_dimension() {
     use alloy_primitives::{Address, B256, U256};
 
-    use super::v2::{StateAccess, TransactionMetadata, ZkGasV2Accumulator};
+    use super::pricing::{StateAccess, TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
         .observe_state_access(StateAccess::StorageWrite {
@@ -223,52 +223,51 @@ fn zk_gas_v2_completion_rejects_exact_resources_below_any_evm_local_dimension() 
     ];
     for (field, exact) in cases {
         assert_eq!(
-            ZkGasV2Model.complete_block_shadow_report(&report, exact, MptSelectors::default(),),
-            Err(ZkGasV2CompletionError::ExactResourcesBelowEvmLocal(field)),
+            ZkGasModel.complete_block_shadow_report(&report, exact, MptSelectors::default(),),
+            Err(ZkGasCompletionError::ExactResourcesBelowEvmLocal(field)),
             "{field} must not shrink below the sealed EVM-local subset",
         );
     }
 }
 
 #[test]
-fn zk_gas_v2_complete_shadow_report_rejects_diagnostics_and_wrong_identity() {
-    let diagnostic = ZkGasV2ShadowReport::collector_unavailable();
+fn zk_gas_pricing_complete_shadow_report_rejects_diagnostics_and_wrong_identity() {
+    let diagnostic = ZkGasShadowReport::collector_unavailable();
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &diagnostic,
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::ShadowDiagnostic(
-            ZkGasV2ShadowDiagnostic::CollectorUnavailable
+        Err(ZkGasCompletionError::ZkGasShadowDiagnostic(
+            ZkGasShadowDiagnostic::CollectorUnavailable
         ))
     );
 
-    let wrong_identity =
-        ZkGasV2ShadowReport::from_parts_for_test("wrong-model", diagnostic.status());
+    let wrong_identity = ZkGasShadowReport::from_parts_for_test("wrong-model", diagnostic.status());
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &wrong_identity,
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::ModelIdentity)
+        Err(ZkGasCompletionError::ModelIdentity)
     );
 }
 
 #[test]
-fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
+fn zk_gas_pricing_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
     let report = |known| {
-        ZkGasV2ShadowReport::from_parts_for_test(
+        ZkGasShadowReport::from_parts_for_test(
             RUNTIME_SPEC_SHA256,
-            ZkGasV2ShadowStatus::Incomplete {
+            ZkGasShadowStatus::Incomplete {
                 known,
-                missing: ZkGasV2Incompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+                missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
             },
         )
     };
     let known = |fixed, operations, feature_error, resources, subtotal, pgu| {
-        ZkGasV2KnownBlockBreakdown::from_parts_for_test(
+        ZkGasKnownBlockBreakdown::from_parts_for_test(
             fixed,
             operations,
             feature_error,
@@ -287,7 +286,7 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         3,
     );
 
-    let inconsistent_raw_resources = ZkGasV2KnownBlockBreakdown::from_parts_for_test(
+    let inconsistent_raw_resources = ZkGasKnownBlockBreakdown::from_parts_for_test(
         valid.fixed_scaled(),
         valid.operations_scaled(),
         valid.feature_error_scaled(),
@@ -297,12 +296,12 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         valid.evm_local_known_subtotal_pgu(),
     );
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(inconsistent_raw_resources),
             ResourceSelectors { unique_account_count: 1, ..Default::default() },
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("evm_local_resources_scaled"))
+        Err(ZkGasCompletionError::InconsistentKnownBreakdown("evm_local_resources_scaled"))
     );
 
     let tampered_total = known(
@@ -314,12 +313,12 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         valid.evm_local_known_subtotal_pgu(),
     );
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(tampered_total),
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("evm_local_known_subtotal_scaled"))
+        Err(ZkGasCompletionError::InconsistentKnownBreakdown("evm_local_known_subtotal_scaled"))
     );
 
     let tampered_ceiling = known(
@@ -331,12 +330,12 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         valid.evm_local_known_subtotal_pgu() + 1,
     );
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(tampered_ceiling),
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("evm_local_known_subtotal_pgu"))
+        Err(ZkGasCompletionError::InconsistentKnownBreakdown("evm_local_known_subtotal_pgu"))
     );
 
     let invalid_feature_attribution = known(
@@ -348,43 +347,43 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
         valid.evm_local_known_subtotal_pgu(),
     );
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(invalid_feature_attribution),
             ResourceSelectors::default(),
             MptSelectors::default()
         ),
-        Err(ZkGasV2CompletionError::InconsistentKnownBreakdown("feature_error_scaled"))
+        Err(ZkGasCompletionError::InconsistentKnownBreakdown("feature_error_scaled"))
     );
 
     let overflow = known(i128::MAX, 1, 0, 0, 0, 0);
     assert_eq!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(overflow),
             ResourceSelectors::default(),
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::Pricing(ZkGasV2Error::ArithmeticOverflow))
+        Err(ZkGasCompletionError::Pricing(ZkGasError::ArithmeticOverflow))
     );
 
     assert!(matches!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(valid),
             ResourceSelectors { unique_account_count: u64::MAX, ..Default::default() },
             MptSelectors::default(),
         ),
-        Err(ZkGasV2CompletionError::Pricing(ZkGasV2Error::SelectorOutOfRange {
+        Err(ZkGasCompletionError::Pricing(ZkGasError::SelectorOutOfRange {
             selector: "unique_account_count",
             value: u64::MAX
         }))
     ));
 
     assert!(matches!(
-        ZkGasV2Model.complete_block_shadow_report(
+        ZkGasModel.complete_block_shadow_report(
             &report(valid),
             ResourceSelectors::default(),
             MptSelectors { path_node_visits: u64::MAX, ..Default::default() }
         ),
-        Err(ZkGasV2CompletionError::Pricing(ZkGasV2Error::SelectorOutOfRange {
+        Err(ZkGasCompletionError::Pricing(ZkGasError::SelectorOutOfRange {
             selector: "path_node_visits",
             value: u64::MAX
         }))
@@ -392,10 +391,10 @@ fn zk_gas_v2_complete_shadow_report_rejects_tamper_overflow_and_mpt_bounds() {
 }
 
 #[test]
-fn zk_gas_v2_shadow_report_preserves_typed_collector_diagnostic() {
-    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+fn zk_gas_shadow_report_preserves_typed_collector_diagnostic() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
         .observe_step(OperationPricingInput {
@@ -420,16 +419,16 @@ fn zk_gas_v2_shadow_report_preserves_typed_collector_diagnostic() {
     let report = accumulator.committed_snapshot().shadow_report();
     assert_eq!(
         report.status(),
-        ZkGasV2ShadowStatus::Diagnostic(ZkGasV2ShadowDiagnostic::Collector(error))
+        ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Collector(error))
     );
     assert_eq!(report.status().label(), "collector_unknown_route");
 }
 
 #[test]
-fn zk_gas_v2_accumulator_commits_only_finished_transactions() {
+fn zk_gas_pricing_accumulator_commits_only_finished_transactions() {
     use alloy_primitives::{Address, B256, U256};
 
-    use super::v2::{StateAccess, TransactionMetadata, ZkGasV2Accumulator};
+    use super::pricing::{StateAccess, TransactionMetadata, ZkGasAccumulator};
 
     let operation = OperationPricingInput {
         route: OperationRoute::Opcode(0x01),
@@ -438,7 +437,7 @@ fn zk_gas_v2_accumulator_commits_only_finished_transactions() {
         model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
         feature_error: false,
     };
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
 
     accumulator
         .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: true })
@@ -485,10 +484,10 @@ fn zk_gas_v2_accumulator_commits_only_finished_transactions() {
 }
 
 #[test]
-fn zk_gas_v2_accumulator_preserves_feature_error_attribution() {
-    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+fn zk_gas_pricing_accumulator_preserves_feature_error_attribution() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
         .observe_step(OperationPricingInput {
@@ -505,19 +504,19 @@ fn zk_gas_v2_accumulator_preserves_feature_error_attribution() {
     assert_eq!(snapshot.operation_routes.len(), 1);
     assert_eq!(snapshot.operation_routes[0].accepted_absolute_scaled, 0);
     assert!(snapshot.operation_routes[0].feature_error_scaled > 0);
-    let ZkGasV2ShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
+    let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
         panic!("runtime snapshot must produce only an incomplete shadow subtotal")
     };
     assert_eq!(known.feature_error_scaled(), snapshot.operation_routes[0].feature_error_scaled);
 }
 
 #[test]
-fn zk_gas_v2_resource_overflow_is_diagnostic_and_keeps_committed_prefix_atomic() {
+fn zk_gas_pricing_resource_overflow_is_diagnostic_and_keeps_committed_prefix_atomic() {
     use alloy_primitives::B256;
 
-    use super::v2::{StateAccess, TransactionMetadata, ZkGasV2Accumulator};
+    use super::pricing::{StateAccess, TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("first transaction");
     accumulator
         .observe_state_access(StateAccess::Code {
@@ -534,54 +533,54 @@ fn zk_gas_v2_resource_overflow_is_diagnostic_and_keeps_committed_prefix_atomic()
     accumulator.commit_transaction().expect("overflow is retained as a non-fatal diagnostic");
 
     let snapshot = accumulator.committed_snapshot();
-    assert_eq!(snapshot.diagnostic, Some(ZkGasV2AccumulatorError::CountOverflow));
+    assert_eq!(snapshot.diagnostic, Some(ZkGasAccumulatorError::CountOverflow));
     assert_eq!(snapshot.resources.unique_code_hash_count, 1);
     assert_eq!(snapshot.resources.unique_code_bytes, u64::MAX);
 }
 
-fn zk_gas_v2_path_snapshots(
+fn zk_gas_pricing_path_snapshots(
     bytecode: Bytecode,
     gas_limit: u64,
-) -> (super::v2::ZkGasV2BlockSnapshot, super::v2::ZkGasV2BlockSnapshot) {
+) -> (super::pricing::ZkGasBlockSnapshot, super::pricing::ZkGasBlockSnapshot) {
     let mut plain =
         TaikoEvmFactory.create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
-    plain.set_zk_gas_v2_enabled(true);
+    plain.set_zk_gas_pricing_enabled(true);
     let plain_result = plain.transact(tx_env(gas_limit));
     assert!(
         plain_result.is_ok(),
-        "plain V2 execution: {plain_result:?}; meter={:?}",
+        "plain pricing execution: {plain_result:?}; meter={:?}",
         plain.meter().map(ZkGasMeter::tx_zk_gas_used)
     );
-    plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
-    let plain = plain.zk_gas_v2_snapshot().expect("plain V2 snapshot");
+    plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
+    let plain = plain.zk_gas_pricing_snapshot().expect("plain pricing snapshot");
 
     let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(bytecode),
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector,
     );
-    inspected.set_zk_gas_v2_enabled(true);
+    inspected.set_zk_gas_pricing_enabled(true);
     let inspected_result = inspected.transact(tx_env(gas_limit));
     assert!(
         inspected_result.is_ok(),
-        "inspected V2 execution: {inspected_result:?}; meter={:?}",
+        "inspected pricing execution: {inspected_result:?}; meter={:?}",
         inspected.meter().map(ZkGasMeter::tx_zk_gas_used)
     );
-    inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
-    let inspected = inspected.zk_gas_v2_snapshot().expect("inspected V2 snapshot");
+    inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
+    let inspected = inspected.zk_gas_pricing_snapshot().expect("inspected pricing snapshot");
     (plain, inspected)
 }
 
 #[test]
-fn zk_gas_v2_collects_without_an_unzen_schedule_on_both_execution_paths() {
+fn zk_gas_pricing_collects_without_an_unzen_schedule_on_both_execution_paths() {
     let bytecode = simple_arithmetic_bytecode();
     let mut plain = TaikoEvmFactory
         .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::SHASTA));
     assert!(plain.meter().is_none(), "Shasta must not install the legacy meter");
-    plain.set_zk_gas_v2_enabled(true);
-    plain.transact(tx_env(100_000)).expect("plain V2-only execution");
-    plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
-    let plain = plain.zk_gas_v2_snapshot().expect("plain collector is active");
+    plain.set_zk_gas_pricing_enabled(true);
+    plain.transact(tx_env(100_000)).expect("plain pricing-only execution");
+    plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
+    let plain = plain.zk_gas_pricing_snapshot().expect("plain collector is active");
 
     let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(bytecode),
@@ -589,72 +588,77 @@ fn zk_gas_v2_collects_without_an_unzen_schedule_on_both_execution_paths() {
         NoOpInspector,
     );
     assert!(inspected.meter().is_none(), "Shasta must not install the legacy meter");
-    inspected.set_zk_gas_v2_enabled(true);
-    inspected.transact(tx_env(100_000)).expect("inspected V2-only execution");
-    inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
-    let inspected = inspected.zk_gas_v2_snapshot().expect("inspected collector is active");
+    inspected.set_zk_gas_pricing_enabled(true);
+    inspected.transact(tx_env(100_000)).expect("inspected pricing-only execution");
+    inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
+    let inspected = inspected.zk_gas_pricing_snapshot().expect("inspected collector is active");
 
     assert_eq!(plain, inspected);
     assert!(!plain.operation_routes.is_empty());
 }
 
 #[test]
-fn zk_gas_v2_factory_default_is_disabled_until_explicitly_enabled() {
+fn zk_gas_pricing_factory_default_is_disabled_until_explicitly_enabled() {
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
 
-    assert!(evm.zk_gas_v2_snapshot().is_none());
+    assert!(evm.zk_gas_pricing_snapshot().is_none());
     evm.transact(tx_env(100_000)).expect("ordinary execution remains available");
-    assert!(evm.zk_gas_v2_snapshot().is_none(), "Task 4 must not activate collection implicitly");
+    assert!(
+        evm.zk_gas_pricing_snapshot().is_none(),
+        "Task 4 must not activate collection implicitly"
+    );
 
-    evm.set_zk_gas_v2_enabled(true);
-    evm.transact(tx_env(100_000)).expect("explicit V2-only execution");
-    evm.commit_transaction_zk_gas_v2().expect("explicit V2 commit");
+    evm.set_zk_gas_pricing_enabled(true);
+    evm.transact(tx_env(100_000)).expect("explicit pricing-only execution");
+    evm.commit_transaction_zk_gas_pricing().expect("explicit pricing commit");
     assert_eq!(
-        evm.zk_gas_v2_snapshot().expect("explicit collector").started_non_anchor_transactions,
+        evm.zk_gas_pricing_snapshot().expect("explicit collector").started_non_anchor_transactions,
         1
     );
 }
 
 #[test]
-fn zk_gas_v2_repeated_enable_and_execution_mode_switch_preserve_committed_prefix() {
+fn zk_gas_pricing_repeated_enable_and_execution_mode_switch_preserve_committed_prefix() {
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
-    evm.set_zk_gas_v2_enabled(true);
+    evm.set_zk_gas_pricing_enabled(true);
     evm.transact(tx_env(100_000)).expect("first plain transaction");
-    evm.commit_transaction_zk_gas_v2().expect("first commit");
+    evm.commit_transaction_zk_gas_pricing().expect("first commit");
 
-    evm.set_zk_gas_v2_enabled(true);
+    evm.set_zk_gas_pricing_enabled(true);
     assert_eq!(
-        evm.zk_gas_v2_snapshot().expect("idempotent enable").started_non_anchor_transactions,
+        evm.zk_gas_pricing_snapshot().expect("idempotent enable").started_non_anchor_transactions,
         1
     );
 
     evm.set_inspector_enabled(true);
     assert_eq!(
-        evm.zk_gas_v2_snapshot()
+        evm.zk_gas_pricing_snapshot()
             .expect("collector moved to inspector")
             .started_non_anchor_transactions,
         1
     );
     evm.transact(tx_env(100_000)).expect("inspected transaction");
-    evm.commit_transaction_zk_gas_v2().expect("second commit");
+    evm.commit_transaction_zk_gas_pricing().expect("second commit");
     assert_eq!(
-        evm.zk_gas_v2_snapshot().expect("inspected prefix").started_non_anchor_transactions,
+        evm.zk_gas_pricing_snapshot().expect("inspected prefix").started_non_anchor_transactions,
         2
     );
 
     evm.set_inspector_enabled(false);
     evm.transact(tx_env(100_000)).expect("plain transaction after switch back");
-    evm.commit_transaction_zk_gas_v2().expect("third commit");
+    evm.commit_transaction_zk_gas_pricing().expect("third commit");
     assert_eq!(
-        evm.zk_gas_v2_snapshot().expect("plain prefix restored").started_non_anchor_transactions,
+        evm.zk_gas_pricing_snapshot()
+            .expect("plain prefix restored")
+            .started_non_anchor_transactions,
         3
     );
 }
 
 #[test]
-fn zk_gas_v2_native_transfer_matches_calibrated_eoa_only_selector() {
+fn zk_gas_pricing_native_transfer_matches_calibrated_eoa_only_selector() {
     let mut eoa_db = InMemoryDB::default();
     eoa_db.insert_account_info(
         BENCH_CALLER,
@@ -665,32 +669,32 @@ fn zk_gas_v2_native_transfer_matches_calibrated_eoa_only_selector() {
         AccountInfo { balance: BENCH_TARGET_BALANCE, ..Default::default() },
     );
     let mut eoa = TaikoEvmFactory.create_evm(eoa_db, evm_env(TaikoSpecId::SHASTA));
-    eoa.set_zk_gas_v2_enabled(true);
+    eoa.set_zk_gas_pricing_enabled(true);
     let mut value_call = tx_env(100_000);
     value_call.value = U256::from(1);
     assert!(eoa.transact(value_call.clone()).expect("EOA transfer executes").result.is_success());
-    eoa.commit_transaction_zk_gas_v2().expect("EOA transfer commits");
-    assert_eq!(eoa.zk_gas_v2_snapshot().expect("EOA snapshot").native_value_transfers, 1);
+    eoa.commit_transaction_zk_gas_pricing().expect("EOA transfer commits");
+    assert_eq!(eoa.zk_gas_pricing_snapshot().expect("EOA snapshot").native_value_transfers, 1);
 
     let mut contract = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
-    contract.set_zk_gas_v2_enabled(true);
+    contract.set_zk_gas_pricing_enabled(true);
     assert!(
         contract.transact(value_call).expect("contract value call executes").result.is_success()
     );
-    contract.commit_transaction_zk_gas_v2().expect("contract call commits");
+    contract.commit_transaction_zk_gas_pricing().expect("contract call commits");
     assert_eq!(
-        contract.zk_gas_v2_snapshot().expect("contract snapshot").native_value_transfers,
+        contract.zk_gas_pricing_snapshot().expect("contract snapshot").native_value_transfers,
         0,
         "an operation-owning contract call is not the native EOA-transfer marker"
     );
 }
 
 #[test]
-fn zk_gas_v2_create_revert_and_halt_never_count_as_native_transfer() {
+fn zk_gas_pricing_create_revert_and_halt_never_count_as_native_transfer() {
     let mut create = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::SHASTA));
-    create.set_zk_gas_v2_enabled(true);
+    create.set_zk_gas_pricing_enabled(true);
     let create_tx = TxEnv::builder()
         .caller(BENCH_CALLER)
         .kind(TxKind::Create)
@@ -701,8 +705,11 @@ fn zk_gas_v2_create_revert_and_halt_never_count_as_native_transfer() {
         .build()
         .unwrap();
     assert!(create.transact(create_tx).expect("create executes").result.is_success());
-    create.commit_transaction_zk_gas_v2().expect("create commits");
-    assert_eq!(create.zk_gas_v2_snapshot().expect("create snapshot").native_value_transfers, 0);
+    create.commit_transaction_zk_gas_pricing().expect("create commits");
+    assert_eq!(
+        create.zk_gas_pricing_snapshot().expect("create snapshot").native_value_transfers,
+        0
+    );
 
     for (bytecode, expected, label) in [
         (
@@ -714,7 +721,7 @@ fn zk_gas_v2_create_revert_and_halt_never_count_as_native_transfer() {
     ] {
         let mut evm =
             TaikoEvmFactory.create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::SHASTA));
-        evm.set_zk_gas_v2_enabled(true);
+        evm.set_zk_gas_pricing_enabled(true);
         let mut tx = tx_env(100_000);
         tx.value = U256::from(1);
         let result = evm.transact(tx).expect("valid failed execution is included");
@@ -726,9 +733,9 @@ fn zk_gas_v2_create_revert_and_halt_never_count_as_native_transfer() {
             "{label}: {:?}",
             result.result
         );
-        evm.commit_transaction_zk_gas_v2().expect("failed execution commits workload");
+        evm.commit_transaction_zk_gas_pricing().expect("failed execution commits workload");
         assert_eq!(
-            evm.zk_gas_v2_snapshot().expect("failed snapshot").native_value_transfers,
+            evm.zk_gas_pricing_snapshot().expect("failed snapshot").native_value_transfers,
             0,
             "{label}"
         );
@@ -736,23 +743,25 @@ fn zk_gas_v2_create_revert_and_halt_never_count_as_native_transfer() {
 }
 
 #[test]
-fn zk_gas_v2_does_not_collect_pre_block_system_calls() {
+fn zk_gas_pricing_does_not_collect_pre_block_system_calls() {
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    evm.set_zk_gas_v2_enabled(true);
+    evm.set_zk_gas_pricing_enabled(true);
     evm.transact_system_call(BENCH_CALLER, BENCH_TARGET, Bytes::new())
         .expect("system call executes");
     assert_eq!(
-        evm.zk_gas_v2_snapshot().expect("explicit collector remains installed"),
-        super::v2::ZkGasV2BlockSnapshot::default(),
-        "system call must not collect into V2"
+        evm.zk_gas_pricing_snapshot().expect("explicit collector remains installed"),
+        super::pricing::ZkGasBlockSnapshot::default(),
+        "system call must not collect into pricing"
     );
 }
 
 #[test]
-fn zk_gas_v2_feature_error_halt_is_included_and_matches_both_paths() {
-    let (plain, inspected) =
-        zk_gas_v2_path_snapshots(Bytecode::new_raw(Bytes::from(vec![opcode::RETURN])), 100_000);
+fn zk_gas_pricing_feature_error_halt_is_included_and_matches_both_paths() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![opcode::RETURN])),
+        100_000,
+    );
     assert_eq!(plain, inspected);
     assert_eq!(plain.started_non_anchor_transactions, 1);
     assert!(plain.operation_routes.iter().any(|row| {
@@ -761,32 +770,106 @@ fn zk_gas_v2_feature_error_halt_is_included_and_matches_both_paths() {
 }
 
 #[test]
-fn zk_gas_v2_unknown_route_is_a_shadow_diagnostic_not_an_evm_error() {
+fn zk_gas_pricing_log0_uses_the_generated_linear_input_on_both_paths() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![opcode::PUSH0, opcode::PUSH0, opcode::LOG0])),
+        100_000,
+    );
+
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.diagnostic, None);
+    assert!(plain.operation_routes.iter().any(|row| {
+        row.route == OperationRoute::Opcode(opcode::LOG0) && row.accepted_absolute_scaled > 0
+    }));
+}
+
+#[test]
+fn zk_gas_pricing_dirty_sstore_noop_is_priced_as_a_warm_noop() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH1,
+            1,
+            opcode::PUSH0,
+            opcode::SSTORE,
+            opcode::PUSH1,
+            1,
+            opcode::PUSH0,
+            opcode::SSTORE,
+            opcode::STOP,
+        ])),
+        100_000,
+    );
+
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.diagnostic, None);
+    let sstore = plain
+        .operation_routes
+        .iter()
+        .find(|row| row.route == OperationRoute::Opcode(opcode::SSTORE))
+        .expect("SSTORE route is collected");
+    assert_eq!(sstore.feature_error_scaled, 0);
+}
+
+#[test]
+fn zk_gas_pricing_known_halted_opcode_uses_feature_error_on_both_paths() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![
+            opcode::PUSH0,
+            opcode::PUSH0,
+            opcode::PUSH0,
+            opcode::LOG1,
+            opcode::STOP,
+        ])),
+        21_500,
+    );
+
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.diagnostic, None);
+    assert!(plain.operation_routes.iter().any(|row| {
+        row.route == OperationRoute::Opcode(opcode::LOG1) && row.feature_error_scaled > 0
+    }));
+}
+
+#[test]
+fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
+    use super::pricing::ZkGasAccumulator;
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator.commit_transaction().expect("cross-executor commit must not panic");
+    assert_eq!(
+        accumulator.committed_snapshot().diagnostic,
+        Some(ZkGasAccumulatorError::NoActiveTransaction)
+    );
+}
+
+#[test]
+fn zk_gas_pricing_unknown_route_is_a_shadow_diagnostic_not_an_evm_error() {
     let mut evm = TaikoEvmFactory.create_evm(
         db_with_contract(Bytecode::new_raw(Bytes::from(vec![0x0c]))),
         evm_env(TaikoSpecId::UNZEN),
     );
-    evm.set_zk_gas_v2_enabled(true);
-    let result = evm.transact(tx_env(100_000)).expect("V2 diagnostic must not alter execution");
+    evm.set_zk_gas_pricing_enabled(true);
+    let result =
+        evm.transact(tx_env(100_000)).expect("pricing diagnostic must not alter execution");
     assert!(matches!(result.result, ExecutionResult::Halt { .. }));
-    evm.commit_transaction_zk_gas_v2().expect("diagnostic transaction still commits");
+    evm.commit_transaction_zk_gas_pricing().expect("diagnostic transaction still commits");
     assert_eq!(
-        evm.zk_gas_v2_snapshot().expect("snapshot").diagnostic,
-        Some(ZkGasV2AccumulatorError::Pricing(ZkGasV2Error::UnknownRoute(OperationRoute::Opcode(
+        evm.zk_gas_pricing_snapshot().expect("snapshot").diagnostic,
+        Some(ZkGasAccumulatorError::Pricing(ZkGasError::UnknownRoute(OperationRoute::Opcode(
             0x0c
         ),)))
     );
 }
 
 #[test]
-fn zk_gas_v2_included_halt_commits_executed_workload() {
+fn zk_gas_pricing_included_halt_commits_executed_workload() {
     let mut evm = TaikoEvmFactory
         .create_evm(db_with_contract(stack_underflow_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    evm.set_zk_gas_v2_enabled(true);
+    evm.set_zk_gas_pricing_enabled(true);
     let result = evm.transact(tx_env(100_000)).expect("valid halting transaction is included");
     assert!(matches!(result.result, ExecutionResult::Halt { .. }));
-    evm.commit_transaction_zk_gas_v2().expect("included halt commits V2");
-    let snapshot = evm.zk_gas_v2_snapshot().expect("snapshot");
+    evm.commit_transaction_zk_gas_pricing().expect("included halt commits pricing");
+    let snapshot = evm.zk_gas_pricing_snapshot().expect("snapshot");
     assert_eq!(snapshot.started_non_anchor_transactions, 1);
     assert!(
         snapshot
@@ -797,14 +880,14 @@ fn zk_gas_v2_included_halt_commits_executed_workload() {
 }
 
 #[test]
-fn zk_gas_v2_discarded_transactions_do_not_leak_into_block_snapshot() {
+fn zk_gas_pricing_discarded_transactions_do_not_leak_into_block_snapshot() {
     macro_rules! assert_reset {
         ($evm:expr) => {{
             let mut evm = $evm;
             evm.reset_transaction_zk_gas();
             assert_eq!(
-                evm.zk_gas_v2_snapshot().expect("collector remains enabled"),
-                super::v2::ZkGasV2BlockSnapshot::default()
+                evm.zk_gas_pricing_snapshot().expect("collector remains enabled"),
+                super::pricing::ZkGasBlockSnapshot::default()
             );
         }};
     }
@@ -812,7 +895,7 @@ fn zk_gas_v2_discarded_transactions_do_not_leak_into_block_snapshot() {
     // Invalid nonce is rejected before inclusion.
     let mut invalid_nonce = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    invalid_nonce.set_zk_gas_v2_enabled(true);
+    invalid_nonce.set_zk_gas_pricing_enabled(true);
     let mut tx = tx_env(100_000);
     tx.nonce = 1;
     assert!(invalid_nonce.transact(tx).is_err());
@@ -822,40 +905,40 @@ fn zk_gas_v2_discarded_transactions_do_not_leak_into_block_snapshot() {
     let mut db = db_with_contract(simple_arithmetic_bytecode());
     db.insert_account_info(BENCH_CALLER, AccountInfo::default());
     let mut insufficient = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
-    insufficient.set_zk_gas_v2_enabled(true);
+    insufficient.set_zk_gas_pricing_enabled(true);
     let mut tx = tx_env(100_000);
     tx.value = U256::from(1);
     assert!(insufficient.transact(tx).is_err());
     assert_reset!(insufficient);
 
-    // Legacy zk-gas rejection omits the transaction and resets the V2 shadow scope too.
+    // Legacy zk-gas rejection omits the transaction and resets the pricing shadow scope too.
     let mut rejected = TaikoEvmFactory.create_evm(
         db_with_contract(limit_exceeding_keccak_bytecode()),
         evm_env(TaikoSpecId::UNZEN),
     );
-    rejected.set_zk_gas_v2_enabled(true);
+    rejected.set_zk_gas_pricing_enabled(true);
     assert_eq!(rejected.transact(tx_env(5_000_000)).unwrap_err().to_string(), ZK_GAS_LIMIT_ERR);
     assert_reset!(rejected);
 
     // A successfully executed transaction rejected by a commit predicate follows the same reset.
     let mut commit_false = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    commit_false.set_zk_gas_v2_enabled(true);
+    commit_false.set_zk_gas_pricing_enabled(true);
     commit_false.transact(tx_env(100_000)).expect("execution succeeds before predicate");
     assert_reset!(commit_false);
 
     // Skipped/unattempted work has no transaction scope to leak.
     let mut skipped = TaikoEvmFactory
         .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    skipped.set_zk_gas_v2_enabled(true);
+    skipped.set_zk_gas_pricing_enabled(true);
     assert_eq!(
-        skipped.zk_gas_v2_snapshot().expect("explicit collector"),
-        super::v2::ZkGasV2BlockSnapshot::default()
+        skipped.zk_gas_pricing_snapshot().expect("explicit collector"),
+        super::pricing::ZkGasBlockSnapshot::default()
     );
 }
 
 #[test]
-fn zk_gas_v2_plain_and_inspected_paths_match_structured_opcode_selectors() {
+fn zk_gas_pricing_plain_and_inspected_paths_match_structured_opcode_selectors() {
     let bytecode = Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,
         0x02,
@@ -918,14 +1001,14 @@ fn zk_gas_v2_plain_and_inspected_paths_match_structured_opcode_selectors() {
         opcode::STOP,
     ]));
 
-    let (plain, inspected) = zk_gas_v2_path_snapshots(bytecode, 2_000_000);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(bytecode, 2_000_000);
     assert_eq!(plain, inspected);
     assert!(plain.operation_routes.len() >= 12);
     assert!(plain.resources.unique_code_hash_count > 0);
 }
 
 #[test]
-fn zk_gas_v2_successful_storage_models_match_between_paths() {
+fn zk_gas_pricing_successful_storage_models_match_between_paths() {
     let bytecode = Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,
         0x01,
@@ -936,7 +1019,7 @@ fn zk_gas_v2_successful_storage_models_match_between_paths() {
         opcode::POP,
         opcode::STOP,
     ]));
-    let (plain, inspected) = zk_gas_v2_path_snapshots(bytecode, 200_000);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(bytecode, 200_000);
     assert_eq!(plain, inspected);
     for opcode in [opcode::SSTORE, opcode::SLOAD] {
         assert!(
@@ -948,33 +1031,33 @@ fn zk_gas_v2_successful_storage_models_match_between_paths() {
 }
 
 #[test]
-fn zk_gas_v2_return_boundaries_match_between_plain_and_inspected_paths() {
+fn zk_gas_pricing_return_boundaries_match_between_plain_and_inspected_paths() {
     for returned_bytes in [0_u64, 1, 31, 32, 33, 4_096, 65_536] {
         let mut code = push_u64(returned_bytes);
         code.push(opcode::PUSH0);
         code.push(opcode::RETURN);
         let (plain, inspected) =
-            zk_gas_v2_path_snapshots(Bytecode::new_raw(Bytes::from(code)), 2_000_000);
+            zk_gas_pricing_path_snapshots(Bytecode::new_raw(Bytes::from(code)), 2_000_000);
         assert_eq!(plain, inspected, "RETURN length {returned_bytes}");
         assert!(plain.operation_routes.iter().any(|row| row.route == OperationRoute::Opcode(0xf3)));
     }
 }
 
 #[test]
-fn zk_gas_v2_return_records_one_4k_boundary_event_per_expanding_opcode() {
+fn zk_gas_pricing_return_records_one_4k_boundary_event_per_expanding_opcode() {
     let returned_bytes = 65_536_u64;
     let mut code = push_u64(returned_bytes);
     code.push(opcode::PUSH0);
     code.push(opcode::RETURN);
     let (snapshot, inspected) =
-        zk_gas_v2_path_snapshots(Bytecode::new_raw(Bytes::from(code)), 2_000_000);
+        zk_gas_pricing_path_snapshots(Bytecode::new_raw(Bytes::from(code)), 2_000_000);
     assert_eq!(snapshot, inspected);
     let actual = snapshot
         .operation_routes
         .iter()
         .find(|row| row.route == OperationRoute::Opcode(opcode::RETURN))
         .expect("RETURN route");
-    let expected = ZkGasV2Model
+    let expected = ZkGasModel
         .price_operation(&OperationPricingInput {
             route: OperationRoute::Opcode(opcode::RETURN),
             interpreter_raw_gas: Some(14_336),
@@ -997,7 +1080,7 @@ fn zk_gas_v2_return_records_one_4k_boundary_event_per_expanding_opcode() {
 }
 
 #[test]
-fn zk_gas_v2_failed_memory_expansion_uses_feature_error_without_phantom_boundaries() {
+fn zk_gas_pricing_failed_memory_expansion_uses_feature_error_without_phantom_boundaries() {
     let bytecode = Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,
         0x01,
@@ -1012,7 +1095,7 @@ fn zk_gas_v2_failed_memory_expansion_uses_feature_error_without_phantom_boundari
         0xff,
         opcode::RETURN,
     ]));
-    let (plain, inspected) = zk_gas_v2_path_snapshots(bytecode, 100_000);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(bytecode, 100_000);
     assert_eq!(plain, inspected);
     let row = plain
         .operation_routes
@@ -1026,7 +1109,7 @@ fn zk_gas_v2_failed_memory_expansion_uses_feature_error_without_phantom_boundari
 }
 
 #[test]
-fn zk_gas_v2_bn254_scalar_selector_is_reduced_before_bit_work() {
+fn zk_gas_pricing_bn254_scalar_selector_is_reduced_before_bit_work() {
     let order = U256::from_be_bytes(alloy_primitives::hex!(
         "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001"
     ));
@@ -1038,10 +1121,10 @@ fn zk_gas_v2_bn254_scalar_selector_is_reduced_before_bit_work() {
 }
 
 #[test]
-fn zk_gas_v2_precompile_address_0x100_does_not_alias_zero() {
-    use super::v2::{TransactionMetadata, ZkGasV2Accumulator};
+fn zk_gas_pricing_precompile_address_0x100_does_not_alias_zero() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 
-    let mut accumulator = ZkGasV2Accumulator::default();
+    let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
     accumulator.observe_precompile(0x100, 1, None).expect("0x100 route is explicit");
     accumulator.commit_transaction().expect("commit");
@@ -1052,6 +1135,144 @@ fn zk_gas_v2_precompile_address_0x100_does_not_alias_zero() {
     assert!(
         snapshot.operation_routes.iter().all(|row| row.route != OperationRoute::Precompile(0x00))
     );
+}
+
+#[test]
+fn disabled_mode_skips_bn254_selector_capture_on_both_execution_paths() {
+    for inspected in [false, true] {
+        super::runtime::reset_bn254_work_unit_observations();
+        let bytecode = staticcall_precompile_bytecode(0x07);
+        if inspected {
+            let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(bytecode),
+                evm_env(TaikoSpecId::UNZEN),
+                NoOpInspector,
+            );
+            evm.transact(tx_env(100_000)).expect("disabled inspected precompile executes");
+        } else {
+            let mut evm =
+                TaikoEvmFactory.create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::UNZEN));
+            evm.transact(tx_env(100_000)).expect("disabled plain precompile executes");
+        }
+        assert_eq!(
+            super::runtime::take_bn254_work_unit_observations(),
+            0,
+            "Disabled must not parse the BN254 selector"
+        );
+
+        super::runtime::reset_bn254_work_unit_observations();
+        let bytecode = staticcall_precompile_bytecode(0x07);
+        if inspected {
+            let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(bytecode),
+                evm_env(TaikoSpecId::UNZEN),
+                NoOpInspector,
+            );
+            evm.set_zk_gas_pricing_enabled(true);
+            evm.transact(tx_env(100_000)).expect("shadow inspected precompile executes");
+        } else {
+            let mut evm =
+                TaikoEvmFactory.create_evm(db_with_contract(bytecode), evm_env(TaikoSpecId::UNZEN));
+            evm.set_zk_gas_pricing_enabled(true);
+            evm.transact(tx_env(100_000)).expect("shadow plain precompile executes");
+        }
+        assert_eq!(
+            super::runtime::take_bn254_work_unit_observations(),
+            1,
+            "Shadow must parse the BN254 selector exactly once"
+        );
+    }
+}
+
+#[test]
+fn disabled_and_shadow_are_execution_equivalent_on_plain_and_inspected_paths() {
+    let cases = [
+        ("arithmetic", simple_arithmetic_bytecode()),
+        (
+            "log0",
+            Bytecode::new_raw(Bytes::from(vec![
+                opcode::PUSH0,
+                opcode::PUSH0,
+                opcode::LOG0,
+                opcode::STOP,
+            ])),
+        ),
+        (
+            "dirty-sstore-noop",
+            Bytecode::new_raw(Bytes::from(vec![
+                opcode::PUSH1,
+                1,
+                opcode::PUSH0,
+                opcode::SSTORE,
+                opcode::PUSH1,
+                1,
+                opcode::PUSH0,
+                opcode::SSTORE,
+                opcode::STOP,
+            ])),
+        ),
+        ("precompile", staticcall_identity_bytecode()),
+    ];
+
+    for spec in [TaikoSpecId::SHASTA, TaikoSpecId::UNZEN] {
+        for (label, bytecode) in &cases {
+            let mut plain_disabled =
+                TaikoEvmFactory.create_evm(db_with_contract(bytecode.clone()), evm_env(spec));
+            let plain_disabled_result = plain_disabled
+                .transact(tx_env(200_000))
+                .unwrap_or_else(|error| panic!("{spec:?} {label} plain Disabled: {error}"));
+            let plain_disabled_legacy = plain_disabled.meter().map(ZkGasMeter::tx_zk_gas_used);
+
+            let mut plain_shadow =
+                TaikoEvmFactory.create_evm(db_with_contract(bytecode.clone()), evm_env(spec));
+            plain_shadow.set_zk_gas_pricing_enabled(true);
+            let plain_shadow_result = plain_shadow
+                .transact(tx_env(200_000))
+                .unwrap_or_else(|error| panic!("{spec:?} {label} plain Shadow: {error}"));
+            let plain_shadow_legacy = plain_shadow.meter().map(ZkGasMeter::tx_zk_gas_used);
+
+            let mut inspected_disabled = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(bytecode.clone()),
+                evm_env(spec),
+                NoOpInspector,
+            );
+            let inspected_disabled_result = inspected_disabled
+                .transact(tx_env(200_000))
+                .unwrap_or_else(|error| panic!("{spec:?} {label} inspected Disabled: {error}"));
+            let inspected_disabled_legacy =
+                inspected_disabled.meter().map(ZkGasMeter::tx_zk_gas_used);
+
+            let mut inspected_shadow = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(bytecode.clone()),
+                evm_env(spec),
+                NoOpInspector,
+            );
+            inspected_shadow.set_zk_gas_pricing_enabled(true);
+            let inspected_shadow_result = inspected_shadow
+                .transact(tx_env(200_000))
+                .unwrap_or_else(|error| panic!("{spec:?} {label} inspected Shadow: {error}"));
+            let inspected_shadow_legacy = inspected_shadow.meter().map(ZkGasMeter::tx_zk_gas_used);
+
+            assert_eq!(plain_shadow_result, plain_disabled_result, "{spec:?} {label} plain");
+            assert_eq!(
+                inspected_shadow_result, inspected_disabled_result,
+                "{spec:?} {label} inspected"
+            );
+            assert_eq!(
+                inspected_disabled_result, plain_disabled_result,
+                "{spec:?} {label} execution path"
+            );
+            assert_eq!(plain_shadow_legacy, plain_disabled_legacy, "{spec:?} {label} plain meter");
+            assert_eq!(
+                inspected_shadow_legacy, inspected_disabled_legacy,
+                "{spec:?} {label} inspected meter"
+            );
+            assert_eq!(
+                inspected_disabled_legacy, plain_disabled_legacy,
+                "{spec:?} {label} path meter"
+            );
+        }
+    }
 }
 
 fn push_u64(value: u64) -> Vec<u8> {
@@ -1070,23 +1291,23 @@ fn push_u64(value: u64) -> Vec<u8> {
 const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 
 #[test]
-fn zk_gas_v2_model_pins_the_sealed_runtime_spec() {
+fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
         "93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
-    assert_eq!(ZkGasV2Model.route_count(), 174);
+    assert_eq!(ZkGasModel.route_count(), 174);
 }
 
-fn assert_zk_gas_v2_operation(
+fn assert_zk_gas_pricing_operation(
     input: OperationPricingInput,
     accepted_absolute_scaled: i128,
     incremental_scaled: i128,
     structural_scaled: i128,
     total_scaled: i128,
 ) {
-    let priced = ZkGasV2Model
+    let priced = ZkGasModel
         .price_operation(&input)
         .unwrap_or_else(|error| panic!("golden vector {:?} failed: {error}", input.route));
     assert_eq!(priced.accepted_absolute_scaled, accepted_absolute_scaled);
@@ -1098,7 +1319,7 @@ fn assert_zk_gas_v2_operation(
 }
 
 #[test]
-fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
+fn zk_gas_model_matches_python_operation_golden_vectors() {
     let memory = MemorySelectors { growth_events: 1, evm_gas_delta: 5, boundary_4k_events: 1 };
     let opcode = |opcode, raw_gas, model_input| OperationPricingInput {
         route: OperationRoute::Opcode(opcode),
@@ -1258,10 +1479,10 @@ fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
     ];
 
     for (input, accepted, incremental, structural, total) in vectors {
-        assert_zk_gas_v2_operation(input, accepted, incremental, structural, total);
+        assert_zk_gas_pricing_operation(input, accepted, incremental, structural, total);
     }
 
-    assert_zk_gas_v2_operation(
+    assert_zk_gas_pricing_operation(
         OperationPricingInput {
             route: OperationRoute::ConfirmedSpawn(0xf0),
             interpreter_raw_gas: None,
@@ -1274,7 +1495,7 @@ fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
         0,
         3_121_878_014_002_702_493_301_969,
     );
-    assert_zk_gas_v2_operation(
+    assert_zk_gas_pricing_operation(
         OperationPricingInput {
             route: OperationRoute::Precompile(0x01),
             interpreter_raw_gas: None,
@@ -1287,7 +1508,7 @@ fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
         117_000_000_000_000_000_000_000,
         20_000_000_000_000_000_000_000_000,
     );
-    assert_zk_gas_v2_operation(
+    assert_zk_gas_pricing_operation(
         OperationPricingInput {
             route: OperationRoute::Precompile(0x04),
             interpreter_raw_gas: None,
@@ -1300,7 +1521,7 @@ fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
         7_344_000_000_000_000_000_000,
         72_900_070_381_036_079_843_616,
     );
-    assert_zk_gas_v2_operation(
+    assert_zk_gas_pricing_operation(
         OperationPricingInput {
             route: OperationRoute::Precompile(0x07),
             interpreter_raw_gas: None,
@@ -1316,8 +1537,8 @@ fn zk_gas_v2_model_matches_python_operation_golden_vectors() {
 }
 
 #[test]
-fn zk_gas_v2_model_uses_the_explicit_feature_error_floor() {
-    let priced = ZkGasV2Model
+fn zk_gas_model_uses_the_explicit_feature_error_floor() {
+    let priced = ZkGasModel
         .price_operation(&OperationPricingInput {
             route: OperationRoute::Opcode(0x01),
             interpreter_raw_gas: Some(3),
@@ -1339,7 +1560,7 @@ fn zk_gas_v2_model_uses_the_explicit_feature_error_floor() {
         structural_scaled: priced.structural_scaled,
         feature_error_scaled: priced.feature_error_scaled,
     }];
-    let block = ZkGasV2Model
+    let block = ZkGasModel
         .price_block(&BlockPricingInput {
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -1353,7 +1574,7 @@ fn zk_gas_v2_model_uses_the_explicit_feature_error_floor() {
 }
 
 #[test]
-fn zk_gas_v2_model_matches_python_block_breakdown_and_single_ceiling() {
+fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
     let operation = OperationPricingInput {
         route: OperationRoute::Opcode(0x01),
         interpreter_raw_gas: Some(3),
@@ -1361,7 +1582,7 @@ fn zk_gas_v2_model_matches_python_block_breakdown_and_single_ceiling() {
         model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
         feature_error: false,
     };
-    let operation = ZkGasV2Model.price_operation(&operation).expect("operation prices");
+    let operation = ZkGasModel.price_operation(&operation).expect("operation prices");
     let operation_route = OperationRoutePricingInput {
         route: OperationRoute::Opcode(0x01),
         accepted_absolute_scaled: operation.accepted_absolute_scaled,
@@ -1369,7 +1590,7 @@ fn zk_gas_v2_model_matches_python_block_breakdown_and_single_ceiling() {
         structural_scaled: operation.structural_scaled,
         feature_error_scaled: 0,
     };
-    let priced = ZkGasV2Model
+    let priced = ZkGasModel
         .price_block(&BlockPricingInput {
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
@@ -1402,8 +1623,8 @@ fn zk_gas_v2_model_matches_python_block_breakdown_and_single_ceiling() {
 }
 
 #[test]
-fn zk_gas_v2_model_composes_route_aggregates_before_block_sum() {
-    let priced = ZkGasV2Model
+fn zk_gas_model_composes_route_aggregates_before_block_sum() {
+    let priced = ZkGasModel
         .price_block(&BlockPricingInput {
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -1423,9 +1644,9 @@ fn zk_gas_v2_model_composes_route_aggregates_before_block_sum() {
 }
 
 #[test]
-fn zk_gas_v2_model_accepts_the_declared_selector_maximum() {
+fn zk_gas_model_accepts_the_declared_selector_maximum() {
     let maximum = 1_000_000_000;
-    let priced = ZkGasV2Model
+    let priced = ZkGasModel
         .price_block(&BlockPricingInput {
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
@@ -1453,8 +1674,8 @@ fn zk_gas_v2_model_accepts_the_declared_selector_maximum() {
 }
 
 #[test]
-fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
-    let model = ZkGasV2Model;
+fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
+    let model = ZkGasModel;
     let unknown = OperationPricingInput {
         route: OperationRoute::Opcode(0x0c),
         interpreter_raw_gas: Some(1),
@@ -1462,7 +1683,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
         model_input: OperationModelInput::StaticRawGas { raw_gas: 1 },
         feature_error: false,
     };
-    assert_eq!(model.price_operation(&unknown), Err(ZkGasV2Error::UnknownRoute(unknown.route)));
+    assert_eq!(model.price_operation(&unknown), Err(ZkGasError::UnknownRoute(unknown.route)));
 
     let missing = OperationPricingInput {
         route: OperationRoute::Opcode(0x01),
@@ -1473,7 +1694,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
     };
     assert_eq!(
         model.price_operation(&missing),
-        Err(ZkGasV2Error::MissingInput("interpreter_raw_gas"))
+        Err(ZkGasError::MissingInput("interpreter_raw_gas"))
     );
 
     let out_of_range = OperationPricingInput {
@@ -1485,7 +1706,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
     };
     assert!(matches!(
         model.price_operation(&out_of_range),
-        Err(ZkGasV2Error::SelectorOutOfRange {
+        Err(ZkGasError::SelectorOutOfRange {
             selector: "interpreter_raw_gas",
             value: 1_000_000_001
         })
@@ -1500,7 +1721,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
     };
     assert_eq!(
         model.price_operation(&opcode_with_native_gas),
-        Err(ZkGasV2Error::InvalidInput("operation_namespace"))
+        Err(ZkGasError::InvalidInput("operation_namespace"))
     );
 
     let precompile_with_interpreter_gas = OperationPricingInput {
@@ -1512,7 +1733,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
     };
     assert_eq!(
         model.price_operation(&precompile_with_interpreter_gas),
-        Err(ZkGasV2Error::InvalidInput("operation_namespace"))
+        Err(ZkGasError::InvalidInput("operation_namespace"))
     );
 
     let spawn_with_raw_gas = OperationPricingInput {
@@ -1524,7 +1745,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
     };
     assert_eq!(
         model.price_operation(&spawn_with_raw_gas),
-        Err(ZkGasV2Error::InvalidInput("operation_namespace"))
+        Err(ZkGasError::InvalidInput("operation_namespace"))
     );
 
     let fixed_with_irrelevant_features = OperationPricingInput {
@@ -1536,7 +1757,7 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
     };
     assert_eq!(
         model.price_operation(&fixed_with_irrelevant_features),
-        Err(ZkGasV2Error::InvalidInput("model_input"))
+        Err(ZkGasError::InvalidInput("model_input"))
     );
 
     let negative_route = [OperationRoutePricingInput {
@@ -1554,12 +1775,12 @@ fn zk_gas_v2_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() 
             resources: ResourceSelectors::default(),
             mpt: MptSelectors::default(),
         }),
-        Err(ZkGasV2Error::NegativeComponent("accepted_absolute"))
+        Err(ZkGasError::NegativeComponent("accepted_absolute"))
     );
 }
 
 #[test]
-fn zk_gas_v2_model_matches_python_proposal_once_golden_vectors_41710_through_41715() {
+fn zk_gas_model_matches_python_proposal_once_golden_vectors_41710_through_41715() {
     struct Golden {
         proposal_id: u64,
         bytes: u64,
@@ -1649,7 +1870,7 @@ fn zk_gas_v2_model_matches_python_proposal_once_golden_vectors_41710_through_417
     ];
 
     for golden in vectors {
-        let priced = ZkGasV2Model
+        let priced = ZkGasModel
             .price_proposal_once(&ProposalPricingInput {
                 canonical_transaction_bytes: golden.bytes,
                 nonempty_payload_transactions: golden.nonempty,
@@ -1677,7 +1898,7 @@ fn zk_gas_v2_model_matches_python_proposal_once_golden_vectors_41710_through_417
 }
 
 #[test]
-fn zk_gas_v2_model_rejects_invalid_blob_source_topology() {
+fn zk_gas_model_rejects_invalid_blob_source_topology() {
     let valid = ProposalPricingInput {
         canonical_transaction_bytes: 0,
         nonempty_payload_transactions: 0,
@@ -1689,7 +1910,7 @@ fn zk_gas_v2_model_rejects_invalid_blob_source_topology() {
         provider_proof_count: 5,
         parent_mpt: MptSelectors::default(),
     };
-    let priced = ZkGasV2Model.price_proposal_once(&valid).expect("valid BPO2 topology prices");
+    let priced = ZkGasModel.price_proposal_once(&valid).expect("valid BPO2 topology prices");
     assert_eq!(priced.blob_source_scaled, 81_788_928_000_000_000_000_000_000);
     assert_eq!(priced.total_scaled, 236_052_798_735_480_402_119_958_866);
     assert_eq!(priced.total_pgu, Some(236_052_799));
@@ -1706,15 +1927,15 @@ fn zk_gas_v2_model_rejects_invalid_blob_source_topology() {
         parent_mpt: MptSelectors::default(),
     };
     assert_eq!(
-        ZkGasV2Model.price_proposal_once(&invalid),
-        Err(ZkGasV2Error::InvalidInput("forced_source_blob_count"))
+        ZkGasModel.price_proposal_once(&invalid),
+        Err(ZkGasError::InvalidInput("forced_source_blob_count"))
     );
 }
 
 #[test]
-fn zk_gas_v2_compilation_does_not_mutate_the_unzen_consensus_schedule() {
+fn zk_gas_pricing_compilation_does_not_mutate_the_unzen_consensus_schedule() {
     let before = UNZEN_ZK_GAS_SCHEDULE;
-    let _ = ZkGasV2Model.route_count();
+    let _ = ZkGasModel.route_count();
     let selected = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
 
     assert!(before == UNZEN_ZK_GAS_SCHEDULE);
@@ -2066,102 +2287,126 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
 
 #[test]
 fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
-    let mut production_evm = TaikoEvmFactory
-        .create_evm(db_with_contract(staticcall_identity_bytecode()), evm_env(TaikoSpecId::UNZEN));
-    production_evm.set_zk_gas_v2_enabled(true);
-    production_evm.transact(tx_env(100_000)).expect("production path should execute");
-    let production_zk_gas =
-        production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
+    for pricing_enabled in [false, true] {
+        let mut production_evm = TaikoEvmFactory.create_evm(
+            db_with_contract(staticcall_identity_bytecode()),
+            evm_env(TaikoSpecId::UNZEN),
+        );
+        production_evm.set_zk_gas_pricing_enabled(pricing_enabled);
+        production_evm.transact(tx_env(100_000)).expect("production path should execute");
+        let production_zk_gas = production_evm
+            .meter()
+            .expect("production path should install a meter")
+            .tx_zk_gas_used();
 
-    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
-        db_with_contract(staticcall_identity_bytecode()),
-        evm_env(TaikoSpecId::UNZEN),
-        NoOpInspector {},
-    );
-    inspector_evm.set_zk_gas_v2_enabled(true);
-    inspector_evm.transact(tx_env(100_000)).expect("inspector path should execute");
-    let inspector_zk_gas =
-        inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
+        let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+            db_with_contract(staticcall_identity_bytecode()),
+            evm_env(TaikoSpecId::UNZEN),
+            NoOpInspector {},
+        );
+        inspector_evm.set_zk_gas_pricing_enabled(pricing_enabled);
+        inspector_evm.transact(tx_env(100_000)).expect("inspector path should execute");
+        let inspector_zk_gas =
+            inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
 
-    assert_eq!(production_zk_gas, inspector_zk_gas);
-    production_evm.commit_transaction_zk_gas_v2().expect("production V2 commit");
-    inspector_evm.commit_transaction_zk_gas_v2().expect("inspector V2 commit");
-    let production = production_evm.zk_gas_v2_snapshot().expect("production V2 snapshot");
-    let inspected = inspector_evm.zk_gas_v2_snapshot().expect("inspector V2 snapshot");
-    assert_eq!(production, inspected);
-    assert!(
-        production.operation_routes.iter().any(|row| {
-            row.route == OperationRoute::Precompile(0x04) && row.accepted_absolute_scaled > 0
-        }),
-        "identity precompile must be priced separately from STATICCALL"
-    );
+        assert_eq!(production_zk_gas, inspector_zk_gas);
+        if pricing_enabled {
+            production_evm.commit_transaction_zk_gas_pricing().expect("production pricing commit");
+            inspector_evm.commit_transaction_zk_gas_pricing().expect("inspector pricing commit");
+            let production =
+                production_evm.zk_gas_pricing_snapshot().expect("production pricing snapshot");
+            let inspected =
+                inspector_evm.zk_gas_pricing_snapshot().expect("inspector pricing snapshot");
+            assert_eq!(production, inspected);
+            assert!(
+                production.operation_routes.iter().any(|row| {
+                    row.route == OperationRoute::Precompile(0x04) &&
+                        row.accepted_absolute_scaled > 0
+                }),
+                "identity precompile must be priced separately from STATICCALL"
+            );
+        } else {
+            assert!(production_evm.zk_gas_pricing_snapshot().is_none());
+            assert!(inspector_evm.zk_gas_pricing_snapshot().is_none());
+        }
+    }
 }
 
 #[test]
-fn zk_gas_v2_reverted_precompile_matches_both_paths() {
+fn zk_gas_pricing_reverted_precompile_matches_both_paths() {
     // BLAKE2F requires a 213-byte input, so an empty-input call executes the precompile and
     // returns failure to the outer contract.
     let bytecode = staticcall_precompile_bytecode(0x09);
-    let (plain, inspected) = zk_gas_v2_path_snapshots(bytecode, 100_000);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(bytecode, 100_000);
     assert_eq!(plain, inspected);
     assert!(plain.operation_routes.iter().any(|row| row.route == OperationRoute::Precompile(0x09)));
 }
 
 #[test]
 fn precompile_metering_snapshots_gas_before_inner_call_end_mutation() {
-    let mut baseline_evm = TaikoEvmFactory.create_evm_with_inspector(
-        db_with_contract(staticcall_identity_bytecode()),
-        evm_env(TaikoSpecId::UNZEN),
-        NoOpInspector {},
-    );
-    baseline_evm.set_zk_gas_v2_enabled(true);
-    baseline_evm.transact(tx_env(100_000)).expect("baseline precompile call should execute");
-    let baseline_zk_gas =
-        baseline_evm.meter().expect("baseline path should install a meter").tx_zk_gas_used();
+    for pricing_enabled in [false, true] {
+        let mut baseline_evm = TaikoEvmFactory.create_evm_with_inspector(
+            db_with_contract(staticcall_identity_bytecode()),
+            evm_env(TaikoSpecId::UNZEN),
+            NoOpInspector {},
+        );
+        baseline_evm.set_zk_gas_pricing_enabled(pricing_enabled);
+        baseline_evm.transact(tx_env(100_000)).expect("baseline precompile call should execute");
+        let baseline_zk_gas =
+            baseline_evm.meter().expect("baseline path should install a meter").tx_zk_gas_used();
 
-    let mut mutating_evm = TaikoEvmFactory.create_evm_with_inspector(
-        db_with_contract(staticcall_identity_bytecode()),
-        evm_env(TaikoSpecId::UNZEN),
-        PrecompileGasMutatingInspector::default(),
-    );
-    mutating_evm.set_zk_gas_v2_enabled(true);
-    mutating_evm.transact(tx_env(100_000)).expect("mutating inspector path should execute");
-    let mutated_zk_gas =
-        mutating_evm.meter().expect("mutating path should install a meter").tx_zk_gas_used();
+        let mut mutating_evm = TaikoEvmFactory.create_evm_with_inspector(
+            db_with_contract(staticcall_identity_bytecode()),
+            evm_env(TaikoSpecId::UNZEN),
+            PrecompileGasMutatingInspector::default(),
+        );
+        mutating_evm.set_zk_gas_pricing_enabled(pricing_enabled);
+        mutating_evm.transact(tx_env(100_000)).expect("mutating inspector path should execute");
+        let mutated_zk_gas =
+            mutating_evm.meter().expect("mutating path should install a meter").tx_zk_gas_used();
 
-    assert!(mutating_evm.inspector().observed_precompile, "test must mutate a precompile result");
-    assert_eq!(
-        mutated_zk_gas, baseline_zk_gas,
-        "inner inspector output mutation must not rewrite completed precompile work"
-    );
-    baseline_evm.commit_transaction_zk_gas_v2().expect("baseline V2 commit");
-    mutating_evm.commit_transaction_zk_gas_v2().expect("mutating V2 commit");
-    assert_eq!(
-        baseline_evm.zk_gas_v2_snapshot(),
-        mutating_evm.zk_gas_v2_snapshot(),
-        "V2 precompile selectors must be captured before call_end mutation"
-    );
+        assert!(
+            mutating_evm.inspector().observed_precompile,
+            "test must mutate a precompile result"
+        );
+        assert_eq!(
+            mutated_zk_gas, baseline_zk_gas,
+            "inner inspector output mutation must not rewrite completed precompile work"
+        );
+        if pricing_enabled {
+            baseline_evm.commit_transaction_zk_gas_pricing().expect("baseline pricing commit");
+            mutating_evm.commit_transaction_zk_gas_pricing().expect("mutating pricing commit");
+            assert_eq!(
+                baseline_evm.zk_gas_pricing_snapshot(),
+                mutating_evm.zk_gas_pricing_snapshot(),
+                "pricing precompile selectors must be captured before call_end mutation"
+            );
+        } else {
+            assert!(baseline_evm.zk_gas_pricing_snapshot().is_none());
+            assert!(mutating_evm.zk_gas_pricing_snapshot().is_none());
+        }
+    }
 }
 
 #[test]
-fn zk_gas_v2_finalizes_executed_step_before_inner_step_end_mutation() {
+fn zk_gas_pricing_finalizes_executed_step_before_inner_step_end_mutation() {
     let code = Bytecode::new_raw(Bytes::from(vec![opcode::STOP]));
     let mut plain =
         TaikoEvmFactory.create_evm(db_with_contract(code.clone()), evm_env(TaikoSpecId::UNZEN));
-    plain.set_zk_gas_v2_enabled(true);
+    plain.set_zk_gas_pricing_enabled(true);
     plain.transact(tx_env(100_000)).expect("plain STOP");
-    plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
+    plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
 
     let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(code),
         evm_env(TaikoSpecId::UNZEN),
         StepEndGasMutatingInspector,
     );
-    inspected.set_zk_gas_v2_enabled(true);
+    inspected.set_zk_gas_pricing_enabled(true);
     inspected.transact(tx_env(100_000)).expect("mutated STOP remains included");
-    inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
+    inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
 
-    assert_eq!(plain.zk_gas_v2_snapshot(), inspected.zk_gas_v2_snapshot());
+    assert_eq!(plain.zk_gas_pricing_snapshot(), inspected.zk_gas_pricing_snapshot());
 }
 
 #[test]
@@ -2326,7 +2571,7 @@ fn spawn_case_db(family: SpawnFamily, child: Address) -> InMemoryDB {
 }
 
 #[test]
-fn zk_gas_v2_attempted_sstore_resources_match_on_static_and_oog_halts() {
+fn zk_gas_pricing_attempted_sstore_resources_match_on_static_and_oog_halts() {
     let child = Address::with_last_byte(0xD3);
     let child_code = Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,
@@ -2359,20 +2604,20 @@ fn zk_gas_v2_attempted_sstore_resources_match_on_static_and_oog_halts() {
         };
 
         let mut plain = TaikoEvmFactory.create_evm(make_db(), evm_env(TaikoSpecId::UNZEN));
-        plain.set_zk_gas_v2_enabled(true);
+        plain.set_zk_gas_pricing_enabled(true);
         plain.transact(tx_env(200_000)).expect("plain included outer transaction");
-        plain.commit_transaction_zk_gas_v2().expect("plain V2 commit");
-        let plain = plain.zk_gas_v2_snapshot().expect("plain V2 snapshot");
+        plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
+        let plain = plain.zk_gas_pricing_snapshot().expect("plain pricing snapshot");
 
         let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
             make_db(),
             evm_env(TaikoSpecId::UNZEN),
             NoOpInspector,
         );
-        inspected.set_zk_gas_v2_enabled(true);
+        inspected.set_zk_gas_pricing_enabled(true);
         inspected.transact(tx_env(200_000)).expect("inspected included outer transaction");
-        inspected.commit_transaction_zk_gas_v2().expect("inspected V2 commit");
-        let inspected = inspected.zk_gas_v2_snapshot().expect("inspected V2 snapshot");
+        inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
+        let inspected = inspected.zk_gas_pricing_snapshot().expect("inspected pricing snapshot");
 
         assert_eq!(plain, inspected, "{label} parity");
         assert_eq!(plain.resources.unique_storage_slot_write_count, 1, "{label}");
@@ -2420,121 +2665,161 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let child = Address::with_last_byte(0xD1);
 
-    for family in SpawnFamily::ALL {
-        let mut plain =
-            TaikoEvmFactory.create_evm(spawn_case_db(family, child), evm_env(TaikoSpecId::UNZEN));
-        plain.set_zk_gas_v2_enabled(true);
-        let plain_result = plain
-            .transact(tx_env(500_000))
-            .unwrap_or_else(|err| panic!("{} plain spawn failed: {err}", family.name()));
-        let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
+    for pricing_enabled in [false, true] {
+        for family in SpawnFamily::ALL {
+            let mut plain = TaikoEvmFactory
+                .create_evm(spawn_case_db(family, child), evm_env(TaikoSpecId::UNZEN));
+            plain.set_zk_gas_pricing_enabled(pricing_enabled);
+            let plain_result = plain
+                .transact(tx_env(500_000))
+                .unwrap_or_else(|err| panic!("{} plain spawn failed: {err}", family.name()));
+            let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
 
-        let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
-            spawn_case_db(family, child),
-            evm_env(TaikoSpecId::UNZEN),
-            StepGasProbeInspector::default(),
-        );
-        inspected.set_zk_gas_v2_enabled(true);
-        let inspected_result = inspected
-            .transact(tx_env(500_000))
-            .unwrap_or_else(|err| panic!("{} inspected spawn failed: {err}", family.name()));
-        let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
-        let probe = inspected.inspector();
-        let spawn_step = probe
-            .steps
-            .iter()
-            .find(|step| step.opcode == family.opcode())
-            .unwrap_or_else(|| panic!("{} step was not observed", family.name()));
-
-        assert!(plain_result.result.is_success(), "{} plain result", family.name());
-        assert!(inspected_result.result.is_success(), "{} inspected result", family.name());
-        assert!(spawn_step.selected_new_frame, "{} must select NewFrame", family.name());
-        assert_ne!(
-            spawn_step.raw_gas,
-            family.spawn_raw_gas(schedule),
-            "{} test must distinguish interpreter delta from spawn estimate",
-            family.name()
-        );
-        assert!(family.was_dispatched(probe, child), "{} child must dispatch", family.name());
-        assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, schedule), "{}", family.name());
-        assert_eq!(plain_zk_gas, inspected_zk_gas, "{} spawn parity", family.name());
-        plain.commit_transaction_zk_gas_v2().expect("plain V2 spawn commit");
-        inspected.commit_transaction_zk_gas_v2().expect("inspected V2 spawn commit");
-        let plain_v2 = plain.zk_gas_v2_snapshot().expect("plain V2 snapshot");
-        let inspected_v2 = inspected.zk_gas_v2_snapshot().expect("inspected V2 snapshot");
-        assert_eq!(plain_v2, inspected_v2, "{} V2 spawn parity", family.name());
-        assert!(
-            plain_v2
-                .operation_routes
+            let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+                spawn_case_db(family, child),
+                evm_env(TaikoSpecId::UNZEN),
+                StepGasProbeInspector::default(),
+            );
+            inspected.set_zk_gas_pricing_enabled(pricing_enabled);
+            let inspected_result = inspected
+                .transact(tx_env(500_000))
+                .unwrap_or_else(|err| panic!("{} inspected spawn failed: {err}", family.name()));
+            let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
+            let probe = inspected.inspector();
+            let spawn_step = probe
+                .steps
                 .iter()
-                .any(|row| row.route == OperationRoute::ConfirmedSpawn(family.opcode())),
-            "{} confirmed wrapper route",
-            family.name()
-        );
-        assert!(
-            plain_v2
-                .operation_routes
-                .iter()
-                .all(|row| row.route != OperationRoute::Opcode(family.opcode())),
-            "{} selected wrapper must replace the deferred base opcode",
-            family.name()
-        );
+                .find(|step| step.opcode == family.opcode())
+                .unwrap_or_else(|| panic!("{} step was not observed", family.name()));
 
-        let failing = Bytecode::new_raw(Bytes::from(vec![family.opcode()]));
-        let mut plain = TaikoEvmFactory
-            .create_evm(db_with_contract(failing.clone()), evm_env(TaikoSpecId::UNZEN));
-        plain.set_zk_gas_v2_enabled(true);
-        let plain_result = plain
-            .transact(tx_env(100_000))
-            .unwrap_or_else(|err| panic!("{} plain nonspawn errored: {err}", family.name()));
-        let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
+            assert!(plain_result.result.is_success(), "{} plain result", family.name());
+            assert!(inspected_result.result.is_success(), "{} inspected result", family.name());
+            assert!(spawn_step.selected_new_frame, "{} must select NewFrame", family.name());
+            assert_ne!(
+                spawn_step.raw_gas,
+                family.spawn_raw_gas(schedule),
+                "{} test must distinguish interpreter delta from spawn estimate",
+                family.name()
+            );
+            assert!(family.was_dispatched(probe, child), "{} child must dispatch", family.name());
+            assert_eq!(
+                inspected_zk_gas,
+                expected_probe_zk_gas(probe, schedule),
+                "{}",
+                family.name()
+            );
+            assert_eq!(plain_zk_gas, inspected_zk_gas, "{} spawn parity", family.name());
+            if pricing_enabled {
+                plain.commit_transaction_zk_gas_pricing().expect("plain pricing spawn commit");
+                inspected
+                    .commit_transaction_zk_gas_pricing()
+                    .expect("inspected pricing spawn commit");
+                let plain_pricing =
+                    plain.zk_gas_pricing_snapshot().expect("plain pricing snapshot");
+                let inspected_pricing =
+                    inspected.zk_gas_pricing_snapshot().expect("inspected pricing snapshot");
+                assert_eq!(
+                    plain_pricing,
+                    inspected_pricing,
+                    "{} pricing spawn parity",
+                    family.name()
+                );
+                assert!(
+                    plain_pricing
+                        .operation_routes
+                        .iter()
+                        .any(|row| row.route == OperationRoute::ConfirmedSpawn(family.opcode())),
+                    "{} confirmed wrapper route",
+                    family.name()
+                );
+                assert!(
+                    plain_pricing
+                        .operation_routes
+                        .iter()
+                        .all(|row| row.route != OperationRoute::Opcode(family.opcode())),
+                    "{} selected wrapper must replace the deferred base opcode",
+                    family.name()
+                );
+            } else {
+                assert!(plain.zk_gas_pricing_snapshot().is_none());
+                assert!(inspected.zk_gas_pricing_snapshot().is_none());
+            }
 
-        let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
-            db_with_contract(failing),
-            evm_env(TaikoSpecId::UNZEN),
-            StepGasProbeInspector::default(),
-        );
-        inspected.set_zk_gas_v2_enabled(true);
-        let inspected_result = inspected
-            .transact(tx_env(100_000))
-            .unwrap_or_else(|err| panic!("{} inspected nonspawn errored: {err}", family.name()));
-        let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
-        let probe = inspected.inspector();
-        let failed_step = probe.steps.first().expect("failing opcode step");
+            let failing = Bytecode::new_raw(Bytes::from(vec![family.opcode()]));
+            let mut plain = TaikoEvmFactory
+                .create_evm(db_with_contract(failing.clone()), evm_env(TaikoSpecId::UNZEN));
+            plain.set_zk_gas_pricing_enabled(pricing_enabled);
+            let plain_result = plain
+                .transact(tx_env(100_000))
+                .unwrap_or_else(|err| panic!("{} plain nonspawn errored: {err}", family.name()));
+            let plain_zk_gas = plain.meter().expect("plain meter").tx_zk_gas_used();
 
-        assert!(matches!(plain_result.result, ExecutionResult::Halt { .. }));
-        assert!(matches!(inspected_result.result, ExecutionResult::Halt { .. }));
-        assert!(!failed_step.selected_new_frame, "{} must not spawn", family.name());
-        assert_ne!(
-            failed_step.raw_gas,
-            family.spawn_raw_gas(schedule),
-            "{} nonspawn test must distinguish raw-gas sources",
-            family.name()
-        );
-        assert!(!family.was_dispatched(probe, child), "{} must not dispatch", family.name());
-        assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, schedule), "{}", family.name());
-        assert_eq!(plain_zk_gas, inspected_zk_gas, "{} nonspawn parity", family.name());
-        plain.commit_transaction_zk_gas_v2().expect("plain V2 nonspawn commit");
-        inspected.commit_transaction_zk_gas_v2().expect("inspected V2 nonspawn commit");
-        let plain_v2 = plain.zk_gas_v2_snapshot().expect("plain V2 snapshot");
-        let inspected_v2 = inspected.zk_gas_v2_snapshot().expect("inspected V2 snapshot");
-        assert_eq!(plain_v2, inspected_v2, "{} V2 nonspawn parity", family.name());
-        assert!(
-            plain_v2
-                .operation_routes
-                .iter()
-                .any(|row| row.route == OperationRoute::Opcode(family.opcode())),
-            "{} unconfirmed wrapper uses ordinary opcode route",
-            family.name()
-        );
-        assert!(
-            plain_v2
-                .operation_routes
-                .iter()
-                .all(|row| row.route != OperationRoute::ConfirmedSpawn(family.opcode())),
-            "{} unconfirmed wrapper is not a confirmed spawn",
-            family.name()
-        );
+            let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(failing),
+                evm_env(TaikoSpecId::UNZEN),
+                StepGasProbeInspector::default(),
+            );
+            inspected.set_zk_gas_pricing_enabled(pricing_enabled);
+            let inspected_result = inspected.transact(tx_env(100_000)).unwrap_or_else(|err| {
+                panic!("{} inspected nonspawn errored: {err}", family.name())
+            });
+            let inspected_zk_gas = inspected.meter().expect("inspected meter").tx_zk_gas_used();
+            let probe = inspected.inspector();
+            let failed_step = probe.steps.first().expect("failing opcode step");
+
+            assert!(matches!(plain_result.result, ExecutionResult::Halt { .. }));
+            assert!(matches!(inspected_result.result, ExecutionResult::Halt { .. }));
+            assert!(!failed_step.selected_new_frame, "{} must not spawn", family.name());
+            assert_ne!(
+                failed_step.raw_gas,
+                family.spawn_raw_gas(schedule),
+                "{} nonspawn test must distinguish raw-gas sources",
+                family.name()
+            );
+            assert!(!family.was_dispatched(probe, child), "{} must not dispatch", family.name());
+            assert_eq!(
+                inspected_zk_gas,
+                expected_probe_zk_gas(probe, schedule),
+                "{}",
+                family.name()
+            );
+            assert_eq!(plain_zk_gas, inspected_zk_gas, "{} nonspawn parity", family.name());
+            if pricing_enabled {
+                plain.commit_transaction_zk_gas_pricing().expect("plain pricing nonspawn commit");
+                inspected
+                    .commit_transaction_zk_gas_pricing()
+                    .expect("inspected pricing nonspawn commit");
+                let plain_pricing =
+                    plain.zk_gas_pricing_snapshot().expect("plain pricing snapshot");
+                let inspected_pricing =
+                    inspected.zk_gas_pricing_snapshot().expect("inspected pricing snapshot");
+                assert_eq!(
+                    plain_pricing,
+                    inspected_pricing,
+                    "{} pricing nonspawn parity",
+                    family.name()
+                );
+                assert!(
+                    plain_pricing
+                        .operation_routes
+                        .iter()
+                        .any(|row| row.route == OperationRoute::Opcode(family.opcode())),
+                    "{} unconfirmed wrapper uses ordinary opcode route",
+                    family.name()
+                );
+                assert!(
+                    plain_pricing
+                        .operation_routes
+                        .iter()
+                        .all(|row| row.route != OperationRoute::ConfirmedSpawn(family.opcode())),
+                    "{} unconfirmed wrapper is not a confirmed spawn",
+                    family.name()
+                );
+            } else {
+                assert!(plain.zk_gas_pricing_snapshot().is_none());
+                assert!(inspected.zk_gas_pricing_snapshot().is_none());
+            }
+        }
     }
 }
 

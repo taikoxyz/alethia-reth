@@ -74,6 +74,84 @@ fn zk_gas_shadow_report_marks_exact_resources_and_mpt_as_missing() {
 }
 
 #[test]
+fn zk_gas_attempted_snapshot_retains_discarded_execution_scope() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator
+        .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: false })
+        .expect("transaction starts");
+    accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(opcode::KECCAK256),
+            interpreter_raw_gas: Some(36),
+            native_gas: None,
+            model_input: OperationModelInput::Keccak {
+                input_length: 32,
+                memory: MemorySelectors::default(),
+            },
+            feature_error: false,
+        })
+        .expect("discarded operation prices");
+
+    accumulator.reset_transaction();
+
+    assert_eq!(accumulator.committed_snapshot(), super::pricing::ZkGasBlockSnapshot::default());
+    let attempted = accumulator.attempted_snapshot();
+    assert_eq!(attempted.transaction_count, 1);
+    assert_eq!(attempted.block.started_non_anchor_transactions, 1);
+    assert!(
+        attempted
+            .block
+            .operation_routes
+            .iter()
+            .any(|row| row.route == OperationRoute::Opcode(opcode::KECCAK256))
+    );
+}
+
+#[test]
+fn zk_gas_successful_commit_counts_once_in_attempted_and_committed_snapshots() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator
+        .begin_transaction(TransactionMetadata { is_anchor: true, native_value_transfer: false })
+        .expect("anchor starts");
+    accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(opcode::ADD),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
+            feature_error: false,
+        })
+        .expect("anchor operation prices");
+    accumulator.commit_transaction().expect("anchor commits");
+
+    let committed = accumulator.committed_snapshot();
+    let attempted = accumulator.attempted_snapshot();
+    assert_eq!(attempted.transaction_count, 1);
+    assert_eq!(attempted.block, committed);
+
+    accumulator.reset_transaction();
+    assert_eq!(accumulator.attempted_snapshot(), attempted);
+}
+
+#[test]
+fn zk_gas_reset_without_active_scope_does_not_create_an_attempt() {
+    use super::pricing::ZkGasAccumulator;
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator.reset_transaction();
+
+    assert_eq!(accumulator.attempted_snapshot().transaction_count, 0);
+    assert_eq!(
+        accumulator.attempted_snapshot().block,
+        super::pricing::ZkGasBlockSnapshot::default()
+    );
+}
+
+#[test]
 fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
     use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 

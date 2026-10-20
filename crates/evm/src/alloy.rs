@@ -29,7 +29,7 @@ use crate::{
         meter::{ZkGasMeter, ZkGasOutcome},
         pricing::{
             StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError,
-            ZkGasBlockSnapshot,
+            ZkGasAttemptedBlockSnapshot, ZkGasBlockSnapshot,
         },
     },
 };
@@ -254,6 +254,9 @@ pub trait TaikoZkGasEvm {
 
     /// Returns the committed block-local pricing selector snapshot, when collection is enabled.
     fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot>;
+
+    /// Returns pricing selectors from every transaction whose execution scope began.
+    fn zk_gas_attempted_pricing_snapshot(&self) -> Option<ZkGasAttemptedBlockSnapshot>;
 }
 
 impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
@@ -350,6 +353,11 @@ where
     /// Returns an owned snapshot of selectors committed by the active Shadow collector.
     fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot> {
         Some(self.zk_gas_pricing()?.committed_snapshot())
+    }
+
+    /// Returns an owned snapshot of all transaction scopes observed by the Shadow collector.
+    fn zk_gas_attempted_pricing_snapshot(&self) -> Option<ZkGasAttemptedBlockSnapshot> {
+        Some(self.zk_gas_pricing()?.attempted_snapshot())
     }
 }
 

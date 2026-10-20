@@ -7,7 +7,8 @@ mod model;
 mod types;
 
 pub use accumulator::{
-    StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError, ZkGasBlockSnapshot,
+    StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError,
+    ZkGasAttemptedBlockSnapshot, ZkGasBlockSnapshot,
 };
 pub use generated::{FIXED_POINT_SCALE, RUNTIME_SPEC_SHA256};
 pub use mode::{

@@ -1,6 +1,7 @@
 //! Prover helpers for executing derived candidate blocks.
 
 use alloy_consensus::transaction::Recovered;
+use alloy_primitives::{B256, keccak256};
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::{
     ConfigureEvm,
@@ -33,15 +34,38 @@ pub struct DerivedBlockExecutionOutcome {
     /// Hashed post-state derived from the execution bundle.
     ///
     /// Built with [`HashedPostState::from_bundle_state`], so it carries only the slots execution
-    /// wrote. The parent storage of a destroyed pre-existing account is not conveyed: reth has no
-    /// storage wipe marker since v2.6, and zeroing those slots needs parent-state access this
-    /// executor does not have. Such a destroy is only reachable before Unzen, since EIP-6780
-    /// limits SELFDESTRUCT to accounts created in the same transaction.
+    /// wrote. The companion [`Self::pre_existing_destroyed_accounts`] list preserves the storage
+    /// wipe identities that reth's hashed post-state representation does not carry.
     pub hashed_state: HashedPostState,
+    /// Hashed identities of pre-existing accounts destroyed by execution, in canonical order.
+    ///
+    /// Consumers must wipe each account's parent storage before applying [`Self::hashed_state`].
+    pub pre_existing_destroyed_accounts: Vec<B256>,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,
     /// Non-enforcing block-local pricing report when Shadow mode is enabled.
     pub zk_gas_shadow_report: Option<ZkGasShadowReport>,
+    /// Non-enforcing report across every transaction whose execution scope began.
+    pub attempted_zk_gas_shadow_report: Option<ZkGasShadowReport>,
+    /// Number of attempted transaction scopes, including the anchor transaction.
+    pub attempted_transaction_count: u64,
+}
+
+/// Returns canonical hashed identities for pre-existing accounts destroyed in this bundle.
+///
+/// Consumers that execute a derived block through a custom executor must preserve this metadata
+/// before converting the bundle into a [`HashedPostState`], which omits storage-wipe markers.
+pub fn pre_existing_destroyed_account_hashes(bundle_state: &BundleState) -> Vec<B256> {
+    let mut destroyed = bundle_state
+        .state()
+        .iter()
+        .filter_map(|(address, account)| {
+            (account.status.was_destroyed() && account.original_info.is_some())
+                .then(|| keccak256(address))
+        })
+        .collect::<Vec<_>>();
+    destroyed.sort_unstable();
+    destroyed
 }
 
 /// Derives next-block environment attributes from a candidate derived block header.
@@ -96,14 +120,18 @@ where
     state.merge_transitions(BundleRetention::Reverts);
 
     let bundle_state = state.take_bundle();
+    let pre_existing_destroyed_accounts = pre_existing_destroyed_account_hashes(&bundle_state);
     let hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
 
     Ok(DerivedBlockExecutionOutcome {
         committed_transactions: execution_outcome.committed_transactions,
         execution_result: execution_outcome.execution_result,
         hashed_state,
+        pre_existing_destroyed_accounts,
         finalized_block_zk_gas: finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed),
         zk_gas_shadow_report: execution_outcome.zk_gas_shadow_report,
+        attempted_zk_gas_shadow_report: execution_outcome.attempted_zk_gas_shadow_report,
+        attempted_transaction_count: execution_outcome.attempted_transaction_count,
     })
 }
 
@@ -154,6 +182,10 @@ mod tests {
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_ethereum_primitives::{Block, BlockBody};
+    use reth_revm::{
+        db::{AccountStatus, BundleAccount},
+        state::AccountInfo,
+    };
 
     use super::*;
     use crate::{
@@ -164,6 +196,56 @@ mod tests {
     use alethia_reth_evm::zk_gas::pricing::{ZkGasIncompleteness, ZkGasMode, ZkGasShadowStatus};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
+
+    #[test]
+    fn pre_existing_destroyed_account_hashes_are_sorted_and_filtered() {
+        let first = Address::with_last_byte(0x03);
+        let second = Address::with_last_byte(0x01);
+        let newly_created = Address::with_last_byte(0x02);
+        let unchanged = Address::with_last_byte(0x04);
+        let mut bundle = BundleState::default();
+        bundle.state.insert(
+            first,
+            BundleAccount::new(
+                Some(AccountInfo::default()),
+                None,
+                Default::default(),
+                AccountStatus::Destroyed,
+            ),
+        );
+        bundle.state.insert(
+            second,
+            BundleAccount::new(
+                Some(AccountInfo::default()),
+                Some(AccountInfo::default()),
+                Default::default(),
+                AccountStatus::DestroyedChanged,
+            ),
+        );
+        bundle.state.insert(
+            newly_created,
+            BundleAccount::new(
+                None,
+                Some(AccountInfo::default()),
+                Default::default(),
+                AccountStatus::DestroyedChanged,
+            ),
+        );
+        bundle.state.insert(
+            unchanged,
+            BundleAccount::new(
+                Some(AccountInfo::default()),
+                Some(AccountInfo::default()),
+                Default::default(),
+                AccountStatus::Changed,
+            ),
+        );
+
+        let mut expected =
+            vec![alloy_primitives::keccak256(first), alloy_primitives::keccak256(second)];
+        expected.sort_unstable();
+        assert_eq!(pre_existing_destroyed_account_hashes(&bundle), expected);
+    }
 
     fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
         let tx = TxLegacy {
@@ -226,6 +308,8 @@ mod tests {
         .expect("derived block execution should skip invalid nonce tx");
 
         assert_eq!(outcome.committed_transactions.len(), 2);
+        assert_eq!(outcome.attempted_transaction_count, 3);
+        assert!(outcome.attempted_zk_gas_shadow_report.is_some());
         assert!(matches!(
             outcome
                 .zk_gas_shadow_report

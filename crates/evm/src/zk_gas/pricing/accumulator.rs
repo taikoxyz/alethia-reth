@@ -245,11 +245,11 @@ impl ResourceSet {
     }
 
     /// Merges a transaction delta after [`Self::prevalidate_merge`] succeeds.
-    fn merge_prevalidated(&mut self, other: ResourceSet, totals: ResourceSelectors) {
-        self.accounts.extend(other.accounts);
-        self.storage_accesses.extend(other.storage_accesses);
-        self.storage_writes.extend(other.storage_writes);
-        for (hash, byte_length) in other.code {
+    fn merge_prevalidated(&mut self, other: &ResourceSet, totals: ResourceSelectors) {
+        self.accounts.extend(other.accounts.iter().copied());
+        self.storage_accesses.extend(other.storage_accesses.iter().copied());
+        self.storage_writes.extend(other.storage_writes.iter().copied());
+        for (&hash, &byte_length) in &other.code {
             self.code.entry(hash).or_insert(byte_length);
         }
         self.unique_account_count = totals.unique_account_count;
@@ -348,6 +348,82 @@ pub struct ZkGasBlockSnapshot {
     pub diagnostic: Option<ZkGasAccumulatorError>,
 }
 
+/// Owned block-local selector snapshot for every transaction whose EVM pricing scope began.
+///
+/// Unlike [`ZkGasBlockSnapshot`], this includes transactions later rejected or truncated by the
+/// block executor. Candidates rejected before execution begins are not included.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ZkGasAttemptedBlockSnapshot {
+    /// Number of attempted transactions, including the anchor transaction.
+    pub transaction_count: u64,
+    /// Aggregated selectors across all attempted transaction scopes.
+    pub block: ZkGasBlockSnapshot,
+}
+
+#[derive(Debug, Default)]
+/// One block-prefix aggregate shared by committed and attempted observations.
+struct SelectorPrefix {
+    /// Non-anchor transaction count.
+    non_anchor_transactions: u64,
+    /// Nonzero native-value transfer count.
+    native_value_transfers: u64,
+    /// Operation components aggregated by route.
+    operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
+    /// Block-global unique execution resources.
+    resources: ResourceSet,
+    /// First diagnostic included in this prefix.
+    diagnostic: Option<ZkGasAccumulatorError>,
+}
+
+impl SelectorPrefix {
+    /// Merges one transaction into this prefix after validating the complete delta.
+    fn merge_transaction(&mut self, transaction: &TransactionSelectors) {
+        if self.diagnostic.is_none() {
+            self.diagnostic = transaction.diagnostic;
+        }
+        let non_anchor = u64::from(!transaction.metadata.is_anchor);
+        let native_transfer = u64::from(transaction.metadata.native_value_transfer);
+        let prevalidated = (|| {
+            let next_non_anchor = self
+                .non_anchor_transactions
+                .checked_add(non_anchor)
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            let next_native_transfers = self
+                .native_value_transfers
+                .checked_add(native_transfer)
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            let mut routes = Vec::with_capacity(transaction.operation_routes.len());
+            for (key, row) in &transaction.operation_routes {
+                routes.push((*key, merged_route(self.operation_routes.get(key), *row)?));
+            }
+            let resources = self.resources.prevalidate_merge(&transaction.resources)?;
+            Ok((next_non_anchor, next_native_transfers, routes, resources))
+        })();
+        let Ok((next_non_anchor, next_native_transfers, routes, resource_totals)) = prevalidated
+        else {
+            self.diagnostic.get_or_insert(prevalidated.unwrap_err());
+            return;
+        };
+        self.non_anchor_transactions = next_non_anchor;
+        self.native_value_transfers = next_native_transfers;
+        for (key, row) in routes {
+            self.operation_routes.insert(key, row);
+        }
+        self.resources.merge_prevalidated(&transaction.resources, resource_totals);
+    }
+
+    /// Returns an owned public snapshot of this prefix.
+    fn snapshot(&self) -> ZkGasBlockSnapshot {
+        ZkGasBlockSnapshot {
+            started_non_anchor_transactions: self.non_anchor_transactions,
+            native_value_transfers: self.native_value_transfers,
+            operation_routes: self.operation_routes.values().copied().collect(),
+            resources: self.resources.selectors(),
+            diagnostic: self.diagnostic,
+        }
+    }
+}
+
 /// Transactional pricing collector. In-flight selectors are invisible until commit.
 ///
 /// The collector intentionally does not implement `Clone`: transaction commit must prevalidate
@@ -360,20 +436,16 @@ pub struct ZkGasBlockSnapshot {
 /// ```
 #[derive(Debug, Default)]
 pub struct ZkGasAccumulator {
-    /// Included non-anchor transaction count.
-    committed_non_anchor_transactions: u64,
-    /// Included nonzero native-value transfer count.
-    committed_native_value_transfers: u64,
-    /// Included operation components aggregated by route.
-    committed_operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
-    /// Block-global unique execution resources.
-    committed_resources: ResourceSet,
+    /// Selectors from included transactions only.
+    committed: SelectorPrefix,
+    /// Selectors from every transaction whose pricing scope began.
+    attempted: SelectorPrefix,
+    /// Number of attempted transaction scopes, including the anchor transaction.
+    attempted_transaction_count: u64,
     /// Transaction scope currently being executed.
     in_flight: Option<TransactionSelectors>,
     /// Spawn opcode selected by the interpreter but not yet dispatched.
     pending_spawn: Option<u8>,
-    /// First diagnostic committed by an included transaction.
-    committed_diagnostic: Option<ZkGasAccumulatorError>,
 }
 
 impl ZkGasAccumulator {
@@ -479,60 +551,33 @@ impl ZkGasAccumulator {
     /// Atomically merges the in-flight selector scope into the block snapshot.
     pub fn commit_transaction(&mut self) -> Result<(), ZkGasAccumulatorError> {
         let Some(transaction) = self.in_flight.take() else {
-            self.committed_diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
+            self.committed.diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
             return Ok(());
         };
         self.pending_spawn = None;
-        let diagnostic = transaction.diagnostic;
-        let non_anchor = u64::from(!transaction.metadata.is_anchor);
-        let native_transfer = u64::from(transaction.metadata.native_value_transfer);
-        if self.committed_diagnostic.is_none() {
-            self.committed_diagnostic = diagnostic;
-        }
-        let prevalidated = (|| {
-            let next_non_anchor = self
-                .committed_non_anchor_transactions
-                .checked_add(non_anchor)
-                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
-            let next_native_transfers = self
-                .committed_native_value_transfers
-                .checked_add(native_transfer)
-                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
-            let mut routes = Vec::with_capacity(transaction.operation_routes.len());
-            for (key, row) in &transaction.operation_routes {
-                routes.push((*key, merged_route(self.committed_operation_routes.get(key), *row)?));
-            }
-            let resources = self.committed_resources.prevalidate_merge(&transaction.resources)?;
-            Ok((next_non_anchor, next_native_transfers, routes, resources))
-        })();
-        let Ok((next_non_anchor, next_native_transfers, routes, resource_totals)) = prevalidated
-        else {
-            self.committed_diagnostic.get_or_insert(prevalidated.unwrap_err());
-            return Ok(());
-        };
-        self.committed_non_anchor_transactions = next_non_anchor;
-        self.committed_native_value_transfers = next_native_transfers;
-        for (key, row) in routes {
-            self.committed_operation_routes.insert(key, row);
-        }
-        self.committed_resources.merge_prevalidated(transaction.resources, resource_totals);
+        self.record_attempt(&transaction);
+        self.committed.merge_transaction(&transaction);
         Ok(())
     }
 
-    /// Discards every in-flight selector while preserving prior committed transactions.
+    /// Retains an attempted observation and clears its in-flight selector scope.
     pub fn reset_transaction(&mut self) {
-        self.in_flight = None;
+        if let Some(transaction) = self.in_flight.take() {
+            self.record_attempt(&transaction);
+        }
         self.pending_spawn = None;
     }
 
     /// Returns an owned committed block snapshot; in-flight data is excluded.
     pub fn committed_snapshot(&self) -> ZkGasBlockSnapshot {
-        ZkGasBlockSnapshot {
-            started_non_anchor_transactions: self.committed_non_anchor_transactions,
-            native_value_transfers: self.committed_native_value_transfers,
-            operation_routes: self.committed_operation_routes.values().copied().collect(),
-            resources: self.committed_resources.selectors(),
-            diagnostic: self.committed_diagnostic,
+        self.committed.snapshot()
+    }
+
+    /// Returns selectors from every transaction whose EVM pricing scope began.
+    pub fn attempted_snapshot(&self) -> ZkGasAttemptedBlockSnapshot {
+        ZkGasAttemptedBlockSnapshot {
+            transaction_count: self.attempted_transaction_count,
+            block: self.attempted.snapshot(),
         }
     }
 
@@ -540,7 +585,7 @@ impl ZkGasAccumulator {
     pub const fn diagnostic(&self) -> Option<ZkGasAccumulatorError> {
         match &self.in_flight {
             Some(transaction) if transaction.diagnostic.is_some() => transaction.diagnostic,
-            _ => self.committed_diagnostic,
+            _ => self.committed.diagnostic,
         }
     }
 
@@ -570,6 +615,16 @@ impl ZkGasAccumulator {
             feature_error_scaled: priced.feature_error_scaled,
         };
         merge_route(&mut transaction.operation_routes, input.route.into(), row)
+    }
+
+    /// Records one completed or discarded in-flight scope in the attempted prefix.
+    fn record_attempt(&mut self, transaction: &TransactionSelectors) {
+        let Some(next_count) = self.attempted_transaction_count.checked_add(1) else {
+            self.attempted.diagnostic.get_or_insert(ZkGasAccumulatorError::ArithmeticOverflow);
+            return;
+        };
+        self.attempted.merge_transaction(transaction);
+        self.attempted_transaction_count = next_count;
     }
 }
 

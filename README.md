@@ -83,10 +83,10 @@ Use `--chain` with one of the supported presets:
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
-## Design documentation
+## Design Documentation
 
-- [ZKGas pricing model](docs/zk-gas-pricing-model.md) describes the accepted SP1 pricing model,
-  ownership rules, sealed runtime artifact, and the current non-enforcing Shadow boundary.
+- [zkGas Shadow pricing model](docs/zk-gas-pricing-model.md) describes the current SP1 PGU pricing
+  export, ownership rules, live EVM-local boundary, and unwired completion inputs.
 
 ## License
 

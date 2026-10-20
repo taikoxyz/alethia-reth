@@ -1,121 +1,162 @@
-# ZKGas Pricing Model
+# zkGas Shadow Pricing Model
 
 ## Status and scope
 
-This document describes the accepted SP1 ZKGas pricing model compiled into alethia-reth. The current
-runtime artifact has model identity
+This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
+alethia-reth. The runtime artifact has model identity
 `93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046` and was introduced by
-[alethia-reth PR #253](https://github.com/taikoxyz/alethia-reth/pull/253).
+[alethia-reth PR #253](https://github.com/taikoxyz/alethia-reth/pull/253). If
+`RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
 
-The model is implemented but is not an admission or consensus rule. `Disabled` remains the default
-runtime mode. `Shadow` collects selectors and evaluates the model without rejecting transactions or
-blocks and without replacing the existing Unzen meter, block limit, or header-difficulty
-commitment.
+The artifact calls itself `accepted_runtime_export`. In this document, that means only that the
+raiko2 calibration pipeline selected it for this runtime integration. It is not a protocol
+specification, governance approval, admission rule, or consensus rule. The words
+`accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
+approval claims.
 
-This is the human-readable semantic contract. The following checked-in artifacts are authoritative
-for details that must remain machine-exact:
+> **Not the Unzen zk gas limit.** This PGU model is separate from the consensus Unzen zk gas meter
+> in `crates/evm/src/zk_gas/{schedule,unzen,meter}.rs`, specified in
+> [taiko-mono's zk gas specification](https://github.com/taikoxyz/taiko-mono/blob/main/packages/protocol/docs/zk_gas_spec.md).
+> The Unzen meter enforces `BLOCK_ZK_GAS_LIMIT` where Unzen is active and commits its total to
+> `header.difficulty`, regardless of `--zkgas-mode`. `--zkgas-mode` controls only this Shadow PGU
+> model. PGU and Unzen zk gas are different units and must not be compared numerically.
 
-- [`runtime-spec.json`](../crates/evm/src/zk_gas/pricing/runtime-spec.json) is the canonical
-  coefficient, provenance, domain, arithmetic, and validation artifact.
-- [`model.rs`](../crates/evm/src/zk_gas/pricing/model.rs) defines the checked executable semantics.
-- [`types.rs`](../crates/evm/src/zk_gas/pricing/types.rs) defines the typed selector and result
-  contracts.
+`Disabled` remains the default runtime mode. `Shadow` collects EVM-local selectors and evaluates an
+incomplete subtotal without rejecting transactions or blocks and without replacing the Unzen
+meter, block limit, or header-difficulty commitment.
+
+### What is live
+
+| Surface | Current status |
+| --- | --- |
+| EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
+| Runtime output | One `tracing` event per successful executor finish, target `zkgas`, carrying the model ID, status, EVM-local subtotal, and fixed/operation/local-resource components. |
+| Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
+| Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
+| Exact resources, block/parent MPT, and proposal selectors | No production producer is wired in this repository, and no published caller is identified by the artifact or documentation. |
+| Admission | Not implemented. There is no `Admission` mode. |
+
+The live log does not contain a block number or hash, exposes no metric, and does not include the
+underlying typed error behind a coarse diagnostic status. Payload-builder attempts and supported
+RPC simulations can therefore be interleaved with canonical execution. The log is also skipped if
+Unzen difficulty validation fails before the executor records it. It is an EVM-local lower-bound
+observation, not a complete block quote or a ready-made SP1 comparison feed.
+
+## Sources of truth
+
+This document is the human-readable guide. The checked-in sources divide authority as follows:
+
+- [`runtime-spec.json`](../crates/evm/src/zk_gas/pricing/runtime-spec.json) carries the current
+  coefficients, route records, embedded provenance, declared domains, and recorded validation.
+- [`generated.rs`](../crates/evm/src/zk_gas/pricing/generated.rs) is generated from that JSON and
+  must not be edited by hand.
+- [`model.rs`](../crates/evm/src/zk_gas/pricing/model.rs) defines executable evaluation,
+  composition, validation, and some hard-coded domain rules.
+- [`types.rs`](../crates/evm/src/zk_gas/pricing/types.rs) defines typed selectors, results, errors,
+  and the hard-coded selector bound.
+- [`mode.rs`](../crates/evm/src/zk_gas/pricing/mode.rs) defines Shadow report and completion types.
 - [`accumulator.rs`](../crates/evm/src/zk_gas/pricing/accumulator.rs) defines transactional selector
-  collection and unique-resource accounting.
-- [`runtime.rs`](../crates/evm/src/zk_gas/runtime.rs) extracts typed operation inputs from revm.
-- [`generated.rs`](../crates/evm/src/zk_gas/pricing/generated.rs) is derived from the canonical JSON
-  and must not be edited by hand.
+  collection and EVM-local unique-resource accounting.
+- [`runtime.rs`](../crates/evm/src/zk_gas/runtime.rs),
+  [`alloy.rs`](../crates/evm/src/alloy.rs), [`evm.rs`](../crates/evm/src/evm.rs), and
+  [`adapter.rs`](../crates/evm/src/zk_gas/adapter.rs) define extraction, Anchor detection,
+  resource observation, spawn confirmation, and inspector integration. `runtime.rs` also contains
+  parts of the separate consensus Unzen meter.
+- [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
+  generates the Rust route table. It does not recreate coefficients from calibration measurements.
 
-If this document conflicts with the canonical JSON or checked evaluator, the artifact and evaluator
-control the current implementation. Such a conflict is a documentation bug and must be fixed before
-the model is promoted to enforcement.
+If prose conflicts with code, the executable evaluator and extractor control current behavior. The
+JSON content address covers the canonical JSON fields; it does not cryptographically bind evaluator
+constants, extraction rules, or ownership code. In particular, the blob/source domain and selector
+bound are currently duplicated in Rust rather than generated from the JSON. Agreement is protected
+by review and tests, not by the artifact hash alone.
 
 ## Objective and non-goals
 
-ZKGas is a host-computable workload meter. It is intended to identify execution that is cheap under
-Ethereum gas but expensive for the configured ZK backend, so a later admission policy can bound the
-work sent to a prover without running the prover first.
+The Shadow model is a host-computable estimate of SP1 work. Its intended future use is to identify
+execution that is cheap under Ethereum gas but expensive for the configured guest, so an admission
+policy can bound prover work without first running the prover.
 
-The pricing model is designed around these properties:
+The current design aims for:
 
 - deterministic integer evaluation for identical committed execution;
-- explicit, non-overlapping ownership of operation, state, trie, payload, block, and proposal work;
-- monotone charging of cost-bearing selectors;
-- explicit conservative pricing or a typed failure for inputs outside the accepted model;
-- transactional collection, so rejected candidate transactions do not pollute an admitted prefix;
-- content-addressed coefficients and execution identity; and
+- explicit ownership of committed operation, state, trie, payload, block, and proposal work;
+- conservative tariffs or typed failure outside a calibrated route;
+- transactional collection, so discarded candidates do not pollute the committed prefix; and
 - conservative safety taking priority over mean prediction error.
 
-The accepted profile is calibrated against normalized SP1 `ExecutionReport::gas()` (PGU) for one
-identified production proposal ELF and VK. It does not claim to price RISC0 cycles, wall-clock proof
-latency, or another SP1 guest. A different backend, guest, cost-bearing trace schema, or coefficient
-set requires independent calibration and a new model identity.
+The current export was calibrated against normalized SP1 `ExecutionReport::gas()` values, called
+PGU here. The artifact embeds a production proposal ELF hash and VK hash, but it does not identify a
+public raiko2 release or tag for that guest. It therefore cannot establish from public material that
+a currently deployed guest still matches. Resolving that provenance is required before promotion
+to admission or use with another guest.
+
+The model does not claim to price RISC0 cycles, wall-clock proof latency, or another SP1 guest. A
+different backend, guest, cost-bearing trace schema, or coefficient set requires independent
+calibration and a new model identity.
 
 The current implementation deliberately does **not**:
 
-- replace or modify the Unzen ZKGas schedule;
+- replace or modify the Unzen zk gas schedule;
 - choose or enforce a new per-block limit;
 - enforce a cumulative proposal budget;
-- guarantee that an admitted proposal finishes within a wall-clock deadline;
-- expose an `Admission` mode; or
-- treat a Shadow subtotal as a complete block quote before exact resources and MPT selectors are
-  supplied.
+- guarantee a wall-clock proof deadline;
+- expose an `Admission` mode;
+- price executed work from a candidate transaction that is later discarded; or
+- produce the exact external inputs required for complete block or proposal pricing.
 
-## Model identity and units
+## Model identity, arithmetic, and rounding
 
-The canonical artifact distinguishes two version numbers:
+The artifact distinguishes the cost-bearing trace-schema version from the JSON runtime-export
+schema version. Refer to `execution_identity.trace_schema_version` and top-level `schema_version`
+instead of copying their current numbers into integrations.
 
-- `execution_identity.trace_schema_version = 9` identifies the calibrated feature/trace schema;
-- top-level `schema_version = 1` identifies the JSON runtime-export format.
+`artifact_sha256` is SHA-256 over sorted-key compact JSON with the self-referential
+`artifact_sha256` field removed. Reports carry this address so completion cannot silently combine
+different JSON artifacts. The address does not cover the surrounding Rust semantics described in
+the source-of-truth section.
 
-The artifact binds the production proposal ELF and VK hashes, calibration source hashes, validation
-authority hashes, route table, tariffs, arithmetic policy, and supported domains. The canonical JSON
-is content-addressed as `RUNTIME_SPEC_SHA256`; reports carry that identity so a caller cannot
-silently complete a report with another model.
+Coefficients are fixed-point PGU values using the artifact's `arithmetic.scale`. The exporter has
+already rounded coefficient numerators upward. Evaluation uses checked signed arithmetic; selector
+bounds and scope term limits come from the artifact and Rust constants. Invalid selectors,
+excessive term counts, overflow, and negative composed components are typed errors.
 
-All coefficients are fixed-point PGU values with scale `10^18`. Evaluation uses checked signed
-128-bit arithmetic. Selectors must be nonnegative and no larger than the sealed bound of
-`1,000,000,000`; each scope is limited to at most 1,024 terms. Invalid selectors, excessive term
-counts, negative components, and overflow are typed errors. The evaluator rounds upward only at a
-block or proposal-once boundary:
+Some individual fitted coefficients are intentionally negative, including parts of EXP,
+zero-length KECCAK256, and cold SLOAD/SSTORE. Those terms avoid double counting work owned by other
+tariffs. Do not “fix” them to zero; the evaluator requires the composed result, not every fitted
+coefficient, to be nonnegative.
+
+The live EVM-local subtotal, complete block result, and proposal-once result each expose their own
+integer ceiling. For a complete proposal comparison, callers must combine scaled values and apply a
+single final ceiling:
 
 ```text
-integer_pgu = ceil(total_scaled_pgu / 10^18)
+proposal_scaled = proposal_once.total_scaled + sum(complete_block[i].total_scaled)
+proposal_pgu = ceil(proposal_scaled / scale)
 ```
 
-There is no runtime-fit step and no mutable runtime discount. Any calibration normalization,
-discount, reserve, envelope, or tariff decision is already incorporated into the sealed
-coefficients.
+Do not sum `total_pgu` from blocks and `price_proposal_once().total_pgu`; those values were rounded
+independently. No in-repository helper currently performs the proposal composition above.
 
 ## Scope decomposition and ownership
-
-The model splits work into disjoint block-local and proposal-once scopes:
-
-```text
-proposal_scaled = proposal_once_scaled + sum(block_scaled)
-proposal_reference_pgu = ceil(proposal_scaled / 10^18)
-
-block_admission_pgu[i] = ceil(block_scaled[i] / 10^18)
-```
-
-The complete proposal reference applies one ceiling after combining all disjoint scaled components.
-The per-block ceiling is a separate value for block-local admission and compatibility analysis;
-`sum(block_admission_pgu)` is not the proposal reference price. Proposal startup and parent-state
-work are not spread across blocks, and block costs are not averaged across a proposal.
 
 The complete block-local fixed-point price is:
 
 ```text
 block_price =
     block_base
-  + started_non_anchor_transaction_tariff * started_non_anchor_transactions
+  + committed_non_anchor_transaction_tariff * committed_non_anchor_transactions
   + native_value_transfer_tariff * native_value_transfers
   + operation_price
   + exact_unique_resource_price
   + exact_block_mpt_price
 ```
 
-The proposal-once price is:
+The Rust field and artifact still use the historical name `started_non_anchor_transactions`, but
+the counter increments only when `commit_transaction` merges the in-flight transaction. It means
+included/committed, not merely attempted.
+
+The proposal-once fixed-point price is:
 
 ```text
 proposal_once_price =
@@ -123,225 +164,193 @@ proposal_once_price =
   + canonical_transaction_byte_tariff * canonical_transaction_bytes
   + nonempty_payload_transaction_tariff * nonempty_payload_transactions
   + true_unattempted_transaction_tariff * true_unattempted_transactions
-  + extra_blob_tariff * (total_blob_count - 1)
-  + extra_source_tariff * (source_count - 1)
+  + extra_blob_tariff * extra_blob_count
+  + extra_source_tariff * extra_source_count
   + exact_parent_mpt_price
 ```
 
-The exact coefficient values live only in `runtime-spec.json` and generated Rust. Keeping the
-numbers in one canonical artifact prevents a prose copy from drifting away from the evaluator.
+Coefficient values and exhaustive route membership live in `runtime-spec.json` and generated Rust.
+This document names only behavior needed to use the evaluator correctly.
 
 ### Anchor ownership
 
-The Anchor transaction is not a second operation-pricing domain. Its executed opcodes,
-precompiles, memory growth, state access, and confirmed spawn wrappers use the same routes as any
-other included transaction. The Anchor does not receive the
-`started_non_anchor_transaction_tariff`; its envelope and protocol orchestration are covered by the
-block fixed term. This prevents both omission of Anchor execution and double charging it through a
-separate whole-Anchor estimate.
+The Anchor transaction is not a separate operation-pricing domain. Its executed ordinary opcodes,
+precompiles, state access, and confirmed spawn wrappers use the corresponding normal routes. A
+spawning CALL/CREATE-family step is the exception described below: the confirmed wrapper owns that
+step, rather than an ordinary opcode route owning it.
+
+The Anchor does not receive the committed non-Anchor transaction tariff. Its envelope and protocol
+orchestration are covered by the block fixed term. This avoids a second whole-Anchor estimate while
+retaining the execution routes that the collector actually emits.
 
 ### Transactional ownership
 
 Selectors are staged per transaction and become block-visible only when that transaction is
-included. Resetting a rejected or otherwise discarded candidate removes its in-flight operation and
-resource selectors while preserving the previously committed prefix.
+committed. Resetting a rejected or discarded candidate removes its operation and resource selectors
+while preserving the previously committed prefix. An included transaction that halts or reverts is
+committed by the executor and retains its observed work.
 
-An included transaction that halts or reverts still consumed execution work, so its executed
-operations remain priced. State and resource selectors reflect the collector's committed execution
-contract rather than being inferred from the transaction's final status alone.
+Work executed for a candidate and then discarded is intentionally absent from the current subtotal.
+This can occur when the Unzen zk gas limit rejects a candidate or the executor filters a recoverable
+non-Anchor failure. The proposal tariff covers only truly unattempted transactions, so it does not
+close this gap. A future admission design must either price discarded attempts or prove that its
+admission input excludes that work consistently with the proving workload.
 
 ## Operation routes and composition
 
-There are 174 authenticated operation routes in three namespaces:
+Authenticated routes use three namespaces:
 
-- `opcode:0xNN` for ordinary interpreter steps;
-- `precompile:0xNN` (including P256 at `0x100`) for direct precompile bodies; and
+- `opcode:0xNN` for supported ordinary interpreter steps;
+- `precompile:0xNN` for direct precompile bodies; and
 - `opcode:0xNN:confirmed_spawn_wrapper` for confirmed CALL/CREATE-family child-frame dispatch.
 
-Each observed event is evaluated into up to four candidates:
+The JSON's `block_local.operation_routes` array is the exhaustive route and model-family map. The
+route accumulator has four candidate fields, but one event does not generally emit all four:
 
-- `accepted_absolute`: the calibrated absolute model for the typed event;
-- `incremental`: a controlled per-event or per-selector candidate retained by some routes;
-- `structural`: an independent structural floor, principally used by precompiles; and
-- `feature_error`: a conservative route used when execution occurred but the accepted typed input
-  is unavailable for that outcome.
+- a normally modeled opcode emits its `accepted_absolute` and any configured `incremental`
+  candidate;
+- an opcode whose typed extraction fails emits `feature_error` instead of its normal candidates;
+- `structural` floors exist on precompile routes, which do not have `feature_error`; and
+- undefined opcode bytes have no route at all and turn the block report into a
+  `collector_unknown_route` diagnostic.
 
-Candidates are accumulated by authenticated route across the committed block. The route then uses
-one of two sealed composition rules:
+Candidates accumulate by route across the committed block, then use the route's composition:
 
 ```text
-accepted route:
+Composition::Accepted:
     route_normal = accepted_absolute
 
-maximum route:
+Composition::Maximum:
     route_normal = max(accepted_absolute, incremental, structural)
 
 route_total = route_normal + feature_error
 operation_price = sum(route_total for every committed route)
 ```
 
-The maximum is applied after each candidate has been accumulated for the route, not independently
-to each event. The accepted artifact contains 113 accepted-only routes and 61 maximum-composition
-routes.
+The maximum is applied after route-wide accumulation, not per event. `feature_error` remains a
+separate accumulated field, although a single opcode event selects either its normal extraction or
+its feature-error path.
 
-The four candidates are alternatives only where the composition rule says so. `feature_error` is
-additive because it represents executed events that could not safely use the accepted route; it is
-not allowed to disappear behind another candidate.
+### Model families and current exceptions
 
-### Accepted model families
+The evaluator implements fixed, fixed-with-memory, linear/floored-linear, static-raw-gas,
+raw-gas-affine, EXP, KECCAK256, memory-access, memory-copy, copy, LOG-piecewise, RETURN, storage, and
+declared-context families. Integrations must use the route's `accepted_absolute_model.kind` and
+parameters rather than inferring a model from the opcode name.
 
-The evaluator supports these typed families:
+Important current exceptions are:
 
-| Family | Cost-bearing selectors and behavior |
-| --- | --- |
-| Fixed | One constant contribution per event. |
-| Fixed with memory | A fixed body plus the shared memory model; some routes require an exact raw-gas envelope. |
-| Linear/floored linear | A checked linear function of interpreter gas, native precompile gas, event count, or declared work units, with optional constant and minimum floors. |
-| Static raw gas | Common dispatch plus a coefficient multiplied by the opcode's exact interpreter raw gas. |
-| Raw-gas affine | Common dispatch plus a constant and raw-gas term. |
-| EXP | A conservative small-exponent bucket, otherwise a function of exponent-byte length and its square. |
-| KECCAK256 | Common/fixed work, zero-length behavior, Keccak permutation count, and shared memory growth. |
-| Memory access | Fixed opcode work plus shared memory growth for `MLOAD`, `MSTORE`, and `MSTORE8`. |
-| Memory copy | Fixed work, copied words, and shared memory growth for `MCOPY`. |
-| Copy | Validated byte/word relationship plus copied words and shared memory growth for calldata/returndata copying. |
-| LOG | Topic count, zero/nonzero data, additional data words, and shared memory growth. |
-| RETURN | Returned bytes/words and shared memory growth, with a conservative repeated-boundary extension outside the measured byte envelope. |
-| Storage | Warm/cold `SLOAD` and warm/cold plus semantic-branch `SSTORE` pricing. |
-| Declared context | Typed value/access classes for context operations whose cost shape is not represented by raw EVM gas alone. |
+- `opcode:0x39` (CODECOPY) uses a flat aggressive tariff inside its raw-gas envelope and switches
+  to a raw-gas fallback above it. The transition is not monotone.
+- ORIGIN, CODESIZE, REVERT, LOG3, LOG4, and in-envelope CODECOPY use flat aggressive tariffs. They
+  are placeholders/conservative prices rather than measured parameterized models and can dominate
+  Shadow subtotals.
+- Only LOG1 and LOG2 use the LOG-piecewise family. LOG0 is a raw-gas linear floor; LOG3 and LOG4 use
+  the flat tariffs above.
+- `max_constant_and_linear` precompile routes take the maximum of the constant and native-gas
+  linear terms; they do not add them. The route's structural and incremental candidates are then
+  composed according to `Composition::Maximum`.
+- RETURN's out-of-envelope raw-gas coefficient is currently zero. Its repeated-boundary branch
+  multiplies a chunk body that includes the whole event's memory price, so memory work is repeated
+  for every conservative chunk.
 
-The exact family assigned to every route and all parameters are in `block_local.operation_routes` of
-the canonical artifact.
+The shared memory selectors are per-operation values. `growth_event` and `boundary_4k_event` are
+zero/one flags, not counts; the first memory region through the boundary is free for the latter.
+`memory_evm_gas_delta` is the EVM memory expansion delta. Typed extractors also validate byte/word
+and raw-gas relationships; a contradiction is invalid input rather than a zero-cost event.
 
-### Shared memory model
+Storage models classify SLOAD by warm/cold access and SSTORE by warm/cold access plus its semantic
+branch. Declared-context models include ADDRESS/CALLER, CALLVALUE, CALLDATALOAD, CALLDATASIZE, and
+TIMESTAMP classes. The artifact is authoritative for the exact per-route assignment.
 
-Memory-bearing operation models use one common selector decomposition:
+### Spawn wrappers
 
-```text
-memory_price =
-    growth_event_tariff * growth_events
-  + evm_gas_delta_tariff * memory_evm_gas_delta
-  + boundary_4k_tariff * boundary_4k_events
-```
+When a CALL/CREATE-family instruction selects a new frame, the collector returns before recording
+the ordinary opcode route, raw gas, or shared memory. If frame dispatch confirms the spawn, only the
+confirmed-wrapper route prices that spawning step. Child operations are priced normally and are not
+multiplied by forwarded gas.
 
-Typed extractors also validate relationships such as `words = ceil(bytes / 32)` and the raw EVM gas
-implied by LOG or copy inputs. A contradiction is an invalid model input, not a zero-cost event.
+Confirmation occurs before later depth or balance checks in the dispatched frame. A selected spawn
+that is never dispatched is not charged. A call into a precompile charges both the confirmed wrapper
+and the precompile body. Consumers must not add the ordinary CALL/CREATE opcode or assume its buffer
+growth was captured by the shared-memory model.
 
-`RETURN` has a measured envelope through 65,536 returned bytes. Above that boundary, the evaluator
-uses the maximum of a raw-gas-linear extension and repeated boundary-sized chunks. This makes the
-extension monotone without claiming that an unmeasured huge return follows the in-envelope fit.
-
-### Storage and context models
-
-`SLOAD` is classified by warm/cold access. `SSTORE` is classified by warm/cold access and one of
-`Clear`, `DirtyRewrite`, `Noop`, `Reset`, `RestoreOriginal`, or `Set`. Invalid combinations, such as
-a cold dirty rewrite, are rejected rather than mapped to another branch.
-
-The declared context model currently distinguishes fixed ADDRESS/CALLER work, zero/nonzero value
-classes, zero/partial/full `CALLDATALOAD`, and `CALLDATASIZE`. These are explicit typed
-approximations in the accepted artifact, not a generic inheritance from Ethereum gas.
-
-### Precompiles and spawn wrappers
-
-Direct precompiles are separate authenticated routes. Most use native precompile gas for their
-accepted, incremental, or structural candidates. Routes may combine a constant and native-gas
-linear term. The `0x07` route additionally uses declared semantic work units for its structural
-floor because native gas alone did not provide the intended conservative boundary.
-
-CALL/CREATE-family opcodes stage a possible spawn. The confirmed wrapper route is charged only when
-frame dispatch confirms it. Child execution itself is priced by the ordinary operations executed in
-the child and is not multiplied by forwarded gas.
-
-## Block fixed, resource, and MPT terms
+## Block fixed, resource, and trie terms
 
 ### Fixed block terms
 
-The sealed block fixed vector contains:
+The block fixed vector owns block/Anchor orchestration, one tariff per committed non-Anchor
+transaction, and eligible native value transfers that do not enter executable code or a precompile.
+The block base is not an opcode estimate for the Anchor.
 
-- `block_base` for fixed per-block work, including block/Anchor orchestration not owned elsewhere;
-- one tariff for each started non-Anchor transaction; and
-- one tariff for each eligible native value transfer that did not enter executable code or a
-  precompile route.
+### EVM-local and exact resources
 
-The block base is not an opcode estimate for the Anchor. Anchor operations remain operation-owned.
+Resource selectors are unique sets or byte totals across the committed block prefix, not
+per-transaction sums. The EVM-local collector's semantics are deliberately broader than net state
+changes:
 
-### Unique execution resources
+- accounts include transaction callers and call targets, access-list accounts, the beneficiary,
+  treasury, state returned from execution, and accounts selected by relevant opcodes;
+- storage-access sets include access-list keys even when never loaded and every observed SLOAD or
+  SSTORE location;
+- an observed SSTORE contributes an access and a write even for a no-op or an instruction that
+  halts, because storage observation is not gated on the instruction result; and
+- code selectors track unique nonempty code hashes and total bytes for those hashes.
 
-The block prices five exact unique selectors:
+An exact producer must start with these collector semantics and add any relevant pre-block or
+outside-EVM loads. Defining "written" as net-changed slots or "accessed" as successful loads is
+incompatible. Completion rejects any exact resource dimension below the EVM-local value, then
+**replaces** the provisional local resource contribution with the exact contribution; it never adds
+both.
 
-- accounts accessed;
-- storage slots accessed;
-- storage slots written;
-- nonempty code hashes materialized; and
-- total bytes across those unique code hashes.
+No production exact-resource producer currently exists. Consequently these rules are a lower-bound
+compatibility contract, not evidence that complete block quotes are live.
 
-These are set cardinalities or unique byte totals across the committed block prefix, not sums of
-per-transaction counts. Repeated access to the same resource does not recreate one-time
-materialization work. The canonical artifact also records dependency ownership, such as the code
-hash dimension's dependency on account observation.
+### Merkle Patricia Trie work
 
-The EVM-local collector may observe only a subset of the resources loaded elsewhere in block
-processing. Completion therefore validates that each exact resource dimension is at least the
-EVM-local observation and **replaces** the provisional EVM-local resource contribution with the
-exact contribution. It does not add both.
+Block and proposal-parent Merkle Patricia Trie (MPT) inputs contain path-node visits,
+materialization work units, hydration hash blocks, dirty encoded nodes, dirty hash blocks,
+structural branch/extension churn nodes, and dropped trie nodes. Each scope is a dot product with
+its tariff vector. Block MPT is an absolute snapshot for the canonically aggregated block state;
+proposal-parent MPT is proposal-once.
 
-### Sparse-trie work
+This repository defines the fields and evaluator but not operational producers for them. It does
+not specify such details as the exact materialization unit, hash-block width, or inclusion of storage
+tries. Those definitions must be supplied and reviewed with the producer before completion can be a
+portable contract; callers must not invent per-transaction path-depth approximations.
 
-Block and proposal-parent MPT work use seven exact selectors:
+## Proposal payload and blob/source terms
 
-- path-node visits;
-- materialization work units;
-- hydration hash blocks;
-- dirty encoded nodes;
-- dirty hash blocks;
-- structural branch/extension churn nodes; and
-- dropped trie nodes.
+`price_proposal_once` takes canonical signed EIP-2718 bytes, a nonempty-payload transaction count,
+and a true-unattempted transaction count. No production producer or complete operational definition
+for the latter two selectors is currently published, including treatment of undecodable or
+zero-signer transactions. They are API inputs, not live observations.
 
-Each scope is a dot product of these selectors and its sealed tariff vector. The block selector is
-the exact absolute snapshot for the canonically aggregated block state. It is not an additive sum of
-per-transaction path-depth guesses. Proposal-parent MPT work is proposal-once and must not be copied
-into every block.
-
-## Proposal payload and blob-source terms
-
-Proposal-once payload pricing observes canonical signed EIP-2718 bytes, the number of transactions
-with nonempty payloads, and transactions that were truly never attempted by proposal execution.
-These terms cover proposal input work that is not owned by executed operation routes.
-
-The current blob/source model accepts only the sealed BPO2 topology:
-
-- between 1 and 11 sources;
-- zero to ten forced-prefix sources, each with exactly one blob;
-- one final normal source with between one and six blobs;
-- between 1 and 16 blobs in total; and
-- agreement between proposal blob hashes and provider blob, commitment, and proof counts.
-
-Inside that domain, the base one-blob/one-source topology incurs no separate blob/source increment;
-the model charges extra blobs and extra sources. Inputs outside the domain are rejected; the
-evaluator does not extrapolate the accepted topology silently.
+The blob/source evaluator accepts the artifact's BPO2 topology; “BPO2” is an unexpanded internal
+label in the current source. The exact source/blob domain is declared in
+`proposal_once.blob_source_domain` and independently hard-coded in `validate_blob_source_domain`.
+The base topology has no separate increment; extra blobs and sources are charged. Inputs outside the
+hard-coded domain are rejected rather than extrapolated.
 
 ## Conservative and failure behavior
 
-Conservative pricing is part of the model, not an error metric to optimize away. The calibration
-uses three broad strategies:
-
-1. controlled measured models for frequent, repeatable, parameter-dependent, or high-damage work;
-2. conservative envelopes when the relevant dimensions are understood but a finer decomposition
-   does not improve the safety boundary; and
-3. explicit aggressive tariffs or failure for unresolved work whose reachable domain cannot safely
-   use the measured model.
+The calibration uses measured models where available, conservative envelopes where dimensions are
+understood, and aggressive tariffs or typed failure for unresolved work. The aggressive routes
+listed above are intentional compatibility prices, not evidence of equal measured cost.
 
 At runtime:
 
-- an authenticated `feature_error` model prices executed outcomes whose exact accepted-model inputs
-  are unavailable;
-- an unknown route follows `unknown_route_policy = reject`;
+- supported opcode extraction failures use that opcode route's authenticated `feature_error` model;
+- unknown routes, including undefined opcode bytes, produce a collector diagnostic rather than a
+  feature-error price;
 - missing, contradictory, or out-of-range selectors are typed errors;
-- arithmetic overflow and negative components are errors; and
-- a diagnostic prevents a Shadow subtotal from being presented as a trustworthy complete quote.
+- arithmetic overflow and negative composed components are errors; and
+- every `Diagnostic`, every mismatched model ID, and every unexpected incompleteness marker causes
+  completion to fail.
 
-Because the only active modes are `Disabled` and non-enforcing `Shadow`, these pricing failures do
-not currently reject EVM execution. They become bounded-cardinality Shadow diagnostics. Any future
-Admission mode must define how these typed failures fail closed before it can enforce a limit.
+Because the only modes are `Disabled` and non-enforcing `Shadow`, these failures do not reject EVM
+execution. They produce bounded-cardinality Shadow diagnostics. Any future admission mode must
+define fail-closed behavior before enforcing a limit.
 
 ## Shadow runtime contract
 
@@ -352,92 +361,83 @@ Runtime mode is selected with either:
 ALETHIA_RETH_ZKGAS_MODE=disabled|shadow
 ```
 
-`Disabled` is the default. It installs no new selector collector and preserves the existing Unzen
-execution, admission, and difficulty paths.
+`Disabled` installs no new selector collector. `Shadow` enables the collector only through
+`TaikoBlockExecutor`. That covers sync, payload building, `eth_simulateV1`,
+`debug_executionWitness`, and taikoAuth transaction-list execution. It does not cover standalone
+`eth_call`, `eth_estimateGas`, or `debug_trace*` paths that bypass that executor.
 
-`Shadow` installs a node-wide observer on every executor, including sync and RPC simulation paths.
-It never rejects a transaction or block and never changes receipts, gas, state, or assembled
-headers. It can add substantial CPU overhead on opcode-heavy execution and is intended for
-diagnostics and reference comparison rather than default operation. Shadow collection is not gated
-on Unzen activation; when selected, it also observes pre-Unzen execution without changing its
-canonical outcome.
+Shadow never changes receipts, gas, state, assembled headers, Unzen validation, or admission. It can
+add CPU overhead on opcode-heavy execution. It is not gated on Unzen activation and can observe
+pre-Unzen block execution without changing the canonical outcome.
 
-An alethia-reth block executor can publish only:
-
-- an `Incomplete` report containing block fixed, operation, and EVM-local resource components; or
-- a typed `Diagnostic` explaining why even that subtotal is not trustworthy.
-
-The report remains incomplete because the EVM runtime does not own exact block-end resources or the
-absolute MPT snapshot. An external caller that owns those values may call
-`complete_block_shadow_report`. Completion authenticates the model identity and known subtotal,
-checks that exact resources dominate the EVM-local subset, prices exact resources and MPT, and
-returns the complete block breakdown. It cannot convert a diagnostic from another model into a
-valid quote.
-
-`price_proposal_once` separately evaluates proposal payload, blob/source, startup, and parent-MPT
-inputs. The caller is responsible for composing its scaled value exactly once with every complete
-block's scaled value, then applying one proposal-level ceiling. Per-block integer values remain the
-separate block-admission view.
+The live executor emits either an `Incomplete` EVM-local subtotal or a coarse `Diagnostic` tracing
+event. `complete_block_shadow_report`, `price_block`, and `price_proposal_once` are evaluator APIs
+used by tests; no in-repository production path calls them. Completion would authenticate the model
+and subtotal, reject every diagnostic, validate exact-resource coverage, and price exact resources
+and block MPT. Proposal pricing would remain a separate call whose `total_scaled` must be composed
+with complete block scaled values by an external owner.
 
 ## Calibration and evidence
 
-The artifact embeds hashes and paths for six calibration/evaluation sources, including the
-estimator, runtime candidate, payload binding, natural holdout, final schema-9 holdout, and opened
-regression result. These source artifacts live in the raiko2 opcode-gas experiment lineage; their
-content hashes, rather than mutable paths, bind the runtime export.
+The JSON embeds relative source paths, file hashes, authority hashes, guest hashes, and recorded
+validation. The source paths do not identify a fetchable repository and commit, and the named
+calibration files and exporter are not vendored here. The guest hashes likewise do not map to a
+named public raiko2 release in the artifact or this repository's documentation.
 
-Alethia-reth vendors the accepted runtime artifact, generator, and executable evaluator, not the
-full calibration corpus or the 56 MB estimator source. This repository can reproduce and verify the
-integer export from `runtime-spec.json`; recomputing the coefficients from raw measurements requires
-the matching raiko2 calibration checkout identified by the embedded source paths and hashes.
+Alethia-reth vendors the runtime JSON, the JSON-to-Rust generator, and the executable evaluator. The
+checked-in commands can verify the JSON's self-address and reproduce `generated.rs` from that JSON.
+They cannot recreate the runtime JSON or its coefficients from raw measurements. Public
+re-derivation is therefore impossible with the material currently linked here.
 
-The accepted runtime artifact records:
-
-- 461 controlled fit rows replayed;
-- 1,152 historical blocks replayed;
-- six historical proposals replayed;
-- zero underquoted controlled rows in the declared matched domain;
-- zero underquoted historical blocks in that replay; and
-- no integer-export rounding uplift in the recorded block or proposal replay.
-
-These results validate the declared artifact and frozen evidence only. They are not a mathematical
-claim about every future block, a proof-latency benchmark, or a capacity guarantee. Shadow
-comparison against current SP1 workloads remains necessary before selecting an admission limit.
+The artifact's `validation` object is the source for recorded replay counts and underquote results.
+Its historical-block evidence is the block expansion of the same recorded proposal replays, not an
+independent corpus. Those fields validate only the frozen evidence claimed by the artifact; they are
+not a mathematical statement about future blocks, proof latency, or capacity. A real SP1 comparison
+also requires the missing exact/proposal producers and attributable block/proposal output, not only
+today's EVM-local log.
 
 ## Capacity and future admission
 
-Model selection and limit selection are separate decisions. This model produces PGU estimates; it
-does not encode the hardware throughput, proposal interval, utilization reserve, queueing policy, or
-acceptable false-reject rate needed to choose a limit.
+Model selection and limit selection are separate decisions. This model does not encode hardware
+throughput, proposal interval, utilization reserve, queueing policy, or acceptable false-reject
+rate. It exposes no per-transaction quote API, and its complete block and proposal APIs are not wired
+to production inputs.
 
-The current implementation is block-local. It can bound a single transaction or block only after
-the exact candidate-prefix completion inputs are available. It does not constrain the sum of every
-block in a proposal. A future cumulative proposal budget may compose the same calibrated terms, but
-that is a separate policy and runtime change.
+Before adding admission, a reviewed change must at least provide:
 
-Before adding Admission, a reviewed change must at least provide:
-
-- exact candidate-prefix resource and MPT selectors on the production construction path;
-- explicit limit and capacity assumptions;
+- versioned, operational definitions and producers for exact resources, block/parent MPT, and
+  proposal selectors;
+- accounting for executed-then-discarded candidates or a justified proving-workload exclusion;
+- attributable block/proposal telemetry suitable for comparison with current SP1 PGU;
+- a public calibration derivation and named guest release, or an explicitly reviewed replacement;
+- explicit capacity and limit assumptions;
 - fail-closed handling for every typed diagnostic;
 - candidate rollback/replacement semantics;
 - historical compatibility and adversarial saturation results; and
-- a versioned activation and rollback plan that does not reinterpret existing Unzen difficulty.
+- an activation and rollback plan that cannot reinterpret existing Unzen difficulty.
 
 ## Reproduction and change policy
 
-Check the generator and canonical artifact with:
+Verify the checked JSON address and generated Rust table with:
 
 ```bash
 python3 -m unittest crates/evm/src/zk_gas/pricing/generate_test.py
 python3 crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
-Regenerate `generated.rs` only through `generate.py`. A change to a coefficient, domain, route,
-ownership rule, arithmetic policy, source authority, production guest identity, or cost-bearing
-selector requires a regenerated artifact with a new content address and fresh compatibility
-evidence. Do not add a compatibility alias that lets reports from two model identities be completed
-as though they were the same model.
+Regenerate `generated.rs` from an already-reviewed `runtime-spec.json` with:
 
-Documentation-only clarification may retain the model identity only when it does not change the
-canonical artifact or executable semantics.
+```bash
+python3 crates/evm/src/zk_gas/pricing/generate.py
+cargo fmt --all
+```
+
+A new runtime JSON requires updating the expected hash in `generate.py` and the pinned assertion in
+`crates/evm/src/zk_gas/tests.rs`, then regenerating and validating the table. Changes to evaluator
+constants, extraction, ownership, hard-coded domains, or selector bounds also change effective
+semantics even when the JSON address does not change; they require explicit review, compatibility
+evidence, and a deliberate identity/version decision.
+
+Do not add a compatibility alias that lets reports from two model identities be completed as though
+they were the same model. Documentation-only clarification may retain the identity only when it does
+not change the artifact or executable semantics.

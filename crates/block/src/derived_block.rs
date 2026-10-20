@@ -59,10 +59,10 @@ pub fn pre_existing_destroyed_account_hashes(bundle_state: &BundleState) -> Vec<
     let mut destroyed = bundle_state
         .state()
         .iter()
-        .filter_map(|(address, account)| {
-            (account.status.was_destroyed() && account.original_info.is_some())
-                .then(|| keccak256(address))
+        .filter(|(_, account)| {
+            account.status.was_destroyed() && account.original_info.is_some()
         })
+        .map(|(address, _)| keccak256(address))
         .collect::<Vec<_>>();
     destroyed.sort_unstable();
     destroyed

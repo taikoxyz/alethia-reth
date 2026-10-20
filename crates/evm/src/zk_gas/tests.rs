@@ -1058,6 +1058,37 @@ fn zk_gas_pricing_discarded_transactions_do_not_leak_into_block_snapshot() {
 }
 
 #[test]
+fn zk_gas_pricing_truncated_attempt_retains_runtime_resources() {
+    let touched = Address::with_last_byte(0xD4);
+    let touched_code = simple_arithmetic_bytecode();
+    let bytecode = resource_touching_limit_exceeding_bytecode(touched);
+    let expected_code_bytes = (bytecode.len() + touched_code.len()) as u64;
+    let mut db = db_with_contract(bytecode.clone());
+    insert_contract(&mut db, touched, touched_code);
+    db.insert_account_storage(BENCH_TARGET, U256::ZERO, U256::from(7))
+        .expect("fixture storage inserts");
+
+    let mut evm = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
+    evm.set_zk_gas_pricing_enabled(true);
+    assert_eq!(evm.transact(tx_env(5_000_000)).unwrap_err().to_string(), ZK_GAS_LIMIT_ERR);
+
+    // Mirror the block executor's discarded-transaction path: resetting retains the attempted
+    // scope while leaving the committed block prefix unchanged.
+    evm.reset_transaction_zk_gas();
+    assert_eq!(
+        evm.zk_gas_pricing_snapshot().expect("collector remains enabled"),
+        super::pricing::ZkGasBlockSnapshot::default()
+    );
+    let attempted = evm.zk_gas_attempted_pricing_snapshot().expect("attempted snapshot");
+    assert_eq!(attempted.transaction_count, 1);
+    assert_eq!(attempted.block.resources.unique_account_count, 5);
+    assert_eq!(attempted.block.resources.unique_storage_slot_access_count, 1);
+    assert_eq!(attempted.block.resources.unique_storage_slot_write_count, 0);
+    assert_eq!(attempted.block.resources.unique_code_hash_count, 2);
+    assert_eq!(attempted.block.resources.unique_code_bytes, expected_code_bytes);
+}
+
+#[test]
 fn zk_gas_pricing_plain_and_inspected_paths_match_structured_opcode_selectors() {
     let bytecode = Bytecode::new_raw(Bytes::from(vec![
         opcode::PUSH1,
@@ -3476,6 +3507,26 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::KECCAK256,
         opcode::STOP,
     ]))
+}
+
+fn resource_touching_limit_exceeding_bytecode(touched: Address) -> Bytecode {
+    let mut code = vec![opcode::PUSH1, 0x01, opcode::PUSH0, opcode::PUSH0, opcode::PUSH20];
+    code.extend_from_slice(touched.as_slice());
+    code.extend_from_slice(&[
+        opcode::EXTCODECOPY,
+        opcode::PUSH0,
+        opcode::SLOAD,
+        opcode::POP,
+        opcode::PUSH1,
+        0x20,
+        opcode::PUSH3,
+        0x18,
+        0x00,
+        0x00,
+        opcode::KECCAK256,
+        opcode::STOP,
+    ]);
+    Bytecode::new_raw(Bytes::from(code))
 }
 
 /// Pushes a zero-arg, zero-value `CALL` to `target` forwarding `gas`, then `STOP`.

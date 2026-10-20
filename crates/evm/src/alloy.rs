@@ -521,15 +521,9 @@ where
         // building and derived-block execution skip invalid transactions and keep executing on
         // this EVM, and an errored run must not leave the journal for the next transaction.
         let state = self.ctx_mut().journal_mut().finalize();
-        let result = result?;
         if !self.suspend_zk_gas_pricing &&
             let Some(accumulator) = self.zk_gas_pricing_mut()
         {
-            if let Err(error) = accumulator.finalize_native_value_transfer(
-                native_value_transfer_candidate && result.is_success(),
-            ) {
-                accumulator.retain_diagnostic(Some(error));
-            }
             for (address, account) in &state {
                 let _ = accumulator.observe_state_access(StateAccess::Account(*address));
                 if let Some(code) = &account.info.code {
@@ -547,6 +541,15 @@ where
                     let _ = accumulator.observe_state_access(access);
                 }
             }
+        }
+        let result = result?;
+        if !self.suspend_zk_gas_pricing &&
+            let Some(accumulator) = self.zk_gas_pricing_mut() &&
+            let Err(error) = accumulator.finalize_native_value_transfer(
+                native_value_transfer_candidate && result.is_success(),
+            )
+        {
+            accumulator.retain_diagnostic(Some(error));
         }
         Ok(ResultAndState::new(result, state))
     }

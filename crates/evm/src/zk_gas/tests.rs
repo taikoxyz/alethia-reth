@@ -957,6 +957,11 @@ fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
         Some(ZkGasAccumulatorError::NoActiveTransaction)
     );
     assert_eq!(
+        accumulator.attempted_snapshot().block.diagnostic,
+        Some(ZkGasAccumulatorError::NoActiveTransaction)
+    );
+    assert_eq!(accumulator.attempted_snapshot().transaction_count, 0);
+    assert_eq!(
         accumulator.committed_snapshot().shadow_report().status().label(),
         "collector_no_active_transaction"
     );

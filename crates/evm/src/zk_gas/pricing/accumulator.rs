@@ -333,15 +333,15 @@ impl From<OperationRoute> for RouteKey {
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ZkGasBlockSnapshot {
-    /// Committed non-anchor transaction count.
+    /// Non-anchor transaction count in this prefix.
     pub started_non_anchor_transactions: u64,
-    /// Committed native value-transfer count.
+    /// Native value-transfer count in this prefix.
     pub native_value_transfers: u64,
-    /// Committed accumulated operation candidates in canonical route order.
+    /// Accumulated operation candidates in canonical route order.
     pub operation_routes: Vec<OperationRoutePricingInput>,
-    /// Committed unique-resource selectors.
+    /// Unique-resource selectors in this prefix.
     pub resources: ResourceSelectors,
-    /// First diagnostic committed by an included transaction, if any.
+    /// First diagnostic retained in this prefix, if any.
     ///
     /// Selectors remain available for shadow-mode analysis, but a snapshot with a diagnostic is
     /// not a trustworthy admission quote.
@@ -350,8 +350,15 @@ pub struct ZkGasBlockSnapshot {
 
 /// Owned block-local selector snapshot for every transaction whose EVM pricing scope began.
 ///
-/// Unlike [`ZkGasBlockSnapshot`], this includes transactions later rejected or truncated by the
-/// block executor. Candidates rejected before execution begins are not included.
+/// The scope begins before revm transaction/header validation. Consequently, validation failures
+/// such as an invalid nonce or insufficient balance are counted, and their declared access-list
+/// accounts and slots are retained. Executor prechecks performed before `transact_raw` are not
+/// counted; these currently include a native gas limit above the remaining block gas and an
+/// intrinsic-zk-gas charge above the remaining zk gas budget. A transaction discarded after its
+/// scope begins remains attempted, including a transaction rejected by the commit predicate or
+/// truncated by the zk gas limit. For a truncation, completed operation steps and resources from
+/// the finalized journal are retained, but the operation whose meter charge first exceeds the
+/// budget is not itself pricing-observed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ZkGasAttemptedBlockSnapshot {
     /// Number of attempted transactions, including the anchor transaction.
@@ -424,7 +431,10 @@ impl SelectorPrefix {
     }
 }
 
-/// Transactional pricing collector. In-flight selectors are invisible until commit.
+/// Transactional pricing collector with committed and attempted block prefixes.
+///
+/// In-flight selectors are invisible in snapshots until the scope is either committed or reset.
+/// Commit adds the scope to both prefixes; reset retains it only in the attempted prefix.
 ///
 /// The collector intentionally does not implement `Clone`: transaction commit must prevalidate
 /// and merge only the incoming delta, never copy the full committed resource prefix.
@@ -552,6 +562,7 @@ impl ZkGasAccumulator {
     pub fn commit_transaction(&mut self) -> Result<(), ZkGasAccumulatorError> {
         let Some(transaction) = self.in_flight.take() else {
             self.committed.diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
+            self.attempted.diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
             return Ok(());
         };
         self.pending_spawn = None;

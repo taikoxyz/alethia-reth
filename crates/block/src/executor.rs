@@ -44,9 +44,14 @@ pub struct CommittedBlockExecutionOutcome<T, R> {
     pub committed_transactions: Vec<Recovered<T>>,
     /// Non-enforcing block-local pricing report when Shadow mode is enabled.
     pub zk_gas_shadow_report: Option<ZkGasShadowReport>,
-    /// Non-enforcing report across every transaction whose execution scope began.
+    /// Non-enforcing report across scopes begun before revm validation.
+    ///
+    /// Includes validation failures and declared access lists, but excludes executor rejections
+    /// for remaining native block gas or intrinsic zk gas, which occur before the scope begins.
     pub attempted_zk_gas_shadow_report: Option<ZkGasShadowReport>,
     /// Number of attempted transaction scopes, including the anchor transaction.
+    ///
+    /// Zero when Shadow mode is disabled or its collector is unavailable.
     pub attempted_transaction_count: u64,
 }
 
@@ -208,7 +213,10 @@ where
         }
     }
 
-    /// Returns the pricing report and count across every transaction whose execution scope began.
+    /// Returns the pricing report and count across scopes begun before revm validation.
+    ///
+    /// Revm validation failures and declared access lists are included. Remaining-block-gas and
+    /// intrinsic-zk-gas precheck failures are excluded because they happen before `transact_raw`.
     pub fn attempted_zk_gas_shadow_report(&self) -> Option<(ZkGasShadowReport, u64)>
     where
         Evm: TaikoZkGasEvm,
@@ -281,8 +289,9 @@ where
         Ok(())
     }
 
-    /// Discards any in-flight zk gas for the current transaction while preserving the committed
-    /// block total.
+    /// Clears in-flight metered zk gas while preserving the committed block total.
+    ///
+    /// An installed Shadow selector scope is retained in its attempted prefix.
     fn reset_current_transaction_zk_gas(&mut self)
     where
         Evm: TaikoZkGasEvm,
@@ -706,7 +715,7 @@ mod test {
         spec::TaikoSpecId,
         zk_gas::{
             pricing::{ZkGasIncompleteness, ZkGasMode, ZkGasShadowStatus},
-            unzen::TX_INTRINSIC_ZK_GAS,
+            unzen::{BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS},
         },
     };
 
@@ -812,6 +821,18 @@ mod test {
         consumer.commit_transaction(output);
         assert!(matches!(
             consumer.zk_gas_shadow_report().expect("shadow report").status(),
+            ZkGasShadowStatus::Diagnostic(
+                alethia_reth_evm::zk_gas::pricing::ZkGasShadowDiagnostic::Collector(
+                    alethia_reth_evm::zk_gas::pricing::ZkGasAccumulatorError::NoActiveTransaction,
+                )
+            )
+        ));
+        let (attempted, attempted_count) = consumer
+            .attempted_zk_gas_shadow_report()
+            .expect("attempted shadow report remains available");
+        assert_eq!(attempted_count, 0);
+        assert!(matches!(
+            attempted.status(),
             ZkGasShadowStatus::Diagnostic(
                 alethia_reth_evm::zk_gas::pricing::ZkGasShadowDiagnostic::Collector(
                     alethia_reth_evm::zk_gas::pricing::ZkGasAccumulatorError::NoActiveTransaction,
@@ -999,6 +1020,14 @@ mod test {
         assert_eq!(
             executor
                 .evm
+                .zk_gas_attempted_pricing_snapshot()
+                .expect("attempted pricing enabled")
+                .transaction_count,
+            1
+        );
+        assert_eq!(
+            executor
+                .evm
                 .zk_gas_pricing_snapshot()
                 .expect("pricing enabled")
                 .started_non_anchor_transactions,
@@ -1011,6 +1040,14 @@ mod test {
         assert_eq!(
             executor
                 .evm
+                .zk_gas_attempted_pricing_snapshot()
+                .expect("attempted pricing enabled")
+                .transaction_count,
+            2
+        );
+        assert_eq!(
+            executor
+                .evm
                 .zk_gas_pricing_snapshot()
                 .expect("pricing enabled")
                 .started_non_anchor_transactions,
@@ -1020,11 +1057,48 @@ mod test {
         executor
             .execute_transaction(recovered_tx(BENCH_CALLER, halt_target, 0, 1))
             .expect("valid HALT yields an included receipt");
+        assert_eq!(
+            executor
+                .evm
+                .zk_gas_attempted_pricing_snapshot()
+                .expect("attempted pricing enabled")
+                .transaction_count,
+            3
+        );
         let snapshot = executor.evm.zk_gas_pricing_snapshot().expect("pricing enabled");
         assert_eq!(snapshot.started_non_anchor_transactions, 1);
         assert!(snapshot.operation_routes.iter().any(|row| {
             row.route == alethia_reth_evm::zk_gas::pricing::OperationRoute::Opcode(opcode::ADD)
         }));
+    }
+
+    #[test]
+    fn executor_does_not_count_intrinsic_zk_gas_rejection_before_pricing_scope_begins() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
+            evm,
+            unzen_execution_ctx(),
+            chain_spec,
+            RethReceiptBuilder::default(),
+            ZkGasMode::Shadow,
+        );
+        executor
+            .reserve_block_zk_gas(BLOCK_ZK_GAS_LIMIT - TX_INTRINSIC_ZK_GAS + 1)
+            .expect("reservation leaves less than one intrinsic charge");
+
+        let err = executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
+            .expect_err("intrinsic zk gas exceeds the remaining budget");
+        assert!(is_zk_gas_limit_exceeded(&err));
+        let attempted =
+            executor.evm.zk_gas_attempted_pricing_snapshot().expect("attempted pricing enabled");
+        assert_eq!(attempted.transaction_count, 0);
+        assert_eq!(attempted.block, Default::default());
     }
 
     #[test]

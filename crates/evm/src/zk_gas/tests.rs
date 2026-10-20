@@ -74,6 +74,84 @@ fn zk_gas_shadow_report_marks_exact_resources_and_mpt_as_missing() {
 }
 
 #[test]
+fn zk_gas_attempted_snapshot_retains_discarded_execution_scope() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator
+        .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: false })
+        .expect("transaction starts");
+    accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(opcode::KECCAK256),
+            interpreter_raw_gas: Some(36),
+            native_gas: None,
+            model_input: OperationModelInput::Keccak {
+                input_length: 32,
+                memory: MemorySelectors::default(),
+            },
+            feature_error: false,
+        })
+        .expect("discarded operation prices");
+
+    accumulator.reset_transaction();
+
+    assert_eq!(accumulator.committed_snapshot(), super::pricing::ZkGasBlockSnapshot::default());
+    let attempted = accumulator.attempted_snapshot();
+    assert_eq!(attempted.transaction_count, 1);
+    assert_eq!(attempted.block.started_non_anchor_transactions, 1);
+    assert!(
+        attempted
+            .block
+            .operation_routes
+            .iter()
+            .any(|row| row.route == OperationRoute::Opcode(opcode::KECCAK256))
+    );
+}
+
+#[test]
+fn zk_gas_successful_commit_counts_once_in_attempted_and_committed_snapshots() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator
+        .begin_transaction(TransactionMetadata { is_anchor: true, native_value_transfer: false })
+        .expect("anchor starts");
+    accumulator
+        .observe_step(OperationPricingInput {
+            route: OperationRoute::Opcode(opcode::ADD),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: OperationModelInput::StaticRawGas { raw_gas: 3 },
+            feature_error: false,
+        })
+        .expect("anchor operation prices");
+    accumulator.commit_transaction().expect("anchor commits");
+
+    let committed = accumulator.committed_snapshot();
+    let attempted = accumulator.attempted_snapshot();
+    assert_eq!(attempted.transaction_count, 1);
+    assert_eq!(attempted.block, committed);
+
+    accumulator.reset_transaction();
+    assert_eq!(accumulator.attempted_snapshot(), attempted);
+}
+
+#[test]
+fn zk_gas_reset_without_active_scope_does_not_create_an_attempt() {
+    use super::pricing::ZkGasAccumulator;
+
+    let mut accumulator = ZkGasAccumulator::default();
+    accumulator.reset_transaction();
+
+    assert_eq!(accumulator.attempted_snapshot().transaction_count, 0);
+    assert_eq!(
+        accumulator.attempted_snapshot().block,
+        super::pricing::ZkGasBlockSnapshot::default()
+    );
+}
+
+#[test]
 fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
     use super::pricing::{TransactionMetadata, ZkGasAccumulator};
 
@@ -879,6 +957,11 @@ fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
         Some(ZkGasAccumulatorError::NoActiveTransaction)
     );
     assert_eq!(
+        accumulator.attempted_snapshot().block.diagnostic,
+        Some(ZkGasAccumulatorError::NoActiveTransaction)
+    );
+    assert_eq!(accumulator.attempted_snapshot().transaction_count, 0);
+    assert_eq!(
         accumulator.committed_snapshot().shadow_report().status().label(),
         "collector_no_active_transaction"
     );
@@ -977,6 +1060,37 @@ fn zk_gas_pricing_discarded_transactions_do_not_leak_into_block_snapshot() {
         skipped.zk_gas_pricing_snapshot().expect("explicit collector"),
         super::pricing::ZkGasBlockSnapshot::default()
     );
+}
+
+#[test]
+fn zk_gas_pricing_truncated_attempt_retains_runtime_resources() {
+    let touched = Address::with_last_byte(0xD4);
+    let touched_code = simple_arithmetic_bytecode();
+    let bytecode = resource_touching_limit_exceeding_bytecode(touched);
+    let expected_code_bytes = (bytecode.len() + touched_code.len()) as u64;
+    let mut db = db_with_contract(bytecode.clone());
+    insert_contract(&mut db, touched, touched_code);
+    db.insert_account_storage(BENCH_TARGET, U256::ZERO, U256::from(7))
+        .expect("fixture storage inserts");
+
+    let mut evm = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
+    evm.set_zk_gas_pricing_enabled(true);
+    assert_eq!(evm.transact(tx_env(5_000_000)).unwrap_err().to_string(), ZK_GAS_LIMIT_ERR);
+
+    // Mirror the block executor's discarded-transaction path: resetting retains the attempted
+    // scope while leaving the committed block prefix unchanged.
+    evm.reset_transaction_zk_gas();
+    assert_eq!(
+        evm.zk_gas_pricing_snapshot().expect("collector remains enabled"),
+        super::pricing::ZkGasBlockSnapshot::default()
+    );
+    let attempted = evm.zk_gas_attempted_pricing_snapshot().expect("attempted snapshot");
+    assert_eq!(attempted.transaction_count, 1);
+    assert_eq!(attempted.block.resources.unique_account_count, 5);
+    assert_eq!(attempted.block.resources.unique_storage_slot_access_count, 1);
+    assert_eq!(attempted.block.resources.unique_storage_slot_write_count, 0);
+    assert_eq!(attempted.block.resources.unique_code_hash_count, 2);
+    assert_eq!(attempted.block.resources.unique_code_bytes, expected_code_bytes);
 }
 
 #[test]
@@ -3398,6 +3512,26 @@ fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::KECCAK256,
         opcode::STOP,
     ]))
+}
+
+fn resource_touching_limit_exceeding_bytecode(touched: Address) -> Bytecode {
+    let mut code = vec![opcode::PUSH1, 0x01, opcode::PUSH0, opcode::PUSH0, opcode::PUSH20];
+    code.extend_from_slice(touched.as_slice());
+    code.extend_from_slice(&[
+        opcode::EXTCODECOPY,
+        opcode::PUSH0,
+        opcode::SLOAD,
+        opcode::POP,
+        opcode::PUSH1,
+        0x20,
+        opcode::PUSH3,
+        0x18,
+        0x00,
+        0x00,
+        opcode::KECCAK256,
+        opcode::STOP,
+    ]);
+    Bytecode::new_raw(Bytes::from(code))
 }
 
 /// Pushes a zero-arg, zero-value `CALL` to `target` forwarding `gas`, then `STOP`.

@@ -29,7 +29,7 @@ use crate::{
         meter::{ZkGasMeter, ZkGasOutcome},
         pricing::{
             StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError,
-            ZkGasBlockSnapshot,
+            ZkGasAttemptedBlockSnapshot, ZkGasBlockSnapshot,
         },
     },
 };
@@ -222,7 +222,10 @@ pub trait TaikoZkGasEvm {
     /// reset would corrupt by wiping the intrinsic charged before execution.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool);
 
-    /// Discards any in-flight zk gas recorded for the current transaction.
+    /// Clears in-flight metered zk gas for the current transaction.
+    ///
+    /// When Shadow pricing is enabled, the selector scope is retained in the attempted prefix
+    /// before it is cleared; the committed prefix remains unchanged.
     fn reset_transaction_zk_gas(&mut self);
 
     /// Commits the current transaction's zk gas into the block total and returns the new total.
@@ -254,6 +257,12 @@ pub trait TaikoZkGasEvm {
 
     /// Returns the committed block-local pricing selector snapshot, when collection is enabled.
     fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot>;
+
+    /// Returns pricing selectors from every transaction whose scope began before revm validation.
+    ///
+    /// Revm validation failures and their declared access lists are included. Executor prechecks
+    /// for remaining native block gas and intrinsic zk gas run before this scope and are excluded.
+    fn zk_gas_attempted_pricing_snapshot(&self) -> Option<ZkGasAttemptedBlockSnapshot>;
 }
 
 impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
@@ -267,7 +276,7 @@ where
         self.reset_zk_gas_per_transact = enabled;
     }
 
-    /// Discards any in-flight zk gas recorded for the current transaction.
+    /// Clears in-flight metered zk gas and retains an installed Shadow scope as attempted.
     ///
     /// Covers both metering homes — the production meter on the base EVM and the inspector's
     /// meter plus its step bookkeeping (only one of the two is ever installed) — so nothing an
@@ -350,6 +359,11 @@ where
     /// Returns an owned snapshot of selectors committed by the active Shadow collector.
     fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot> {
         Some(self.zk_gas_pricing()?.committed_snapshot())
+    }
+
+    /// Returns an owned snapshot of all transaction scopes observed by the Shadow collector.
+    fn zk_gas_attempted_pricing_snapshot(&self) -> Option<ZkGasAttemptedBlockSnapshot> {
+        Some(self.zk_gas_pricing()?.attempted_snapshot())
     }
 }
 
@@ -513,15 +527,9 @@ where
         // building and derived-block execution skip invalid transactions and keep executing on
         // this EVM, and an errored run must not leave the journal for the next transaction.
         let state = self.ctx_mut().journal_mut().finalize();
-        let result = result?;
         if !self.suspend_zk_gas_pricing &&
             let Some(accumulator) = self.zk_gas_pricing_mut()
         {
-            if let Err(error) = accumulator.finalize_native_value_transfer(
-                native_value_transfer_candidate && result.is_success(),
-            ) {
-                accumulator.retain_diagnostic(Some(error));
-            }
             for (address, account) in &state {
                 let _ = accumulator.observe_state_access(StateAccess::Account(*address));
                 if let Some(code) = &account.info.code {
@@ -539,6 +547,15 @@ where
                     let _ = accumulator.observe_state_access(access);
                 }
             }
+        }
+        let result = result?;
+        if !self.suspend_zk_gas_pricing &&
+            let Some(accumulator) = self.zk_gas_pricing_mut() &&
+            let Err(error) = accumulator.finalize_native_value_transfer(
+                native_value_transfer_candidate && result.is_success(),
+            )
+        {
+            accumulator.retain_diagnostic(Some(error));
         }
         Ok(ResultAndState::new(result, state))
     }

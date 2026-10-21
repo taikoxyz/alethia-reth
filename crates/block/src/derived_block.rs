@@ -1,7 +1,6 @@
 //! Prover helpers for executing derived candidate blocks.
 
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{B256, keccak256};
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::{
     ConfigureEvm,
@@ -33,20 +32,10 @@ pub struct DerivedBlockExecutionOutcome {
     pub execution_result: BlockExecutionResult<Receipt>,
     /// Hashed post-state derived from the execution bundle.
     ///
-    /// Built with [`HashedPostState::from_bundle_state`], so it carries only the slots execution
-    /// wrote. The companion [`Self::pre_existing_destroyed_accounts`] list preserves the storage
-    /// wipe identities that reth's hashed post-state representation does not carry.
+    /// This is sufficient only for Unzen-and-later execution: EIP-6780 prevents
+    /// `SELFDESTRUCT` from deleting pre-existing account storage, so consumers do not need an
+    /// out-of-band storage-wipe list. Do not use this outcome to compute pre-Unzen state roots.
     pub hashed_state: HashedPostState,
-    /// Hashed identities of pre-existing accounts destroyed by execution, sorted ascending by
-    /// hashed address.
-    ///
-    /// Consumers must wipe each account's parent storage before applying [`Self::hashed_state`],
-    /// even when `hashed_state.storages` has no entry for that account. The predicate mirrors
-    /// reth's `zero_destroyed_account_storage` and must be re-checked when the reth revision
-    /// moves. This list can be non-empty after Unzen for harmless empty-parent-storage cases
-    /// such as an EIP-161 touch or a pre-funded address created and destroyed in one
-    /// transaction; consumers must not use fork activation to assert that it is empty.
-    pub pre_existing_destroyed_accounts: Vec<B256>,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,
     /// Non-enforcing block-local pricing report when Shadow mode is enabled.
@@ -60,22 +49,6 @@ pub struct DerivedBlockExecutionOutcome {
     ///
     /// Zero when Shadow mode is disabled or its collector is unavailable.
     pub attempted_transaction_count: u64,
-}
-
-/// Returns canonical hashed identities for pre-existing accounts destroyed in this bundle.
-///
-/// Consumers that execute a derived block through a custom executor must preserve this metadata
-/// before converting the bundle into a [`HashedPostState`], which omits storage-wipe markers.
-/// The result is sorted ascending by hashed address for deterministic stateless consumption.
-pub fn pre_existing_destroyed_account_hashes(bundle_state: &BundleState) -> Vec<B256> {
-    let mut destroyed = bundle_state
-        .state()
-        .iter()
-        .filter(|(_, account)| account.status.was_destroyed() && account.original_info.is_some())
-        .map(|(address, _)| keccak256(address))
-        .collect::<Vec<_>>();
-    destroyed.sort_unstable();
-    destroyed
 }
 
 /// Derives next-block environment attributes from a candidate derived block header.
@@ -130,14 +103,12 @@ where
     state.merge_transitions(BundleRetention::Reverts);
 
     let bundle_state = state.take_bundle();
-    let pre_existing_destroyed_accounts = pre_existing_destroyed_account_hashes(&bundle_state);
     let hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
 
     Ok(DerivedBlockExecutionOutcome {
         committed_transactions: execution_outcome.committed_transactions,
         execution_result: execution_outcome.execution_result,
         hashed_state,
-        pre_existing_destroyed_accounts,
         finalized_block_zk_gas: finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed),
         zk_gas_shadow_report: execution_outcome.zk_gas_shadow_report,
         attempted_zk_gas_shadow_report: execution_outcome.attempted_zk_gas_shadow_report,
@@ -192,88 +163,25 @@ mod tests {
     use alloy_consensus::{Header, Signed, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
     use reth_ethereum_primitives::{Block, BlockBody};
-    use reth_revm::{
-        db::{AccountStatus, BundleAccount},
-        state::{AccountInfo, Bytecode, bytecode::opcode},
-    };
 
     use super::*;
     use crate::{
         config::TaikoEvmConfig,
-        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts, insert_contract, unzen_chain_spec},
+        testutil::{BENCH_SUCCESS_TARGET, db_with_contracts, unzen_chain_spec},
     };
-    use alethia_reth_chainspec::{
-        TAIKO_DEVNET,
-        spec::{TaikoChainSpec, TaikoDevnetConfigExt},
-    };
+    use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_evm::zk_gas::pricing::{ZkGasIncompleteness, ZkGasMode, ZkGasShadowStatus};
 
     const TEST_CALLER: Address = Address::with_last_byte(0x30);
 
-    #[test]
-    fn pre_existing_destroyed_account_hashes_are_sorted_and_filtered() {
-        let destroyed = (1..=8).map(Address::with_last_byte).collect::<Vec<_>>();
-        let newly_created = Address::with_last_byte(0x20);
-        let unchanged = Address::with_last_byte(0x21);
-        let mut bundle = BundleState::default();
-        for (index, address) in destroyed.iter().copied().enumerate() {
-            let status = if index % 2 == 0 {
-                AccountStatus::Destroyed
-            } else {
-                AccountStatus::DestroyedChanged
-            };
-            bundle.state.insert(
-                address,
-                BundleAccount::new(
-                    Some(AccountInfo::default()),
-                    Some(AccountInfo::default()),
-                    Default::default(),
-                    status,
-                ),
-            );
-        }
-        bundle.state.insert(
-            newly_created,
-            BundleAccount::new(
-                None,
-                Some(AccountInfo::default()),
-                Default::default(),
-                AccountStatus::DestroyedChanged,
-            ),
-        );
-        bundle.state.insert(
-            unchanged,
-            BundleAccount::new(
-                Some(AccountInfo::default()),
-                Some(AccountInfo::default()),
-                Default::default(),
-                AccountStatus::Changed,
-            ),
-        );
-
-        let actual = pre_existing_destroyed_account_hashes(&bundle);
-        assert_eq!(actual.len(), destroyed.len());
-        assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(destroyed.iter().all(|address| actual.contains(&keccak256(address))));
-    }
-
     fn test_transaction(chain_id: u64, nonce: u64) -> Recovered<TransactionSigned> {
-        test_transaction_with_value(chain_id, nonce, BENCH_SUCCESS_TARGET, U256::ZERO)
-    }
-
-    fn test_transaction_with_value(
-        chain_id: u64,
-        nonce: u64,
-        to: Address,
-        value: U256,
-    ) -> Recovered<TransactionSigned> {
         let tx = TxLegacy {
             chain_id: Some(ChainId::from(chain_id)),
             nonce,
             gas_price: 1,
             gas_limit: 5_000_000,
-            to: TxKind::Call(to),
-            value,
+            to: TxKind::Call(BENCH_SUCCESS_TARGET),
+            value: U256::ZERO,
             input: Bytes::default(),
         };
         let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
@@ -352,54 +260,6 @@ mod tests {
         .expect("filtered block should assemble");
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
-    }
-
-    #[test]
-    fn execute_derived_block_reports_pre_existing_destroyed_account_after_refund() {
-        let contract = Address::with_last_byte(0x41);
-        let beneficiary = Address::with_last_byte(0x42);
-        let mut selfdestruct_code = vec![opcode::PUSH20];
-        selfdestruct_code.extend_from_slice(beneficiary.as_slice());
-        selfdestruct_code.push(opcode::SELFDESTRUCT);
-
-        let chain_spec = Arc::new(
-            TAIKO_DEVNET
-                .as_ref()
-                .clone_with_devnet_unzen_timestamp(1_000_000)
-                .expect("devnet supports a pre-Unzen test window"),
-        );
-        let chain_id = chain_spec.inner.chain().id();
-        let config = TaikoEvmConfig::new_with_zk_gas_mode(chain_spec, ZkGasMode::Disabled);
-        let parent_header = SealedHeader::seal_slow(Header::default());
-        let destroy = test_transaction_with_value(chain_id, 0, contract, U256::ZERO);
-        let refund = test_transaction_with_value(chain_id, 1, contract, U256::from(1_u64));
-        let derived_block = RecoveredBlock::new_unhashed(
-            Block {
-                header: Header {
-                    number: 1,
-                    timestamp: 1,
-                    gas_limit: 30_000_000,
-                    base_fee_per_gas: Some(0),
-                    ..Default::default()
-                },
-                body: BlockBody {
-                    transactions: vec![destroy.clone_inner(), refund.clone_inner()],
-                    ommers: Default::default(),
-                    withdrawals: None,
-                },
-            },
-            vec![destroy.signer(), refund.signer()],
-        );
-        let mut db = db_with_contracts(&[(TEST_CALLER, 0)]);
-        insert_contract(&mut db, contract, Bytecode::new_raw(Bytes::from(selfdestruct_code)));
-        db.insert_account_storage(contract, U256::ZERO, U256::from(7_u64))
-            .expect("pre-existing contract storage inserts");
-
-        let outcome = execute_derived_block(&config, &parent_header, &derived_block, db)
-            .expect("pre-Unzen destroy-then-refund block executes");
-
-        assert_eq!(outcome.committed_transactions.len(), 2);
-        assert_eq!(outcome.pre_existing_destroyed_accounts, vec![keccak256(contract)]);
     }
 
     #[test]

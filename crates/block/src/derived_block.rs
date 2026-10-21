@@ -31,6 +31,10 @@ pub struct DerivedBlockExecutionOutcome {
     /// Execution result for the committed transactions.
     pub execution_result: BlockExecutionResult<Receipt>,
     /// Hashed post-state derived from the execution bundle.
+    ///
+    /// This is sufficient only for Unzen-and-later execution: EIP-6780 prevents
+    /// `SELFDESTRUCT` from deleting pre-existing account storage, so consumers do not need an
+    /// out-of-band storage-wipe list. Do not use this outcome to compute pre-Unzen state roots.
     pub hashed_state: HashedPostState,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,

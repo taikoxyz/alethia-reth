@@ -24,3 +24,6 @@ jobs:
           timeout: 1800
           interval: 60
           token: ${{ secrets.GITHUB_TOKEN }}
+          # claude-review is advisory and cannot pass on PRs that edit the Claude workflows
+          # (claude-code-action requires them to match the default branch), so don't gate on it.
+          ignored: claude-review

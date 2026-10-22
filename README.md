@@ -85,8 +85,9 @@ Use `./target/release/alethia-reth --help` for the full option list and defaults
 
 ## Design Documentation
 
-- [zkGas Shadow pricing model](docs/zk-gas-pricing-model.md) describes the current SP1 PGU pricing
-  export, ownership rules, live EVM-local boundary, and unwired completion inputs.
+- [zkGas Shadow pricing model](docs/zk-gas-pricing-model.md) describes the non-consensus SP1 PGU
+  model behind `--zkgas-mode shadow` (separate from the enforced Unzen zk gas limit), its ownership
+  rules, and what is live today versus unwired completion inputs.
 
 ## License
 

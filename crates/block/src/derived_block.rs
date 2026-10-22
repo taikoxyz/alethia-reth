@@ -32,16 +32,23 @@ pub struct DerivedBlockExecutionOutcome {
     pub execution_result: BlockExecutionResult<Receipt>,
     /// Hashed post-state derived from the execution bundle.
     ///
-    /// Built with [`HashedPostState::from_bundle_state`], so it carries only the slots execution
-    /// wrote. The parent storage of a destroyed pre-existing account is not conveyed: reth has no
-    /// storage wipe marker since v2.6, and zeroing those slots needs parent-state access this
-    /// executor does not have. Such a destroy is only reachable before Unzen, since EIP-6780
-    /// limits SELFDESTRUCT to accounts created in the same transaction.
+    /// This is sufficient only for Unzen-and-later execution: EIP-6780 prevents
+    /// `SELFDESTRUCT` from deleting pre-existing account storage, so consumers do not need an
+    /// out-of-band storage-wipe list. Do not use this outcome to compute pre-Unzen state roots.
     pub hashed_state: HashedPostState,
     /// Finalized zk gas accumulated by committed transactions.
     pub finalized_block_zk_gas: u64,
     /// Non-enforcing block-local pricing report when Shadow mode is enabled.
     pub zk_gas_shadow_report: Option<ZkGasShadowReport>,
+    /// Non-enforcing report across scopes begun before revm validation.
+    ///
+    /// Includes validation failures and declared access lists, but excludes executor rejections
+    /// for remaining native block gas or intrinsic zk gas, which occur before the scope begins.
+    pub attempted_zk_gas_shadow_report: Option<ZkGasShadowReport>,
+    /// Number of attempted transaction scopes, including the anchor transaction.
+    ///
+    /// Zero when Shadow mode is disabled or its collector is unavailable.
+    pub attempted_transaction_count: u64,
 }
 
 /// Derives next-block environment attributes from a candidate derived block header.
@@ -104,6 +111,8 @@ where
         hashed_state,
         finalized_block_zk_gas: finalized_zk_gas.load(std::sync::atomic::Ordering::Relaxed),
         zk_gas_shadow_report: execution_outcome.zk_gas_shadow_report,
+        attempted_zk_gas_shadow_report: execution_outcome.attempted_zk_gas_shadow_report,
+        attempted_transaction_count: execution_outcome.attempted_transaction_count,
     })
 }
 
@@ -226,6 +235,8 @@ mod tests {
         .expect("derived block execution should skip invalid nonce tx");
 
         assert_eq!(outcome.committed_transactions.len(), 2);
+        assert_eq!(outcome.attempted_transaction_count, 3);
+        assert_ne!(outcome.attempted_zk_gas_shadow_report, outcome.zk_gas_shadow_report);
         assert!(matches!(
             outcome
                 .zk_gas_shadow_report
@@ -313,6 +324,8 @@ mod tests {
             run(ZkGasMode::Shadow, chain_spec, &parent_header, &derived_block);
 
         assert!(disabled.zk_gas_shadow_report.is_none());
+        assert!(disabled.attempted_zk_gas_shadow_report.is_none());
+        assert_eq!(disabled.attempted_transaction_count, 0);
         assert!(matches!(
             shadow.zk_gas_shadow_report.expect("shadow report").status(),
             ZkGasShadowStatus::Incomplete {

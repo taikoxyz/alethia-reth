@@ -209,9 +209,11 @@ execution, such as a commit-predicate rejection or Unzen zk gas truncation, is r
 `zk_gas_attempted_pricing_snapshot` and `attempted_zk_gas_shadow_report`.
 
 Neither prefix covers executor precheck rejections for remaining native block gas or intrinsic zk
-gas, the operation whose meter charge first exceeds the zk gas budget, or transactions skipped
-without execution (zero-signer non-Anchor transactions and transactions after zk gas exhaustion).
-For a truncated attempt, completed steps and resources from the finalized journal are retained.
+gas, the interpreter opcode step whose meter charge first exceeds the zk gas budget, or transactions
+skipped without execution (zero-signer non-Anchor transactions and transactions after zk gas
+exhaustion). For a truncated attempt, completed steps and resources from the finalized journal are
+retained. Completed precompile bodies remain observed even when their meter charge triggers
+truncation; resetting the rejected transaction retains that work in the attempted prefix.
 
 `attempted_transaction_count` includes the Anchor and counts only scopes that began; it is zero when
 Shadow is disabled or its collector is unavailable. Subtracting it from a transaction-list length

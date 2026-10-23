@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.5.0](https://github.com/taikoxyz/alethia-reth/compare/v1.4.1...v1.5.0) (2026-10-23)
+
+
+### Features
+
+* **block:** expose prover execution observations ([#256](https://github.com/taikoxyz/alethia-reth/issues/256)) ([22548cc](https://github.com/taikoxyz/alethia-reth/commit/22548cc51ce8ba6bf28f4ccfaec1dda47a615808))
+* **evm:** add zkGas shadow pricing runtime ([#253](https://github.com/taikoxyz/alethia-reth/issues/253)) ([37a3366](https://github.com/taikoxyz/alethia-reth/commit/37a3366edda050abc6460bfc0f4c27b242a72f5e))
+* **evm:** align zk gas spawn charging ([#239](https://github.com/taikoxyz/alethia-reth/issues/239)) ([99bbcf8](https://github.com/taikoxyz/alethia-reth/commit/99bbcf8b48c2204e79e7976e520d2ba6b2f5f975))
+
+
+### Bug Fixes
+
+* **ci:** restrict [@claude](https://github.com/claude) workflow to members and same-repo PRs ([ed4a25d](https://github.com/taikoxyz/alethia-reth/commit/ed4a25dc4044c611ab7626f829d2e8f13a9a8216))
+* **repo:** check [@claude](https://github.com/claude) PRs for forks in a read-only job before the secret-bearing job ([322a020](https://github.com/taikoxyz/alethia-reth/commit/322a0202f6af344a4d1b3f9e57e918a4f328d920))
+* **repo:** restrict [@claude](https://github.com/claude) workflow to members and same-repo PRs ([#244](https://github.com/taikoxyz/alethia-reth/issues/244)) ([ed4a25d](https://github.com/taikoxyz/alethia-reth/commit/ed4a25dc4044c611ab7626f829d2e8f13a9a8216))
+* **repo:** upgrade node.js to patched 22.23.4 ([#258](https://github.com/taikoxyz/alethia-reth/issues/258)) ([b13fb6f](https://github.com/taikoxyz/alethia-reth/commit/b13fb6f6291ca36c303996049471b58b9af1c38e))
+
+
+### Chores
+
+* **deps:** bump reth to v2.6.0 ([#252](https://github.com/taikoxyz/alethia-reth/issues/252)) ([32ef37d](https://github.com/taikoxyz/alethia-reth/commit/32ef37d738fd684b84942d83d045766b8d211d6f))
+* **repo:** move CI to GitHub-hosted runners ([#250](https://github.com/taikoxyz/alethia-reth/issues/250)) ([b3f68ce](https://github.com/taikoxyz/alethia-reth/commit/b3f68ce727b9c6c28836c333761c0aa649a75a8d))
+* **repo:** remove dead arc-runner-set actionlint allowlist ([#254](https://github.com/taikoxyz/alethia-reth/issues/254)) ([90486bb](https://github.com/taikoxyz/alethia-reth/commit/90486bbebe60e25a02eb75e5dab0004eb5a2ae72))
+* **repo:** run PR hygiene jobs on GitHub-hosted runners ([#245](https://github.com/taikoxyz/alethia-reth/issues/245)) ([0f4d628](https://github.com/taikoxyz/alethia-reth/commit/0f4d628380d03a5dc53445e4582ddebbc41a7cc6))
+
+
+### Documentation
+
+* **evm:** document zkGas pricing model ([#255](https://github.com/taikoxyz/alethia-reth/issues/255)) ([d4a45f1](https://github.com/taikoxyz/alethia-reth/commit/d4a45f126cdc373a504911fb3c4366f21f191f0d))
+
+
+### Code Refactoring
+
+* **block:** remove prover storage wipe metadata ([#257](https://github.com/taikoxyz/alethia-reth/issues/257)) ([f09235e](https://github.com/taikoxyz/alethia-reth/commit/f09235ef68536c6db1fec2c491f14d97975dd706))
+
+
+### Workflow
+
+* **repo:** check [@claude](https://github.com/claude) PRs for forks in a read-only job ([#247](https://github.com/taikoxyz/alethia-reth/issues/247)) ([322a020](https://github.com/taikoxyz/alethia-reth/commit/322a0202f6af344a4d1b3f9e57e918a4f328d920))
+* **repo:** fail the [@claude](https://github.com/claude) gate closed on a missing head SHA ([#249](https://github.com/taikoxyz/alethia-reth/issues/249)) ([b71613d](https://github.com/taikoxyz/alethia-reth/commit/b71613d98ee7aeaa0fc271f19a7c442044e18299))
+
 ## [1.4.1](https://github.com/taikoxyz/alethia-reth/compare/v1.4.0...v1.4.1) (2026-09-19)
 
 

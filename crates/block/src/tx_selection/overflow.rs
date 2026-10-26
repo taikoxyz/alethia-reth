@@ -12,7 +12,8 @@
 //! pool keeps the memory no larger than the pool. There is no eviction by size and no expiry,
 //! because an expiry would let the same transactions come due again as new.
 
-use alloy_primitives::{Address, B256, Keccak256, TxHash};
+use crate::config::TaikoNextBlockEnvAttributes;
+use alloy_primitives::{B256, Keccak256, TxHash};
 use core::fmt;
 use reth_transaction_pool::error::PoolTransactionError;
 use std::{
@@ -68,27 +69,48 @@ impl ZkOverflowMemory {
     }
 }
 
-/// Returns the digest of the execution state selection starts from: keccak256 over
-/// `parent_hash ‖ beneficiary ‖ base_fee ‖ gas_limit` (integers as 8-byte big-endian), advanced
-/// by [`advance_selection_state`] for each hash in `committed`, in order.
+/// Returns the digest of the execution state selection starts from: keccak256 over the parent hash
+/// and every field of the next block's environment, advanced by [`advance_selection_state`] for
+/// each hash in `committed`, in order.
 ///
-/// The block timestamp is left out by design: payload builds for one parent can carry a different
-/// timestamp on every call, and the pre-building RPC selects at the parent's timestamp, which
-/// differs from the derived block's. In the payload path the digest also leaves out
-/// `prev_randao`, `extra_data` and the parent beacon block root; for a given parent and anchor
-/// these do not vary in practice.
+/// The environment covers everything the block context hands a transaction: the timestamp, fee
+/// recipient, `prev_randao`, gas limit and base fee, plus `extra_data` and the parent beacon block
+/// root, which reach execution through fee sharing and the EIP-4788 system call. A change in any of
+/// them can change what a transaction costs, so it leads to a re-run rather than a skip. Integers
+/// are encoded as 8-byte big-endian, `extra_data` is length-prefixed and the beacon root is
+/// preceded by a presence byte.
 pub fn selection_state_seed(
     parent_hash: B256,
-    beneficiary: Address,
-    base_fee: u64,
-    gas_limit: u64,
+    env: &TaikoNextBlockEnvAttributes,
     committed: &[TxHash],
 ) -> B256 {
+    // Destructured so that a new environment field fails to compile until it is hashed here.
+    let TaikoNextBlockEnvAttributes {
+        timestamp,
+        suggested_fee_recipient,
+        prev_randao,
+        gas_limit,
+        extra_data,
+        base_fee_per_gas,
+        parent_beacon_block_root,
+    } = env;
+
     let mut hasher = Keccak256::new();
     hasher.update(parent_hash);
-    hasher.update(beneficiary);
-    hasher.update(base_fee.to_be_bytes());
+    hasher.update(timestamp.to_be_bytes());
+    hasher.update(suggested_fee_recipient);
+    hasher.update(prev_randao);
     hasher.update(gas_limit.to_be_bytes());
+    hasher.update(base_fee_per_gas.to_be_bytes());
+    hasher.update((extra_data.len() as u64).to_be_bytes());
+    hasher.update(extra_data);
+    match parent_beacon_block_root {
+        Some(root) => {
+            hasher.update([1u8]);
+            hasher.update(root);
+        }
+        None => hasher.update([0u8]),
+    }
     committed.iter().fold(hasher.finalize(), |state, tx| advance_selection_state(state, *tx))
 }
 
@@ -129,6 +151,7 @@ impl PoolTransactionError for ZkGasBudgetExceeded {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{Address, Bytes};
 
     /// Returns a distinct transaction hash for tests.
     fn tx_hash(byte: u8) -> TxHash {
@@ -170,35 +193,50 @@ mod tests {
         assert!(memory.is_empty());
     }
 
+    fn test_env() -> TaikoNextBlockEnvAttributes {
+        TaikoNextBlockEnvAttributes {
+            timestamp: 1,
+            suggested_fee_recipient: Address::with_last_byte(2),
+            prev_randao: B256::with_last_byte(3),
+            gas_limit: 4,
+            extra_data: Bytes::from_static(&[5]),
+            base_fee_per_gas: 6,
+            parent_beacon_block_root: Some(B256::with_last_byte(7)),
+        }
+    }
+
     #[test]
     fn state_seed_changes_with_every_input() {
         let parent = B256::with_last_byte(1);
-        let beneficiary = Address::with_last_byte(2);
-        let base_fee = 3;
-        let gas_limit = 4;
-        let committed = [tx_hash(5)];
+        let env = test_env();
+        let seed = selection_state_seed(parent, &env, &[]);
+        assert_eq!(seed, selection_state_seed(parent, &test_env(), &[]));
+        assert_ne!(selection_state_seed(B256::with_last_byte(9), &env, &[]), seed);
 
-        let seed = selection_state_seed(parent, beneficiary, base_fee, gas_limit, &[]);
-        assert_eq!(seed, selection_state_seed(parent, beneficiary, base_fee, gas_limit, &[]));
-        assert_eq!(
-            selection_state_seed(parent, beneficiary, base_fee, gas_limit, &committed),
-            selection_state_seed(parent, beneficiary, base_fee, gas_limit, &committed),
-        );
-
-        let variants = [
-            selection_state_seed(B256::with_last_byte(9), beneficiary, base_fee, gas_limit, &[]),
-            selection_state_seed(parent, Address::with_last_byte(9), base_fee, gas_limit, &[]),
-            selection_state_seed(parent, beneficiary, base_fee + 1, gas_limit, &[]),
-            selection_state_seed(parent, beneficiary, base_fee, gas_limit + 1, &[]),
-            selection_state_seed(parent, beneficiary, base_fee, gas_limit, &committed),
+        let changes: [fn(&mut TaikoNextBlockEnvAttributes); 8] = [
+            |env| env.timestamp += 1,
+            |env| env.suggested_fee_recipient = Address::with_last_byte(9),
+            |env| env.prev_randao = B256::with_last_byte(9),
+            |env| env.gas_limit += 1,
+            |env| env.extra_data = Bytes::from_static(&[5, 0]),
+            |env| env.base_fee_per_gas += 1,
+            |env| env.parent_beacon_block_root = None,
+            |env| env.parent_beacon_block_root = Some(B256::ZERO),
         ];
-        for variant in variants {
-            assert_ne!(variant, seed);
+        let variants = changes.map(|change| {
+            let mut env = test_env();
+            change(&mut env);
+            selection_state_seed(parent, &env, &[])
+        });
+        for (i, variant) in variants.iter().enumerate() {
+            assert_ne!(*variant, seed, "change {i} left the seed unchanged");
         }
+        // A missing beacon root and a zero one are told apart.
+        assert_ne!(variants[6], variants[7]);
 
         // Committed hashes are folded through `advance_selection_state`.
         assert_eq!(
-            selection_state_seed(parent, beneficiary, base_fee, gas_limit, &committed),
+            selection_state_seed(parent, &env, &[tx_hash(5)]),
             advance_selection_state(seed, tx_hash(5)),
         );
     }

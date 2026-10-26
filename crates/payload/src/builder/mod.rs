@@ -22,7 +22,7 @@ use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
-    tx_selection::ZkOverflowMemory,
+    tx_selection::{ZkOverflowMemory, selection_state_seed},
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::ANCHOR_V3_V4_GAS_LIMIT;
@@ -227,20 +227,19 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
+    let env_attributes = TaikoNextBlockEnvAttributes {
+        timestamp: attributes.timestamp(),
+        suggested_fee_recipient: attributes.beneficiary,
+        prev_randao: attributes.mix_hash,
+        gas_limit: attributes.gas_limit,
+        extra_data: attributes.extra_data.clone(),
+        base_fee_per_gas: attributes.base_fee_per_gas,
+        parent_beacon_block_root: attributes.parent_beacon_block_root,
+    };
+    // New-mode pool selection starts from this payload's parent and block environment.
+    let block_state_seed = selection_state_seed(parent_header.hash(), &env_attributes, &[]);
     let mut builder = evm_config
-        .builder_for_next_block(
-            &mut db,
-            &parent_header,
-            TaikoNextBlockEnvAttributes {
-                timestamp: attributes.timestamp(),
-                suggested_fee_recipient: attributes.beneficiary,
-                prev_randao: attributes.mix_hash,
-                gas_limit: attributes.gas_limit,
-                extra_data: attributes.extra_data.clone(),
-                base_fee_per_gas: attributes.base_fee_per_gas,
-                parent_beacon_block_root: attributes.parent_beacon_block_root,
-            },
-        )
+        .builder_for_next_block(&mut db, &parent_header, env_attributes)
         .map_err(PayloadBuilderError::other)?;
 
     // If we have a state-root task, wire a state hook that streams per-tx state diffs. Hooks
@@ -273,7 +272,7 @@ where
             let ctx = PoolExecutionContext {
                 anchor_tx,
                 parent_header: &parent_header,
-                parent_hash: parent_header.hash(),
+                block_state_seed,
                 block_timestamp: attributes.timestamp(),
                 payload_id: payload_id.to_string(),
                 base_fee,

@@ -10,20 +10,18 @@ use reth::{
 use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_evm::{
-    Evm as _,
     block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_primitives_traits::{Header as RethHeader, NodePrimitives, Recovered};
-use reth_revm::context::Block as _;
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
     executor::{TxSelectionExecutor, is_zk_gas_limit_exceeded},
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
-        select_and_execute_pool_transactions, selection_state_seed,
+        advance_selection_state, select_and_execute_pool_transactions,
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -51,8 +49,9 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) anchor_tx: &'a Recovered<EthTransactionSigned>,
     /// The parent block header.
     pub(super) parent_header: &'a RethHeader,
-    /// Hash of the parent block, the base of the selection state seed.
-    pub(super) parent_hash: B256,
+    /// Digest of the parent and the block environment this payload executes in, before the
+    /// anchor; see [`alethia_reth_block::tx_selection::selection_state_seed`].
+    pub(super) block_state_seed: B256,
     /// Timestamp for the new block.
     pub(super) block_timestamp: u64,
     /// Payload identifier for logging.
@@ -185,13 +184,8 @@ where
         max_lists: 1,
         min_tip: 0,
         locals: vec![],
-        state_seed: selection_state_seed(
-            ctx.parent_hash,
-            builder.evm().block().beneficiary(),
-            ctx.base_fee,
-            ctx.gas_limit,
-            &[*ctx.anchor_tx.tx_hash()],
-        ),
+        // The anchor committed above, so selection starts from the state after it.
+        state_seed: advance_selection_state(ctx.block_state_seed, *ctx.anchor_tx.tx_hash()),
     };
 
     match select_and_execute_pool_transactions(builder, pool, &config, ctx.zk_overflows, || {
@@ -237,16 +231,20 @@ mod tests {
     use reth_evm_ethereum::RethReceiptBuilder;
     use reth_primitives_traits::Recovered;
     use reth_provider::test_utils::MockEthProvider;
+    use reth_revm::state::Bytecode;
     use reth_storage_api::StateProvider;
     use reth_transaction_pool::{
-        TransactionOrigin, TransactionPool, noop::NoopTransactionPool, test_utils::testing_pool,
+        TransactionOrigin, TransactionPool,
+        noop::NoopTransactionPool,
+        test_utils::{TestPool, testing_pool},
     };
 
     use alethia_reth_block::{
+        config::TaikoNextBlockEnvAttributes,
         executor::{TaikoBlockExecutor, ZkGasLimitExceeded},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
-            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            insert_contract, recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
         tx_selection::selection_state_seed,
     };
@@ -426,7 +424,7 @@ mod tests {
             &PoolExecutionContext {
                 anchor_tx: &anchor_tx,
                 parent_header: &parent_header,
-                parent_hash: B256::ZERO,
+                block_state_seed: B256::ZERO,
                 block_timestamp: 1,
                 payload_id: "anchor-zk-gas".to_string(),
                 base_fee: 0,
@@ -488,7 +486,11 @@ mod tests {
         let client = test_client((*chain_spec).clone());
         let cancel = CancelOnDrop::default();
         let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
-        let parent_hash = B256::repeat_byte(0x66);
+        let block_state_seed = selection_state_seed(
+            B256::repeat_byte(0x66),
+            &test_env_attributes(1, beneficiary),
+            &[],
+        );
         let gas_limit = 29_000_000;
         let overflows = ZkOverflowMemory::default();
 
@@ -499,7 +501,7 @@ mod tests {
             &PoolExecutionContext {
                 anchor_tx: &anchor_tx,
                 parent_header: &parent_header,
-                parent_hash,
+                block_state_seed,
                 block_timestamp: 1,
                 payload_id: "pool-zk-gas-overflow".to_string(),
                 base_fee: 0,
@@ -523,14 +525,103 @@ mod tests {
         // The overflow is remembered at the state right after the anchor.
         assert_eq!(
             overflows.state(&limit_hash),
-            Some(selection_state_seed(
-                parent_hash,
-                beneficiary,
-                0,
-                gas_limit,
-                &[*anchor_tx.tx_hash()]
-            ))
+            Some(advance_selection_state(block_state_seed, *anchor_tx.tx_hash()))
         );
         assert_eq!(overflows.state(&success_hash), None);
+    }
+
+    /// Hashes in a loop while `TIMESTAMP == 1` and stops at once at any other timestamp.
+    const BENCH_TIMESTAMP_TARGET: Address = Address::with_last_byte(0x40);
+
+    /// Returns the block environment of a new-mode test payload at `timestamp`.
+    fn test_env_attributes(timestamp: u64, beneficiary: Address) -> TaikoNextBlockEnvAttributes {
+        TaikoNextBlockEnvAttributes {
+            timestamp,
+            suggested_fee_recipient: beneficiary,
+            prev_randao: B256::ZERO,
+            gas_limit: 30_000_000,
+            extra_data: Bytes::new(),
+            base_fee_per_gas: 0,
+            parent_beacon_block_root: Some(B256::ZERO),
+        }
+    }
+
+    /// Builds a new-mode payload at `timestamp` from `pool`, with the same parent and anchor every
+    /// time, and returns how many transactions it committed, the anchor included.
+    fn committed_in_new_mode_at(
+        chain_spec: &Arc<TaikoChainSpec>,
+        pool: &TestPool,
+        anchor_tx: &Recovered<EthTransactionSigned>,
+        timestamp: u64,
+        overflows: &ZkOverflowMemory,
+    ) -> usize {
+        let mut db = db_with_contracts(&[
+            (Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0),
+            (BENCH_LIMIT_CALLER, 0),
+        ]);
+        insert_contract(
+            &mut db,
+            BENCH_TIMESTAMP_TARGET,
+            Bytecode::new_raw(Bytes::from_static(&alloy_primitives::hex!(
+                "42600114600857005b6201000060002050600856"
+            ))),
+        );
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let mut evm_env = unzen_evm_env();
+        evm_env.block_env.timestamp = U256::from(timestamp);
+        let evm = TaikoEvmFactory.create_evm(&mut state, evm_env);
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            unzen_execution_ctx(),
+            chain_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
+        let env = test_env_attributes(timestamp, Address::ZERO);
+
+        let outcome = execute_anchor_and_pool_transactions(
+            &mut builder,
+            pool,
+            &test_client((**chain_spec).clone()),
+            &PoolExecutionContext {
+                anchor_tx,
+                parent_header: &parent_header,
+                block_state_seed: selection_state_seed(B256::repeat_byte(0x66), &env, &[]),
+                block_timestamp: timestamp,
+                payload_id: format!("timestamp-{timestamp}"),
+                base_fee: 0,
+                gas_limit: 29_000_000,
+                zk_overflows: overflows,
+            },
+            &CancelOnDrop::default(),
+        )
+        .expect("new-mode selection should complete");
+        assert!(matches!(outcome, ExecutionOutcome::Completed(_)));
+        builder.executor.receipts().len()
+    }
+
+    #[test]
+    fn new_mode_reruns_a_remembered_overflow_once_the_timestamp_changes() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let anchor_tx = test_anchor_transaction(BENCH_SUCCESS_TARGET);
+        let switch = recovered_tx(BENCH_LIMIT_CALLER, BENCH_TIMESTAMP_TARGET, 0, 10);
+        let switch_hash = *switch.tx_hash();
+        let pool = testing_pool();
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("test runtime");
+        rt.block_on(pool.add_consensus_transaction(switch, TransactionOrigin::External))
+            .expect("test tx should enter the pool");
+
+        // At timestamp 1 the transaction hashes in a loop and overflows: only the anchor commits.
+        let remembered = ZkOverflowMemory::default();
+        assert_eq!(committed_in_new_mode_at(&chain_spec, &pool, &anchor_tx, 1, &remembered), 1);
+        assert!(remembered.state(&switch_hash).is_some());
+
+        // At timestamp 2 it stops at once and fits, with a fresh memory and with the one that
+        // remembers its overflow at timestamp 1.
+        let fresh = ZkOverflowMemory::default();
+        assert_eq!(committed_in_new_mode_at(&chain_spec, &pool, &anchor_tx, 2, &fresh), 2);
+        assert_eq!(committed_in_new_mode_at(&chain_spec, &pool, &anchor_tx, 2, &remembered), 2);
+        assert_eq!(remembered.state(&switch_hash), None);
     }
 }

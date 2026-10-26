@@ -269,6 +269,16 @@ branches that send a trailing `blockContext` argument get no error from alethia-
 extra positional parameters and simulates under the parent's rules. taiko-geth rejects the extra
 argument, so drivers must stop sending it.
 
+## Simulation
+
+For a block under Unzen or Etna rules, `eth_call` and `eth_estimateGas` meter zk gas the way the
+block executor meters one transaction: each run starts from zero against the full 100,000,000 block
+zk-gas budget and is charged the 243,000 intrinsic zk gas before execution. `eth_estimateGas` starts
+every one of its runs from zero, so repeated runs never accumulate. A call that would exceed the
+budget returns a JSON-RPC error, never a result: code `-32603`, message
+`Revm error: zk gas limit exceeded` (match on the substring `zk gas limit exceeded`).
+`eth_createAccessList` and `debug_traceCall` meter the same way.
+
 ## Devnet activation override
 
 `--devnet-etna-timestamp <TIMESTAMP>` or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP=<TIMESTAMP>` applies only

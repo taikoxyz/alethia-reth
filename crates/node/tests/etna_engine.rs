@@ -235,6 +235,29 @@ fn devnet_etna_genesis_serves_preselection_and_pending_simulation() -> eyre::Res
             http.request::<Value, _>("eth_getBlockByNumber", rpc_params!["pending", true]).await?,
             Value::Null
         );
+        // Simulation meters zk gas against the full block budget and reports the zk limit as an
+        // error, not a result: modexp with a 1,024-byte modulus and an all-ones 32-byte exponent
+        // costs ~8.4M gas, which at multiplier 154 is far above the 100M zk budget.
+        let mut input = Vec::with_capacity(96 + 32 + 32 + 1024);
+        for len in [32_u64, 32, 1024] {
+            input.extend_from_slice(&alloy_primitives::U256::from(len).to_be_bytes::<32>());
+        }
+        input.extend_from_slice(&[0x02; 32]);
+        input.extend_from_slice(&[0xff; 32]);
+        input.extend_from_slice(&[0x01; 1024]);
+        let modexp = json!({
+            "to": "0x0000000000000000000000000000000000000005",
+            "data": alloy_primitives::Bytes::from(input),
+            "gas": "0x989680",
+        });
+        for method in ["eth_call", "eth_estimateGas"] {
+            let result = http.request::<Value, _>(method, rpc_params![&modexp, "latest"]).await;
+            let Err(jsonrpsee::core::ClientError::Call(e)) = result else {
+                panic!("{method} must report the zk limit as a call error: {result:?}");
+            };
+            assert_eq!(e.code(), -32603, "{method}: {e:?}");
+            assert!(e.message().contains("zk gas limit exceeded"), "{method}: {e:?}");
+        }
         Ok(())
     })
 }

@@ -2,12 +2,12 @@
 
 use crate::env::TaikoEvmEnv;
 use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
-use alloy_primitives::{Address, address};
+use alloy_primitives::{Address, U256, address};
 use reth_revm::{
     Inspector,
     context::{
         TxEnv,
-        result::{ExecutionResult, HaltReason},
+        result::{EVMError, ExecutionResult, HaltReason},
     },
     db::InMemoryDB,
     inspector::NoOpInspector,
@@ -339,8 +339,9 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
     let expected = probe.steps.iter().fold(
-        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
-            precompile_gas_used,
+        TX_INTRINSIC_ZK_GAS +
+            u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
+                precompile_gas_used,
         |acc, step| {
             let raw_gas = if step.opcode == opcode::STATICCALL {
                 schedule.spawn_estimates.staticcall
@@ -351,8 +352,9 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
         },
     );
     let naive_expected = probe.steps.iter().fold(
-        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
-            precompile_gas_used,
+        TX_INTRINSIC_ZK_GAS +
+            u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
+                precompile_gas_used,
         |acc, step| {
             acc + (step.raw_gas * u64::from(schedule.opcode_multipliers[step.opcode as usize]))
         },
@@ -686,7 +688,12 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
             family.name()
         );
         assert!(family.was_dispatched(probe, child), "{} child must dispatch", family.name());
-        assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, schedule), "{}", family.name());
+        assert_eq!(
+            inspected_zk_gas,
+            expected_probe_zk_gas(probe, schedule) + TX_INTRINSIC_ZK_GAS,
+            "{}",
+            family.name()
+        );
         assert_eq!(plain_zk_gas, inspected_zk_gas, "{} spawn parity", family.name());
 
         let failing = Bytecode::new_raw(Bytes::from(vec![family.opcode()]));
@@ -719,7 +726,12 @@ fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
             family.name()
         );
         assert!(!family.was_dispatched(probe, child), "{} must not dispatch", family.name());
-        assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, schedule), "{}", family.name());
+        assert_eq!(
+            inspected_zk_gas,
+            expected_probe_zk_gas(probe, schedule) + TX_INTRINSIC_ZK_GAS,
+            "{}",
+            family.name()
+        );
         assert_eq!(plain_zk_gas, inspected_zk_gas, "{} nonspawn parity", family.name());
     }
 }
@@ -756,7 +768,10 @@ fn metered_paths_match_for_dynamic_opcode_and_custom_inspector_composition() {
 
     assert!(keccak.raw_gas > 30, "memory expansion must contribute dynamic gas");
     assert!(!keccak.selected_new_frame);
-    assert_eq!(inspected_zk_gas, expected_probe_zk_gas(probe, &UNZEN_ZK_GAS_SCHEDULE));
+    assert_eq!(
+        inspected_zk_gas,
+        expected_probe_zk_gas(probe, &UNZEN_ZK_GAS_SCHEDULE) + TX_INTRINSIC_ZK_GAS
+    );
     assert_eq!(plain_zk_gas, inspected_zk_gas);
 }
 
@@ -766,7 +781,8 @@ fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
     let spawn_charge = family.spawn_raw_gas(schedule) *
         u64::from(schedule.opcode_multipliers[usize::from(family.opcode())]);
     let admitted = family.prefix_zk_gas(schedule) + spawn_charge - 1;
-    let reserved = schedule.block_limit - admitted;
+    // A standalone transact charges the intrinsic from the same budget before execution.
+    let reserved = schedule.block_limit - admitted - TX_INTRINSIC_ZK_GAS;
 
     let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
         spawn_case_db(family, child),
@@ -795,7 +811,12 @@ fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
     assert_eq!(inspected_error.to_string(), ZK_GAS_LIMIT_ERR, "{}", family.name());
     assert_eq!(plain_error.to_string(), ZK_GAS_LIMIT_ERR, "{}", family.name());
     assert!(!dispatched, "{} must not dispatch child work", family.name());
-    assert_eq!(inspected_zk_gas, family.prefix_zk_gas(schedule), "{}", family.name());
+    assert_eq!(
+        inspected_zk_gas,
+        TX_INTRINSIC_ZK_GAS + family.prefix_zk_gas(schedule),
+        "{}",
+        family.name()
+    );
     assert_eq!(plain_zk_gas, inspected_zk_gas, "{} fatal parity", family.name());
 }
 
@@ -879,6 +900,99 @@ fn disabled_per_transact_reset_preserves_executor_accumulation_semantics() {
         first_run * 2,
         "a disabled entry reset must preserve cross-transact accumulation for the executor"
     );
+}
+
+#[test]
+fn standalone_transact_charges_the_intrinsic_zk_gas_once() {
+    // Spec 3.1: standalone simulation (`eth_call`, `eth_estimateGas`) meters a transaction like a
+    // block transaction, so its reading is the executor-style metering (entry reset disabled, no
+    // intrinsic) plus exactly one `TX_INTRINSIC_ZK_GAS`, on both metered paths and on every run.
+    for spec in [TaikoSpecId::UNZEN, TaikoSpecId::ETNA] {
+        for inspected in [false, true] {
+            let mut executor_style =
+                metered_evm(spec, inspected, db_with_contract(simple_arithmetic_bytecode()));
+            executor_style.set_per_transact_zk_gas_reset_enabled(false);
+            executor_style.transact(tx_env(100_000)).expect("executor-style run should execute");
+            let executor_style =
+                executor_style.meter().expect("metered spec installs a meter").tx_zk_gas_used();
+            assert!(executor_style > 0, "{spec:?} inspected={inspected}: must charge opcodes");
+
+            let mut evm =
+                metered_evm(spec, inspected, db_with_contract(simple_arithmetic_bytecode()));
+            evm.transact(tx_env(100_000)).expect("standalone run should execute");
+            let standalone = evm.meter().expect("metered spec installs a meter").tx_zk_gas_used();
+            assert_eq!(
+                standalone - executor_style,
+                TX_INTRINSIC_ZK_GAS,
+                "{spec:?} inspected={inspected}"
+            );
+
+            evm.transact(tx_env(100_000)).expect("second standalone run should execute");
+            assert_eq!(
+                evm.meter().expect("metered spec installs a meter").tx_zk_gas_used(),
+                standalone,
+                "{spec:?} inspected={inspected}: a reused EVM must charge the intrinsic once per run"
+            );
+        }
+    }
+}
+
+#[test]
+fn standalone_transact_reports_the_zk_limit_for_opcode_and_direct_precompile_overflows() {
+    // Spec 3.1: standalone simulation reports an explicit zk-limit error instead of a result when
+    // a call needs more than the full block zk budget: (a) an opcode overflow (KECCAK256 over
+    // 1.5 MiB) and (b) a transaction sent directly to modexp whose ~8.4M gas at multiplier 154
+    // is far above the 100M budget.
+    let modexp = TxEnv::builder()
+        .caller(BENCH_CALLER)
+        .kind(TxKind::Call(Address::with_last_byte(0x05)))
+        .data(modexp_zk_overflow_input())
+        .chain_id(Some(167))
+        .gas_limit(10_000_000)
+        .build()
+        .unwrap();
+    let cases = [
+        ("keccak", db_with_contract(limit_exceeding_keccak_bytecode()), tx_env(16_000_000)),
+        ("modexp", db_with_contract(simple_arithmetic_bytecode()), modexp),
+    ];
+
+    for spec in [TaikoSpecId::UNZEN, TaikoSpecId::ETNA] {
+        for inspected in [false, true] {
+            for (name, db, tx) in cases.clone() {
+                let mut evm = metered_evm(spec, inspected, db);
+                let result = evm.transact(tx);
+                assert!(
+                    matches!(&result, Err(EVMError::Custom(msg)) if msg == ZK_GAS_LIMIT_ERR),
+                    "{name} {spec:?} inspected={inspected}: {result:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn system_calls_skip_the_standalone_intrinsic() {
+    // A system call is not a block transaction: on a standalone EVM it meters its execution
+    // without the intrinsic charge, and the next ordinary transact charges it again.
+    let system_address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
+    for spec in [TaikoSpecId::UNZEN, TaikoSpecId::ETNA] {
+        for inspected in [false, true] {
+            let mut evm =
+                metered_evm(spec, inspected, db_with_contract(simple_arithmetic_bytecode()));
+            evm.transact_system_call(system_address, BENCH_TARGET, Bytes::new())
+                .expect("system call should execute");
+            let system_call = evm.meter().expect("metered spec installs a meter").tx_zk_gas_used();
+            assert!(system_call > 0, "{spec:?} inspected={inspected}: must meter execution");
+            assert!(system_call < TX_INTRINSIC_ZK_GAS, "{spec:?} inspected={inspected}");
+
+            evm.transact(tx_env(100_000)).expect("ordinary run should execute");
+            assert!(
+                evm.meter().expect("metered spec installs a meter").tx_zk_gas_used() >=
+                    TX_INTRINSIC_ZK_GAS,
+                "{spec:?} inspected={inspected}: ordinary transacts charge the intrinsic again"
+            );
+        }
+    }
 }
 
 #[test]
@@ -995,12 +1109,13 @@ fn metered_paths_charge_forfeited_gas_for_an_oog_halting_step() {
     // (`Interpreter::halt` spends it), and that forfeiture is part of the step's zk gas
     // charge: pre-2.4.0 revm ran `halt_oog()` (spend-all) inside `step` itself, and
     // taiko-geth's zk mirror follows that reference behavior. These committed values feed
-    // `header.difficulty` on Unzen, so any drift here is a consensus change.
+    // `header.difficulty` on Unzen, so any drift here is a consensus change. Both standalone
+    // readings also carry the one intrinsic charge every transaction pays.
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let push_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::PUSH1)]);
     let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
     let forfeited_gas = 1;
-    let expected = 2 * 3 * push_multiplier + forfeited_gas * add_multiplier;
+    let expected = TX_INTRINSIC_ZK_GAS + 2 * 3 * push_multiplier + forfeited_gas * add_multiplier;
 
     let (production_zk_gas, inspector_zk_gas) =
         metered_paths_zk_gas_for_halting_tx(simple_arithmetic_bytecode(), 21_000 + 7, |reason| {
@@ -1022,10 +1137,11 @@ fn metered_paths_charge_static_gas_zk_gas_for_a_stack_underflow_step() {
     // `ADD` on an empty stack: the GasTable static charge (3 gas) lands before revm validates
     // the stack, so the halting step contributes `3 x multiplier`. Known cross-client
     // divergence: taiko-geth validates the stack before charging gas and meters 0 for this
-    // step; the fix is tracked on the geth side, so this pins reth's committed value.
+    // step; the fix is tracked on the geth side, so this pins reth's committed value. Both
+    // standalone readings also carry the one intrinsic charge every transaction pays.
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
-    let expected = 3 * add_multiplier;
+    let expected = TX_INTRINSIC_ZK_GAS + 3 * add_multiplier;
 
     let (production_zk_gas, inspector_zk_gas) =
         metered_paths_zk_gas_for_halting_tx(stack_underflow_bytecode(), 100_000, |reason| {
@@ -1124,6 +1240,33 @@ fn non_unzen_default_create_evm_path_keeps_metering_disabled() {
 
     assert!(evm.meter().is_none());
     evm.transact(tx_env(5_000_000)).expect("non-Unzen tx should stay on the legacy path");
+}
+
+/// Builds a standalone EVM for `spec` over `db` on the production metered path (`create_evm`) or
+/// the inspector metered path (`create_evm_with_inspector`).
+fn metered_evm(
+    spec: TaikoSpecId,
+    inspected: bool,
+    db: InMemoryDB,
+) -> <TaikoEvmFactory as EvmFactory>::Evm<InMemoryDB, NoOpInspector> {
+    if inspected {
+        TaikoEvmFactory.create_evm_with_inspector(db, evm_env(spec), NoOpInspector {})
+    } else {
+        TaikoEvmFactory.create_evm(db, evm_env(spec))
+    }
+}
+
+/// modexp input with a 32-byte base, a 32-byte all-ones exponent and a 1,024-byte modulus:
+/// ~8.4M gas, which at the modexp multiplier of 154 is far above the 100M block zk budget.
+fn modexp_zk_overflow_input() -> Bytes {
+    let mut input = Vec::with_capacity(96 + 32 + 32 + 1024);
+    for len in [32_u64, 32, 1024] {
+        input.extend_from_slice(&U256::from(len).to_be_bytes::<32>());
+    }
+    input.extend_from_slice(&[0x02; 32]);
+    input.extend_from_slice(&[0xff; 32]);
+    input.extend_from_slice(&[0x01; 1024]);
+    Bytes::from(input)
 }
 
 fn evm_env(spec: TaikoSpecId) -> TaikoEvmEnv {

@@ -928,7 +928,7 @@ mod tests {
         let accounts = senders(&txs);
         let pool = testing_pool();
         add_to_pool(&pool, txs.clone());
-        let [a, _b, c] = txs.each_ref().map(|tx| pooled(&pool, tx));
+        let [a, b, c] = txs.each_ref().map(|tx| pooled(&pool, tx));
         let overflows = ZkOverflowMemory::default();
 
         // `b` does not fit after `a`, so it is left out and `c`, which fits, is still selected.
@@ -941,8 +941,10 @@ mod tests {
         assert_eq!(list_hashes(&lists[0]), hashes([&a, &c]));
         assert_eq!(lists[0].total_tx_bytes, body_len(&a) + body_len(&c));
         assert_eq!(receipts, 2);
-        // A transaction left out for the byte budget is not a zk gas overflow.
+        // A transaction left out for the byte budget is not a zk gas overflow, and it stays in
+        // the pool for a later block.
         assert!(overflows.is_empty());
+        assert!(pool.contains(b.tx_hash()));
 
         // One byte less leaves room for `a` only.
         let config = TxSelectionConfig {

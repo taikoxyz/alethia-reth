@@ -270,7 +270,13 @@ where
     let total_fees = match &attributes.transactions {
         Some(transactions) => {
             debug!(target: "payload_builder", id=%payload_id, tx_count=transactions.len(), "using provided transaction list");
-            match execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)? {
+            match execute_provided_transactions(
+                &mut builder,
+                transactions,
+                base_fee,
+                None,
+                &cancel,
+            )? {
                 ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
                 ExecutionOutcome::Completed(fees) => fees,
             }

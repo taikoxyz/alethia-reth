@@ -210,6 +210,7 @@ where
         + DatabaseProviderFactory
         + StateProviderFactory
         + BalProvider
+        + Clone
         + 'static,
     EngineT: EngineTypes<
             ExecutionData = TaikoExecutionData,
@@ -270,11 +271,21 @@ where
             let built_payload = match self.wait_for_built_payload(payload_id).await {
                 Ok(built_payload) => built_payload,
                 // Reth's payload job reports every failed build as `missing payload`, so a pruned
-                // parent is told apart by reading the parent's state again.
+                // parent is told apart by reading the parent's state again. The first read of a
+                // historical state can be costly, so it runs off the async RPC workers.
                 Err(error) if is_etna_build => {
-                    return Err(failed_build_error(error, || {
-                        read_parent_state(&self.provider, parent_hash)
-                    }));
+                    let provider = self.provider.clone();
+                    let classified = tokio::task::spawn_blocking(move || {
+                        failed_build_error(error, || read_parent_state(&provider, parent_hash))
+                    })
+                    .await;
+                    return Err(match classified {
+                        Ok(error) => error,
+                        Err(join_error) if join_error.is_panic() => {
+                            std::panic::resume_unwind(join_error.into_panic())
+                        }
+                        Err(join_error) => Self::internal_error(join_error).into(),
+                    });
                 }
                 Err(error) => return Err(error.into()),
             };

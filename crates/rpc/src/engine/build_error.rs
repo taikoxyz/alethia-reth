@@ -48,15 +48,16 @@ pub(crate) fn read_parent_state(
 
 /// Returns the JSON-RPC error for an Etna FCU whose payload job did not deliver a block.
 ///
-/// Only a failed build (`GetPayloadError`) calls `read_parent_state`. When that read fails with a
-/// pruned parent state, the answer is `-38100 "cannot build on parent"` with the read error's text
-/// as diagnostic data. Otherwise it is the job's own error, unchanged.
+/// Only a failed build (`GetPayloadError`) calls `probe_parent`, which reads the parent's state
+/// (see [`read_parent_state`]). When that read fails with a pruned parent state, the answer is
+/// `-38100 "cannot build on parent"` with the read error's text as diagnostic data. Otherwise it is
+/// the job's own error, unchanged.
 pub(crate) fn failed_build_error(
     error: EngineApiError,
-    read_parent_state: impl FnOnce() -> ProviderResult<()>,
+    probe_parent: impl FnOnce() -> ProviderResult<()>,
 ) -> ErrorObjectOwned {
     if matches!(error, EngineApiError::GetPayloadError(_)) &&
-        let Err(read_error) = read_parent_state() &&
+        let Err(read_error) = probe_parent() &&
         is_pruned_parent_state(&read_error)
     {
         return ErrorObjectOwned::owned(

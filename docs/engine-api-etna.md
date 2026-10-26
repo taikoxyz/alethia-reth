@@ -310,10 +310,12 @@ executionBlock length and fails the job rather than return a block above `maxBlo
 Preselection simulates the next block under the parent's fork rules and `extraData`, and never
 applies pre-execution system calls. On an Etna parent it drops the legacy 2,000,000 zk-gas anchor
 reserve. At the boundary the parent is still pre-Etna, so the first Etna block is selected with that
-reserve. Results are estimates; the builder enforces the actual gas and zk-gas limits. Drivers' Etna
-branches that send a trailing `blockContext` argument get no error from alethia-reth, which ignores
-extra positional parameters and simulates under the parent's rules. taiko-geth rejects the extra
-argument, so drivers must stop sending it.
+reserve. Results are estimates; the builder enforces the actual gas and zk-gas limits. Etna builds
+also enforce `maxBlockBytes`, the inclusive bound on the executionBlock's RLP length with
+transactions in block-body form ([byte limit](#byte-limit)), which preselection does not apply.
+Drivers' Etna branches that send a trailing `blockContext` argument get no error from alethia-reth,
+which ignores extra positional parameters and simulates under the parent's rules. taiko-geth rejects
+the extra argument, so drivers must stop sending it.
 
 ## Simulation
 

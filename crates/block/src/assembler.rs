@@ -119,6 +119,11 @@ where
 /// - Every optional field an Etna header carries is present (blob gas used and excess blob gas, the
 ///   beacon root, the requests hash); a header without one of them is only shorter. The block
 ///   access list hash and slot number stay absent, as the assembler leaves them.
+///
+/// The test
+/// `alethia_reth_payload::builder::tests::etna_header_reserve_bounds_a_maximal_assembled_header`
+/// (`crates/payload/src/builder/mod.rs`) pins this: the bound must equal the length of a header the
+/// assembler builds with `gasUsed` at the gas limit and a `u64::MAX` difficulty.
 pub fn etna_header_length_bound(
     parent: &SealedHeader,
     attributes: &TaikoNextBlockEnvAttributes,

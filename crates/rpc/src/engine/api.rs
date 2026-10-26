@@ -631,6 +631,8 @@ mod tests {
                 signature: [0; 65],
             },
             anchor_transaction: None,
+            forced_transaction: None,
+            max_block_bytes: (timestamp >= 100).then_some(124_000),
         }
     }
 

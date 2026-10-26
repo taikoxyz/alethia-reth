@@ -90,6 +90,25 @@ pub struct TaikoPayloadAttributes {
     /// instead of building an anchor transaction from checkpoint parameters.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub anchor_transaction: Option<AlloyBytes>,
+    /// Raw EIP-2718 bytes of a forced transaction (wire name `forcedTransaction`, `0x`-hex).
+    ///
+    /// Etna only. These are the bytes whose keccak256 is the forced-inclusion entry's transaction
+    /// hash; they must decode as exactly one EIP-2718 transaction with a recoverable signer. An
+    /// Etna build's mode follows from presence: `blockMetadata.txList` present selects a
+    /// given-list build (this field must then be absent), this field without a list selects a
+    /// mixed build that executes the forced transaction first and then selects from the pool, and
+    /// neither selects a pool build.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub forced_transaction: Option<AlloyBytes>,
+    /// Upper bound on the built block's executionBlock length (wire name `maxBlockBytes`, a JSON
+    /// number).
+    ///
+    /// Required on every Etna build, given-list builds included, at least
+    /// [`ETNA_MIN_MAX_BLOCK_BYTES`](crate::etna::ETNA_MIN_MAX_BLOCK_BYTES), and forbidden before
+    /// Etna. The built block's `rlp([header, [tx…]])`, including its outer list header and with
+    /// transactions in block-body form, is at most this many bytes.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub max_block_bytes: Option<u64>,
 }
 
 #[cfg(feature = "net")]
@@ -243,6 +262,8 @@ where
                 signature: [0; 65],
             },
             anchor_transaction: None,
+            forced_transaction: None,
+            max_block_bytes: None,
         }
     }
 }
@@ -276,6 +297,52 @@ mod tests {
         // L1 origin defaults remain zeroed and stable.
         assert_eq!(first.l1_origin.block_id, U256::ZERO);
         assert_eq!(first.l1_origin, second.l1_origin);
+
+        // Local dev-mode builds never use the Etna build fields.
+        assert_eq!(first.forced_transaction, None);
+        assert_eq!(first.max_block_bytes, None);
+    }
+
+    #[test]
+    fn etna_attributes_round_trip_forced_transaction_and_max_block_bytes() {
+        let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
+        let mut attributes: TaikoPayloadAttributes =
+            builder.build(&SealedHeader::seal_slow(Header::default()));
+        let raw = AlloyBytes::from_static(&hex!("02f86c83028c5980"));
+        attributes.forced_transaction = Some(raw.clone());
+        attributes.max_block_bytes = Some(124_000);
+
+        let json = serde_json::to_value(&attributes).expect("attributes serialize");
+        assert_eq!(json["forcedTransaction"], "0x02f86c83028c5980");
+        assert_eq!(json["forcedTransaction"], Value::String(hex::encode_prefixed(&raw)));
+        // A JSON number, like `blockMetadata.gasLimit`.
+        assert_eq!(json["maxBlockBytes"], 124_000);
+        assert!(json["maxBlockBytes"].is_u64());
+        let decoded: TaikoPayloadAttributes =
+            serde_json::from_value(json.clone()).expect("attributes deserialize");
+        assert_eq!(decoded, attributes);
+
+        // Both members are top level, next to `anchorTransaction`.
+        let mut wire = serde_json::to_value(&attributes).expect("attributes serialize");
+        let object = wire.as_object_mut().expect("attributes are an object");
+        object.insert("forcedTransaction".into(), Value::String("0x02c0".into()));
+        object.insert("maxBlockBytes".into(), serde_json::json!(1024));
+        let parsed: TaikoPayloadAttributes =
+            serde_json::from_value(wire).expect("driver-shaped attributes deserialize");
+        assert_eq!(parsed.forced_transaction, Some(AlloyBytes::from_static(&[0x02, 0xc0])));
+        assert_eq!(parsed.max_block_bytes, Some(1_024));
+
+        // Absent fields are omitted on the wire, and a payload without them still parses.
+        attributes.forced_transaction = None;
+        attributes.max_block_bytes = None;
+        let json = serde_json::to_value(&attributes).expect("attributes serialize");
+        let object = json.as_object().expect("attributes are an object");
+        assert!(!object.contains_key("forcedTransaction"), "{json}");
+        assert!(!object.contains_key("maxBlockBytes"), "{json}");
+        let decoded: TaikoPayloadAttributes =
+            serde_json::from_value(json).expect("attributes without the fields deserialize");
+        assert_eq!(decoded.forced_transaction, None);
+        assert_eq!(decoded.max_block_bytes, None);
     }
 
     #[test]

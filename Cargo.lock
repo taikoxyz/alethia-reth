@@ -318,11 +318,14 @@ name = "alethia-reth-primitives"
 version = "1.4.1"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-serde",
+ "alloy-signer",
+ "alloy-signer-local",
  "reth-chainspec",
  "reth-engine-local",
  "reth-engine-primitives",

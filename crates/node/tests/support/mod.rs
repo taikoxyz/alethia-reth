@@ -88,6 +88,9 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             signature: [0; 65],
         },
         anchor_transaction: None,
+        forced_transaction: None,
+        // Every Etna target carries the driver's block-size bound.
+        max_block_bytes: (timestamp >= 100).then_some(124_000),
     }
 }
 

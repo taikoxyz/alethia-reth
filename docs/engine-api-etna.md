@@ -108,11 +108,14 @@ and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Both dri
 fingerprint with stored origins to detect blocks they already inserted, so a changed fingerprint
 would re-insert blocks preconfirmed before the upgrade. An Etna job's fingerprint is the same
 preimage with version byte 2 plus its nonzero `parentBeaconBlockRoot`, hashed between the withdrawals
-and the transaction-list hash; `extraData` is hashed for every job. alethia-reth stamps every payload
-ID this way, so its FCUv3 IDs for Unzen jobs keep their V2-era values. taiko-client-rs computes the
-fingerprint with alethia-reth's `payload_id_taiko`, so it must move to this alethia-reth version
-together with its FCUv3 switch: earlier versions also hash a zero root, which changes every Unzen
-fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
+and the transaction-list hash; `extraData` is hashed for every job. After `extraData`, an Etna job
+hashes `0x01 ‖ u64_be(maxBlockBytes)` (big-endian, eight bytes) and then, only when present,
+`0x02 ‖ keccak256(forcedTransaction)` over the raw transaction bytes, so mixed and pool jobs that
+differ only in these fields get distinct IDs. Pre-Etna jobs carry neither field, so their IDs are
+unchanged. alethia-reth stamps every payload ID this way, so its FCUv3 IDs for Unzen jobs keep their
+V2-era values. taiko-client-rs computes the fingerprint with alethia-reth's `payload_id_taiko`, so it
+must move to this alethia-reth version together with its FCUv3 switch: earlier versions also hash a
+zero root, which changes every Unzen fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
 
 ### V5 normalization and V4 import
 
@@ -153,6 +156,10 @@ internal payload ranking still uses actual fees.
 | A nonzero root before Etna | JSON-RPC `-32602` |
 | FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp` | JSON-RPC `-32602` |
 | Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current) |
+| Etna FCUv3 attributes without `maxBlockBytes` or with `maxBlockBytes` below 1,024 | JSON-RPC `-32602` |
+| Etna FCUv3 attributes with both `forcedTransaction` and `blockMetadata.txList` | JSON-RPC `-32602` |
+| A `forcedTransaction` that is not exactly one EIP-2718 transaction or whose signer cannot be recovered | JSON-RPC `-32602` |
+| FCUv3 attributes with `forcedTransaction` or `maxBlockBytes` before Etna | JSON-RPC `-32602` |
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
 | An Unzen payload with withdrawals, blob gas, or nonempty side arrays | Payload status `INVALID` |
 | Wrong Etna `extraData` length on import | Payload status `INVALID` |
@@ -173,6 +180,23 @@ Unzen and the nonzero anchor state root for Etna), and a `blockMetadata.timestam
 bytes of `blockMetadata.extraData`. That field keeps its Base64 encoding; do not send hex.
 An explicit transaction list, including an empty one, is derived input; an absent list selects from
 the transaction pool.
+
+Etna attributes carry two more top-level members next to `anchorTransaction`. Omit a member to
+leave it absent; sending either one for a pre-Etna target is rejected:
+
+| Member | Type | Rule |
+| --- | --- | --- |
+| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with transactions in block-body form, is at most this many bytes. |
+| `forcedTransaction` | `0x`-hex | The raw EIP-2718 bytes whose keccak256 is the forced-inclusion entry's `txHash`, not the RLP-wrapped network form. They must decode as exactly one transaction, with no trailing bytes, whose signer recovers. |
+
+The Etna build mode follows from presence:
+
+| `blockMetadata.txList` | `forcedTransaction` | Build |
+| --- | --- | --- |
+| present | absent | Given list: the list is derived input |
+| absent | present | Mixed: the forced transaction is executed first, then the pool fills the block |
+| absent | absent | Pool |
+| present | present | Rejected with `-32602` |
 
 ## `taikoAuth` preselection
 

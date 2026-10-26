@@ -1,4 +1,5 @@
 //! Taiko payload-builder attribute normalization and payload-id derivation.
+use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use alloy_rpc_types_engine::PayloadId;
@@ -13,10 +14,20 @@ use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use tracing::debug;
 
-use crate::{extra_data::ETNA_EXTRA_DATA_LEN, payload::attributes::TaikoPayloadAttributes};
+use crate::{
+    etna::{ETNA_MIN_MAX_BLOCK_BYTES, EtnaBuildFieldsBeforeEtna, ensure_no_etna_build_fields},
+    extra_data::ETNA_EXTRA_DATA_LEN,
+    payload::attributes::TaikoPayloadAttributes,
+};
 
 /// Version byte stamped into every Taiko payload identifier, before and after Etna.
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
+
+/// Payload-ID preimage tag that precedes the big-endian `maxBlockBytes` term.
+const PAYLOAD_ID_MAX_BLOCK_BYTES_TAG: u8 = 0x01;
+
+/// Payload-ID preimage tag that precedes the keccak256 of the raw `forcedTransaction` bytes.
+const PAYLOAD_ID_FORCED_TRANSACTION_TAG: u8 = 0x02;
 
 /// Taiko Payload Builder Attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +67,19 @@ pub struct TaikoPayloadBuilderAttributes {
     pub extra_data: Bytes,
     /// Optional prebuilt anchor transaction required for pre-Etna pool selection.
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
+    /// The decoded, signer-recovered forced transaction of an Etna mixed build.
+    ///
+    /// `Some` only on Etna jobs without a transaction list (`transactions` is `None`): the forced
+    /// transaction is executed first and the rest of the block is selected from the pool. Its
+    /// transaction type is not checked here; the build leaves out an unsupported type exactly as
+    /// it does in a given list.
+    pub forced_transaction: Option<Recovered<TransactionSigned>>,
+    /// Upper bound on the built block's executionBlock length, `rlp([header, [tx…]])` including
+    /// its outer list header and with transactions in block-body form.
+    ///
+    /// `Some` (at least [`ETNA_MIN_MAX_BLOCK_BYTES`]) on every Etna job, whatever its build mode,
+    /// and `None` before Etna.
+    pub max_block_bytes: Option<u64>,
 }
 
 #[cfg(feature = "net")]
@@ -103,8 +127,11 @@ impl TaikoPayloadBuilderAttributes {
     ///
     /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp, because the
     /// fork is chosen from the latter and the block is built at the former. Etna jobs also require
-    /// a non-zero beacon root, 13-byte extraData, empty withdrawals, and no anchor transaction.
-    /// Pre-Etna jobs pass `false`, as [`Self::try_new`] does, and of these rules keep only the root
+    /// a non-zero beacon root, 13-byte extraData, empty withdrawals, no anchor transaction, and a
+    /// `maxBlockBytes` of at least [`ETNA_MIN_MAX_BLOCK_BYTES`]; a `forcedTransaction` must come
+    /// without a transaction list and decode as exactly one EIP-2718 transaction whose signer
+    /// recovers. Pre-Etna jobs pass `false`, as [`Self::try_new`] does: they reject
+    /// `forcedTransaction` and `maxBlockBytes` and, of the other Etna rules, keep only the root
     /// check: a nonzero root is rejected. Every job also rejects a base fee above `u64::MAX` and an
     /// anchor transaction that fails to decode or recover its signer.
     pub fn try_new_for_fork(
@@ -117,7 +144,7 @@ impl TaikoPayloadBuilderAttributes {
                 "block metadata timestamp must match payload attributes timestamp",
             ));
         }
-        if is_etna_active {
+        let (forced_transaction, max_block_bytes) = if is_etna_active {
             if attributes
                 .payload_attributes
                 .parent_beacon_block_root
@@ -145,19 +172,49 @@ impl TaikoPayloadBuilderAttributes {
                     "Etna payload extra_data must contain exactly 13 bytes",
                 ));
             }
-        } else if attributes
-            .payload_attributes
-            .parent_beacon_block_root
-            .is_some_and(|root| !root.is_zero())
-        {
-            // Pre-Etna payload conversion reconstructs the Unzen zero-root convention. Although
-            // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
-            // root here would build a header that pre-Etna import rejects. Re-check at job creation
-            // so callers outside the Engine RPC validation path retain the same invariant.
-            return Err(alloy_rlp::Error::Custom(
-                "non-zero parent_beacon_block_root is unsupported on Taiko",
-            ));
-        }
+            let max_block_bytes = attributes
+                .max_block_bytes
+                .ok_or(alloy_rlp::Error::Custom("Etna payload requires maxBlockBytes"))?;
+            if max_block_bytes < ETNA_MIN_MAX_BLOCK_BYTES {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload maxBlockBytes must be at least 1024",
+                ));
+            }
+            if attributes.forced_transaction.is_some() &&
+                attributes.block_metadata.tx_list.is_some()
+            {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload must not combine forcedTransaction with blockMetadata.txList",
+                ));
+            }
+            let forced_transaction = attributes
+                .forced_transaction
+                .as_ref()
+                .map(|bytes| decode_forced_transaction(bytes))
+                .transpose()?;
+            (forced_transaction, Some(max_block_bytes))
+        } else {
+            ensure_no_etna_build_fields(
+                attributes.forced_transaction.is_some(),
+                attributes.max_block_bytes.is_some(),
+            )
+            .map_err(|_| alloy_rlp::Error::Custom(EtnaBuildFieldsBeforeEtna::MESSAGE))?;
+            if attributes
+                .payload_attributes
+                .parent_beacon_block_root
+                .is_some_and(|root| !root.is_zero())
+            {
+                // Pre-Etna payload conversion reconstructs the Unzen zero-root convention. Although
+                // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a
+                // non-zero root here would build a header that pre-Etna import rejects. Re-check at
+                // job creation so callers outside the Engine RPC validation path retain the same
+                // invariant.
+                return Err(alloy_rlp::Error::Custom(
+                    "non-zero parent_beacon_block_root is unsupported on Taiko",
+                ));
+            }
+            (None, None)
+        };
 
         let id = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_V2);
 
@@ -216,6 +273,8 @@ impl TaikoPayloadBuilderAttributes {
             extra_data: attributes.block_metadata.extra_data,
             transactions,
             anchor_transaction,
+            forced_transaction,
+            max_block_bytes,
         };
 
         Ok(res)
@@ -264,7 +323,10 @@ impl TaikoPayloadBuilderAttributes {
 /// timestamp, `prev_randao`, suggested fee recipient, RLP withdrawals when present, a nonzero
 /// parent beacon block root, the transaction-list keccak (zero when absent), and the raw
 /// `extraData`. Etna jobs are therefore told apart by their nonzero root and their 13-byte
-/// `extraData` (`proposalId` and `anchorBlockNumber`).
+/// `extraData` (`proposalId` and `anchorBlockNumber`). After `extraData` come the Etna build
+/// fields, each only when present: `0x01 ‖ u64_be(maxBlockBytes)`, then
+/// `0x02 ‖ keccak256(forcedTransaction)`. Jobs that differ only in these fields get distinct IDs,
+/// and attributes without them (every pre-Etna job) keep their earlier IDs.
 pub fn payload_id_taiko(
     parent: &B256,
     attributes: &TaikoPayloadAttributes,
@@ -295,6 +357,15 @@ pub fn payload_id_taiko(
     hasher.update(tx_hash);
     hasher.update(attributes.block_metadata.extra_data.as_ref());
 
+    if let Some(max_block_bytes) = attributes.max_block_bytes {
+        hasher.update([PAYLOAD_ID_MAX_BLOCK_BYTES_TAG]);
+        hasher.update(max_block_bytes.to_be_bytes());
+    }
+    if let Some(forced_transaction) = &attributes.forced_transaction {
+        hasher.update([PAYLOAD_ID_FORCED_TRANSACTION_TAG]);
+        hasher.update(keccak256(forced_transaction));
+    }
+
     let mut out = hasher.finalize();
     out[0] = payload_version;
     let mut id_bytes = [0u8; 8];
@@ -306,6 +377,26 @@ pub fn payload_id_taiko(
 /// requires.
 pub fn block_metadata_timestamp_matches(attributes: &TaikoPayloadAttributes) -> bool {
     attributes.block_metadata.timestamp == U256::from(attributes.payload_attributes.timestamp)
+}
+
+/// Decodes the raw `forcedTransaction` bytes as exactly one EIP-2718 transaction and recovers its
+/// signer.
+///
+/// The bytes are the canonical EIP-2718 encoding (a typed transaction is its type byte followed by
+/// the payload, not wrapped in an RLP string as in the network form); trailing bytes are rejected.
+fn decode_forced_transaction(
+    bytes: &[u8],
+) -> Result<Recovered<TransactionSigned>, alloy_rlp::Error> {
+    TransactionSigned::decode_2718_exact(bytes)
+        .map_err(|_| {
+            alloy_rlp::Error::Custom(
+                "Etna payload forcedTransaction must be exactly one EIP-2718 transaction",
+            )
+        })?
+        .try_into_recovered()
+        .map_err(|_| {
+            alloy_rlp::Error::Custom("Etna payload forcedTransaction signer is not recoverable")
+        })
 }
 
 /// Decode RLP-encoded bytes into signed transactions.
@@ -338,9 +429,12 @@ pub fn decode_recovered_transactions(
 mod test {
     use super::*;
     use crate::payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes};
-    use alloy_consensus::Header;
-    use alloy_primitives::{Address, Bytes, U256, hex};
+    use alloy_consensus::{Header, SignableTransaction, Signed, TxEip1559};
+    use alloy_eips::eip2718::Encodable2718;
+    use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
     use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use reth_chainspec::ChainSpec;
     use reth_engine_local::LocalPayloadAttributesBuilder;
     use reth_payload_primitives::PayloadAttributesBuilder;
@@ -393,7 +487,214 @@ mod test {
             block_metadata: create_block_metadata(timestamp, tx_list),
             l1_origin: default_l1_origin(),
             anchor_transaction: None,
+            forced_transaction: None,
+            max_block_bytes: None,
         }
+    }
+
+    /// Etna attributes that pass every pre-existing Etna check, with the two build fields set.
+    fn etna_attrs(
+        max_block_bytes: Option<u64>,
+        forced_transaction: Option<Bytes>,
+    ) -> TaikoPayloadAttributes {
+        let mut attributes = create_payload_attrs(1000, None, 1);
+        attributes.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+        attributes.block_metadata.extra_data =
+            Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+        attributes.max_block_bytes = max_block_bytes;
+        attributes.forced_transaction = forced_transaction;
+        attributes
+    }
+
+    /// Returns the raw EIP-2718 bytes of a signed EIP-1559 transaction and its signer.
+    fn signed_eip1559(nonce: u64) -> (TransactionSigned, Address) {
+        let signer =
+            PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("test key is valid");
+        let tx = TxEip1559 {
+            chain_id: 167_001,
+            nonce,
+            gas_limit: 21_000,
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 1,
+            to: TxKind::Call(Address::with_last_byte(0x21)),
+            value: U256::from(1),
+            access_list: Default::default(),
+            input: Bytes::new(),
+        };
+        let signature = signer.sign_hash_sync(&tx.signature_hash()).expect("test tx signs");
+        (Signed::new_unhashed(tx, signature).into(), signer.address())
+    }
+
+    fn raw_eip1559(nonce: u64) -> Bytes {
+        signed_eip1559(nonce).0.encoded_2718().into()
+    }
+
+    #[test]
+    fn try_new_for_fork_requires_etna_max_block_bytes() {
+        for (max_block_bytes, ok) in
+            [(None, false), (Some(1_023), false), (Some(1_024), true), (Some(124_000), true)]
+        {
+            let result = TaikoPayloadBuilderAttributes::try_new_for_fork(
+                B256::ZERO,
+                etna_attrs(max_block_bytes, None),
+                true,
+            );
+            match result {
+                Ok(attrs) => {
+                    assert!(ok, "{max_block_bytes:?} must be rejected");
+                    assert_eq!(attrs.max_block_bytes, max_block_bytes);
+                    assert!(attrs.forced_transaction.is_none());
+                    assert!(attrs.transactions.is_none(), "no list and no forced tx: pool build");
+                }
+                Err(err) => {
+                    assert!(!ok, "{max_block_bytes:?} must be accepted: {err}");
+                    assert!(err.to_string().contains("maxBlockBytes"), "{err}");
+                }
+            }
+        }
+        assert_eq!(ETNA_MIN_MAX_BLOCK_BYTES, 1_024);
+        let err = TaikoPayloadBuilderAttributes::try_new_for_fork(
+            B256::ZERO,
+            etna_attrs(Some(ETNA_MIN_MAX_BLOCK_BYTES - 1), None),
+            true,
+        )
+        .expect_err("a bound below the floor must be rejected");
+        assert!(err.to_string().contains(&ETNA_MIN_MAX_BLOCK_BYTES.to_string()), "{err}");
+
+        // Given-list builds need the bound too, and carry it unchanged.
+        let mut given = etna_attrs(None, None);
+        given.block_metadata.tx_list = Some(Bytes::from_static(&[0xc0]));
+        TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, given.clone(), true)
+            .expect_err("a given-list Etna build without maxBlockBytes must be rejected");
+        given.max_block_bytes = Some(124_000);
+        let attrs = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, given, true)
+            .expect("a given-list Etna build with maxBlockBytes must normalize");
+        assert_eq!(attrs.max_block_bytes, Some(124_000));
+        assert_eq!(attrs.transactions.as_deref(), Some([].as_slice()));
+    }
+
+    #[test]
+    fn try_new_for_fork_decodes_the_forced_transaction() {
+        let (tx, signer_address) = signed_eip1559(3);
+        let raw: Bytes = tx.encoded_2718().into();
+        let attrs = TaikoPayloadBuilderAttributes::try_new_for_fork(
+            B256::ZERO,
+            etna_attrs(Some(124_000), Some(raw.clone())),
+            true,
+        )
+        .expect("a signed EIP-1559 forced transaction must normalize");
+
+        // A mixed build selects the rest from the pool.
+        assert!(attrs.transactions.is_none());
+        assert_eq!(attrs.tx_list_hash, B256::ZERO);
+        assert_eq!(attrs.max_block_bytes, Some(124_000));
+        let forced = attrs.forced_transaction.expect("forced transaction is decoded");
+        assert_eq!(*forced.tx_hash(), keccak256(&raw));
+        assert_eq!(forced.signer(), signer_address);
+        assert_eq!(forced.into_inner(), tx);
+    }
+
+    #[test]
+    fn try_new_for_fork_rejects_malformed_forced_transactions() {
+        let raw = raw_eip1559(0);
+        // The network (pooled) form wraps the typed bytes in an RLP string header.
+        let network_form = Bytes::from(alloy_rlp::encode(raw.as_ref()));
+        assert_ne!(network_form, raw);
+        let mut trailing = raw.to_vec();
+        trailing.push(0x00);
+        // A typed transaction whose signature cannot be recovered: r = s = 0.
+        let unrecoverable: TransactionSigned = Signed::new_unhashed(
+            TxEip1559 { chain_id: 167_001, gas_limit: 21_000, ..Default::default() },
+            alloy_primitives::Signature::new(U256::ZERO, U256::ZERO, false),
+        )
+        .into();
+        let unrecoverable: Bytes = unrecoverable.encoded_2718().into();
+        let decoded = TransactionSigned::decode_2718_exact(&unrecoverable)
+            .expect("the zero-signature transaction decodes, so only recovery rejects it");
+        assert!(decoded.recover_signer().is_err());
+
+        let cases: [(&str, Bytes, Option<Bytes>); 6] = [
+            ("empty", Bytes::new(), None),
+            ("type byte only", Bytes::from_static(&[0x02]), None),
+            ("network form", network_form, None),
+            ("trailing byte", Bytes::from(trailing), None),
+            ("unrecoverable signer", unrecoverable, None),
+            ("with txList", raw.clone(), Some(Bytes::from_static(&[0xc0]))),
+        ];
+        for (name, forced, tx_list) in cases {
+            let mut attributes = etna_attrs(Some(124_000), Some(forced));
+            attributes.block_metadata.tx_list = tx_list;
+            let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, attributes, true)
+                .expect_err(name);
+            assert!(err.to_string().contains("forcedTransaction"), "{name}: {err}");
+        }
+
+        // An empty explicit list is still a list, so it excludes the forced transaction too.
+        let mut attributes = etna_attrs(Some(124_000), Some(raw));
+        attributes.block_metadata.tx_list = Some(Bytes::new());
+        TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, attributes, true)
+            .expect_err("an empty txList and a forced transaction are exclusive");
+    }
+
+    #[test]
+    fn pre_etna_attributes_reject_etna_build_fields() {
+        let raw = raw_eip1559(0);
+        for (max_block_bytes, forced) in
+            [(Some(124_000), None), (None, Some(raw.clone())), (Some(124_000), Some(raw.clone()))]
+        {
+            let mut attributes = create_payload_attrs(1000, None, 1);
+            attributes.max_block_bytes = max_block_bytes;
+            attributes.forced_transaction = forced;
+            type Normalize = fn(
+                TaikoPayloadAttributes,
+            )
+                -> Result<TaikoPayloadBuilderAttributes, alloy_rlp::Error>;
+            let normalizers: [Normalize; 2] = [
+                |a| TaikoPayloadBuilderAttributes::try_new(B256::ZERO, a),
+                |a| TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, a, false),
+            ];
+            for normalize in normalizers {
+                let err = normalize(attributes.clone())
+                    .expect_err("Etna build fields must be rejected before Etna");
+                assert_eq!(err.to_string(), "forcedTransaction and maxBlockBytes require Etna");
+                assert_eq!(err.to_string(), EtnaBuildFieldsBeforeEtna.to_string());
+            }
+        }
+
+        let attrs =
+            TaikoPayloadBuilderAttributes::try_new(B256::ZERO, create_payload_attrs(1000, None, 1))
+                .expect("pre-Etna attributes without the fields still normalize");
+        assert_eq!(attrs.max_block_bytes, None);
+        assert!(attrs.forced_transaction.is_none());
+    }
+
+    #[test]
+    fn payload_id_binds_max_block_bytes_and_forced_transaction() {
+        let parent = B256::repeat_byte(0xaa);
+        let raw_a = raw_eip1559(0);
+        let raw_b = raw_eip1559(1);
+        let id = |max_block_bytes, forced| {
+            payload_id_taiko(&parent, &etna_attrs(max_block_bytes, forced), PAYLOAD_ID_VERSION_V2)
+        };
+
+        let base = id(None, None);
+        let max = id(Some(124_000), None);
+        assert_ne!(base, max);
+        assert_ne!(max, id(Some(123_999), None));
+        assert_ne!(max, id(Some(124_000), Some(raw_a.clone())));
+        assert_ne!(id(Some(124_000), Some(raw_a.clone())), id(Some(124_000), Some(raw_b)));
+        // A forced transaction alone is bound too, independently of the bound.
+        assert_ne!(base, id(None, Some(raw_a)));
+
+        // Pinned against an independent sha256/keccak256 computation of the preimage: the
+        // pre-existing terms, then `0x01 ‖ u64_be(maxBlockBytes)`, then
+        // `0x02 ‖ keccak256(forcedTransaction)`. Without the fields the ID is unchanged.
+        assert_eq!(base, PayloadId::new([0x02, 0x34, 0xfc, 0x21, 0x78, 0x65, 0x63, 0x9c]));
+        assert_eq!(max, PayloadId::new([0x02, 0xa4, 0x74, 0xc7, 0x62, 0x62, 0x6a, 0x4a]));
+        assert_eq!(
+            id(Some(124_000), Some(Bytes::from_static(&[0x02, 0xc0]))),
+            PayloadId::new([0x02, 0x55, 0xee, 0x4c, 0x2e, 0x0d, 0xd7, 0x06])
+        );
     }
 
     #[test]

@@ -85,6 +85,42 @@ pub fn validate_etna_extra_data(
     Ok(())
 }
 
+/// Error returned when a pre-Etna payload job carries an Etna-only build attribute.
+///
+/// `forcedTransaction` and `maxBlockBytes` exist only for Etna targets. Both payload-job
+/// normalization and Engine API attribute validation reject them before Etna with this error, which
+/// drivers receive as an invalid-parameters (`-32602`) response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EtnaBuildFieldsBeforeEtna;
+
+impl EtnaBuildFieldsBeforeEtna {
+    /// The error text, also usable where only a `&'static str` fits (such as
+    /// `alloy_rlp::Error::Custom`).
+    pub const MESSAGE: &'static str = "forcedTransaction and maxBlockBytes require Etna";
+}
+
+impl fmt::Display for EtnaBuildFieldsBeforeEtna {
+    /// Names the two Etna-only build attributes.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(Self::MESSAGE)
+    }
+}
+
+impl core::error::Error for EtnaBuildFieldsBeforeEtna {}
+
+/// Rejects a pre-Etna payload job that carries `forcedTransaction` or `maxBlockBytes`.
+///
+/// Call it only for targets before Etna; on an Etna target both attributes are valid inputs.
+pub const fn ensure_no_etna_build_fields(
+    has_forced_transaction: bool,
+    has_max_block_bytes: bool,
+) -> Result<(), EtnaBuildFieldsBeforeEtna> {
+    if has_forced_transaction || has_max_block_bytes {
+        return Err(EtnaBuildFieldsBeforeEtna);
+    }
+    Ok(())
+}
+
 /// Returns the executionBlock length, `rlp([header, [tx…]])` including its outer list header, or
 /// `None` when it overflows `usize`.
 ///
@@ -153,9 +189,9 @@ pub fn execution_block_length(header: &Header, transactions: &[TransactionSigned
 #[cfg(test)]
 mod tests {
     use super::{
-        ETNA_MIN_MAX_BLOCK_BYTES, InvalidEtnaExtraData, checked_execution_block_len,
-        execution_block_len, execution_block_length, max_txs_payload_len, validate_etna_extra_data,
-        validate_etna_root,
+        ETNA_MIN_MAX_BLOCK_BYTES, EtnaBuildFieldsBeforeEtna, InvalidEtnaExtraData,
+        checked_execution_block_len, ensure_no_etna_build_fields, execution_block_len,
+        execution_block_length, max_txs_payload_len, validate_etna_extra_data, validate_etna_root,
     };
     use alloy_consensus::{Header, Signed, TxEip1559, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
@@ -311,6 +347,25 @@ mod tests {
             );
             assert!(buf.is_empty(), "executionBlock holds exactly [header, txs]");
         }
+    }
+
+    #[test]
+    fn etna_build_fields_are_rejected_before_etna() {
+        assert_eq!(ensure_no_etna_build_fields(false, false), Ok(()));
+        for (has_forced_transaction, has_max_block_bytes) in
+            [(true, false), (false, true), (true, true)]
+        {
+            assert_eq!(
+                ensure_no_etna_build_fields(has_forced_transaction, has_max_block_bytes),
+                Err(EtnaBuildFieldsBeforeEtna)
+            );
+        }
+        assert_eq!(
+            EtnaBuildFieldsBeforeEtna.to_string(),
+            "forcedTransaction and maxBlockBytes require Etna"
+        );
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(EtnaBuildFieldsBeforeEtna);
+        assert_eq!(boxed.to_string(), EtnaBuildFieldsBeforeEtna::MESSAGE);
     }
 
     #[test]

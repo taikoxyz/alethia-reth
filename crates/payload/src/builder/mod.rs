@@ -387,6 +387,8 @@ mod tests {
                 signature: [0; 65],
             },
             anchor_transaction: None,
+            forced_transaction: None,
+            max_block_bytes: None,
         };
 
         PayloadConfig::new(parent_header, attributes, payload_id)
@@ -408,12 +410,15 @@ mod tests {
 
     #[test]
     fn etna_pool_transaction_source_normalizes_without_an_anchor() {
-        let config = test_payload_config(None);
+        let mut config = test_payload_config(None);
+        config.attributes.max_block_bytes = Some(124_000);
         let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
             .expect("Etna config should normalize");
 
         assert!(attributes.transactions.is_none());
         assert!(attributes.anchor_transaction.is_none());
+        assert!(attributes.forced_transaction.is_none());
+        assert_eq!(attributes.max_block_bytes, Some(124_000));
     }
 
     #[test]
@@ -435,6 +440,7 @@ mod tests {
         let spec = chain_spec_with_etna_at(100);
         for (index, (expected, mutate)) in cases.into_iter().enumerate() {
             let mut config = test_payload_config(None);
+            config.attributes.max_block_bytes = Some(124_000);
             mutate(&mut config);
             match normalize_payload_config(&config, &spec) {
                 Ok(_) => panic!("case {index} ({expected}) must be rejected"),

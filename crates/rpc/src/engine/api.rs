@@ -40,6 +40,8 @@ use alethia_reth_db::model::{
     StoredL1OriginTable,
 };
 
+use super::build_error::{failed_build_error, read_parent_state};
+
 /// The list of all supported Engine capabilities available over the engine endpoint.
 ///
 /// Per the Engine API spec, `engine_exchangeCapabilities` itself is served but never listed.
@@ -222,26 +224,34 @@ where
     /// Updates fork choice and, when attributes start a build, atomically persists its L1
     /// origin. Null attributes still reach normal forkchoice validation, and non-VALID outcomes
     /// return their status without publishing origin or proposal metadata.
+    ///
+    /// A failed Etna build is answered `-38100 "cannot build on parent"` when the head's state,
+    /// the build's parent, is pruned; every other failed build keeps reth's error.
     async fn fork_choice_updated_v3(
         &self,
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated> {
-        let (stored_l1_origin, is_preconf_block, batch_id) = match payload_attributes.as_ref() {
+        let (stored_l1_origin, is_preconf_block, batch_id, is_etna_build) = match payload_attributes
+            .as_ref()
+        {
             Some(payload) => {
+                let timestamp = payload.payload_attributes.timestamp;
                 let batch_id = self
                     .chain_spec
-                    .is_shasta_active(payload.payload_attributes.timestamp)
+                    .is_shasta_active(timestamp)
                     .then(|| decode_shasta_proposal_id(payload.block_metadata.extra_data.as_ref()))
                     .flatten();
                 (
                     Some(StoredL1Origin::from(&payload.l1_origin)),
                     payload.l1_origin.is_preconf_block(),
                     batch_id,
+                    self.chain_spec.is_etna_active(timestamp),
                 )
             }
-            None => (None, false, None),
+            None => (None, false, None, false),
         };
+        let parent_hash = fork_choice_state.head_block_hash;
 
         let status =
             self.inner.fork_choice_updated_v3(fork_choice_state, payload_attributes).await?;
@@ -257,8 +267,17 @@ where
                 .payload_id
                 .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
 
-            let built_payload =
-                self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
+            let built_payload = match self.wait_for_built_payload(payload_id).await {
+                Ok(built_payload) => built_payload,
+                // Reth's payload job reports every failed build as `missing payload`, so a pruned
+                // parent is told apart by reading the parent's state again.
+                Err(error) if is_etna_build => {
+                    return Err(failed_build_error(error, || {
+                        read_parent_state(&self.provider, parent_hash)
+                    }));
+                }
+                Err(error) => return Err(error.into()),
+            };
 
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
@@ -380,10 +399,25 @@ mod tests {
         let (payload_tx, mut payload_rx) =
             tokio::sync::mpsc::unbounded_channel::<PayloadServiceCommand<TaikoEngineTypes>>();
         // The store adapter supplies deterministic already-built jobs. Real RPC handling,
-        // normalization and database transactions are exercised around the adapter.
+        // normalization and database transactions are exercised around the adapter. Jobs for
+        // timestamps 98 (Unzen) and 101 (Etna) fail the way reth's payload job reports every
+        // failed build: `missing payload`.
+        type Resolved = std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<EthBuiltPayload, PayloadBuilderError>>
+                    + Send,
+            >,
+        >;
         tokio::spawn(async move {
             while let Some(command) = payload_rx.recv().await {
                 match command {
+                    PayloadServiceCommand::Resolve(id, _, tx)
+                        if [98_u8, 101].iter().any(|t| id == PayloadId::new([*t; 8])) =>
+                    {
+                        let failed: Resolved =
+                            Box::pin(async { Err(PayloadBuilderError::MissingPayload) });
+                        tx.send(Some(failed)).ok();
+                    }
                     PayloadServiceCommand::Resolve(id, _, tx) => {
                         let timestamp = [49_u8, 99, 100]
                             .into_iter()
@@ -408,17 +442,7 @@ mod tests {
                                 None,
                                 None,
                             );
-                            Box::pin(async move { Ok(built) })
-                                as std::pin::Pin<
-                                    Box<
-                                        dyn std::future::Future<
-                                                Output = Result<
-                                                    EthBuiltPayload,
-                                                    PayloadBuilderError,
-                                                >,
-                                            > + Send,
-                                    >,
-                                >
+                            Box::pin(async move { Ok(built) }) as Resolved
                         });
                         tx.send(future).ok();
                     }
@@ -706,6 +730,145 @@ mod tests {
             );
             assert_eq!(db.tx_ref().get::<BatchToLastBlock>(9).unwrap(), None);
         }
+    }
+
+    /// Writes blocks 0..=5 to the fixture database and returns their hashes. Writing them also
+    /// moves the Finish checkpoint to block 5.
+    fn seed_chain(
+        provider: &reth_provider::ProviderFactory<reth_provider::test_utils::MockNodeTypesWithDB>,
+    ) -> Vec<B256> {
+        use reth_provider::BlockWriter;
+        let provider_rw = provider.provider_rw().expect("the fixture database opens for writing");
+        let mut parent_hash = B256::ZERO;
+        let hashes = (0..=5)
+            .map(|number| {
+                let header =
+                    Header { number, parent_hash, gas_limit: 30_000_000, ..Default::default() };
+                let block = reth_primitives_traits::RecoveredBlock::new_unhashed(
+                    reth_ethereum::Block { header, body: BlockBody::default() },
+                    vec![],
+                );
+                parent_hash = block.hash();
+                provider_rw.insert_block(&block).expect("the block is written");
+                parent_hash
+            })
+            .collect();
+        provider_rw.commit().expect("the seeded chain commits");
+        hashes
+    }
+
+    /// Sends an FCUv3 on `head` with the fixture's attributes for `timestamp`.
+    async fn fcu_on(module: &RpcModule<()>, head: B256, timestamp: u64) -> serde_json::Value {
+        let state = ForkchoiceState {
+            head_block_hash: head,
+            safe_block_hash: B256::ZERO,
+            finalized_block_hash: B256::ZERO,
+        };
+        rpc_call(
+            module,
+            "engine_forkchoiceUpdatedV3",
+            serde_json::json!([state, fcu_attributes(timestamp, false)]),
+        )
+        .await
+    }
+
+    /// Asserts that `response` is the job's own failed-build error, `-32603` `missing payload`.
+    fn assert_missing_payload(response: &serde_json::Value) {
+        assert_eq!(response["error"]["code"], -32603, "{response}");
+        assert_eq!(response["error"]["data"]["err"], "missing payload", "{response}");
+    }
+
+    #[tokio::test]
+    async fn pruned_parent_builds_answer_cannot_build_on_parent() {
+        use reth_provider::PruneCheckpointWriter;
+        use reth_prune_types::{PruneCheckpoint, PruneMode, PruneSegment};
+        let (module, provider, _) = rpc_fixture();
+        let hashes = seed_chain(&provider);
+        // Account and storage history are pruned through block 3, as on a node that prunes
+        // history, so the state of blocks 0..=2 is gone.
+        let provider_rw = provider.provider_rw().unwrap();
+        for segment in [PruneSegment::AccountHistory, PruneSegment::StorageHistory] {
+            let checkpoint = PruneCheckpoint {
+                block_number: Some(3),
+                tx_number: None,
+                prune_mode: PruneMode::Before(4),
+            };
+            provider_rw.save_prune_checkpoint(segment, checkpoint).unwrap();
+        }
+        provider_rw.commit().unwrap();
+
+        // Reth reports a parent below the history prune boundary on the first state read.
+        let blockchain = reth_provider::providers::BlockchainProvider::new(provider.clone())
+            .expect("the seeded database opens");
+        let read = crate::engine::build_error::read_parent_state(&blockchain, hashes[1]);
+        assert!(
+            matches!(
+                &read,
+                Err(reth_provider::ProviderError::InsufficientChangesets { requested: 1, available })
+                    if *available == (3..=5)
+            ),
+            "{read:?}"
+        );
+        assert!(crate::engine::build_error::read_parent_state(&blockchain, hashes[3]).is_ok());
+
+        for head in [hashes[0], hashes[1], hashes[2]] {
+            let response = fcu_on(&module, head, 101).await;
+            assert_eq!(response["error"]["code"], -38100, "{response}");
+            assert_eq!(response["error"]["message"], "cannot build on parent", "{response}");
+            let data = response["error"]["data"].as_str().expect("the data is the read error");
+            assert!(data.contains("insufficient changesets"), "{response}");
+        }
+        // The parent's state is readable at the prune boundary and at the tip, an unknown head is
+        // not definitive, and only Etna builds read the parent's state.
+        for (head, timestamp) in
+            [(hashes[3], 101), (hashes[5], 101), (B256::with_last_byte(77), 101), (hashes[1], 98)]
+        {
+            assert_missing_payload(&fcu_on(&module, head, timestamp).await);
+        }
+
+        let db = provider.provider().unwrap();
+        for timestamp in [98, 101] {
+            assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(timestamp).unwrap(), None);
+            let proposal_id = decode_shasta_proposal_id(
+                fcu_attributes(timestamp, false).block_metadata.extra_data.as_ref(),
+            )
+            .unwrap();
+            assert_eq!(db.tx_ref().get::<BatchToLastBlock>(proposal_id).unwrap(), None);
+        }
+        assert_eq!(
+            db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn builds_without_a_finish_checkpoint_keep_the_internal_error() {
+        let (module, provider, _) = rpc_fixture();
+        let hashes = seed_chain(&provider);
+        let provider_rw = provider.provider_rw().unwrap();
+        provider_rw
+            .tx_ref()
+            .delete::<reth_db::tables::StageCheckpoints>(
+                reth_stages_types::StageId::Finish.to_string(),
+                None,
+            )
+            .unwrap();
+        provider_rw.commit().unwrap();
+
+        // Reth reports a missing Finish checkpoint as insufficient changesets for block 0 in
+        // 0..=0, which says nothing about pruning.
+        let blockchain = reth_provider::providers::BlockchainProvider::new(provider.clone())
+            .expect("the seeded database opens");
+        let read = crate::engine::build_error::read_parent_state(&blockchain, hashes[1]);
+        assert!(
+            matches!(
+                &read,
+                Err(reth_provider::ProviderError::InsufficientChangesets { requested: 0, available })
+                    if *available == (0..=0)
+            ),
+            "{read:?}"
+        );
+        assert_missing_payload(&fcu_on(&module, hashes[1], 101).await);
     }
 
     /// Returns the raw EIP-2718 bytes of a signed, recoverable EIP-1559 transaction.

@@ -166,11 +166,22 @@ internal payload ranking still uses actual fees.
 | Block-hash mismatch | Payload status `INVALID` |
 | Etna zk-gas exhaustion or zk-gas/difficulty mismatch | Payload status `INVALID` |
 | Unzen zk-gas exhaustion or zk-gas/difficulty mismatch | JSON-RPC `-32603` (historical internal-error mapping) |
-| A started payload job whose build fails, from `getPayloadV5` or the FCU that started it | JSON-RPC `-32603` (`missing payload`) |
+| An Etna FCUv3 build that fails on a parent whose state is pruned | JSON-RPC `-38100` (`cannot build on parent`; `data` is diagnostic text) |
+| Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
+| `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
 | A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.
+
+`-38100` is definitive: the node cannot build on that parent and the client must halt rather than
+retry, as it does for `-38006` (an FCU head below the finalized block, answered before any build
+starts). Reth reports every failed build as `missing payload`, so after an Etna FCUv3 build fails
+the node reads the parent's state once more and answers `-38100` only when that read reports the
+state pruned: `StateAtBlockPruned`, or `InsufficientChangesets` for a block below the history prune
+boundary. Every other failure keeps its answer and is transient: timeouts, `SYNCING`, unknown
+blocks, a missing Finish checkpoint, and any other build error. `getPayloadV5` never answers
+`-38100`.
 
 ### FCU attributes
 

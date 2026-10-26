@@ -233,6 +233,9 @@ mod tests {
 
         use crate::{TaikoChainSpecParser, TaikoCliExtArgs, command::TaikoNodeExtArgs};
 
+        // Parsing `NodeCommand` directly locks reth's global engine defaults; set them first, as
+        // the production entrypoints do.
+        crate::command::disable_state_masking_by_default();
         let _lock = crate::tests::env_lock();
         unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
         let mut json = serde_json::to_value(TAIKO_DEVNET.genesis()).unwrap();

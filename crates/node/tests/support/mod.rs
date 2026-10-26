@@ -32,7 +32,7 @@ use reth_rpc::eth::EthApiTypes;
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Weak},
+    sync::Arc,
     time::Duration,
 };
 
@@ -135,12 +135,14 @@ pub enum EngineMode {
 pub struct Datadir(PathBuf);
 
 impl Datadir {
+    /// Reserves a fresh temporary directory; nothing is created until a node launches on it.
     pub fn new() -> Self {
         Self(tempdir_path())
     }
 }
 
 impl Drop for Datadir {
+    /// Removes the directory with everything the nodes launched on it left behind.
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
@@ -148,30 +150,50 @@ impl Drop for Datadir {
 
 /// A node on a [`Datadir`] that can be stopped and launched again on the same data.
 pub struct RestartableNode {
+    /// The running node.
     pub node: TestNode,
+    /// The task runtime whose graceful shutdown stops the node.
     runtime: Runtime,
-    database: Weak<TempDatabase<DatabaseEnv>>,
+    /// A strong reference to the node database, so `stop` can close it itself.
+    database: Arc<TempDatabase<DatabaseEnv>>,
+    /// A strong reference to the proof-history database, closed by `stop` the same way.
+    proof_history: Arc<reth_optimism_trie::db::MdbxProofsStorage>,
 }
 
 impl RestartableNode {
     /// Shuts the node down the way SIGTERM does (the engine persists its canonical blocks) and
-    /// waits until the database is closed, so the next launch can open it again.
+    /// closes both MDBX environments before returning, so the next launch can open them again.
     pub async fn stop(self) -> eyre::Result<()> {
-        let Self { node, runtime, database } = self;
+        let Self { node, runtime, database, proof_history } = self;
         drop(node);
         let stopped = tokio::task::spawn_blocking(move || {
             runtime.graceful_shutdown_with_timeout(Duration::from_secs(5))
         })
         .await?;
         eyre::ensure!(stopped, "node shutdown timed out");
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while database.strong_count() > 0 {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .map_err(|_| eyre::eyre!("the stopped node still holds its database"))
+        // The engine and persistence OS threads release their database handles after the
+        // graceful shutdown returns. Whoever drops the last handle closes the environment, and a
+        // reopen in this process fails with MDBX_BUSY while that close is still running, so
+        // take the last handles here and close both environments on this task.
+        let database = last_handle(database, "the node database").await?;
+        let proof_history = last_handle(proof_history, "the proof-history database").await?;
+        tokio::task::spawn_blocking(move || drop((database, proof_history))).await?;
+        Ok(())
     }
+}
+
+/// Waits, for at most 10 seconds, until `shared` is the only strong reference left, then takes
+/// its value so the caller decides where it is dropped.
+async fn last_handle<T>(shared: Arc<T>, what: &str) -> eyre::Result<T> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while Arc::strong_count(&shared) > 1 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| eyre::eyre!("{what} was still shared 10 s after the node stopped"))?;
+    Arc::into_inner(shared)
+        .ok_or_else(|| eyre::eyre!("{what} was shared again after the node stopped"))
 }
 
 /// Launches a node on `datadir`, reopening whatever earlier launches left there.
@@ -185,6 +207,8 @@ pub async fn launch_at(
     launch(chain_spec, &datadir.0, datadir.0.join("kept"), mode).await
 }
 
+/// Launches a node whose database lives in `path`; dropping the last database handle removes
+/// `remove_on_drop`.
 async fn launch(
     chain_spec: Arc<TaikoChainSpec>,
     path: &Path,
@@ -201,7 +225,7 @@ async fn launch(
         )?,
         remove_on_drop,
     ));
-    let weak_database = Arc::downgrade(&database);
+    let kept_database = Arc::clone(&database);
     let mut config =
         NodeConfig::new(chain_spec).with_unused_ports().with_disabled_discovery().with_rpc(
             RpcServerArgs::default()
@@ -228,6 +252,8 @@ async fn launch(
             ..alethia_reth_node::proof_history::ProofHistoryConfig::disabled()
         },
     )?;
+    let handles = handles.expect("proof history is enabled");
+    let proof_history = Arc::clone(handles.0.inner());
     let builder = builder.extend_rpc_modules(move |mut ctx| {
         // Mirror the binary's authenticated `taikoAuth` registration.
         let taiko_auth = TaikoAuthExt::new(
@@ -237,7 +263,7 @@ async fn launch(
             ctx.node().evm_config().clone(),
         );
         ctx.auth_module.merge_auth_methods(taiko_auth.into_rpc())?;
-        alethia_reth_node::proof_history::install_proof_history_rpc(&mut ctx, handles.unwrap())
+        alethia_reth_node::proof_history::install_proof_history_rpc(&mut ctx, handles)
     });
     let handle = tokio::time::timeout(
         Duration::from_secs(30),
@@ -257,7 +283,7 @@ async fn launch(
         }),
     )
     .await??;
-    Ok(RestartableNode { node: handle.node, runtime, database: weak_database })
+    Ok(RestartableNode { node: handle.node, runtime, database: kept_database, proof_history })
 }
 
 pub async fn fcu(
@@ -290,6 +316,8 @@ const GOLDEN_TOUCH_KEY: &str = "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9
 pub const POOL_SENDER_KEY: &str =
     "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
+/// An EIP-1559 transaction on the fixture chain with a 1,000,000 gas limit and a 1 gwei fee cap,
+/// signed by `key`.
 fn sign_eip1559(
     key: &str,
     nonce: u64,
@@ -384,6 +412,7 @@ pub async fn hash_of_tag(http: &impl ClientT, tag: &str) -> eyre::Result<Option<
     block_hash(http, tag.into()).await
 }
 
+/// The `hash` of the block `eth_getBlockByNumber` returns for `block`, `None` when it is null.
 async fn block_hash(http: &impl ClientT, block: Value) -> eyre::Result<Option<B256>> {
     let block: Value = http.request("eth_getBlockByNumber", rpc_params![block, false]).await?;
     Ok(if block.is_null() { None } else { Some(serde_json::from_value(block["hash"].clone())?) })

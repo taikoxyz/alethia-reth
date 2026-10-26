@@ -63,6 +63,10 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) gas_limit: u64,
     /// Zk gas overflows remembered across this builder's selection calls.
     pub(super) zk_overflows: &'a ZkOverflowMemory,
+    /// Cap on the summed block-body length of the selected transactions, passed to selection as
+    /// [`TxSelectionConfig::max_tx_bytes_per_list`]: `Some` on Etna builds, derived from
+    /// `maxBlockBytes` and the header reserve, and `None` before Etna.
+    pub(super) tx_bytes_budget: Option<u64>,
 }
 
 /// How a transaction from a given list fared against the block being built.
@@ -172,7 +176,8 @@ pub(super) fn execute_provided_transactions(
 /// Executes fork-aware pool transactions until exhaustion or cancellation.
 ///
 /// Legacy payloads validate and execute their supplied anchor before pool selection. Etna payloads
-/// require no anchor and begin ordinary selection with the caller-supplied full gas budget.
+/// require no anchor and begin ordinary selection with the caller-supplied full gas budget and
+/// transaction byte budget ([`PoolExecutionContext::tx_bytes_budget`]).
 pub(super) fn execute_pool_transactions<Client, Pool>(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives, Executor: TxSelectionExecutor>,
     pool: &Pool,
@@ -246,7 +251,7 @@ where
         min_tip: 0,
         locals: vec![],
         state_seed,
-        max_tx_bytes_per_list: None,
+        max_tx_bytes_per_list: ctx.tx_bytes_budget,
     };
 
     match select_and_execute_pool_transactions(builder, pool, &config, ctx.zk_overflows, || {
@@ -507,6 +512,7 @@ mod tests {
                 base_fee: 0,
                 gas_limit: 30_000_000,
                 zk_overflows: &overflows,
+                tx_bytes_budget: None,
             },
             &cancel,
         );
@@ -584,6 +590,7 @@ mod tests {
                 base_fee: 0,
                 gas_limit,
                 zk_overflows: &overflows,
+                tx_bytes_budget: None,
             },
             &cancel,
         )
@@ -670,6 +677,7 @@ mod tests {
                 base_fee: 0,
                 gas_limit: 29_000_000,
                 zk_overflows: overflows,
+                tx_bytes_budget: None,
             },
             &CancelOnDrop::default(),
         )
@@ -757,6 +765,7 @@ mod tests {
                     base_fee: 0,
                     gas_limit: 30_000_000,
                     zk_overflows: &ZkOverflowMemory::default(),
+                    tx_bytes_budget: None,
                 },
                 &CancelOnDrop::default(),
             )
@@ -774,7 +783,9 @@ mod tests {
     fn etna_builder(
         accounts: &[(Address, u64)],
     ) -> ExecutorBackedBuilder<
-        impl BlockExecutor<Transaction = EthTransactionSigned, Receipt = reth_ethereum::Receipt> + use<>,
+        impl BlockExecutor<Transaction = EthTransactionSigned, Receipt = reth_ethereum::Receipt>
+        + TxSelectionExecutor
+        + use<>,
     > {
         let state = State::builder()
             .with_database(db_with_contracts(accounts))
@@ -942,5 +953,74 @@ mod tests {
         assert!(a_gas > c_gas, "{a_gas} {c_gas}");
         assert_eq!(total_fees, U256::from(a_gas + c_gas));
         assert_eq!(nonce_of(&mut builder, b_caller), 0);
+    }
+
+    #[test]
+    fn etna_pool_selection_respects_the_tx_bytes_budget() {
+        let [a_caller, b_caller, c_caller] = [0x56, 0x57, 0x58].map(Address::with_last_byte);
+        let tx = |caller, tip, input_len| {
+            recovered_tx_with_input(
+                caller,
+                BENCH_SUCCESS_TARGET,
+                0,
+                tip,
+                Bytes::from(vec![0_u8; input_len]),
+            )
+        };
+        let txs = [tx(a_caller, 30, 3_000), tx(b_caller, 20, 3_000), tx(c_caller, 10, 100)];
+        let pool = testing_pool();
+        for tx in txs.clone() {
+            block_on_ready(pool.add_consensus_transaction(tx, TransactionOrigin::External))
+                .expect("transaction should enter the pool");
+        }
+        // The test pool re-signs what it stores, so the lengths are taken from the copies it hands
+        // to selection.
+        let [a_len, b_len, c_len] = txs.each_ref().map(|tx| {
+            let pooled = pool.get(tx.tx_hash()).expect("test tx should be in the pool");
+            pooled.to_consensus().inner().length() as u64
+        });
+        assert!(a_len == b_len && a_len > 3_000 && c_len < 300, "{a_len} {b_len} {c_len}");
+        let accounts = [(a_caller, 0), (b_caller, 0), (c_caller, 0)];
+
+        let select = |tx_bytes_budget| {
+            let mut builder = etna_builder(&accounts);
+            let outcome = execute_pool_transactions(
+                &mut builder,
+                &pool,
+                &test_client(etna_chain_spec()),
+                &PoolExecutionContext {
+                    anchor_tx: None,
+                    parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
+                    block_state_seed: B256::ZERO,
+                    block_timestamp: 1,
+                    payload_id: "etna-tx-bytes-budget".to_string(),
+                    base_fee: 0,
+                    gas_limit: 30_000_000,
+                    zk_overflows: &ZkOverflowMemory::default(),
+                    tx_bytes_budget,
+                },
+                &CancelOnDrop::default(),
+            )
+            .expect("a transaction beyond the byte budget should be left out, not fail the build");
+            let ExecutionOutcome::Completed(total_fees) = outcome else {
+                panic!("pool selection should not cancel")
+            };
+            let receipts = builder.executor.receipts().to_vec();
+            let b_nonce = nonce_of(&mut builder, b_caller);
+            (receipts, total_fees, b_nonce)
+        };
+
+        // Without a budget all three fit.
+        let (receipts, _, b_nonce) = select(None);
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(b_nonce, 1);
+
+        // `b` does not fit after `a`, so it is left out and `c`, which fits, is still selected.
+        let (receipts, total_fees, b_nonce) = select(Some(a_len + c_len));
+        assert_eq!(receipts.len(), 2);
+        let a_gas = receipts[0].cumulative_gas_used;
+        let c_gas = receipts[1].cumulative_gas_used - a_gas;
+        assert_eq!(total_fees, U256::from(30 * a_gas + 10 * c_gas));
+        assert_eq!(b_nonce, 0);
     }
 }

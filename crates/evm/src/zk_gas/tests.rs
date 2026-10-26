@@ -390,6 +390,46 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
 }
 
 #[test]
+fn direct_precompile_transaction_meters_identically_on_both_paths() {
+    // Spec 3.1: a transaction whose `to` is a precompile is metered by the precompile's
+    // multiplier alone, with no synthetic CALL and no spawn estimate. identity (0x04) over 32
+    // bytes costs 15 + 3 = 18 gas, times multiplier 6. Both EVMs disable the per-transact reset,
+    // as the block executor does, so the reading is its per-transaction metering without the
+    // intrinsic charge the executor adds separately.
+    let input = Bytes::from(vec![0u8; 32]);
+    let tx = TxEnv::builder()
+        .caller(BENCH_CALLER)
+        .kind(TxKind::Call(Address::with_last_byte(0x04)))
+        .data(input.clone())
+        .chain_id(Some(167))
+        .gas_limit(100_000)
+        .build()
+        .unwrap();
+
+    let mut production_evm = TaikoEvmFactory
+        .create_evm(db_with_contract(simple_arithmetic_bytecode()), evm_env(TaikoSpecId::ETNA));
+    production_evm.set_per_transact_zk_gas_reset_enabled(false);
+    let production = production_evm.transact(tx.clone()).expect("production path should execute");
+    assert_eq!(production.result.output(), Some(&input), "identity should echo its input");
+    let production_zk_gas =
+        production_evm.meter().expect("production path should install a meter").tx_zk_gas_used();
+
+    let mut inspector_evm = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(simple_arithmetic_bytecode()),
+        evm_env(TaikoSpecId::ETNA),
+        NoOpInspector {},
+    );
+    inspector_evm.set_per_transact_zk_gas_reset_enabled(false);
+    let inspected = inspector_evm.transact(tx).expect("inspector path should execute");
+    assert_eq!(inspected.result.output(), Some(&input), "identity should echo its input");
+    let inspector_zk_gas =
+        inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
+
+    assert_eq!(production_zk_gas, 18 * 6);
+    assert_eq!(inspector_zk_gas, 18 * 6);
+}
+
+#[test]
 fn precompile_metering_snapshots_gas_before_inner_call_end_mutation() {
     let mut baseline_evm = TaikoEvmFactory.create_evm_with_inspector(
         db_with_contract(staticcall_identity_bytecode()),

@@ -26,11 +26,7 @@ use alethia_reth_chainspec::spec::TaikoExecutorSpec;
 use alethia_reth_evm::{
     alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoAnchorEvm, TaikoZkGasEvm},
     handler::get_treasury_address,
-    zk_gas::{
-        adapter::ZK_GAS_LIMIT_ERR,
-        meter::ZkGasOutcome,
-        pricing::{ZkGasMode, ZkGasShadowReport, ZkGasShadowStatus},
-    },
+    zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
 
@@ -42,17 +38,6 @@ pub struct CommittedBlockExecutionOutcome<T, R> {
     pub execution_result: BlockExecutionResult<R>,
     /// Transactions that were accepted by the executor and included in execution.
     pub committed_transactions: Vec<Recovered<T>>,
-    /// Non-enforcing block-local pricing report when Shadow mode is enabled.
-    pub zk_gas_shadow_report: Option<ZkGasShadowReport>,
-    /// Non-enforcing report across scopes begun before revm validation.
-    ///
-    /// Includes validation failures and declared access lists, but excludes executor rejections
-    /// for remaining native block gas or intrinsic zk gas, which occur before the scope begins.
-    pub attempted_zk_gas_shadow_report: Option<ZkGasShadowReport>,
-    /// Number of attempted transaction scopes, including the anchor transaction.
-    ///
-    /// Zero when Shadow mode is disabled or its collector is unavailable.
-    pub attempted_transaction_count: u64,
 }
 
 /// Dedicated block-execution error raised when a block hits the zk gas limit.
@@ -145,8 +130,6 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     /// Flag indicating whether the executor has been initialized with the anchor transaction info
     /// in `apply_pre_execution_changes`.
     evm_extra_execution_ctx_initialized: bool,
-    /// Non-consensus pricing collection mode selected by runtime configuration.
-    zk_gas_mode: ZkGasMode,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -155,20 +138,11 @@ where
     R: ReceiptBuilder,
 {
     /// Creates a new [`TaikoBlockExecutor`]
-    pub fn new(evm: Evm, ctx: TaikoBlockExecutionCtx<'a>, spec: Spec, receipt_builder: R) -> Self
-    where
-        Evm: TaikoAnchorEvm + TaikoZkGasEvm,
-    {
-        Self::new_with_zk_gas_mode(evm, ctx, spec, receipt_builder, ZkGasMode::Disabled)
-    }
-
-    /// Creates a block executor with an explicit non-consensus pricing collection mode.
-    pub fn new_with_zk_gas_mode(
+    pub fn new(
         mut evm: Evm,
         ctx: TaikoBlockExecutionCtx<'a>,
         spec: Spec,
         receipt_builder: R,
-        zk_gas_mode: ZkGasMode,
     ) -> Self
     where
         Evm: TaikoAnchorEvm + TaikoZkGasEvm,
@@ -181,7 +155,6 @@ where
         // commit) in `execute_transaction_without_commit`; the wrapper's per-transact entry
         // reset must stay off or it would wipe the intrinsic charged before `transact` runs.
         evm.set_per_transact_zk_gas_reset_enabled(false);
-        evm.set_zk_gas_pricing_enabled(zk_gas_mode == ZkGasMode::Shadow);
         Self {
             evm,
             ctx,
@@ -192,68 +165,6 @@ where
             spec,
             receipt_builder,
             evm_extra_execution_ctx_initialized: false,
-            zk_gas_mode,
-        }
-    }
-
-    /// Returns the current non-enforcing pricing Shadow report, or `None` when collection is
-    /// disabled.
-    pub fn zk_gas_shadow_report(&self) -> Option<ZkGasShadowReport>
-    where
-        Evm: TaikoZkGasEvm,
-    {
-        match self.zk_gas_mode {
-            ZkGasMode::Disabled => None,
-            ZkGasMode::Shadow => Some(
-                self.evm
-                    .zk_gas_pricing_snapshot()
-                    .map(|snapshot| snapshot.shadow_report())
-                    .unwrap_or_else(ZkGasShadowReport::collector_unavailable),
-            ),
-        }
-    }
-
-    /// Returns the pricing report and count across scopes begun before revm validation.
-    ///
-    /// Revm validation failures and declared access lists are included. Remaining-block-gas and
-    /// intrinsic-zk-gas precheck failures are excluded because they happen before `transact_raw`.
-    pub fn attempted_zk_gas_shadow_report(&self) -> Option<(ZkGasShadowReport, u64)>
-    where
-        Evm: TaikoZkGasEvm,
-    {
-        match self.zk_gas_mode {
-            ZkGasMode::Disabled => None,
-            ZkGasMode::Shadow => self
-                .evm
-                .zk_gas_attempted_pricing_snapshot()
-                .map(|snapshot| (snapshot.block.shadow_report(), snapshot.transaction_count))
-                .or_else(|| Some((ZkGasShadowReport::collector_unavailable(), 0))),
-        }
-    }
-
-    /// Emits one bounded-cardinality block-level Shadow observation.
-    fn record_zk_gas_shadow_report(&self)
-    where
-        Evm: TaikoZkGasEvm,
-    {
-        let Some(report) = self.zk_gas_shadow_report() else { return };
-        match report.status() {
-            ZkGasShadowStatus::Incomplete { known, .. } => tracing::info!(
-                target: "zkgas",
-                model_id = report.model_id(),
-                status = report.status().label(),
-                evm_local_known_subtotal_pgu = ?known.evm_local_known_subtotal_pgu(),
-                fixed_scaled = ?known.fixed_scaled(),
-                operations_scaled = ?known.operations_scaled(),
-                evm_local_resources_scaled = ?known.evm_local_resources_scaled(),
-                "zk gas pricing shadow block report"
-            ),
-            ZkGasShadowStatus::Diagnostic(_) => tracing::warn!(
-                target: "zkgas",
-                model_id = report.model_id(),
-                status = report.status().label(),
-                "zk gas pricing shadow block diagnostic"
-            ),
         }
     }
 
@@ -289,9 +200,8 @@ where
         Ok(())
     }
 
-    /// Clears in-flight metered zk gas while preserving the committed block total.
-    ///
-    /// An installed Shadow selector scope is retained in its attempted prefix.
+    /// Discards any in-flight zk gas for the current transaction while preserving the committed
+    /// block total.
     fn reset_current_transaction_zk_gas(&mut self)
     where
         Evm: TaikoZkGasEvm,
@@ -312,9 +222,6 @@ where
     where
         Evm: TaikoZkGasEvm,
     {
-        self.evm
-            .commit_transaction_zk_gas_pricing()
-            .expect("validated zk gas pricing selectors must commit atomically");
         match self.evm.commit_transaction_zk_gas() {
             Ok(Some(zk_gas)) => self.ctx.set_finalized_block_zk_gas(zk_gas),
             Ok(None) => {}
@@ -378,18 +285,8 @@ where
             }
         }
 
-        let zk_gas_shadow_report = self.zk_gas_shadow_report();
-        let (attempted_zk_gas_shadow_report, attempted_transaction_count) = self
-            .attempted_zk_gas_shadow_report()
-            .map_or((None, 0), |(report, count)| (Some(report), count));
         let execution_result = self.apply_post_execution_changes()?;
-        Ok(CommittedBlockExecutionOutcome {
-            execution_result,
-            committed_transactions,
-            zk_gas_shadow_report,
-            attempted_zk_gas_shadow_report,
-            attempted_transaction_count,
-        })
+        Ok(CommittedBlockExecutionOutcome { execution_result, committed_transactions })
     }
 }
 
@@ -537,10 +434,8 @@ where
 
         // Charge the per-transaction intrinsic zk gas before EVM execution begins, as required
         // by the Unzen zk gas spec (taikoxyz/taiko-mono#21669). The intrinsic sits in the
-        // in-flight tx total so it is committed alongside opcode/precompile usage for every valid
-        // included receipt, including REVERT and HALT. It is discarded only when the executor
-        // omits the transaction (validation/execution error, budget rejection, or commit predicate
-        // false). A schedule with a zero intrinsic makes this a no-op.
+        // in-flight tx total so it is committed alongside opcode/precompile usage on success
+        // and discarded on revert/failure. A schedule with a zero intrinsic makes this a no-op.
         // If the intrinsic alone would exceed the remaining block budget, mirror the
         // mid-tx exhaustion path used by the inspector.
         if let Err(ZkGasOutcome::LimitExceeded) = self.evm.charge_tx_intrinsic_zk_gas() {
@@ -617,7 +512,6 @@ where
     fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         self.sync_finalized_block_zk_gas();
         self.validate_expected_zk_gas_difficulty()?;
-        self.record_zk_gas_shadow_report();
         Ok((
             self.evm,
             BlockExecutionResult {
@@ -706,140 +600,24 @@ mod test {
     use reth_revm::{
         State,
         db::{CacheDB, EmptyDB},
-        state::{AccountInfo, Bytecode, bytecode::opcode},
+        state::AccountInfo,
     };
 
     use alethia_reth_evm::{
-        alloy::{TaikoZkGasEvm, decode_anchor_system_call_data},
-        factory::TaikoEvmFactory,
-        spec::TaikoSpecId,
-        zk_gas::{
-            pricing::{ZkGasIncompleteness, ZkGasMode, ZkGasShadowStatus},
-            unzen::{BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS},
-        },
+        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
+        zk_gas::unzen::TX_INTRINSIC_ZK_GAS,
     };
 
     use super::*;
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, insert_contract,
-            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
+            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     const BENCH_CALLER: Address = Address::with_last_byte(0x30);
-
-    #[test]
-    fn shadow_mode_preserves_canonical_execution_and_unzen_difficulty_input() {
-        fn run(mode: ZkGasMode) -> (BlockExecutionResult<reth_ethereum_primitives::Receipt>, u64) {
-            let chain_spec = Arc::new(unzen_chain_spec());
-            let mut state = State::builder()
-                .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-                .with_bundle_update()
-                .build();
-            let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-            let ctx = unzen_execution_ctx();
-            let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
-                evm,
-                ctx.clone(),
-                chain_spec,
-                RethReceiptBuilder::default(),
-                mode,
-            );
-            executor
-                .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
-                .expect("transaction executes");
-
-            match mode {
-                ZkGasMode::Disabled => {
-                    assert!(executor.zk_gas_shadow_report().is_none());
-                }
-                ZkGasMode::Shadow => {
-                    let report = executor.zk_gas_shadow_report().expect("shadow report");
-                    assert!(matches!(
-                        report.status(),
-                        ZkGasShadowStatus::Incomplete {
-                            missing:
-                                ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
-                            ..
-                        }
-                    ));
-                }
-            }
-
-            let (_, result) = executor.finish().expect("executor finishes");
-            (result, ctx.finalized_block_zk_gas())
-        }
-
-        let (disabled, disabled_difficulty) = run(ZkGasMode::Disabled);
-        let (shadow, shadow_difficulty) = run(ZkGasMode::Shadow);
-        assert_eq!(shadow.receipts, disabled.receipts);
-        assert_eq!(shadow.requests, disabled.requests);
-        assert_eq!(shadow.gas_used, disabled.gas_used);
-        assert_eq!(shadow.blob_gas_used, disabled.blob_gas_used);
-        assert_eq!(shadow_difficulty, disabled_difficulty);
-    }
-
-    #[test]
-    fn shadow_cross_executor_commit_retains_a_diagnostic_instead_of_panicking() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut producer_state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let producer_evm = TaikoEvmFactory.create_evm(&mut producer_state, unzen_evm_env());
-        let mut producer = TaikoBlockExecutor::new_with_zk_gas_mode(
-            producer_evm,
-            unzen_execution_ctx(),
-            chain_spec.clone(),
-            RethReceiptBuilder::default(),
-            ZkGasMode::Shadow,
-        );
-        let output = producer
-            .execute_transaction_without_commit(recovered_tx(
-                BENCH_CALLER,
-                BENCH_SUCCESS_TARGET,
-                0,
-                1,
-            ))
-            .expect("BAL worker executes transaction");
-
-        let mut consumer_state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let consumer_evm = TaikoEvmFactory.create_evm(&mut consumer_state, unzen_evm_env());
-        let mut consumer = TaikoBlockExecutor::new_with_zk_gas_mode(
-            consumer_evm,
-            unzen_execution_ctx(),
-            chain_spec,
-            RethReceiptBuilder::default(),
-            ZkGasMode::Shadow,
-        );
-
-        consumer.commit_transaction(output);
-        assert!(matches!(
-            consumer.zk_gas_shadow_report().expect("shadow report").status(),
-            ZkGasShadowStatus::Diagnostic(
-                alethia_reth_evm::zk_gas::pricing::ZkGasShadowDiagnostic::Collector(
-                    alethia_reth_evm::zk_gas::pricing::ZkGasAccumulatorError::NoActiveTransaction,
-                )
-            )
-        ));
-        let (attempted, attempted_count) = consumer
-            .attempted_zk_gas_shadow_report()
-            .expect("attempted shadow report remains available");
-        assert_eq!(attempted_count, 0);
-        assert!(matches!(
-            attempted.status(),
-            ZkGasShadowStatus::Diagnostic(
-                alethia_reth_evm::zk_gas::pricing::ZkGasShadowDiagnostic::Collector(
-                    alethia_reth_evm::zk_gas::pricing::ZkGasAccumulatorError::NoActiveTransaction,
-                )
-            )
-        ));
-    }
 
     #[test]
     fn test_encode_anchor_system_call_data() {
@@ -910,12 +688,11 @@ mod test {
         let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
         assert_eq!(evm.block_zk_gas_used(), Some(0));
         let ctx = unzen_execution_ctx();
-        let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
+        let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx.clone(),
             chain_spec.clone(),
             RethReceiptBuilder::default(),
-            ZkGasMode::Shadow,
         );
 
         let gas_used = executor
@@ -923,182 +700,21 @@ mod test {
             .expect("first transaction should commit");
         let finalized_after_first = ctx.finalized_block_zk_gas();
         assert!(finalized_after_first > 0);
-        let pricing_after_first = executor.evm.zk_gas_pricing_snapshot().expect("pricing enabled");
-        assert_eq!(pricing_after_first.started_non_anchor_transactions, 1);
-        assert_eq!(
-            executor
-                .evm
-                .zk_gas_attempted_pricing_snapshot()
-                .expect("attempted pricing enabled")
-                .transaction_count,
-            1
-        );
 
         let err = executor
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 1, 1))
             .expect_err("second transaction should be discarded");
         assert!(is_zk_gas_limit_exceeded(&err));
         assert_eq!(ctx.finalized_block_zk_gas(), finalized_after_first);
-        assert_eq!(executor.evm.zk_gas_pricing_snapshot(), Some(pricing_after_first.clone()));
-        let attempted_after_limit =
-            executor.evm.zk_gas_attempted_pricing_snapshot().expect("attempted pricing enabled");
-        assert_eq!(attempted_after_limit.transaction_count, 2);
-        assert_ne!(attempted_after_limit.block, pricing_after_first);
 
         let repeated_err = executor
             .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1))
             .expect_err("later transactions should not execute after zk gas exhaustion");
         assert!(is_zk_gas_limit_exceeded(&repeated_err));
-        assert_eq!(executor.evm.zk_gas_pricing_snapshot(), Some(pricing_after_first));
-        assert_eq!(
-            executor.evm.zk_gas_attempted_pricing_snapshot().expect("attempted pricing enabled"),
-            attempted_after_limit
-        );
 
         let (_, result) = executor.finish().expect("executor should finish after truncation");
         assert_eq!(result.receipts.len(), 1);
         assert_eq!(result.gas_used, gas_used.tx_gas_used());
-    }
-
-    #[test]
-    fn executor_does_not_count_candidate_rejected_before_pricing_scope_begins() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let mut env = unzen_evm_env();
-        env.block_env.gas_limit = 4_000_000;
-        let evm = TaikoEvmFactory.create_evm(&mut state, env);
-        let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
-            evm,
-            unzen_execution_ctx(),
-            chain_spec,
-            RethReceiptBuilder::default(),
-            ZkGasMode::Shadow,
-        );
-
-        let err = executor
-            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
-            .expect_err("candidate exceeds remaining native block gas before execution");
-        assert!(matches!(
-            err,
-            BlockExecutionError::Validation(
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
-            )
-        ));
-        let attempted =
-            executor.evm.zk_gas_attempted_pricing_snapshot().expect("attempted pricing enabled");
-        assert_eq!(attempted.transaction_count, 0);
-        assert_eq!(attempted.block, Default::default());
-    }
-
-    #[test]
-    fn executor_pricing_commits_included_halt_and_discards_predicate_and_invalid_transactions() {
-        let halt_target = Address::with_last_byte(0x24);
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut db = db_with_contracts(&[(BENCH_CALLER, 0)]);
-        insert_contract(&mut db, halt_target, Bytecode::new_raw(Bytes::from(vec![opcode::ADD])));
-        let mut state = State::builder().with_database(db).with_bundle_update().build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-        let ctx = unzen_execution_ctx();
-        let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
-            evm,
-            ctx,
-            chain_spec,
-            RethReceiptBuilder::default(),
-            ZkGasMode::Shadow,
-        );
-
-        let omitted = executor
-            .execute_transaction_with_commit_condition(
-                recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
-                |_| CommitChanges::No,
-            )
-            .expect("predicate rejection is not an execution error");
-        assert!(omitted.is_none());
-        assert_eq!(
-            executor
-                .evm
-                .zk_gas_attempted_pricing_snapshot()
-                .expect("attempted pricing enabled")
-                .transaction_count,
-            1
-        );
-        assert_eq!(
-            executor
-                .evm
-                .zk_gas_pricing_snapshot()
-                .expect("pricing enabled")
-                .started_non_anchor_transactions,
-            0
-        );
-
-        executor
-            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 1, 1))
-            .expect_err("invalid nonce is discarded");
-        assert_eq!(
-            executor
-                .evm
-                .zk_gas_attempted_pricing_snapshot()
-                .expect("attempted pricing enabled")
-                .transaction_count,
-            2
-        );
-        assert_eq!(
-            executor
-                .evm
-                .zk_gas_pricing_snapshot()
-                .expect("pricing enabled")
-                .started_non_anchor_transactions,
-            0
-        );
-
-        executor
-            .execute_transaction(recovered_tx(BENCH_CALLER, halt_target, 0, 1))
-            .expect("valid HALT yields an included receipt");
-        assert_eq!(
-            executor
-                .evm
-                .zk_gas_attempted_pricing_snapshot()
-                .expect("attempted pricing enabled")
-                .transaction_count,
-            3
-        );
-        let snapshot = executor.evm.zk_gas_pricing_snapshot().expect("pricing enabled");
-        assert_eq!(snapshot.started_non_anchor_transactions, 1);
-        assert!(snapshot.operation_routes.iter().any(|row| {
-            row.route == alethia_reth_evm::zk_gas::pricing::OperationRoute::Opcode(opcode::ADD)
-        }));
-    }
-
-    #[test]
-    fn executor_does_not_count_intrinsic_zk_gas_rejection_before_pricing_scope_begins() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let mut state = State::builder()
-            .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
-            .with_bundle_update()
-            .build();
-        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
-        let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
-            evm,
-            unzen_execution_ctx(),
-            chain_spec,
-            RethReceiptBuilder::default(),
-            ZkGasMode::Shadow,
-        );
-        executor
-            .reserve_block_zk_gas(BLOCK_ZK_GAS_LIMIT - TX_INTRINSIC_ZK_GAS + 1)
-            .expect("reservation leaves less than one intrinsic charge");
-
-        let err = executor
-            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
-            .expect_err("intrinsic zk gas exceeds the remaining budget");
-        assert!(is_zk_gas_limit_exceeded(&err));
-        let attempted =
-            executor.evm.zk_gas_attempted_pricing_snapshot().expect("attempted pricing enabled");
-        assert_eq!(attempted.transaction_count, 0);
-        assert_eq!(attempted.block, Default::default());
     }
 
     #[test]

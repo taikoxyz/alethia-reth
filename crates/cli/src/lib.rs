@@ -25,7 +25,6 @@ use alethia_reth_node::{
     TaikoNode,
     components::{ProviderTaikoBlockReader, reject_jit_args},
     consensus::validation::TaikoBeaconConsensus,
-    evm::zk_gas::pricing::ZkGasMode,
     proof_history::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
@@ -61,39 +60,6 @@ pub struct TaikoCliExtArgs {
         help_heading = "Taiko"
     )]
     pub devnet_unzen_timestamp: u64,
-
-    /// Non-consensus zk gas pricing runtime mode.
-    ///
-    /// `disabled` is the default and preserves the existing Unzen admission path. `shadow`
-    /// installs a node-wide, non-enforcing observer on every executor, including sync and RPC
-    /// simulation paths. Shadow execution can add substantial CPU overhead on opcode-heavy
-    /// workloads and publishes diagnostics only; it never replaces Unzen admission or rejects
-    /// a block.
-    #[arg(
-        long = "zkgas-mode",
-        env = "ALETHIA_RETH_ZKGAS_MODE",
-        value_name = "MODE",
-        default_value = "disabled",
-        value_parser = parse_zkgas_mode,
-        long_help = "Non-consensus zk gas pricing mode. `disabled` (the default) preserves the \
-existing Unzen admission path. `shadow` enables a node-wide, non-enforcing observer on every \
-executor, including sync and RPC simulation paths. Shadow can add substantial CPU overhead on \
-opcode-heavy workloads and publishes diagnostics only; it never replaces Unzen admission or \
-rejects a block. Accepted values: disabled, shadow.",
-        help_heading = "Taiko"
-    )]
-    pub zk_gas_mode: ZkGasMode,
-}
-
-/// Parses the deliberately restricted zk gas pricing runtime-mode surface.
-fn parse_zkgas_mode(value: &str) -> Result<ZkGasMode, String> {
-    match value {
-        "disabled" => Ok(ZkGasMode::Disabled),
-        "shadow" => Ok(ZkGasMode::Shadow),
-        _ => Err(format!(
-            "unsupported zk gas pricing mode `{value}`; expected `disabled` or `shadow`"
-        )),
-    }
 }
 
 /// CLI arguments controlling the optional proof-history sidecar.
@@ -322,13 +288,13 @@ mod tests {
         time::Duration,
     };
 
-    use clap::{CommandFactory, Parser};
+    use clap::Parser;
     use reth::{args::EngineArgs, cli::Commands};
 
     use super::{
         DEFAULT_PROOF_HISTORY_MAX_STARTUP_PRUNE_BLOCKS,
         DEFAULT_PROOF_HISTORY_VERIFICATION_INTERVAL, DEFAULT_PROOF_HISTORY_WINDOW,
-        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs, ZkGasMode,
+        TaikoChainSpecParser, TaikoCli, TaikoCliExtArgs,
     };
     use crate::command::{
         TaikoNodeExtArgs, disable_state_masking_by_default, validate_engine_args,
@@ -353,41 +319,6 @@ mod tests {
             .expect("flag should parse");
 
         assert_eq!(cli.ext.devnet_unzen_timestamp, 42);
-    }
-
-    #[test]
-    fn test_zkgas_mode_defaults_to_disabled() {
-        let _lock = env_lock();
-        unsafe { std::env::remove_var("ALETHIA_RETH_ZKGAS_MODE") };
-        let cli = TestCli::try_parse_from(["alethia-reth"]).expect("default args should parse");
-
-        assert_eq!(cli.ext.zk_gas_mode, ZkGasMode::Disabled);
-        assert_eq!(cli.ext.zk_gas_mode(), ZkGasMode::Disabled);
-    }
-
-    #[test]
-    fn test_zkgas_shadow_mode_parses() {
-        let cli = TestCli::try_parse_from(["alethia-reth", "--zkgas-mode", "shadow"])
-            .expect("shadow mode should parse");
-
-        assert_eq!(cli.ext.zk_gas_mode(), ZkGasMode::Shadow);
-    }
-
-    #[test]
-    fn test_zkgas_admission_mode_is_unavailable() {
-        let err = TestCli::try_parse_from(["alethia-reth", "--zkgas-mode", "admission"])
-            .expect_err("admission must remain unavailable without exact MPT selectors");
-
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
-    }
-
-    #[test]
-    fn test_zkgas_help_documents_shadow_scope_and_non_enforcement() {
-        let help = TestCli::command().render_long_help().to_string();
-
-        assert!(help.contains("node-wide, non-enforcing observer"));
-        assert!(help.contains("never replaces Unzen admission or rejects a block"));
-        assert!(help.contains("substantial CPU overhead"));
     }
 
     #[test]

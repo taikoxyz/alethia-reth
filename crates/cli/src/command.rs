@@ -14,10 +14,7 @@ use reth_cli_commands::{NodeCommand, launcher::Launcher, node::NoArgs};
 use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 
-use alethia_reth_node::{
-    chainspec::spec::TaikoDevnetConfigExt, evm::zk_gas::pricing::ZkGasMode,
-    proof_history::ProofHistoryConfig,
-};
+use alethia_reth_node::{chainspec::spec::TaikoDevnetConfigExt, proof_history::ProofHistoryConfig};
 
 use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
@@ -28,9 +25,6 @@ pub trait TaikoNodeExtArgs {
 
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
-
-    /// Returns the non-consensus zk gas pricing runtime mode.
-    fn zk_gas_mode(&self) -> ZkGasMode;
 }
 
 impl TaikoNodeExtArgs for NoArgs {
@@ -42,11 +36,6 @@ impl TaikoNodeExtArgs for NoArgs {
     /// Returns a disabled proof-history configuration for commands without Taiko options.
     fn proof_history_config(&self) -> ProofHistoryConfig {
         ProofHistoryConfig::disabled()
-    }
-
-    /// Returns disabled pricing collection for commands without Taiko options.
-    fn zk_gas_mode(&self) -> ZkGasMode {
-        ZkGasMode::Disabled
     }
 }
 
@@ -67,11 +56,6 @@ impl TaikoNodeExtArgs for TaikoCliExtArgs {
             verification_interval: self.proof_history.verification_interval,
             max_startup_prune_blocks: self.proof_history.max_startup_prune_blocks,
         }
-    }
-
-    /// Returns the configured non-consensus zk gas pricing runtime mode.
-    fn zk_gas_mode(&self) -> ZkGasMode {
-        self.zk_gas_mode
     }
 }
 

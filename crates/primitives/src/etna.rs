@@ -13,10 +13,12 @@ use reth_ethereum_primitives::TransactionSigned;
 /// the header, so it is rejected as an invalid parameter before any job starts.
 pub const ETNA_MIN_MAX_BLOCK_BYTES: u64 = 1_024;
 
-/// JSON-RPC error code returned when a payload job failed because the parent's state is pruned.
+/// JSON-RPC error code an `engine_forkchoiceUpdatedV3` with Etna build attributes returns when its
+/// build failed and a read of the parent's state then reports that state pruned.
 ///
-/// Drivers treat this code as a definitive build failure; every other build failure stays a
-/// transient internal error (`-32603`).
+/// Only that FCU answers it; `engine_getPayloadV5` for the failed job keeps the unknown-payload
+/// answer. Drivers treat this code as a definitive build failure; every other build failure stays
+/// a transient internal error (`-32603`).
 pub const ENGINE_CANNOT_BUILD_ON_PARENT_CODE: i32 = -38_100;
 
 /// JSON-RPC error message paired with [`ENGINE_CANNOT_BUILD_ON_PARENT_CODE`].
@@ -85,7 +87,7 @@ pub fn validate_etna_extra_data(
     Ok(())
 }
 
-/// Error returned when a pre-Etna payload job carries an Etna-only build attribute.
+/// Error returned when pre-Etna build attributes carry an Etna-only field.
 ///
 /// `forcedTransaction` and `maxBlockBytes` exist only for Etna targets. Engine API attribute
 /// validation rejects either one before Etna with this error, which drivers receive as an
@@ -109,7 +111,7 @@ impl fmt::Display for EtnaBuildFieldsBeforeEtna {
 
 impl core::error::Error for EtnaBuildFieldsBeforeEtna {}
 
-/// Rejects a pre-Etna payload job that carries `forcedTransaction` or `maxBlockBytes`.
+/// Rejects pre-Etna build attributes that carry `forcedTransaction` or `maxBlockBytes`.
 ///
 /// Call it only for targets before Etna; on an Etna target both attributes are valid inputs.
 pub const fn ensure_no_etna_build_fields(

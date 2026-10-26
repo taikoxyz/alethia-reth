@@ -243,7 +243,7 @@ leave it absent; sending either one for a pre-Etna target is rejected:
 | Member | Type | Rule |
 | --- | --- | --- |
 | `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with transactions in block-body form, is at most this many bytes. |
-| `forcedTransaction` | `0x`-hex | The raw EIP-2718 bytes whose keccak256 is the forced-inclusion entry's `txHash`, not the RLP-wrapped network form. They must decode as exactly one transaction, with no trailing bytes, whose signer recovers. |
+| `forcedTransaction` | `0x`-hex | The raw EIP-2718 bytes whose keccak256 is the forced-inclusion entry's `txHash`, not the RLP-wrapped network form. They must decode as exactly one transaction, with no trailing bytes, whose signer recovers. The transaction type is not checked here: a type Etna does not accept, such as a blob transaction, is left out of position 0 as in a given list. |
 
 The Etna build mode follows from presence:
 

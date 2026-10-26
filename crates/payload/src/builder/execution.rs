@@ -202,8 +202,9 @@ struct PoolSelectionStart {
 /// it is included exactly when that build includes it:
 /// - Included: its tip is collected, the selection state advances past it, and its gas and bytes
 ///   come off the pool's budgets.
-/// - Left out or zk overflow: it is not in the block and the pool keeps `full`. After a zk overflow
-///   the exhaustion is cleared, so pool selection can run.
+/// - Left out or zk overflow: it is not at position 0 and the pool keeps `full`. After a zk
+///   overflow the exhaustion is cleared, so pool selection can run. A copy the pool also holds may
+///   still be selected later in the block, as an ordinary pool transaction.
 ///
 /// Remembered zk overflows apply to pool candidates only; the forced transaction runs first on the
 /// real pre-block state, so this step takes no overflow memory.
@@ -1231,17 +1232,16 @@ mod tests {
     fn mixed_build_includes_the_forced_transaction_exactly_when_its_singleton_build_does() {
         let [fi_caller, unfunded, p_caller] = [0x62, 0x63, 0x64].map(Address::with_last_byte);
         let accounts = [(fi_caller, 0), (p_caller, 0)];
+        // The forced transaction's calldata makes its gas differ from `p`'s.
+        let forced = |caller, to, nonce| {
+            recovered_tx_with_input(caller, to, nonce, 1, Bytes::from_static(&[1; 32]))
+        };
         let cases = [
-            ("fits", 0, recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 1), true),
-            ("nonce gap", 0, recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 1, 1), false),
-            ("unfunded sender", 0, recovered_tx(unfunded, BENCH_SUCCESS_TARGET, 0, 1), false),
-            (
-                "fee below the base fee",
-                10,
-                recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 1),
-                false,
-            ),
-            ("zk overflow", 0, recovered_tx(fi_caller, BENCH_LIMIT_TARGET, 0, 1), false),
+            ("fits", 0, forced(fi_caller, BENCH_SUCCESS_TARGET, 0), true),
+            ("nonce gap", 0, forced(fi_caller, BENCH_SUCCESS_TARGET, 1), false),
+            ("unfunded sender", 0, forced(unfunded, BENCH_SUCCESS_TARGET, 0), false),
+            ("fee below the base fee", 10, forced(fi_caller, BENCH_SUCCESS_TARGET, 0), false),
+            ("zk overflow", 0, forced(fi_caller, BENCH_LIMIT_TARGET, 0), false),
         ];
         for (case, base_fee, fi, expect_included) in cases {
             let mut env = etna_evm_env();
@@ -1274,12 +1274,13 @@ mod tests {
             let mixed_receipts = mixed.executor.receipts();
             assert_eq!(mixed_receipts.len(), 1 + usize::from(included), "{case}");
             if included {
-                // Position 0, on the same pre-state.
-                assert_eq!(
-                    mixed_receipts[0].cumulative_gas_used,
-                    singleton_receipts[0].cumulative_gas_used,
-                    "{case}"
-                );
+                // Receipt 0 is the forced transaction's, on the same pre-state: its gas matches the
+                // singleton build's and differs from `p`'s.
+                let fi_gas = singleton_receipts[0].cumulative_gas_used;
+                let p_gas =
+                    mixed_receipts[1].cumulative_gas_used - mixed_receipts[0].cumulative_gas_used;
+                assert_eq!(mixed_receipts[0].cumulative_gas_used, fi_gas, "{case}");
+                assert_ne!(fi_gas, p_gas, "{case}");
             }
         }
     }
@@ -1311,24 +1312,67 @@ mod tests {
     }
 
     #[test]
-    fn mixed_build_leaves_out_an_overflowing_forced_transaction_without_remembering_it() {
-        let [fi_caller, p_caller] = [0x66, 0x67].map(Address::with_last_byte);
-        let fi = recovered_tx(fi_caller, BENCH_LIMIT_TARGET, 0, 1);
-        let pool = pool_with([recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10)]);
+    fn mixed_build_leaves_out_a_failing_forced_transaction_and_still_fills_from_the_pool() {
+        let [fi_caller, l_caller, p_caller] = [0x66, 0x67, 0x73].map(Address::with_last_byte);
+        // `l` pays the higher tip, so it is the first pool candidate.
+        let l = recovered_tx(l_caller, BENCH_LIMIT_TARGET, 0, 20);
+        let l_hash = *l.tx_hash();
+        let pool = pool_with([l, recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10)]);
+        let block_state_seed = B256::repeat_byte(0x66);
+        let cases = [
+            ("zk overflow", recovered_tx(fi_caller, BENCH_LIMIT_TARGET, 0, 1)),
+            ("nonce gap", recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 1, 1)),
+        ];
+        for (case, fi) in cases {
+            let overflows = ZkOverflowMemory::default();
+            let mut builder = etna_builder(&[(fi_caller, 0), (l_caller, 0), (p_caller, 0)]);
+
+            // The step that runs the forced transaction never receives the overflow memory.
+            let total_fees = run_etna_build(
+                &mut builder,
+                &pool,
+                &etna_build_ctx(Some(&fi), &overflows, block_state_seed),
+            );
+
+            // The forced transaction is left out, and any zk gas exhaustion it caused is cleared,
+            // so `p` still runs and is the block's only transaction.
+            let receipts = builder.executor.receipts().to_vec();
+            assert_eq!(receipts.len(), 1, "{case}");
+            assert_eq!(total_fees, U256::from(10 * receipts[0].cumulative_gas_used), "{case}");
+            assert_eq!(nonce_of(&mut builder, fi_caller), 0, "{case}");
+            assert_eq!(nonce_of(&mut builder, p_caller), 1, "{case}");
+            // Pool selection starts from the state before any transaction: `l` overflowed there.
+            assert_eq!(overflows.state(&l_hash), Some(block_state_seed), "{case}");
+        }
+    }
+
+    #[test]
+    fn mixed_build_may_select_a_pooled_copy_of_a_left_out_forced_transaction_later() {
+        let fi_caller = Address::with_last_byte(0x74);
+        // The forced transaction is one nonce ahead of its sender, so it is left out of position
+        // 0. The pool holds a copy of it and the sender's transaction at the current nonce, and
+        // the copy's calldata makes its gas differ from that transaction's.
+        let current = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 10);
+        let fi = recovered_tx_with_input(
+            fi_caller,
+            BENCH_SUCCESS_TARGET,
+            1,
+            10,
+            Bytes::from_static(&[1; 32]),
+        );
+        let pool = pool_with([current, fi.clone()]);
         let overflows = ZkOverflowMemory::default();
-        let mut builder = etna_builder(&[(fi_caller, 0), (p_caller, 0)]);
+        let mut builder = etna_builder(&[(fi_caller, 0)]);
 
-        // The step that runs the forced transaction never receives the overflow memory.
-        let total_fees =
-            run_etna_build(&mut builder, &pool, &etna_build_ctx(Some(&fi), &overflows, B256::ZERO));
+        run_etna_build(&mut builder, &pool, &etna_build_ctx(Some(&fi), &overflows, B256::ZERO));
 
-        // The forced transaction is left out, and the zk gas exhaustion it caused is cleared, so
-        // `p` still runs and is the block's only transaction.
-        let receipts = builder.executor.receipts().to_vec();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(total_fees, U256::from(10 * receipts[0].cumulative_gas_used));
-        assert_eq!(nonce_of(&mut builder, fi_caller), 0);
-        assert_eq!(nonce_of(&mut builder, p_caller), 1);
+        // The pool runs the current nonce at position 0 and then the copy at position 1, as an
+        // ordinary pool transaction.
+        let receipts = builder.executor.receipts();
+        assert_eq!(receipts.len(), 2);
+        let first_gas = receipts[0].cumulative_gas_used;
+        assert!(first_gas < receipts[1].cumulative_gas_used - first_gas, "{receipts:?}");
+        assert_eq!(nonce_of(&mut builder, fi_caller), 2);
     }
 
     #[test]

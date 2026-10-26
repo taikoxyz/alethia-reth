@@ -207,28 +207,33 @@ with the block's full gas limit, the full zk-gas budget, and a transaction byte 
 `maxBlockBytes` ([byte limit](#byte-limit)). A transaction that is left out leaves no state,
 receipt, or fee behind. An ordinary EVM revert or out-of-gas is included and charged as usual.
 
-- **Given list.** The list runs in order. A transaction is left out for a transaction-level reason:
-  an unsupported type, a size above the remaining byte budget, a nonce, balance, base-fee, or
-  intrinsic-gas failure against the current state, or a gas limit above the block's remaining gas.
-  The first transaction that exceeds the zk-gas limit is discarded and ends the list. A given-list
-  build of `[tx]` therefore returns either a block holding `tx` or an empty block, never an error
-  for a transaction-level reason; only failures unrelated to the transactions, such as a state read
-  error, fail the build.
+- **Given list.** The list runs in order. A transaction is left out for a transaction-level reason,
+  such as an unsupported type, a size above the remaining byte budget, a nonce, balance, base-fee,
+  or intrinsic-gas failure against the current state, or a gas limit above the block's remaining
+  gas. The first transaction that exceeds the zk-gas limit is discarded and ends the list. A
+  given-list build of `[tx]` therefore returns either a block holding `tx` or an empty block, never
+  an error for a transaction-level reason; only failures unrelated to the transactions, such as a
+  state read error, fail the build.
 - **Pool.** The builder selects from its own transaction pool by effective tip, within the gas,
   zk-gas, and byte budgets left. As build policy, not a consensus rule, a pool transaction that
   exceeds the zk-gas limit is discarded together with its sender's later nonces and selection
-  continues with other senders; the builder remembers such transactions and bounds the work it
-  spends re-running them.
+  continues with other senders. The builder remembers such transactions and bounds the work spent on
+  overflowing trials: once the gas limits of remembered transactions that overflow again add up to
+  the pool's gas budget, it skips remembered transactions, and once those of first-time overflows
+  do, it stops selecting.
 - **Mixed.** The forced transaction runs first, at position 0, on the parent's state with the full
   budgets, exactly as the given-list build of `[forcedTransaction]` with the same attributes runs
-  it. It is transaction 0 exactly when that build would include it, and pool selection then
-  continues from the state after it with the gas and bytes it left. Otherwise it is absent, the
-  block holds only pool transactions, and the pool gets the full budgets; the given-list build of
-  the forced transaction alone on the same parent and attributes is then empty as well, which is the
-  execution-layer condition for skipping the entry. The pool's remembered zk-gas overflows never
-  apply to the forced transaction. If the pool also holds the forced transaction, it still appears
-  only once, at position 0, and its sender's next nonce can follow from the pool. Drivers detect
-  inclusion by comparing keccak256 of transaction 0's EIP-2718 encoding with the entry's `txHash`.
+  it. Inclusion means transaction 0 only. The forced transaction is transaction 0 exactly when that
+  build would include it; pool selection then continues from the state after it with the gas and
+  bytes it left, and a copy of it in the pool is not included again, though its sender's next nonce
+  can follow. Otherwise it is left out of position 0 and the pool fills the block with the full
+  budgets; the given-list build of the forced transaction alone on the same parent and attributes is
+  then empty as well, which is the execution-layer condition for skipping the entry. A copy of a
+  left-out forced transaction that the pool also holds may still be selected later in the block, for
+  example after an earlier pool transaction fills its sender's nonce gap or funds its sender; that
+  copy is an ordinary pool transaction, not an inclusion. The pool's remembered zk-gas overflows
+  never apply to the forced transaction. Drivers detect inclusion by comparing keccak256 of
+  transaction 0's EIP-2718 encoding with the entry's `txHash`.
 
 #### Byte limit
 

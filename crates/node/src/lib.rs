@@ -15,6 +15,7 @@ pub use alethia_reth_rpc as rpc;
 
 use chainspec::spec::TaikoChainSpec;
 use components::{TaikoConsensusBuilder, TaikoExecutorBuilder, TaikoNetworkBuilder};
+use evm::zk_gas::pricing::ZkGasMode;
 use payload::TaikoPayloadBuilderBuilder;
 use primitives::engine::TaikoEngineTypes;
 use reth::{
@@ -38,7 +39,22 @@ use std::sync::Arc;
 
 /// The main node type for a Taiko network node, implementing the `NodeTypes` trait.
 #[derive(Debug, Clone, Default)]
-pub struct TaikoNode;
+pub struct TaikoNode {
+    /// Non-consensus zk gas runtime mode.
+    zk_gas_mode: ZkGasMode,
+}
+
+impl TaikoNode {
+    /// Creates a Taiko node with an explicit non-consensus zk gas runtime mode.
+    pub const fn new(zk_gas_mode: ZkGasMode) -> Self {
+        Self { zk_gas_mode }
+    }
+
+    /// Returns the configured non-consensus zk gas runtime mode.
+    pub const fn zk_gas_mode(&self) -> ZkGasMode {
+        self.zk_gas_mode
+    }
+}
 
 impl NodeTypes for TaikoNode {
     /// The node's primitive types, defining basic operations and structures.
@@ -82,7 +98,7 @@ where
         ComponentsBuilder::default()
             .node_types()
             .pool(EthereumPoolBuilder::default())
-            .executor(TaikoExecutorBuilder)
+            .executor(TaikoExecutorBuilder::new(self.zk_gas_mode))
             .payload(BasicPayloadServiceBuilder::new(TaikoPayloadBuilderBuilder))
             .network(TaikoNetworkBuilder)
             .consensus(TaikoConsensusBuilder)
@@ -127,5 +143,6 @@ mod tests {
     fn taiko_node_implements_expected_core_traits() {
         fn assert_traits<T: Clone + Default + core::fmt::Debug>() {}
         assert_traits::<TaikoNode>();
+        assert_eq!(TaikoNode::default().zk_gas_mode(), evm::zk_gas::pricing::ZkGasMode::Disabled);
     }
 }

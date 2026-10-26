@@ -201,6 +201,11 @@ pub trait TaikoZkGasEvm {
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64>;
 
+    /// Returns `true` when the finalized block zk gas budget can still pay one more
+    /// transaction's intrinsic charge (see [`Self::charge_tx_intrinsic_zk_gas`]). Always `true`
+    /// when no meter is installed (pre-Unzen specs).
+    fn can_fit_tx_intrinsic_zk_gas(&self) -> bool;
+
     /// Reserves finalized block zk gas without executing a transaction.
     ///
     /// Returns the new finalized block total, or `None` when no meter is installed.
@@ -252,6 +257,11 @@ where
     /// Returns the finalized block zk gas that has already been committed.
     fn block_zk_gas_used(&self) -> Option<u64> {
         self.meter().map(|m| m.block_zk_gas_used())
+    }
+
+    /// Returns whether the finalized block budget can pay one more transaction intrinsic charge.
+    fn can_fit_tx_intrinsic_zk_gas(&self) -> bool {
+        self.meter().is_none_or(|m| m.can_fit_tx_intrinsic())
     }
 
     /// Reserves finalized block zk gas through the active meter.

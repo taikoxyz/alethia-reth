@@ -245,6 +245,38 @@ where
     }
 }
 
+/// Executor hooks that let transaction selection keep filling a block after one candidate
+/// overflows the zk gas budget.
+///
+/// Block import, sealing and prover execution never use these hooks, so they keep stopping at the
+/// first zk gas overflow.
+pub trait TxSelectionExecutor {
+    /// Clears the zk gas exhaustion an overflowed transaction left, so the next candidate can run.
+    /// Only transaction selection may call this; block execution must keep stopping at the first
+    /// overflow.
+    fn clear_zk_gas_exhaustion(&mut self);
+
+    /// Returns whether the block zk gas budget can still pay another transaction's intrinsic
+    /// charge. Always true without a zk gas meter.
+    fn can_fit_another_transaction_zk_gas(&self) -> bool;
+}
+
+impl<Evm: TaikoZkGasEvm, Spec: Clone, R: ReceiptBuilder> TxSelectionExecutor
+    for TaikoBlockExecutor<'_, Evm, Spec, R>
+{
+    /// Drops the sticky exhaustion flag and discards the overflowed transaction's in-flight zk
+    /// gas, keeping the committed block total.
+    fn clear_zk_gas_exhaustion(&mut self) {
+        self.zk_gas_exhausted = false;
+        self.reset_current_transaction_zk_gas();
+    }
+
+    /// Asks the EVM meter whether the finalized block budget covers one more intrinsic charge.
+    fn can_fit_another_transaction_zk_gas(&self) -> bool {
+        self.evm.can_fit_tx_intrinsic_zk_gas()
+    }
+}
+
 #[cfg(feature = "prover")]
 impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
 where
@@ -604,8 +636,10 @@ mod test {
     };
 
     use alethia_reth_evm::{
-        alloy::decode_anchor_system_call_data, factory::TaikoEvmFactory, spec::TaikoSpecId,
-        zk_gas::unzen::TX_INTRINSIC_ZK_GAS,
+        alloy::decode_anchor_system_call_data,
+        factory::TaikoEvmFactory,
+        spec::TaikoSpecId,
+        zk_gas::unzen::{BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS},
     };
 
     use super::*;
@@ -676,6 +710,93 @@ mod test {
         executor.reserve_block_zk_gas(2_000_000).expect("pre-Unzen reserve should be a no-op");
 
         assert_eq!(ctx.finalized_block_zk_gas(), 0);
+    }
+
+    #[test]
+    fn clear_zk_gas_exhaustion_lets_the_next_transaction_run() {
+        let caller_a = Address::with_last_byte(0x31);
+        let caller_b = Address::with_last_byte(0x32);
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(caller_a, 0), (caller_b, 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let ctx = unzen_execution_ctx();
+        let mut executor =
+            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
+
+        let err = executor
+            .execute_transaction(recovered_tx(caller_a, BENCH_LIMIT_TARGET, 0, 1))
+            .expect_err("the overflowing transaction should exceed the zk gas limit");
+        assert!(is_zk_gas_limit_exceeded(&err));
+
+        let sticky_err = executor
+            .execute_transaction(recovered_tx(caller_b, BENCH_SUCCESS_TARGET, 0, 1))
+            .expect_err("zk gas exhaustion should stay sticky until cleared");
+        assert!(is_zk_gas_limit_exceeded(&sticky_err));
+
+        executor.clear_zk_gas_exhaustion();
+        executor
+            .execute_transaction(recovered_tx(caller_b, BENCH_SUCCESS_TARGET, 0, 1))
+            .expect("the next transaction should run once exhaustion is cleared");
+        assert_eq!(executor.receipts().len(), 1);
+        assert!(ctx.finalized_block_zk_gas() < 100_000_000);
+    }
+
+    #[test]
+    fn can_fit_another_transaction_zk_gas_tracks_the_intrinsic() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+
+        {
+            let mut state =
+                State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
+            let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+            let mut executor = TaikoBlockExecutor::new(
+                evm,
+                unzen_execution_ctx(),
+                chain_spec.clone(),
+                RethReceiptBuilder::default(),
+            );
+            executor
+                .reserve_block_zk_gas(BLOCK_ZK_GAS_LIMIT - TX_INTRINSIC_ZK_GAS)
+                .expect("reserve should fit");
+            assert!(executor.can_fit_another_transaction_zk_gas());
+        }
+
+        {
+            let mut state =
+                State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
+            let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+            let mut executor = TaikoBlockExecutor::new(
+                evm,
+                unzen_execution_ctx(),
+                chain_spec.clone(),
+                RethReceiptBuilder::default(),
+            );
+            executor
+                .reserve_block_zk_gas(BLOCK_ZK_GAS_LIMIT - TX_INTRINSIC_ZK_GAS + 1)
+                .expect("reserve should fit");
+            assert!(!executor.can_fit_another_transaction_zk_gas());
+        }
+
+        {
+            let mut state =
+                State::builder().with_database(db_with_contracts(&[])).with_bundle_update().build();
+            let mut env = unzen_evm_env();
+            env.cfg_env.spec = TaikoSpecId::SHASTA;
+            let evm = TaikoEvmFactory.create_evm(&mut state, env);
+            let mut executor = TaikoBlockExecutor::new(
+                evm,
+                unzen_execution_ctx(),
+                chain_spec,
+                RethReceiptBuilder::default(),
+            );
+            executor
+                .reserve_block_zk_gas(BLOCK_ZK_GAS_LIMIT - TX_INTRINSIC_ZK_GAS + 1)
+                .expect("pre-Unzen reserve should be a no-op");
+            assert!(executor.can_fit_another_transaction_zk_gas());
+        }
     }
 
     #[test]

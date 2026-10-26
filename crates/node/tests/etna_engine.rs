@@ -261,3 +261,84 @@ fn devnet_etna_genesis_serves_preselection_and_pending_simulation() -> eyre::Res
         Ok(())
     })
 }
+
+#[test]
+fn etna_mixed_build_puts_the_forced_transaction_first_within_the_byte_limit() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::etna::execution_block_length;
+        use alloy_primitives::{Address, Bytes};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let target = Address::with_last_byte(0x21);
+        // A pooled transaction of ~2 KB and a small golden-touch forced transaction.
+        let p = signed_tx_with_key(POOL_SENDER_KEY, 0, target, Bytes::from(vec![0; 2_000]));
+        assert_eq!(send_raw(&http, &p).await?, *p.tx_hash());
+        let fi = signed_tx(0, false, target, Bytes::new());
+        let (fi_hash, p_hash) = (*fi.tx_hash(), *p.tx_hash());
+        let attrs = fixture_attributes(100);
+        let build_on_genesis = |attrs| build(&client, spec.clone(), spec.genesis_header(), attrs);
+        let hashes = |built: &Built| {
+            built.block.body().transactions.iter().map(|tx| *tx.tx_hash()).collect::<Vec<_>>()
+        };
+        let listed = |txs: &[_], max_block_bytes: u64| {
+            let mut attrs = with_txs(attrs.clone(), txs);
+            attrs.max_block_bytes = Some(max_block_bytes);
+            attrs
+        };
+
+        // Mixed: the forced transaction is transaction 0 and the pool fills the rest.
+        let mixed = build_on_genesis(pool_mode(attrs.clone(), Some(&fi), 124_000)).await?;
+        assert_eq!(hashes(&mixed), [fi_hash, p_hash]);
+        let length = execution_block_length(mixed.block.header(), &mixed.block.body().transactions);
+        assert!(length <= 124_000, "{length}");
+        let length = u64::try_from(length)?;
+
+        // Pool only: a job differing only in `forcedTransaction` gets its own ID.
+        let pool = build_on_genesis(pool_mode(attrs.clone(), None, 124_000)).await?;
+        assert_ne!(pool.id, mixed.id);
+        assert_eq!(hashes(&pool), [p_hash]);
+
+        // The header reserve, live: 16 bytes above the built length still holds both
+        // transactions; one byte below it leaves the pooled transaction out.
+        let roomy = build_on_genesis(pool_mode(attrs.clone(), Some(&fi), length + 16)).await?;
+        assert_eq!(hashes(&roomy), [fi_hash, p_hash]);
+        assert_eq!(roomy.block.hash(), mixed.block.hash());
+        let tight = build_on_genesis(pool_mode(attrs.clone(), Some(&fi), length - 1)).await?;
+        assert_eq!(hashes(&tight), [fi_hash]);
+
+        // Given list through the same call path: the byte budget leaves out a listed
+        // transaction that no longer fits.
+        let listed_roomy = build_on_genesis(listed(&[fi.clone(), p.clone()], length + 16)).await?;
+        assert_eq!(listed_roomy.block.hash(), mixed.block.hash());
+        let listed_tight = build_on_genesis(listed(&[fi.clone(), p.clone()], length - 1)).await?;
+        assert_eq!(hashes(&listed_tight), [fi_hash]);
+        let listed_small = build_on_genesis(listed(std::slice::from_ref(&p), 1_024)).await?;
+        assert_eq!(hashes(&listed_small), Vec::<B256>::new());
+
+        // A forced transaction with a nonce gap is not transaction 0, and its given-list build
+        // alone is empty: the execution-layer condition for skipping the entry.
+        let fi_gap = signed_tx(5, false, target, Bytes::new());
+        let gapped = build_on_genesis(pool_mode(attrs.clone(), Some(&fi_gap), 124_000)).await?;
+        assert_eq!(hashes(&gapped), [p_hash]);
+        let alone = build_on_genesis(listed(&[fi_gap], 124_000)).await?;
+        assert_eq!(hashes(&alone), Vec::<B256>::new());
+
+        // The smallest accepted bound leaves no room for the pooled transaction.
+        let small = build_on_genesis(pool_mode(attrs.clone(), None, 1_024)).await?;
+        assert_eq!(hashes(&small), Vec::<B256>::new());
+
+        // Etna attributes without `maxBlockBytes` are rejected before any job starts.
+        let mut unbounded = pool_mode(attrs.clone(), None, 124_000);
+        unbounded.max_block_bytes = None;
+        let error = fcu(&client, genesis, genesis, Some(unbounded))
+            .await
+            .expect_err("an Etna build without maxBlockBytes must be rejected");
+        assert_eq!(rpc_error_code(&error), Some(-32602), "{error:?}");
+        assert!(format!("{error:?}").contains("maxBlockBytes"), "{error:?}");
+        Ok(())
+    })
+}

@@ -196,22 +196,29 @@ pub async fn fcu(
     .await??)
 }
 
-pub fn signed_tx(
+/// The golden-touch key; `signed_tx` signs with it.
+const GOLDEN_TOUCH_KEY: &str = "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
+
+/// Key of `0x70997970c51812dc3a010c7d01b50e0d17dc79c8`, funded in the fixture genesis.
+pub const POOL_SENDER_KEY: &str =
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+
+fn sign_eip1559(
+    key: &str,
     nonce: u64,
-    anchor: bool,
+    tip: u128,
     target: Address,
     input: Bytes,
 ) -> reth_ethereum_primitives::TransactionSigned {
     use alloy_consensus::{SignableTransaction, Signed, TxEip1559};
     use alloy_signer::SignerSync;
-    let signer: alloy_signer_local::PrivateKeySigner =
-        "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38".parse().unwrap();
+    let signer: alloy_signer_local::PrivateKeySigner = key.parse().unwrap();
     let tx = TxEip1559 {
         chain_id: 167001,
         nonce,
         gas_limit: 1_000_000,
         max_fee_per_gas: 1_000_000_000,
-        max_priority_fee_per_gas: if anchor { 0 } else { 7 },
+        max_priority_fee_per_gas: tip,
         to: target.into(),
         value: U256::ZERO,
         access_list: Default::default(),
@@ -219,6 +226,59 @@ pub fn signed_tx(
     };
     let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
     Signed::new_unhashed(tx, signature).into()
+}
+
+pub fn signed_tx(
+    nonce: u64,
+    anchor: bool,
+    target: Address,
+    input: Bytes,
+) -> reth_ethereum_primitives::TransactionSigned {
+    sign_eip1559(GOLDEN_TOUCH_KEY, nonce, if anchor { 0 } else { 7 }, target, input)
+}
+
+/// An EIP-1559 transaction with tip 7 signed by `key`.
+pub fn signed_tx_with_key(
+    key: &str,
+    nonce: u64,
+    target: Address,
+    input: Bytes,
+) -> reth_ethereum_primitives::TransactionSigned {
+    sign_eip1559(key, nonce, 7, target, input)
+}
+
+/// The raw EIP-2718 bytes a driver sends as `forcedTransaction`.
+pub fn raw_2718(tx: &reth_ethereum_primitives::TransactionSigned) -> Bytes {
+    use alloy_eips::eip2718::Encodable2718;
+    tx.encoded_2718().into()
+}
+
+/// Submits `tx` to the node's pool through `eth_sendRawTransaction`.
+pub async fn send_raw(
+    http: &impl ClientT,
+    tx: &reth_ethereum_primitives::TransactionSigned,
+) -> eyre::Result<B256> {
+    Ok(http.request("eth_sendRawTransaction", rpc_params![raw_2718(tx)]).await?)
+}
+
+/// Pool (no `forced`) or mixed (`forced`) Etna attributes with the given byte bound.
+pub fn pool_mode(
+    mut attrs: TaikoPayloadAttributes,
+    forced: Option<&reth_ethereum_primitives::TransactionSigned>,
+    max_block_bytes: u64,
+) -> TaikoPayloadAttributes {
+    attrs.block_metadata.tx_list = None;
+    attrs.forced_transaction = forced.map(raw_2718);
+    attrs.max_block_bytes = Some(max_block_bytes);
+    attrs
+}
+
+/// The JSON-RPC error code carried by a failed request, if the failure is a call error.
+pub fn rpc_error_code(error: &eyre::Report) -> Option<i32> {
+    match error.downcast_ref::<jsonrpsee::core::ClientError>()? {
+        jsonrpsee::core::ClientError::Call(error) => Some(error.code()),
+        _ => None,
+    }
 }
 
 pub fn with_txs(

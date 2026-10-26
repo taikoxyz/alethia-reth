@@ -3,7 +3,7 @@ use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
     Context, Inspector, MainBuilder, MainContext,
     context::{
-        BlockEnv, DBErrorMarker, TxEnv,
+        DBErrorMarker, TxEnv,
         result::{EVMError, HaltReason},
     },
     inspector::NoOpInspector,
@@ -12,7 +12,8 @@ use reth_revm::{
 };
 
 use crate::{
-    alloy::{TaikoEvmContext, TaikoEvmWrapper},
+    alloy::{TaikoAnchorEvm, TaikoEvmContext, TaikoEvmWrapper},
+    env::TaikoBlockEnv,
     evm::TaikoEvm,
     spec::TaikoSpecId,
     zk_gas::{adapter::ZkGasInspector, schedule::schedule_for},
@@ -37,7 +38,7 @@ impl EvmFactory for TaikoEvmFactory {
     /// The EVM specification identifier
     type Spec = TaikoSpecId;
     /// Block environment used by the EVM.
-    type BlockEnv = BlockEnv;
+    type BlockEnv = TaikoBlockEnv;
     /// Precompiles used by the EVM.
     type Precompiles = PrecompilesMap;
 
@@ -48,6 +49,7 @@ impl EvmFactory for TaikoEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
+        let base_fee_share_pctg = input.block_env.base_fee_share_pctg;
         let schedule = schedule_for(spec_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
@@ -58,7 +60,14 @@ impl EvmFactory for TaikoEvmFactory {
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false)
+        let mut evm =
+            TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false);
+        let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::ETNA);
+        evm.set_anchor_ctx_derivation_enabled(allow_legacy_anchor);
+        if !allow_legacy_anchor && let Some(percentage) = base_fee_share_pctg {
+            evm.set_block_fee_context(percentage);
+        }
+        evm
     }
 
     /// Creates a new instance of an EVM with an inspector.
@@ -69,6 +78,7 @@ impl EvmFactory for TaikoEvmFactory {
         inspector: I,
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
+        let base_fee_share_pctg = input.block_env.base_fee_share_pctg;
         let schedule = schedule_for(spec_id);
         let evm = Context::mainnet()
             .with_cfg(input.cfg_env)
@@ -79,6 +89,12 @@ impl EvmFactory for TaikoEvmFactory {
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
 
-        TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
+        let mut evm = TaikoEvmWrapper::new(TaikoEvm::new(evm), true);
+        let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::ETNA);
+        evm.set_anchor_ctx_derivation_enabled(allow_legacy_anchor);
+        if !allow_legacy_anchor && let Some(percentage) = base_fee_share_pctg {
+            evm.set_block_fee_context(percentage);
+        }
+        evm
     }
 }

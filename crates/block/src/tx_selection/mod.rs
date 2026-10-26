@@ -247,13 +247,10 @@ where
             best_txs.mark_invalid(&pool_tx, zk_gas_budget_error());
             continue;
         }
-        if remembered.is_some() {
-            if rerun_overflow_gas >= overflow_gas_cap {
-                trace!(target: "tx_selection", ?tx_hash, rerun_overflow_gas, "skipping remembered zk gas overflow: re-run allowance used up");
-                best_txs.mark_invalid(&pool_tx, zk_gas_budget_error());
-                continue;
-            }
-            trace!(target: "tx_selection", ?tx_hash, "re-running transaction that overflowed the zk gas budget at another state");
+        if remembered.is_some() && rerun_overflow_gas >= overflow_gas_cap {
+            trace!(target: "tx_selection", ?tx_hash, rerun_overflow_gas, "skipping remembered zk gas overflow: re-run allowance used up");
+            best_txs.mark_invalid(&pool_tx, zk_gas_budget_error());
+            continue;
         }
 
         // 6. Check if transaction fits in current list; if not, try starting a new one
@@ -300,6 +297,9 @@ where
         }
 
         // 7. Execute transaction
+        if remembered.is_some() {
+            trace!(target: "tx_selection", ?tx_hash, "re-running transaction that overflowed the zk gas budget at another state");
+        }
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_output) => gas_output.tx_gas_used(),
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
@@ -654,7 +654,8 @@ mod tests {
             assert_eq!(overflows.state(hash), Some(seed));
         }
 
-        // At the same state the remembered overflows are skipped without running or opening lists.
+        // At the same state the remembered overflows are left out again and stay remembered,
+        // without stopping selection, so the success tx is included.
         let (lists, receipts) = select_on_fresh_builder(
             &accounts,
             0,
@@ -666,6 +667,35 @@ mod tests {
         assert_eq!(list_hashes(&lists[0]), vec![success_hash]);
         assert_eq!(receipts, 1);
         assert_eq!(overflows.len(), 6);
+    }
+
+    #[test]
+    fn tx_selection_skips_remembered_overflow_at_the_same_state_without_opening_a_list() {
+        let success = recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 20);
+        let success_hash = *success.tx_hash();
+        let limit = recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 10);
+        let limit_hash = *limit.tx_hash();
+        let accounts = senders([&success, &limit]);
+        let pool = testing_pool();
+        add_to_pool(&pool, [success, limit]);
+        let seed = B256::with_last_byte(4);
+        let after_success = advance_selection_state(seed, success_hash);
+        let overflows = ZkOverflowMemory::default();
+        overflows.record(limit_hash, after_success);
+        // Each list fits one 5M gas limit transaction: after the success tx, the gas it used plus
+        // the remembered tx's 5M gas limit is over the per-list limit.
+        let config =
+            TxSelectionConfig { gas_limit_per_list: 5_000_000, ..overflow_test_config(2, seed) };
+
+        let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
+
+        // The remembered tx comes after the success tx, at the state it overflowed at. It does
+        // not fit the current list, but it is skipped before the list checks, so no second list
+        // is opened for it.
+        assert_eq!(lists.len(), 1);
+        assert_eq!(list_hashes(&lists[0]), vec![success_hash]);
+        assert_eq!(receipts, 1);
+        assert_eq!(overflows.state(&limit_hash), Some(after_success));
     }
 
     #[test]

@@ -71,6 +71,12 @@ impl ZkOverflowMemory {
 /// Returns the digest of the execution state selection starts from: keccak256 over
 /// `parent_hash ‖ beneficiary ‖ base_fee ‖ gas_limit` (integers as 8-byte big-endian), advanced
 /// by [`advance_selection_state`] for each hash in `committed`, in order.
+///
+/// The block timestamp is left out by design: payload builds for one parent can carry a different
+/// timestamp on every call, and the pre-building RPC selects at the parent's timestamp, which
+/// differs from the derived block's. In the payload path the digest also leaves out
+/// `prev_randao`, `extra_data` and the parent beacon block root; for a given parent and anchor
+/// these do not vary in practice.
 pub fn selection_state_seed(
     parent_hash: B256,
     beneficiary: Address,

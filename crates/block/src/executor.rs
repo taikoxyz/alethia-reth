@@ -253,7 +253,8 @@ where
 pub trait TxSelectionExecutor {
     /// Clears the zk gas exhaustion an overflowed transaction left, so the next candidate can run.
     /// Only transaction selection may call this; block execution must keep stopping at the first
-    /// overflow.
+    /// overflow. Call it only between transactions, after an overflow error: it discards the
+    /// in-flight zk gas.
     fn clear_zk_gas_exhaustion(&mut self);
 
     /// Returns whether the block zk gas budget can still pay another transaction's intrinsic
@@ -631,8 +632,8 @@ mod test {
     use reth_primitives_traits::SignedTransaction;
     use reth_revm::{
         State,
-        db::{CacheDB, EmptyDB},
-        state::AccountInfo,
+        db::{CacheDB, EmptyDB, states::bundle_state::BundleRetention},
+        state::{AccountInfo, Bytecode, bytecode::opcode},
     };
 
     use alethia_reth_evm::{
@@ -646,8 +647,8 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, recovered_tx,
-            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, insert_contract,
+            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -730,6 +731,7 @@ mod test {
             .execute_transaction(recovered_tx(caller_a, BENCH_LIMIT_TARGET, 0, 1))
             .expect_err("the overflowing transaction should exceed the zk gas limit");
         assert!(is_zk_gas_limit_exceeded(&err));
+        assert_eq!(ctx.finalized_block_zk_gas(), 0);
 
         let sticky_err = executor
             .execute_transaction(recovered_tx(caller_b, BENCH_SUCCESS_TARGET, 0, 1))
@@ -741,7 +743,79 @@ mod test {
             .execute_transaction(recovered_tx(caller_b, BENCH_SUCCESS_TARGET, 0, 1))
             .expect("the next transaction should run once exhaustion is cleared");
         assert_eq!(executor.receipts().len(), 1);
-        assert!(ctx.finalized_block_zk_gas() < 100_000_000);
+        assert!(ctx.finalized_block_zk_gas() >= TX_INTRINSIC_ZK_GAS);
+        assert!(ctx.finalized_block_zk_gas() < BLOCK_ZK_GAS_LIMIT);
+    }
+
+    #[test]
+    fn overflowed_transaction_leaves_no_state_after_clearing_exhaustion() {
+        let caller_a = Address::with_last_byte(0x31);
+        let caller_b = Address::with_last_byte(0x32);
+        let writer = Address::with_last_byte(0x25);
+        let mut db = db_with_contracts(&[(caller_a, 0), (caller_b, 0)]);
+        // Sets storage slot 0 to 1, then runs the 64 KiB KECCAK256 loop, so the transaction
+        // overflows the zk gas budget after it has written storage.
+        insert_contract(
+            &mut db,
+            writer,
+            Bytecode::new_raw(Bytes::from(vec![
+                opcode::PUSH1,
+                0x01,
+                opcode::PUSH1,
+                0x00,
+                opcode::SSTORE,   // slot 0 = 1
+                opcode::JUMPDEST, // loop entry at offset 5
+                opcode::PUSH3,
+                0x01,
+                0x00,
+                0x00, // len 0x010000 (64 KiB)
+                opcode::PUSH1,
+                0x00, // memory offset 0
+                opcode::KECCAK256,
+                opcode::POP, // discard the digest
+                opcode::PUSH1,
+                0x05,         // jump destination 5
+                opcode::JUMP, // loop
+            ])),
+        );
+        let funded_balance =
+            db.basic(caller_a).expect("db read").expect("caller a is funded").balance;
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let ctx = unzen_execution_ctx();
+        let mut executor =
+            TaikoBlockExecutor::new(evm, ctx.clone(), chain_spec, RethReceiptBuilder::default());
+
+        let err = executor
+            .execute_transaction(recovered_tx(caller_a, writer, 0, 1))
+            .expect_err("the writer transaction should exceed the zk gas limit");
+        assert!(is_zk_gas_limit_exceeded(&err));
+        assert_eq!(ctx.finalized_block_zk_gas(), 0);
+
+        executor.clear_zk_gas_exhaustion();
+        executor
+            .execute_transaction(recovered_tx(caller_b, BENCH_SUCCESS_TARGET, 0, 1))
+            .expect("the next transaction should run once exhaustion is cleared");
+        let (evm, _) = executor.finish().expect("executor should finish");
+        drop(evm);
+
+        // The overflowed transaction left nothing behind: no nonce bump, no fee charge and no
+        // storage write. Only the next transaction's changes are in the state.
+        let a = state.basic(caller_a).expect("db read").expect("caller a exists");
+        assert_eq!(a.nonce, 0);
+        assert_eq!(a.balance, funded_balance);
+        assert_eq!(state.storage(writer, U256::ZERO).expect("db read"), U256::ZERO);
+        assert_eq!(state.basic(caller_b).expect("db read").expect("caller b exists").nonce, 1);
+        let finalized = ctx.finalized_block_zk_gas();
+        assert!(finalized >= TX_INTRINSIC_ZK_GAS);
+        assert!(finalized < BLOCK_ZK_GAS_LIMIT);
+
+        state.merge_transitions(BundleRetention::Reverts);
+        let bundle = state.take_bundle();
+        assert!(bundle.account(&caller_a).is_none());
+        assert!(bundle.account(&writer).is_none());
+        assert!(bundle.account(&caller_b).is_some());
     }
 
     #[test]

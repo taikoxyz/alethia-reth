@@ -169,19 +169,64 @@ internal payload ranking still uses actual fees.
 | An Etna FCUv3 build that fails on a parent whose state is pruned | JSON-RPC `-38100` (`cannot build on parent`; `data` is diagnostic text) |
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
+| An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID` and the head stays; with attributes, a build on that ancestor (never `-38006`) |
 | A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.
 
 `-38100` is definitive: the node cannot build on that parent and the client must halt rather than
-retry, as it does for `-38006` (an FCU head below the finalized block, answered before any build
-starts). Reth reports every failed build as `missing payload`, so after an Etna FCUv3 build fails
-the node reads the parent's state once more and answers `-38100` only when that read reports the
-state pruned: `StateAtBlockPruned`, or `InsufficientChangesets` for a block below the history prune
-boundary. Every other failure keeps its answer and is transient: timeouts, `SYNCING`, unknown
-blocks, a missing Finish checkpoint, and any other build error. `getPayloadV5` never answers
-`-38100`.
+retry. alethia-reth never answers `-38006` (too deep reorg): its chain spec selects Reth's OP Stack
+forkchoice handling, which accepts an FCU to any canonical ancestor, including one below the
+finalized block, without moving the head (see
+[Rewinding for governance recovery](#rewinding-for-governance-recovery)). Reth reports every failed
+build as `missing payload`, so after an Etna FCUv3 build fails the node reads the parent's state
+once more and answers `-38100` only when that read reports the state pruned: `StateAtBlockPruned`,
+or `InsufficientChangesets` for a block below the history prune boundary. Every other failure keeps
+its answer and is transient: timeouts, `SYNCING`, unknown blocks, a missing Finish checkpoint, and
+any other build error. `getPayloadV5` never answers `-38100`.
+
+### Rewinding for governance recovery
+
+After a governance recovery, the driver rewinds the execution layer to the last checkpoint block `c`
+and builds the recovered chain from `c + 1`. A normal node never moves its head back: an FCU whose
+head is a canonical ancestor answers `VALID` and leaves the head where it is, and with attributes it
+builds on that ancestor without making it canonical. Moving the head back needs Reth's
+`--engine.allow-unwind-canonical-header`, under which every FCU to a canonical ancestor, with or
+without attributes, unwinds the canonical chain to that ancestor at once. Never run a validator or
+lander execution layer with that flag permanently: the routine FCUs that drivers send to older
+canonical parents, for example to re-check an earlier block, would unwind the chain.
+
+Rewind with this one-shot procedure:
+
+1. Stop all Engine API traffic to the node and restart it once with both
+   `--engine.allow-unwind-canonical-header` and
+   `--engine.always-process-payload-attributes-on-canonical-head`.
+2. Send exactly one `engine_forkchoiceUpdatedV3` with `headBlockHash`, `safeBlockHash`, and
+   `finalizedBlockHash` all set to the hash of block `c`, and `null` attributes. It answers `VALID`
+   without a payload ID, and the head is `c` at once: `eth_blockNumber` returns `c` and
+   `eth_getBlockByNumber` returns `null` for `c + 1`. The node removes the blocks above `c` from
+   disk in the background.
+3. Stop the node gracefully (SIGTERM, which lets it finish the removal) and restart it without the
+   two flags. `eth_blockNumber` returns `c`, block `c` keeps its hash, block `c + 1` is absent, and
+   the `safe` and `finalized` tags resolve to block `c`. If block `c + 1` is still present, for
+   example after an ungraceful stop, repeat from step 1.
+4. Resume normal driving. Repeating the step 2 FCU is now a no-op, and an FCU with attributes on `c`
+   builds block `c + 1`, which `engine_newPayloadV4` and an FCU make canonical as usual. Later
+   restarts keep the new chain.
+
+Without the unwind flag, the step 2 FCU still answers `VALID` but leaves the head in place, so
+drivers must confirm that block `c + 1` is gone before building on `c`. The second flag changes
+nothing on alethia-reth, whose forkchoice handling already processes attributes on canonical
+ancestors at any depth; it is part of the procedure so the procedure does not rely on that. With or
+without the flags, an FCU with attributes to a canonical ancestor below the finalized block builds
+on it instead of answering `-38006`; with the flags, it also unwinds the head to that ancestor.
+
+The rewind does not touch alethia-reth's L1-origin records: `taiko_headL1Origin` keeps naming the
+old head until the next build that is not a preconfirmation records an origin, and the records above
+`c` remain until rebuilt blocks replace them. On a node that runs `--proofs-history`, the
+proof-history store does not see the rewind either: it waits until the canonical chain passes its
+old head and then reconciles as it does after any reorg it missed.
 
 ### FCU attributes
 

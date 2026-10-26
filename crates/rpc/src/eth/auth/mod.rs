@@ -5,7 +5,7 @@ use std::sync::Arc;
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_primitives::{Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth::{
@@ -36,7 +36,7 @@ use alethia_reth_block::{
     factory::TaikoBlockExecutorFactory,
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
-        select_and_execute_pool_transactions,
+        select_and_execute_pool_transactions, selection_state_seed,
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -160,12 +160,16 @@ pub struct TaikoAuthExt<Pool, Eth, Evm, Provider: DatabaseProviderFactory> {
     tx_resp_builder: Eth,
     /// EVM configuration used to construct candidate payload environments.
     evm_config: Evm,
+    /// Zk gas overflows remembered across candidate-list selections; clones share the same
+    /// memory.
+    zk_overflows: Arc<ZkOverflowMemory>,
 }
 
 impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, Evm, Provider> {
-    /// Creates a new instance of `TaikoAuthExt` with the given provider.
+    /// Creates a new instance of `TaikoAuthExt` with the given provider and an empty zk gas
+    /// overflow memory.
     pub fn new(provider: Provider, pool: Pool, tx_resp_builder: Eth, evm_config: Evm) -> Self {
-        Self { provider, pool, tx_resp_builder, evm_config }
+        Self { provider, pool, tx_resp_builder, evm_config, zk_overflows: Arc::default() }
     }
 
     /// Stores the current L1 head origin block id.
@@ -390,14 +394,20 @@ where
             max_lists: max_transactions_lists as usize,
             min_tip,
             locals: locals.unwrap_or_default(),
-            state_seed: B256::ZERO,
+            state_seed: selection_state_seed(
+                parent.hash(),
+                beneficiary,
+                base_fee,
+                combined_gas_limit,
+                &[],
+            ),
         };
 
         match select_and_execute_pool_transactions(
             &mut builder,
             &self.pool,
             &config,
-            &ZkOverflowMemory::default(),
+            &self.zk_overflows,
             || false,
         ) {
             Ok(SelectionOutcome::Completed(lists)) => {

@@ -10,18 +10,20 @@ use reth::{
 use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_evm::{
+    Evm as _,
     block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_primitives_traits::{Header as RethHeader, NodePrimitives, Recovered};
+use reth_revm::context::Block as _;
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
     executor::{TxSelectionExecutor, is_zk_gas_limit_exceeded},
     tx_selection::{
         DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
-        select_and_execute_pool_transactions,
+        select_and_execute_pool_transactions, selection_state_seed,
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -49,6 +51,8 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) anchor_tx: &'a Recovered<EthTransactionSigned>,
     /// The parent block header.
     pub(super) parent_header: &'a RethHeader,
+    /// Hash of the parent block, the base of the selection state seed.
+    pub(super) parent_hash: B256,
     /// Timestamp for the new block.
     pub(super) block_timestamp: u64,
     /// Payload identifier for logging.
@@ -57,6 +61,8 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) base_fee: u64,
     /// Block gas limit.
     pub(super) gas_limit: u64,
+    /// Zk gas overflows remembered across this builder's selection calls.
+    pub(super) zk_overflows: &'a ZkOverflowMemory,
 }
 
 /// Executes the provided transaction list in legacy mode.
@@ -169,7 +175,8 @@ where
         }
     }
 
-    // Use the shared transaction selection logic for pool transactions.
+    // Use the shared transaction selection logic for pool transactions. Selection starts after
+    // the anchor, so the anchor hash is part of the state seed.
     let config = TxSelectionConfig {
         base_fee: ctx.base_fee,
         gas_limit_per_list: ctx.gas_limit,
@@ -178,16 +185,18 @@ where
         max_lists: 1,
         min_tip: 0,
         locals: vec![],
-        state_seed: B256::ZERO,
+        state_seed: selection_state_seed(
+            ctx.parent_hash,
+            builder.evm().block().beneficiary(),
+            ctx.base_fee,
+            ctx.gas_limit,
+            &[*ctx.anchor_tx.tx_hash()],
+        ),
     };
 
-    match select_and_execute_pool_transactions(
-        builder,
-        pool,
-        &config,
-        &ZkOverflowMemory::default(),
-        || cancel.is_cancelled(),
-    ) {
+    match select_and_execute_pool_transactions(builder, pool, &config, ctx.zk_overflows, || {
+        cancel.is_cancelled()
+    }) {
         Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
         Ok(SelectionOutcome::Completed(lists)) => {
             // Calculate total fees from the executed transactions.
@@ -229,7 +238,9 @@ mod tests {
     use reth_primitives_traits::Recovered;
     use reth_provider::test_utils::MockEthProvider;
     use reth_storage_api::StateProvider;
-    use reth_transaction_pool::noop::NoopTransactionPool;
+    use reth_transaction_pool::{
+        TransactionOrigin, TransactionPool, noop::NoopTransactionPool, test_utils::testing_pool,
+    };
 
     use alethia_reth_block::{
         executor::{TaikoBlockExecutor, ZkGasLimitExceeded},
@@ -237,6 +248,7 @@ mod tests {
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
             recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
+        tx_selection::selection_state_seed,
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR};
@@ -249,7 +261,7 @@ mod tests {
     const GOLDEN_TOUCH_PRIVATE_KEY: &str =
         "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
 
-    fn test_anchor_transaction() -> Recovered<EthTransactionSigned> {
+    fn test_anchor_transaction(to: Address) -> Recovered<EthTransactionSigned> {
         let signer: PrivateKeySigner =
             GOLDEN_TOUCH_PRIVATE_KEY.parse().expect("golden touch private key should parse");
         let tx = TxEip1559 {
@@ -258,7 +270,7 @@ mod tests {
             gas_limit: ANCHOR_V3_V4_GAS_LIMIT,
             max_fee_per_gas: 0,
             max_priority_fee_per_gas: 0,
-            to: BENCH_LIMIT_TARGET.into(),
+            to: to.into(),
             value: U256::ZERO,
             access_list: Default::default(),
             input: Bytes::copy_from_slice(ANCHOR_V4_SELECTOR),
@@ -400,11 +412,12 @@ mod tests {
             inner: ExecutorBackedBuilder { executor },
             fail_next_execution: true,
         };
-        let anchor_tx = test_anchor_transaction();
+        let anchor_tx = test_anchor_transaction(BENCH_LIMIT_TARGET);
         let client = test_client((*chain_spec).clone());
         let pool = NoopTransactionPool::default();
         let cancel = CancelOnDrop::default();
         let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
+        let overflows = ZkOverflowMemory::default();
 
         let result = execute_anchor_and_pool_transactions(
             &mut builder,
@@ -413,10 +426,12 @@ mod tests {
             &PoolExecutionContext {
                 anchor_tx: &anchor_tx,
                 parent_header: &parent_header,
+                parent_hash: B256::ZERO,
                 block_timestamp: 1,
                 payload_id: "anchor-zk-gas".to_string(),
                 base_fee: 0,
                 gas_limit: 30_000_000,
+                zk_overflows: &overflows,
             },
             &cancel,
         );
@@ -436,5 +451,86 @@ mod tests {
             .downcast_ref::<BlockExecutionError>()
             .expect("payload evm error should retain the block execution error");
         assert!(is_zk_gas_limit_exceeded(execution_err));
+    }
+
+    #[test]
+    fn new_mode_keeps_selecting_after_a_pool_zk_gas_overflow() {
+        let chain_spec = Arc::new(unzen_chain_spec());
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[
+                (Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0),
+                (BENCH_LIMIT_CALLER, 0),
+                (BENCH_SUCCESS_CALLER, 0),
+            ]))
+            .with_bundle_update()
+            .build();
+        let mut evm_env = unzen_evm_env();
+        evm_env.block_env.beneficiary = Address::with_last_byte(0x77);
+        let beneficiary = evm_env.block_env.beneficiary;
+        let evm = TaikoEvmFactory.create_evm(&mut state, evm_env);
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            unzen_execution_ctx(),
+            chain_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+        let anchor_tx = test_anchor_transaction(BENCH_SUCCESS_TARGET);
+        let limit = recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 20);
+        let success = recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 10);
+        let [limit_hash, success_hash] = [&limit, &success].map(|tx| *tx.tx_hash());
+        let pool = testing_pool();
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("test runtime");
+        for tx in [limit, success] {
+            rt.block_on(pool.add_consensus_transaction(tx, TransactionOrigin::External))
+                .expect("test tx should enter the pool");
+        }
+        let client = test_client((*chain_spec).clone());
+        let cancel = CancelOnDrop::default();
+        let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
+        let parent_hash = B256::repeat_byte(0x66);
+        let gas_limit = 29_000_000;
+        let overflows = ZkOverflowMemory::default();
+
+        let outcome = execute_anchor_and_pool_transactions(
+            &mut builder,
+            &pool,
+            &client,
+            &PoolExecutionContext {
+                anchor_tx: &anchor_tx,
+                parent_header: &parent_header,
+                parent_hash,
+                block_timestamp: 1,
+                payload_id: "pool-zk-gas-overflow".to_string(),
+                base_fee: 0,
+                gas_limit,
+                zk_overflows: &overflows,
+            },
+            &cancel,
+        )
+        .expect("a pool zk gas overflow should not fail payload building");
+
+        let ExecutionOutcome::Completed(total_fees) = outcome else {
+            panic!("selection should not cancel")
+        };
+        // The anchor plus the success tx; the higher-tip limit tx overflowed and was left out.
+        let receipts = builder.executor.receipts();
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts[1].success);
+        // Only the tip-10 success tx paid fees, so the second receipt is its receipt.
+        let success_gas_used = receipts[1].cumulative_gas_used - receipts[0].cumulative_gas_used;
+        assert_eq!(total_fees, U256::from(10 * success_gas_used));
+        // The overflow is remembered at the state right after the anchor.
+        assert_eq!(
+            overflows.state(&limit_hash),
+            Some(selection_state_seed(
+                parent_hash,
+                beneficiary,
+                0,
+                gas_limit,
+                &[*anchor_tx.tx_hash()]
+            ))
+        );
+        assert_eq!(overflows.state(&success_hash), None);
     }
 }

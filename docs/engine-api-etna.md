@@ -178,7 +178,8 @@ activation.
 `-38100` is definitive: the node cannot build on that parent and the client must halt rather than
 retry. alethia-reth never answers `-38006` (too deep reorg): its chain spec selects Reth's OP Stack
 forkchoice handling, which accepts an FCU to any canonical ancestor, including one below the
-finalized block, without moving the head (see
+finalized block, without moving the head unless the node runs with
+`--engine.allow-unwind-canonical-header` (see
 [Rewinding for governance recovery](#rewinding-for-governance-recovery)). Reth reports every failed
 build as `missing payload`, so after an Etna FCUv3 build fails the node reads the parent's state
 once more and answers `-38100` only when that read reports the state pruned: `StateAtBlockPruned`,

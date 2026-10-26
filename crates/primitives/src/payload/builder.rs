@@ -617,20 +617,31 @@ mod test {
             .expect("the zero-signature transaction decodes, so only recovery rejects it");
         assert!(decoded.recover_signer().is_err());
 
-        let cases: [(&str, Bytes, Option<Bytes>); 6] = [
-            ("empty", Bytes::new(), None),
-            ("type byte only", Bytes::from_static(&[0x02]), None),
-            ("network form", network_form, None),
-            ("trailing byte", Bytes::from(trailing), None),
-            ("unrecoverable signer", unrecoverable, None),
-            ("with txList", raw.clone(), Some(Bytes::from_static(&[0xc0]))),
+        let not_one_tx = "Etna payload forcedTransaction must be exactly one EIP-2718 transaction";
+        let cases: [(&str, Bytes, Option<Bytes>, &str); 6] = [
+            ("empty", Bytes::new(), None, not_one_tx),
+            ("type byte only", Bytes::from_static(&[0x02]), None, not_one_tx),
+            ("network form", network_form, None, not_one_tx),
+            ("trailing byte", Bytes::from(trailing), None, not_one_tx),
+            (
+                "unrecoverable signer",
+                unrecoverable,
+                None,
+                "Etna payload forcedTransaction signer is not recoverable",
+            ),
+            (
+                "with txList",
+                raw.clone(),
+                Some(Bytes::from_static(&[0xc0])),
+                "Etna payload must not combine forcedTransaction with blockMetadata.txList",
+            ),
         ];
-        for (name, forced, tx_list) in cases {
+        for (name, forced, tx_list, expected) in cases {
             let mut attributes = etna_attrs(Some(124_000), Some(forced));
             attributes.block_metadata.tx_list = tx_list;
             let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, attributes, true)
                 .expect_err(name);
-            assert!(err.to_string().contains("forcedTransaction"), "{name}: {err}");
+            assert_eq!(err, alloy_rlp::Error::Custom(expected), "{name}");
         }
 
         // An empty explicit list is still a list, so it excludes the forced transaction too.

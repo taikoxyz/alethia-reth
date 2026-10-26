@@ -384,7 +384,7 @@ mod tests {
     use reth::revm::State;
     use reth_evm::{
         Evm, EvmFactory,
-        block::{BlockExecutionError, BlockExecutor, CommitChanges},
+        block::{BlockExecutionError, BlockExecutor, CommitChanges, InternalBlockExecutionError},
         execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
     };
     use reth_evm_ethereum::RethReceiptBuilder;
@@ -995,7 +995,7 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{case}: a transaction-level failure errored: {err}"));
             assert_eq!(outcome, ListedTxOutcome::LeftOut, "{case}");
             assert!(builder.executor.receipts().is_empty(), "{case}: left a receipt");
-            assert_eq!(nonce_of(&mut builder, funded), 0, "{case}: left state behind");
+            assert_eq!(nonce_of(&mut builder, tx.signer()), 0, "{case}: left state behind");
         }
 
         let mut builder = etna_builder(&[(funded, 0)]);
@@ -1022,11 +1022,37 @@ mod tests {
             .expect("a legacy-wrapped zk overflow is a transaction-level outcome");
         assert_eq!(outcome, ListedTxOutcome::ZkOverflow);
 
-        // An infrastructure failure is not turned into a left-out transaction.
-        let mut builder = builder_failing_with(BlockExecutionError::msg("state read failed"));
-        let err = execute_listed_transaction(&mut builder, &tx, None)
-            .expect_err("an infrastructure failure must fail the build");
-        assert!(err.to_string().contains("state read failed"), "{err}");
+        // A failure that is not about the transaction is never turned into a left-out
+        // transaction, whichever error shape carries it: an internal error, a fatal EVM error
+        // (for example a database error), a non-fatal EVM error that is not a transaction
+        // validation error, or another validation error.
+        let failures = [
+            ("internal", BlockExecutionError::msg("state read failed")),
+            (
+                "fatal evm",
+                BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
+                    hash: *tx.tx_hash(),
+                    error: "state read failed".into(),
+                }),
+            ),
+            (
+                "non-fatal evm",
+                BlockExecutionError::Validation(BlockValidationError::EVM {
+                    hash: *tx.tx_hash(),
+                    error: "state read failed".into(),
+                }),
+            ),
+            (
+                "other validation",
+                BlockExecutionError::Validation(BlockValidationError::msg("state read failed")),
+            ),
+        ];
+        for (case, failure) in failures {
+            let mut builder = builder_failing_with(failure);
+            let err = execute_listed_transaction(&mut builder, &tx, None)
+                .expect_err("a non-transaction failure must fail the build");
+            assert!(err.to_string().contains("state read failed"), "{case}: {err}");
+        }
     }
 
     #[test]
@@ -1075,17 +1101,8 @@ mod tests {
             )
         };
         let txs = [tx(a_caller, 30, 3_000), tx(b_caller, 20, 3_000), tx(c_caller, 10, 100)];
-        let pool = testing_pool();
-        for tx in txs.clone() {
-            block_on_ready(pool.add_consensus_transaction(tx, TransactionOrigin::External))
-                .expect("transaction should enter the pool");
-        }
-        // The test pool re-signs what it stores, so the lengths are taken from the copies it hands
-        // to selection.
-        let [a_len, b_len, c_len] = txs.each_ref().map(|tx| {
-            let pooled = pool.get(tx.tx_hash()).expect("test tx should be in the pool");
-            pooled.to_consensus().inner().length() as u64
-        });
+        let pool = pool_with(txs.clone());
+        let [a_len, b_len, c_len] = txs.each_ref().map(|tx| pooled_len(&pool, tx));
         assert!(a_len == b_len && a_len > 3_000 && c_len < 300, "{a_len} {b_len} {c_len}");
         let accounts = [(a_caller, 0), (b_caller, 0), (c_caller, 0)];
 
@@ -1312,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_build_leaves_out_a_failing_forced_transaction_and_still_fills_from_the_pool() {
+    fn mixed_build_leaves_out_a_failing_forced_transaction_and_selects_from_the_unadvanced_seed() {
         let [fi_caller, l_caller, p_caller] = [0x66, 0x67, 0x73].map(Address::with_last_byte);
         // `l` pays the higher tip, so it is the first pool candidate.
         let l = recovered_tx(l_caller, BENCH_LIMIT_TARGET, 0, 20);

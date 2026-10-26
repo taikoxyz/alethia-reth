@@ -120,7 +120,7 @@ pub(super) fn execute_listed_transaction(
             Ok(ListedTxOutcome::Included { gas_used: gas_output.tx_gas_used(), tx_bytes })
         }
         Err(err) if is_zk_gas_limit_exceeded(&err) => {
-            debug!(target: "payload_builder", ?tx, "listed transaction exceeded the zk gas limit");
+            trace!(target: "payload_builder", ?tx, "listed transaction exceeded the zk gas limit");
             Ok(ListedTxOutcome::ZkOverflow)
         }
         Err(BlockExecutionError::Validation(

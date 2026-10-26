@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use alloy_consensus::{EMPTY_OMMER_ROOT_HASH, Header, constants::EMPTY_WITHDRAWALS};
-use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::{B256, Bloom, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -18,13 +15,13 @@ use reth_evm_ethereum::RethReceiptBuilder;
 use reth_execution_cache::{CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider};
 use reth_payload_builder::EthBuiltPayload;
 use reth_payload_builder_primitives::PayloadBuilderError;
-use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_primitives_traits::SealedBlock;
 use reth_provider::{BlockReader, ChainSpecProvider, StateProviderFactory};
 use reth_revm::{database::StateProviderDatabase, db::State};
 use tracing::{debug, warn};
 
 use alethia_reth_block::{
-    assembler::TaikoBlockAssembler,
+    assembler::{TaikoBlockAssembler, etna_header_length_bound},
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
     tx_selection::{ZkOverflowMemory, selection_state_seed},
@@ -204,52 +201,6 @@ fn next_block_env_attributes(
     }
 }
 
-/// Returns an upper bound on the RLP length of every header an Etna build of this job can seal.
-///
-/// The header is sealed only after execution, so the transaction byte budget is derived from
-/// this bound instead. It is the length of a header template built the way
-/// [`TaikoBlockAssembler`] builds an Etna header:
-/// - The fields taken from the job are exact: the parent hash, beneficiary, block number
-///   (`parent.number + 1`), gas limit, timestamp, extraData, mixHash and base fee come from the
-///   same parent and attributes as the block environment, and the ommers hash, nonce and
-///   withdrawals root are constants.
-/// - The fields known only after execution are fixed-size or bounded: the state, transactions and
-///   receipts roots are always 32 bytes and the logs bloom always 256 bytes, whatever their value;
-///   `gasUsed` never exceeds the gas limit, because the executor rejects a transaction whose gas
-///   limit exceeds the block's remaining gas; and the difficulty carries the block's zk gas, a
-///   `u64`, so `u64::MAX` bounds it. An RLP integer never gets shorter as it grows.
-/// - Every optional field an Etna header carries is present (blob gas used and excess blob gas, the
-///   beacon root, the requests hash); a header without one of them is only shorter. The block
-///   access list hash and slot number stay absent, as the assembler leaves them.
-fn etna_header_reserve(parent: &SealedHeader, attributes: &TaikoPayloadBuilderAttributes) -> usize {
-    Header {
-        parent_hash: parent.hash(),
-        ommers_hash: EMPTY_OMMER_ROOT_HASH,
-        beneficiary: attributes.beneficiary,
-        state_root: B256::ZERO,
-        transactions_root: B256::ZERO,
-        receipts_root: B256::ZERO,
-        logs_bloom: Bloom::ZERO,
-        difficulty: U256::from(u64::MAX),
-        number: parent.number + 1,
-        gas_limit: attributes.gas_limit,
-        gas_used: attributes.gas_limit,
-        timestamp: attributes.timestamp(),
-        extra_data: attributes.extra_data.clone(),
-        mix_hash: attributes.mix_hash,
-        nonce: BEACON_NONCE.into(),
-        base_fee_per_gas: Some(attributes.base_fee_per_gas),
-        withdrawals_root: Some(EMPTY_WITHDRAWALS),
-        blob_gas_used: Some(0),
-        excess_blob_gas: Some(0),
-        parent_beacon_block_root: Some(attributes.parent_beacon_block_root.unwrap_or_default()),
-        requests_hash: Some(EMPTY_REQUESTS_HASH),
-        block_access_list_hash: None,
-        slot_number: None,
-    }
-    .length()
-}
-
 /// Returns the transaction byte budget of an Etna build: the largest summed block-body length of
 /// its transactions whose executionBlock, with a `header_reserve`-byte header, still fits in
 /// `max_block_bytes`.
@@ -283,15 +234,18 @@ fn etna_tx_bytes_budget(
 /// # Errors
 ///
 /// An internal error whose text contains `maxBlockBytes` and names the actual and the maximum
-/// length.
+/// length and the header's length, so a header reserve shortfall can be told apart from a budget
+/// that was never applied.
 fn ensure_within_max_block_bytes(
     block: &SealedBlock<Block>,
     max_block_bytes: u64,
 ) -> Result<(), PayloadBuilderError> {
     let len = execution_block_length(block.header(), &block.body().transactions);
     if len as u64 > max_block_bytes {
+        let header_len = block.header().length();
         return Err(PayloadBuilderError::Internal(RethError::msg(format!(
-            "built Etna executionBlock is {len} bytes, above maxBlockBytes {max_block_bytes}"
+            "built Etna executionBlock is {len} bytes ({header_len}-byte header), above \
+             maxBlockBytes {max_block_bytes}"
         ))));
     }
     Ok(())
@@ -349,10 +303,14 @@ where
         chain_spec.is_etna_active(attributes.timestamp()),
         "maxBlockBytes must be present exactly on Etna jobs"
     );
+    let env_attributes = next_block_env_attributes(&attributes);
     let tx_bytes_budget = attributes
         .max_block_bytes
         .map(|max_block_bytes| {
-            etna_tx_bytes_budget(etna_header_reserve(&parent_header, &attributes), max_block_bytes)
+            etna_tx_bytes_budget(
+                etna_header_length_bound(&parent_header, &env_attributes),
+                max_block_bytes,
+            )
         })
         .transpose()?;
 
@@ -370,7 +328,6 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
-    let env_attributes = next_block_env_attributes(&attributes);
     // New-mode pool selection starts from this payload's parent and block environment.
     let block_state_seed = selection_state_seed(parent_header.hash(), &env_attributes, &[]);
     let mut builder = evm_config
@@ -619,7 +576,7 @@ mod tests {
     #[test]
     fn etna_header_reserve_bounds_a_maximal_assembled_header() {
         let (parent, attrs) = etna_job();
-        let reserve = etna_header_reserve(&parent, &attrs);
+        let reserve = etna_header_length_bound(&parent, &next_block_env_attributes(&attrs));
 
         // A real-shaped header: the job's known fields, a full block, 100M zk gas in the
         // difficulty, non-zero roots and a non-empty bloom.
@@ -663,6 +620,7 @@ mod tests {
         assert!(message.contains("maxBlockBytes"), "{message}");
         assert!(message.contains(&exact.to_string()), "{message}");
         assert!(message.contains(&(exact - 1).to_string()), "{message}");
+        assert!(message.contains(&format!("{}-byte header", block.header().length())), "{message}");
     }
 
     #[test]

@@ -3,7 +3,8 @@ use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
 use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
-use alloy_primitives::U256;
+use alloy_primitives::{B256, Bloom, U256};
+use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::{
@@ -11,10 +12,10 @@ use reth_evm::{
     execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_execution_types::BlockExecutionResult;
-use reth_primitives_traits::logs_bloom;
+use reth_primitives_traits::{SealedHeader, logs_bloom};
 use reth_revm::context::Block as _;
 
-use crate::factory::TaikoBlockExecutionCtx;
+use crate::{config::TaikoNextBlockEnvAttributes, factory::TaikoBlockExecutionCtx};
 
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 ///
@@ -98,6 +99,56 @@ where
             body: BlockBody { transactions, ommers: Default::default(), withdrawals },
         })
     }
+}
+
+/// Returns an upper bound on the RLP length of every Etna header [`TaikoBlockAssembler`] can
+/// assemble for a block built on `parent` in the environment `attributes` describes.
+///
+/// A payload builder seals the header only after execution, so it derives its transaction byte
+/// budget from this bound instead. The bound is the length of a header template built the way
+/// [`TaikoBlockAssembler::assemble_block`] builds an Etna header, so the two must change together:
+/// - The fields taken from the parent and `attributes` are exact: the parent hash, beneficiary,
+///   block number (`parent.number + 1`), gas limit, timestamp, extraData, mixHash and base fee come
+///   from the same parent and attributes as the block environment, and the ommers hash, nonce and
+///   withdrawals root are constants.
+/// - The fields known only after execution are fixed-size or bounded: the state, transactions and
+///   receipts roots are always 32 bytes and the logs bloom always 256 bytes, whatever their value;
+///   `gasUsed` never exceeds the gas limit, because the executor rejects a transaction whose gas
+///   limit exceeds the block's remaining gas; and the difficulty carries the block's zk gas, a
+///   `u64`, so `u64::MAX` bounds it. An RLP integer never gets shorter as it grows.
+/// - Every optional field an Etna header carries is present (blob gas used and excess blob gas, the
+///   beacon root, the requests hash); a header without one of them is only shorter. The block
+///   access list hash and slot number stay absent, as the assembler leaves them.
+pub fn etna_header_length_bound(
+    parent: &SealedHeader,
+    attributes: &TaikoNextBlockEnvAttributes,
+) -> usize {
+    Header {
+        parent_hash: parent.hash(),
+        ommers_hash: EMPTY_OMMER_ROOT_HASH,
+        beneficiary: attributes.suggested_fee_recipient,
+        state_root: B256::ZERO,
+        transactions_root: B256::ZERO,
+        receipts_root: B256::ZERO,
+        logs_bloom: Bloom::ZERO,
+        difficulty: U256::from(u64::MAX),
+        number: parent.number + 1,
+        gas_limit: attributes.gas_limit,
+        gas_used: attributes.gas_limit,
+        timestamp: attributes.timestamp,
+        extra_data: attributes.extra_data.clone(),
+        mix_hash: attributes.prev_randao,
+        nonce: BEACON_NONCE.into(),
+        base_fee_per_gas: Some(attributes.base_fee_per_gas),
+        withdrawals_root: Some(EMPTY_WITHDRAWALS),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+        parent_beacon_block_root: Some(attributes.parent_beacon_block_root.unwrap_or_default()),
+        requests_hash: Some(EMPTY_REQUESTS_HASH),
+        block_access_list_hash: None,
+        slot_number: None,
+    }
+    .length()
 }
 
 #[cfg(test)]

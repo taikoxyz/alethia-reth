@@ -384,17 +384,21 @@ pub fn block_metadata_timestamp_matches(attributes: &TaikoPayloadAttributes) -> 
 ///
 /// The bytes are the canonical EIP-2718 encoding (a typed transaction is its type byte followed by
 /// the payload, not wrapped in an RLP string as in the network form); trailing bytes are rejected.
+/// The returned error carries only a static message, so the underlying cause is logged at debug
+/// level.
 fn decode_forced_transaction(
     bytes: &[u8],
 ) -> Result<Recovered<TransactionSigned>, alloy_rlp::Error> {
     TransactionSigned::decode_2718_exact(bytes)
-        .map_err(|_| {
+        .map_err(|err| {
+            debug!(target: "payload_builder", %err, "forcedTransaction does not decode");
             alloy_rlp::Error::Custom(
                 "Etna payload forcedTransaction must be exactly one EIP-2718 transaction",
             )
         })?
         .try_into_recovered()
-        .map_err(|_| {
+        .map_err(|err| {
+            debug!(target: "payload_builder", %err, "forcedTransaction signer does not recover");
             alloy_rlp::Error::Custom("Etna payload forcedTransaction signer is not recoverable")
         })
 }

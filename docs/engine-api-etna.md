@@ -169,7 +169,7 @@ internal payload ranking still uses actual fees.
 | An Etna FCUv3 build that fails on a parent whose state is pruned | JSON-RPC `-38100` (`cannot build on parent`; `data` is diagnostic text) |
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
-| An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID` and the head stays; with attributes, a build on that ancestor (never `-38006`) |
+| An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays, unless the node runs with `--engine.allow-unwind-canonical-header`, which moves it back to that ancestor; with attributes, also a build on that ancestor (never `-38006`) |
 | A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before

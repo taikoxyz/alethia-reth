@@ -4,7 +4,8 @@
 //! digest of the execution state it ran against: the block environment from
 //! [`selection_state_seed`], advanced by [`advance_selection_state`] for every transaction
 //! committed before it. A later pass that reaches the same digest skips the transaction without
-//! executing it again. A different digest means the transaction may now fit, so it can run again.
+//! executing it again. A different digest means the transaction may now fit, so it runs again,
+//! but only while the selection call's re-run allowance lasts; past it, the transaction is skipped.
 //!
 //! An entry is removed only when its transaction leaves the pool ([`ZkOverflowMemory::retain`])
 //! or later executes within the budget ([`ZkOverflowMemory::forget`]), so pruning against the
@@ -96,10 +97,6 @@ pub fn advance_selection_state(state: B256, tx: TxHash) -> B256 {
 
 /// Error raised when a transaction overflows the block zk gas budget.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "constructed once transaction selection skips zk gas overflows")
-)]
 pub(crate) struct ZkGasBudgetExceeded;
 
 impl Display for ZkGasBudgetExceeded {

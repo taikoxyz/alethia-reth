@@ -5,7 +5,7 @@ use std::sync::Arc;
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{B256, Bytes, U256};
 use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth::{
@@ -35,7 +35,7 @@ use alethia_reth_block::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
     tx_selection::{
-        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
+        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
         select_and_execute_pool_transactions,
     },
 };
@@ -390,9 +390,16 @@ where
             max_lists: max_transactions_lists as usize,
             min_tip,
             locals: locals.unwrap_or_default(),
+            state_seed: B256::ZERO,
         };
 
-        match select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false) {
+        match select_and_execute_pool_transactions(
+            &mut builder,
+            &self.pool,
+            &config,
+            &ZkOverflowMemory::default(),
+            || false,
+        ) {
             Ok(SelectionOutcome::Completed(lists)) => {
                 // Convert ExecutedTxList to PreBuiltTxList with RPC transactions
                 lists

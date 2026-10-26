@@ -2,6 +2,7 @@
 
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
+use alloy_primitives::B256;
 use reth::{
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{cancelled::CancelOnDrop, primitives::U256},
@@ -17,9 +18,9 @@ use reth_primitives_traits::{Header as RethHeader, NodePrimitives, Recovered};
 use tracing::{debug, trace, warn};
 
 use alethia_reth_block::{
-    executor::is_zk_gas_limit_exceeded,
+    executor::{TxSelectionExecutor, is_zk_gas_limit_exceeded},
     tx_selection::{
-        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
+        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
         select_and_execute_pool_transactions,
     },
 };
@@ -117,7 +118,7 @@ pub(super) fn execute_provided_transactions(
 /// Executes new-mode transactions: injects the anchor transaction, then pulls
 /// from the mempool until exhaustion or cancellation.
 pub(super) fn execute_anchor_and_pool_transactions<Client, Pool>(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
+    builder: &mut impl BlockBuilder<Primitives = EthPrimitives, Executor: TxSelectionExecutor>,
     pool: &Pool,
     client: &Client,
     ctx: &PoolExecutionContext<'_>,
@@ -177,9 +178,16 @@ where
         max_lists: 1,
         min_tip: 0,
         locals: vec![],
+        state_seed: B256::ZERO,
     };
 
-    match select_and_execute_pool_transactions(builder, pool, &config, || cancel.is_cancelled()) {
+    match select_and_execute_pool_transactions(
+        builder,
+        pool,
+        &config,
+        &ZkOverflowMemory::default(),
+        || cancel.is_cancelled(),
+    ) {
         Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
         Ok(SelectionOutcome::Completed(lists)) => {
             // Calculate total fees from the executed transactions.

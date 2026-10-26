@@ -40,9 +40,10 @@ use alethia_reth_chainspec::{
     hardfork::{TaikoHardfork, TaikoHardforks},
     spec::TaikoChainSpec,
 };
-use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+use alethia_reth_evm::{env::TaikoBlockEnv, factory::TaikoEvmFactory, spec::TaikoSpecId};
 #[cfg(feature = "net")]
 use alethia_reth_primitives::engine::types::TaikoExecutionData;
+use alethia_reth_primitives::{ETNA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg};
 
 /// Error when base fee is missing from a block header.
 #[derive(Debug)]
@@ -75,6 +76,26 @@ impl std::fmt::Display for MissingUnzenHeaderDifficulty {
 }
 
 impl std::error::Error for MissingUnzenHeaderDifficulty {}
+
+/// Carries an Etna header's base-fee share into the EVM environment, so replay paths that rebuild
+/// the EVM from this environment keep fee sharing.
+///
+/// Only a 13-byte Etna `extraData` yields an authoritative percentage; any other length (the exempt
+/// genesis or a malformed header) leaves it unset. This never fails: consensus and the block
+/// executor reject malformed Etna headers, and an error here would pre-empt the consensus rejection
+/// on engine-tree import paths.
+fn with_taiko_fee_context(
+    block_env: BlockEnv,
+    spec: TaikoSpecId,
+    extra_data: &[u8],
+) -> TaikoBlockEnv {
+    let block_env = TaikoBlockEnv::from(block_env);
+    if spec.is_enabled_in(TaikoSpecId::ETNA) && extra_data.len() == ETNA_EXTRA_DATA_LEN {
+        let percentage = u64::from(decode_shasta_basefee_sharing_pctg(extra_data));
+        return block_env.with_base_fee_share_pctg(percentage)
+    }
+    block_env
+}
 
 /// A complete configuration of EVM for Taiko network.
 #[derive(Debug, Clone)]
@@ -128,7 +149,8 @@ fn taiko_blob_excess_gas_and_price(spec: TaikoSpecId) -> Option<BlobExcessGasAnd
 ///
 /// Unzen activates Cancun semantics, which require a parent beacon block root for block execution.
 /// Imported payloads can supply an explicit value, but local next-block building falls back to the
-/// zero root when Unzen is active.
+/// zero root when Unzen is active. Etna's non-zero root rule is enforced by consensus and by block
+/// execution (`TaikoBlockExecutor::apply_pre_execution_changes`), not here.
 fn normalize_parent_beacon_block_root(
     is_unzen_active: bool,
     parent_beacon_block_root: Option<B256>,
@@ -191,6 +213,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             slot_num: 0,
         };
 
+        let block_env = with_taiko_fee_context(block_env, spec, &header.extra_data);
         Ok(EvmEnv { cfg_env, block_env })
     }
 
@@ -229,6 +252,7 @@ impl ConfigureEvm for TaikoEvmConfig {
             slot_num: 0,
         };
 
+        let block_env = with_taiko_fee_context(block_env, spec, &attributes.extra_data);
         Ok((cfg, block_env).into())
     }
 
@@ -257,6 +281,9 @@ impl ConfigureEvm for TaikoEvmConfig {
 
     /// Returns the configured [`BlockExecutorFactory::ExecutionCtx`] for `parent + 1`
     /// block.
+    ///
+    /// The Etna non-zero root is enforced when the block executor applies pre-execution changes,
+    /// so simulations that never run them, such as tx-pool preselection, can use this context.
     fn context_for_next_block(
         &self,
         parent: &SealedHeader,
@@ -319,6 +346,8 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             slot_num: 0,
         };
 
+        let block_env =
+            with_taiko_fee_context(block_env, spec, &payload.execution_payload.extra_data);
         Ok((cfg_env, block_env).into())
     }
 
@@ -328,6 +357,7 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
         payload: &'a TaikoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let is_unzen_active = self.chain_spec().is_unzen_active(payload.timestamp());
+        let is_etna_active = self.chain_spec().is_etna_active(payload.timestamp());
         // Unzen commits the finalized block zk gas into the header difficulty, so payload
         // execution must validate it against the sidecar value the same way block re-execution
         // does. Requiring the sidecar value keeps `engine_newPayload` fail-closed instead of
@@ -343,7 +373,9 @@ impl ConfigureEngineEvm<TaikoExecutionData> for TaikoEvmConfig {
             parent_hash: payload.parent_hash(),
             parent_beacon_block_root: normalize_parent_beacon_block_root(
                 is_unzen_active,
-                payload.parent_beacon_block_root(),
+                // Etna executes the sidecar root. Legacy conversion commits the Unzen zero root,
+                // independently of sidecar data.
+                if is_etna_active { payload.parent_beacon_block_root() } else { None },
             ),
             ommers: &[],
             withdrawals: payload.withdrawals().map(|w| Cow::Owned(w.clone().into())),
@@ -408,7 +440,9 @@ pub fn taiko_spec_by_timestamp_and_block_number<C>(
 where
     C: EthereumHardforks + EthChainSpec + Hardforks,
 {
-    if chain_spec.fork(TaikoHardfork::Unzen).active_at_timestamp(timestamp) {
+    if chain_spec.fork(TaikoHardfork::Etna).active_at_timestamp(timestamp) {
+        TaikoSpecId::ETNA
+    } else if chain_spec.fork(TaikoHardfork::Unzen).active_at_timestamp(timestamp) {
         TaikoSpecId::UNZEN
     } else if chain_spec.fork(TaikoHardfork::Shasta).active_at_timestamp(timestamp) {
         // London is on from genesis for Taiko, so Shasta reduces to the timestamp activation.
@@ -463,6 +497,43 @@ mod tests {
         TaikoEvmConfig::new(Arc::new(chain_spec))
     }
 
+    fn config_with_etna_at(timestamp: u64) -> TaikoEvmConfig {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
+        TaikoEvmConfig::new(Arc::new(chain_spec))
+    }
+
+    fn etna_header(percentage: u8) -> Header {
+        Header {
+            number: 1,
+            timestamp: 1,
+            gas_limit: 30_000_000,
+            beneficiary: Address::with_last_byte(0xBB),
+            base_fee_per_gas: Some(10_000_000),
+            extra_data: vec![percentage, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1].into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn etna_header_environment_carries_fee_percentage_without_length_check() {
+        let config = config_with_etna_at(0);
+        let mut header = etna_header(25);
+        assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(25));
+        assert_eq!(
+            config_with_etna_at(100).evm_env(&header).unwrap().block_env.base_fee_share_pctg,
+            None
+        );
+        header.extra_data = vec![0; 13].into();
+        assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(0));
+        // A malformed Etna header still builds an environment; consensus rejects it instead.
+        header.extra_data = vec![25, 0, 0, 0, 0, 0, 1].into();
+        assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, None);
+        let genesis_env = config.evm_env(config.chain_spec().genesis_header()).unwrap();
+        assert_eq!(genesis_env.cfg_env.spec, TaikoSpecId::ETNA);
+        assert_eq!(genesis_env.block_env.base_fee_share_pctg, None);
+    }
+
     #[test]
     fn unzen_takes_precedence_over_shasta() {
         let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
@@ -471,6 +542,16 @@ mod tests {
 
         let selected = taiko_spec_by_timestamp_and_block_number(&chain_spec, 0, 1);
         assert_eq!(selected, TaikoSpecId::UNZEN);
+    }
+
+    #[test]
+    fn etna_takes_precedence_over_unzen() {
+        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
+        chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(10));
+
+        assert_eq!(taiko_spec_by_timestamp_and_block_number(&chain_spec, 9, 1), TaikoSpecId::UNZEN);
+        assert_eq!(taiko_spec_by_timestamp_and_block_number(&chain_spec, 10, 1), TaikoSpecId::ETNA);
     }
 
     #[test]
@@ -546,7 +627,7 @@ mod tests {
     mod payload_ctx {
         use super::*;
         use alethia_reth_primitives::engine::types::{
-            TaikoExecutionDataSidecar, TaikoExecutionPayloadV1,
+            TaikoExecutionDataSidecar, TaikoExecutionPayloadV1, TaikoOsakaPayloadFields,
         };
         use alloy_primitives::Bloom;
 
@@ -575,7 +656,37 @@ mod tests {
                     taiko_block: Some(true),
                     block_access_list: None,
                     slot_number: None,
+                    osaka: None,
                 },
+            }
+        }
+
+        fn osaka_fields(parent_beacon_block_root: B256) -> TaikoOsakaPayloadFields {
+            TaikoOsakaPayloadFields {
+                parent_beacon_block_root,
+                withdrawals: vec![],
+                blob_gas_used: 0,
+                excess_blob_gas: 0,
+                expected_blob_versioned_hashes: vec![],
+                execution_requests: vec![],
+            }
+        }
+
+        #[test]
+        fn payload_root_follows_etna_activation_without_changing_legacy_execution() {
+            let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+            spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
+            spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
+            let config = TaikoEvmConfig::new(Arc::new(spec));
+            let root = B256::with_last_byte(7);
+            let mut payload = sample_payload(Some(U256::ZERO));
+            payload.taiko_sidecar.osaka = Some(osaka_fields(root));
+            for (timestamp, expected) in
+                [(49, None), (50, Some(B256::ZERO)), (99, Some(B256::ZERO)), (100, Some(root))]
+            {
+                payload.execution_payload.timestamp = timestamp;
+                let context = config.context_for_payload(&payload).unwrap();
+                assert_eq!(context.parent_beacon_block_root, expected, "timestamp {timestamp}");
             }
         }
 

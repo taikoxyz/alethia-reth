@@ -2,13 +2,14 @@
 use std::{io, sync::Arc};
 
 use alethia_reth_primitives::{
-    decode_shasta_proposal_id, engine::types::TaikoExecutionData,
+    decode_shasta_proposal_id,
+    engine::{osaka::TaikoExecutionPayloadV3, types::TaikoExecutionData},
     payload::attributes::TaikoPayloadAttributes,
 };
 use alloy_hardforks::EthereumHardforks;
-use alloy_primitives::BlockNumber;
+use alloy_primitives::{B256, BlockNumber, Bytes};
 use alloy_rpc_types_engine::{
-    ExecutionPayloadEnvelopeV2, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
+    ExecutionPayloadEnvelopeV5, ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus,
 };
 use async_trait::async_trait;
 use jsonrpsee::{RpcModule, proc_macros::rpc};
@@ -21,8 +22,11 @@ use reth_db::transaction::DbTx;
 use reth_db_api::transaction::DbTxMut;
 use reth_engine_primitives::EngineApiValidator;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{EngineTypes, PayloadBuilderError, PayloadTypes};
-use reth_payload_primitives::PayloadKind;
+use reth_node_api::{EngineTypes, PayloadTypes};
+use reth_payload_primitives::{
+    EngineApiMessageVersion, EngineObjectValidationError, MessageValidationKind, PayloadKind,
+    validate_payload_timestamp,
+};
 use reth_provider::{
     BalProvider, BlockReader, DBProvider, DatabaseProviderFactory, HeaderProvider,
     StateProviderFactory,
@@ -40,7 +44,7 @@ use alethia_reth_db::model::{
 ///
 /// Per the Engine API spec, `engine_exchangeCapabilities` itself is served but never listed.
 pub const TAIKO_ENGINE_CAPABILITIES: &[&str] =
-    &["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"];
+    &["engine_forkchoiceUpdatedV3", "engine_getPayloadV5", "engine_newPayloadV4"];
 
 /// Returns the Engine API capabilities advertised by the Taiko engine endpoint.
 pub fn taiko_engine_capabilities() -> EngineCapabilities {
@@ -54,24 +58,30 @@ pub fn taiko_engine_capabilities() -> EngineCapabilities {
 #[cfg_attr(not(feature = "client"), rpc(server, namespace = "engine"), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned))]
 #[cfg_attr(feature = "client", rpc(server, client, namespace = "engine", client_bounds(Engine::PayloadAttributes: jsonrpsee::core::Serialize + Clone), server_bounds(Engine::PayloadAttributes: jsonrpsee::core::DeserializeOwned)))]
 pub trait TaikoEngineApi<Engine: EngineTypes> {
-    /// Submit a new execution payload and return validation status.
-    #[method(name = "newPayloadV2")]
-    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus>;
+    /// Submit an Osaka payload with the standard V4 side parameters.
+    #[method(name = "newPayloadV4")]
+    async fn new_payload_v4(
+        &self,
+        payload: TaikoExecutionPayloadV3,
+        expected_blob_versioned_hashes: Vec<B256>,
+        parent_beacon_block_root: B256,
+        execution_requests: Vec<Bytes>,
+    ) -> RpcResult<PayloadStatus>;
 
     /// Update fork choice and optionally start payload building.
-    #[method(name = "forkchoiceUpdatedV2")]
-    async fn fork_choice_updated_v2(
+    #[method(name = "forkchoiceUpdatedV3")]
+    async fn fork_choice_updated_v3(
         &self,
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<Engine::PayloadAttributes>,
     ) -> RpcResult<ForkchoiceUpdated>;
 
-    /// Fetch a previously built payload by ID.
-    #[method(name = "getPayloadV2")]
-    async fn get_payload_v2(
+    /// Fetch a previously built payload in an Osaka envelope.
+    #[method(name = "getPayloadV5")]
+    async fn get_payload_v5(
         &self,
         payload_id: PayloadId,
-    ) -> RpcResult<Engine::ExecutionPayloadEnvelopeV2>;
+    ) -> RpcResult<Engine::ExecutionPayloadEnvelopeV5>;
 
     /// Exchange the list of supported Engine API methods with the connected driver.
     #[method(name = "exchangeCapabilities")]
@@ -84,7 +94,7 @@ pub struct TaikoEngineApi<Provider, PayloadT: PayloadTypes, Pool, Validator, Cha
     inner: EngineApi<Provider, PayloadT, Pool, Validator, ChainSpec>,
     /// Provider used for DB reads/writes during L1-origin persistence.
     provider: Provider,
-    /// Taiko chain spec used to detect Unzen payloads when preparing `getPayloadV2` responses.
+    /// Taiko chain spec used to decode Shasta proposal IDs and check Osaka payload timestamps.
     chain_spec: Arc<TaikoChainSpec>,
     /// Payload store used to resolve built payloads by payload ID.
     payload_store: PayloadStore<PayloadT>,
@@ -131,7 +141,7 @@ where
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
             BuiltPayload = EthBuiltPayload,
-            ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
+            ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5,
         >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
@@ -145,19 +155,7 @@ where
         EngineApiError::Internal(Box::new(err))
     }
 
-    /// Converts a built payload into the standard V2 envelope, preserving the builder fee unless
-    /// Unzen requires the hash-relevant header difficulty to be carried through `blockValue`.
-    fn convert_built_payload_to_execution_payload_envelope_v2(
-        &self,
-        built_payload: EthBuiltPayload,
-    ) -> ExecutionPayloadEnvelopeV2 {
-        convert_built_payload_to_execution_payload_envelope_v2(
-            self.chain_spec.as_ref(),
-            built_payload,
-        )
-    }
-
-    /// Waits for a built payload to appear in the payload store; maps absence to `MissingPayload`.
+    /// Resolves a stored payload, preserving builder errors and reporting unknown IDs distinctly.
     async fn wait_for_built_payload(
         &self,
         payload_id: PayloadId,
@@ -165,7 +163,8 @@ where
         // Leverage the payload builder's own resolution path instead of manual polling.
         match self.payload_store.resolve_kind(payload_id, PayloadKind::WaitForPending).await {
             Some(Ok(payload)) => Ok(payload),
-            _ => Err(EngineApiError::GetPayloadError(PayloadBuilderError::MissingPayload)),
+            Some(Err(error)) => Err(EngineApiError::GetPayloadError(error)),
+            None => Err(EngineApiError::UnknownPayload),
         }
     }
 
@@ -214,19 +213,16 @@ where
             ExecutionData = TaikoExecutionData,
             PayloadAttributes = TaikoPayloadAttributes,
             BuiltPayload = EthBuiltPayload,
-            ExecutionPayloadEnvelopeV2 = ExecutionPayloadEnvelopeV2,
+            ExecutionPayloadEnvelopeV5 = ExecutionPayloadEnvelopeV5,
         >,
     Pool: TransactionPool + 'static,
     Validator: EngineApiValidator<EngineT>,
     ChainSpec: EthereumHardforks + Send + Sync + 'static,
 {
-    /// Creates a new execution payload with the given execution data.
-    async fn new_payload_v2(&self, payload: TaikoExecutionData) -> RpcResult<PayloadStatus> {
-        self.inner.new_payload_v2(payload).await.map_err(|e| e.into())
-    }
-
-    /// Updates the fork choice with the given state and payload attributes.
-    async fn fork_choice_updated_v2(
+    /// Updates fork choice and, when attributes start a build, atomically persists its L1
+    /// origin. Null attributes still reach normal forkchoice validation, and non-VALID outcomes
+    /// return their status without publishing origin or proposal metadata.
+    async fn fork_choice_updated_v3(
         &self,
         fork_choice_state: ForkchoiceState,
         payload_attributes: Option<EngineT::PayloadAttributes>,
@@ -248,35 +244,67 @@ where
         };
 
         let status =
-            self.inner.fork_choice_updated_v2(fork_choice_state, payload_attributes).await?;
+            self.inner.fork_choice_updated_v3(fork_choice_state, payload_attributes).await?;
+
+        // Non-VALID forkchoice outcomes do not start a build and therefore carry no ID.
+        // Preserve the upstream status without publishing origin/proposal metadata.
+        if !status.payload_status.status.is_valid() {
+            return Ok(status);
+        }
 
         if let Some(mut stored_l1_origin) = stored_l1_origin {
             let payload_id = status
                 .payload_id
                 .ok_or_else(|| Self::internal_error(io::Error::other("missing payload id")))?;
 
-            let built_payload = self
-                .wait_for_built_payload(payload_id)
-                .await
-                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+            let built_payload =
+                self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
 
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
             self.persist_l1_origin(stored_l1_origin, is_preconf_block, batch_id)
-                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
+                .map_err(ErrorObjectOwned::from)?;
         }
 
         Ok(status)
     }
 
-    /// Retrieves the execution payload by its ID.
-    async fn get_payload_v2(
+    /// Normalizes all four wire arguments before forwarding the internal data to Reth.
+    async fn new_payload_v4(
+        &self,
+        payload: TaikoExecutionPayloadV3,
+        expected_blob_versioned_hashes: Vec<B256>,
+        parent_beacon_block_root: B256,
+        execution_requests: Vec<Bytes>,
+    ) -> RpcResult<PayloadStatus> {
+        let data = payload
+            .into_execution_data(
+                expected_blob_versioned_hashes,
+                parent_beacon_block_root,
+                execution_requests,
+            )
+            .map_err(|error| {
+                EngineApiError::from(EngineObjectValidationError::InvalidParams(Box::new(error)))
+            })?;
+        self.inner.new_payload_v4(data).await.map_err(Into::into)
+    }
+
+    /// Resolves the stored job, checks that its own timestamp falls within Osaka, and converts
+    /// the RPC envelope.
+    async fn get_payload_v5(
         &self,
         payload_id: PayloadId,
-    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV2> {
+    ) -> RpcResult<EngineT::ExecutionPayloadEnvelopeV5> {
         let built_payload =
             self.wait_for_built_payload(payload_id).await.map_err(ErrorObjectOwned::from)?;
-        Ok(self.convert_built_payload_to_execution_payload_envelope_v2(built_payload))
+        validate_payload_timestamp(
+            self.chain_spec.as_ref(),
+            EngineApiMessageVersion::V5,
+            built_payload.block().timestamp,
+            MessageValidationKind::GetPayload,
+        )
+        .map_err(EngineApiError::from)?;
+        convert_built_payload_to_execution_payload_envelope_v5(built_payload).map_err(Into::into)
     }
 
     /// Exchanges supported Engine API methods with the driver, returning this node's list.
@@ -300,96 +328,474 @@ where
     }
 }
 
-/// Converts a built payload into the standard V2 execution payload envelope.
-///
-/// Unzen reuses `blockValue` to transport the hash-relevant header difficulty through the standard
-/// `getPayloadV2` response shape without adding a new wire field.
-fn convert_built_payload_to_execution_payload_envelope_v2(
-    chain_spec: &TaikoChainSpec,
+/// Converts an Osaka payload while exposing finalized zk-gas as blockValue and preserving fees
+/// in the builder's stored payload. Unsupported sidecar conversions propagate without panicking.
+fn convert_built_payload_to_execution_payload_envelope_v5(
     built_payload: EthBuiltPayload,
-) -> ExecutionPayloadEnvelopeV2 {
-    let block = built_payload.block();
-    let is_unzen_active = chain_spec.is_unzen_active(block.header().timestamp);
-    let header_difficulty = block.header().difficulty;
-    let mut envelope = ExecutionPayloadEnvelopeV2::from(built_payload);
-
-    if is_unzen_active {
-        // Consensus rule: Taiko Unzen round-trips the header difficulty through `blockValue` so
-        // the RPC response can carry the hash-relevant field without introducing a new wire field.
-        envelope.block_value = header_difficulty;
-    }
-
-    envelope
+) -> Result<ExecutionPayloadEnvelopeV5, EngineApiError> {
+    let difficulty = built_payload.block().difficulty;
+    let mut envelope =
+        built_payload.try_into_v5().map_err(|error| EngineApiError::Internal(Box::new(error)))?;
+    envelope.block_value = difficulty;
+    Ok(envelope)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reth_node_api::PayloadBuilderError;
 
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
     use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
     use alloy_eips::merge::BEACON_NONCE;
-    use alloy_hardforks::ForkCondition;
+    use alloy_hardforks::{EthereumHardfork, ForkCondition};
     use alloy_primitives::{Address, B256, Bytes, U256};
     use std::sync::Arc;
 
-    #[test]
-    fn engine_capabilities_advertise_exactly_the_served_methods() {
+    fn rpc_fixture() -> (
+        RpcModule<()>,
+        reth_provider::ProviderFactory<reth_provider::test_utils::MockNodeTypesWithDB>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use alethia_reth_primitives::engine::TaikoEngineTypes;
+        use alloy_rpc_types_engine::{ClientCode, ClientVersionV1, PayloadStatusEnum};
+        use reth::payload::{PayloadBuilderHandle, PayloadServiceCommand};
+        use reth_engine_primitives::{
+            BeaconEngineMessage, ConsensusEngineHandle, OnForkChoiceUpdated,
+        };
+        let provider = crate::eth::auth::tests::create_taiko_test_provider_factory();
+        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
+        // Unzen and the Cancun, Prague, and Osaka rules it implies start at 50, so timestamp 49
+        // is pre-Unzen. Those Ethereum forks are derived from Unzen only when a spec is built, so
+        // the fixture moves all four.
+        for fork in [EthereumHardfork::Cancun, EthereumHardfork::Prague, EthereumHardfork::Osaka] {
+            spec.inner.hardforks.insert(fork, ForkCondition::Timestamp(50));
+        }
+        spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(50));
+        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
+        spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Timestamp(0));
+        let spec = Arc::new(spec);
+        let api_spec = spec.clone();
+        let (payload_tx, mut payload_rx) =
+            tokio::sync::mpsc::unbounded_channel::<PayloadServiceCommand<TaikoEngineTypes>>();
+        // The store adapter supplies deterministic already-built jobs. Real RPC handling,
+        // normalization and database transactions are exercised around the adapter.
+        tokio::spawn(async move {
+            while let Some(command) = payload_rx.recv().await {
+                match command {
+                    PayloadServiceCommand::Resolve(id, _, tx) => {
+                        let timestamp = [49_u8, 99, 100]
+                            .into_iter()
+                            .find(|timestamp| id == PayloadId::new([*timestamp; 8]))
+                            .map(u64::from);
+                        let future = timestamp.map(|timestamp| {
+                            let mut block = sample_unzen_block(U256::from(7), timestamp);
+                            block.header.blob_gas_used = Some(0);
+                            block.header.excess_blob_gas = Some(0);
+                            block.header.requests_hash =
+                                Some(alloy_eips::eip7685::EMPTY_REQUESTS_HASH);
+                            if timestamp == 100 {
+                                block.header.parent_beacon_block_root =
+                                    Some(B256::with_last_byte(42));
+                            }
+                            let built = EthBuiltPayload::new(
+                                Arc::new(reth_primitives_traits::RecoveredBlock::new_unhashed(
+                                    block,
+                                    vec![],
+                                )),
+                                U256::from(999),
+                                None,
+                                None,
+                            );
+                            Box::pin(async move { Ok(built) })
+                                as std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = Result<
+                                                    EthBuiltPayload,
+                                                    PayloadBuilderError,
+                                                >,
+                                            > + Send,
+                                    >,
+                                >
+                        });
+                        tx.send(future).ok();
+                    }
+                    _ => panic!("unexpected payload service operation"),
+                }
+            }
+        });
+        let payload_handle = PayloadBuilderHandle::new(payload_tx);
+        let store = PayloadStore::new(payload_handle.clone());
+        let (engine_tx, mut engine_rx) =
+            tokio::sync::mpsc::unbounded_channel::<BeaconEngineMessage<TaikoEngineTypes>>();
+        let jobs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let jobs_clone = jobs.clone();
+        tokio::spawn(async move {
+            while let Some(message) = engine_rx.recv().await {
+                match message {
+                    BeaconEngineMessage::ForkchoiceUpdated { state, payload_attrs, tx } => {
+                        let status = PayloadStatus::from_status(PayloadStatusEnum::Valid);
+                        let response = if state.head_block_hash.is_zero() {
+                            OnForkChoiceUpdated::invalid_state()
+                        } else if state.head_block_hash == B256::with_last_byte(200) {
+                            OnForkChoiceUpdated::valid(PayloadStatus::from_status(
+                                PayloadStatusEnum::Syncing,
+                            ))
+                        } else if state.head_block_hash == B256::with_last_byte(201) {
+                            OnForkChoiceUpdated::valid(PayloadStatus::from_status(
+                                PayloadStatusEnum::Invalid {
+                                    validation_error: "invalid ancestor".into(),
+                                },
+                            ))
+                        } else if state.head_block_hash == B256::with_last_byte(202) {
+                            OnForkChoiceUpdated::valid(status)
+                        } else if let Some(attrs) = payload_attrs {
+                            jobs_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let (id_tx, id_rx) = tokio::sync::oneshot::channel();
+                            id_tx
+                                .send(Ok(PayloadId::new(
+                                    [attrs.payload_attributes.timestamp as u8; 8],
+                                )))
+                                .unwrap();
+                            OnForkChoiceUpdated::updated_with_pending_payload_id(status, id_rx)
+                        } else {
+                            OnForkChoiceUpdated::valid(status)
+                        };
+                        tx.send(Ok(response)).ok();
+                    }
+                    BeaconEngineMessage::NewPayload { payload, tx } => {
+                        let result = <crate::engine::validator::TaikoEngineValidator as reth_node_api::PayloadValidator<TaikoEngineTypes>>::convert_payload_to_block(
+                            &crate::engine::validator::TaikoEngineValidator::new(spec.clone()), payload,
+                        );
+                        let status = match result {
+                            Ok(_) => PayloadStatusEnum::Valid,
+                            Err(err) => {
+                                PayloadStatusEnum::Invalid { validation_error: err.to_string() }
+                            }
+                        };
+                        tx.send(Ok(PayloadStatus::from_status(status))).ok();
+                    }
+                    _ => panic!("unexpected engine operation"),
+                }
+            }
+        });
+        let blockchain = reth_provider::providers::BlockchainProvider::with_latest(
+            provider.clone(),
+            reth_primitives_traits::SealedHeader::seal_slow(Header::default()),
+        )
+        .unwrap();
+        let inner = EngineApi::new(
+            blockchain.clone(),
+            api_spec.clone(),
+            ConsensusEngineHandle::new(engine_tx),
+            PayloadStore::new(payload_handle),
+            reth::transaction_pool::noop::NoopTransactionPool::default(),
+            reth::tasks::Runtime::test(),
+            ClientVersionV1 {
+                code: ClientCode::RH,
+                name: "test".into(),
+                version: "test".into(),
+                commit: "test".into(),
+            },
+            taiko_engine_capabilities(),
+            crate::engine::validator::TaikoEngineValidator::new(api_spec.clone()),
+            false,
+            reth::network::noop::NoopNetwork::default(),
+        );
+        (TaikoEngineApi::new(inner, blockchain, api_spec, store).into_rpc_module(), provider, jobs)
+    }
+
+    async fn rpc_call(
+        module: &RpcModule<()>,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let request =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                .to_string();
+        let (response, _) = module.raw_json_request(&request, 1).await.unwrap();
+        serde_json::from_str(response.get()).unwrap()
+    }
+
+    fn fcu_state(head: u8) -> ForkchoiceState {
+        ForkchoiceState {
+            head_block_hash: B256::with_last_byte(head),
+            safe_block_hash: B256::ZERO,
+            finalized_block_hash: B256::ZERO,
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_only_osaka_methods_and_checks_get_payload_v5_fork() {
+        let (module, _, _) = rpc_fixture();
+        let mut methods = module.method_names().collect::<Vec<_>>();
+        methods.sort();
+        assert_eq!(
+            methods,
+            vec![
+                "engine_exchangeCapabilities",
+                "engine_forkchoiceUpdatedV3",
+                "engine_getPayloadV5",
+                "engine_newPayloadV4"
+            ]
+        );
+        // Per the Engine API spec, `engine_exchangeCapabilities` itself is never listed.
         let mut capabilities = taiko_engine_capabilities().list();
         capabilities.sort();
-
-        // Exactly the methods routed by `TaikoEngineApiServer::into_rpc`; per the Engine API
-        // spec, `engine_exchangeCapabilities` itself must not be part of the list.
         assert_eq!(
             capabilities,
-            vec!["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"]
+            ["engine_forkchoiceUpdatedV3", "engine_getPayloadV5", "engine_newPayloadV4"]
         );
+        for method in ["engine_forkchoiceUpdatedV2", "engine_getPayloadV2", "engine_newPayloadV2"] {
+            let response = rpc_call(&module, method, serde_json::json!([])).await;
+            assert_eq!(response["error"]["code"], -32601, "{method}: {response}");
+        }
+        for timestamp in [49_u8, 99, 100] {
+            // The fixture head stays at timestamp 0, so a head-based fork check would fail 99/100.
+            let response = rpc_call(
+                &module,
+                "engine_getPayloadV5",
+                serde_json::json!([PayloadId::new([timestamp; 8])]),
+            )
+            .await;
+            if timestamp == 49 {
+                assert_eq!(response["error"]["code"], -38005, "{response}");
+                continue;
+            }
+            let result = &response["result"];
+            assert_eq!(result["executionPayload"]["timestamp"], format!("0x{timestamp:x}"));
+            assert_eq!(result["blockValue"], "0x7");
+            assert_eq!(result["executionPayload"]["blobGasUsed"], "0x0");
+            assert_eq!(result["executionPayload"]["excessBlobGas"], "0x0");
+            assert_eq!(result["executionPayload"]["withdrawals"], serde_json::json!([]));
+            assert_eq!(result["executionRequests"], serde_json::json!([]));
+            assert_eq!(
+                result["blobsBundle"],
+                serde_json::json!({"commitments": [], "proofs": [], "blobs": []})
+            );
+            assert_eq!(result["shouldOverrideBuilder"], false);
+        }
+        let response =
+            rpc_call(&module, "engine_getPayloadV5", serde_json::json!([PayloadId::new([0; 8])]))
+                .await;
+        assert_eq!(response["error"]["code"], -38001);
+        assert_eq!(response["error"]["message"], "Unknown payload");
     }
 
-    #[test]
-    fn unzen_payload_overwrites_block_value_with_header_difficulty() {
-        let chain_spec = unzen_chain_spec();
-        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
+    #[tokio::test]
+    async fn fcu_v3_allows_null_attributes_but_validates_forkchoice() {
+        let (module, _, jobs) = rpc_fixture();
+        let method = "engine_forkchoiceUpdatedV3";
+        let response = rpc_call(&module, method, serde_json::json!([fcu_state(1), null])).await;
+        assert_eq!(response["result"]["payloadStatus"]["status"], "VALID", "{response}");
+        let response = rpc_call(&module, method, serde_json::json!([fcu_state(0), null])).await;
+        assert_eq!(response["error"]["code"], -38002, "{response}");
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 
-        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
-            chain_spec.as_ref(),
-            built_payload,
+    fn fcu_attributes(timestamp: u64, preconf: bool) -> TaikoPayloadAttributes {
+        use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
+        TaikoPayloadAttributes {
+            payload_attributes: alloy_rpc_types_engine::PayloadAttributes {
+                timestamp,
+                prev_randao: B256::ZERO,
+                suggested_fee_recipient: Address::ZERO,
+                withdrawals: Some(vec![]),
+                parent_beacon_block_root: Some(if timestamp >= 100 {
+                    B256::with_last_byte(42)
+                } else {
+                    B256::ZERO
+                }),
+                slot_number: None,
+                target_gas_limit: None,
+            },
+            base_fee_per_gas: U256::from(1),
+            block_metadata: TaikoBlockMetadata {
+                timestamp: U256::from(timestamp),
+                gas_limit: 30_000_000,
+                extra_data: if timestamp >= 100 {
+                    Bytes::from(vec![0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 1])
+                } else {
+                    Bytes::from(vec![0, 0, 0, 0, 0, 0, 9])
+                },
+                ..Default::default()
+            },
+            l1_origin: RpcL1Origin {
+                block_id: U256::from(timestamp),
+                l2_block_hash: B256::ZERO,
+                l1_block_height: (!preconf).then_some(U256::from(1)),
+                l1_block_hash: (!preconf).then_some(B256::with_last_byte(1)),
+                build_payload_args_id: [0; 8],
+                is_forced_inclusion: false,
+                signature: [0; 65],
+            },
+            anchor_transaction: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fcu_v3_fork_checks_and_origin_persistence() {
+        for timestamp in [49, 99, 100] {
+            for preconf in [false, true] {
+                let (module, provider, jobs) = rpc_fixture();
+                let attrs = fcu_attributes(timestamp, preconf);
+                let response = rpc_call(
+                    &module,
+                    "engine_forkchoiceUpdatedV3",
+                    serde_json::json!([fcu_state(1), attrs]),
+                )
+                .await;
+                // Taiko activates Cancun, Prague, and Osaka at Unzen (50 in the fixture).
+                let valid = timestamp != 49;
+                if valid {
+                    assert!(response.get("result").is_some(), "{response}");
+                } else {
+                    assert_eq!(response["error"]["code"], -38005, "{response}");
+                }
+                assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), usize::from(valid));
+                let db = provider.provider().unwrap();
+                let origin = db.tx_ref().get::<StoredL1OriginTable>(timestamp).unwrap();
+                assert_eq!(origin.is_some(), valid);
+                if let Some(origin) = origin {
+                    assert_eq!(origin.block_id, U256::from(timestamp));
+                    assert!(!origin.l2_block_hash.is_zero());
+                }
+                assert_eq!(
+                    db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
+                    (valid && !preconf).then_some(timestamp)
+                );
+                let proposal_id = decode_shasta_proposal_id(
+                    fcu_attributes(timestamp, preconf).block_metadata.extra_data.as_ref(),
+                )
+                .unwrap();
+                assert_eq!(
+                    db.tx_ref().get::<BatchToLastBlock>(proposal_id).unwrap(),
+                    (valid && !preconf).then_some(timestamp)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nonvalid_fcu_statuses_do_not_require_payload_ids_or_write_origins() {
+        // The early return depends only on the upstream status, so one target fork suffices.
+        for (head, expected) in [(200, "SYNCING"), (201, "INVALID"), (202, "VALID")] {
+            let (module, provider, jobs) = rpc_fixture();
+            let response = rpc_call(
+                &module,
+                "engine_forkchoiceUpdatedV3",
+                serde_json::json!([fcu_state(head), fcu_attributes(100, false)]),
+            )
+            .await;
+            if expected == "VALID" {
+                assert_eq!(response["error"]["code"], -32603, "{response}");
+            } else {
+                assert_eq!(response["result"]["payloadStatus"]["status"], expected, "{response}");
+                assert!(response["result"]["payloadId"].is_null());
+            }
+            assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let db = provider.provider().unwrap();
+            assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(100).unwrap(), None);
+            assert_eq!(
+                db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
+                None
+            );
+            assert_eq!(db.tx_ref().get::<BatchToLastBlock>(9).unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_fcu_attributes_never_start_jobs_or_publish_origins() {
+        let (module, provider, jobs) = rpc_fixture();
+        // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
+        // remaining cases fail Taiko's rules (-32602). The last two target Unzen.
+        let expected =
+            [-38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003, -32602, -32602];
+        for (case, code) in expected.into_iter().enumerate() {
+            let mut attrs = fcu_attributes(100, false);
+            match case {
+                0 => attrs.payload_attributes.parent_beacon_block_root = None,
+                1 => attrs.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
+                2 => attrs.anchor_transaction = Some(Bytes::new()),
+                3 => attrs.block_metadata.timestamp = U256::from(99),
+                4 => attrs.block_metadata.extra_data = Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
+                5 => attrs.payload_attributes.slot_number = Some(1),
+                6 => attrs.payload_attributes.target_gas_limit = Some(1),
+                7 => attrs.payload_attributes.withdrawals = None,
+                // An Unzen target building at an Etna timestamp, or at one wider than `u64`.
+                _ => {
+                    attrs = fcu_attributes(99, false);
+                    attrs.block_metadata.timestamp =
+                        if case == 8 { U256::from(100) } else { U256::MAX };
+                }
+            }
+            let response = rpc_call(
+                &module,
+                "engine_forkchoiceUpdatedV3",
+                serde_json::json!([fcu_state(1), attrs]),
+            )
+            .await;
+            assert_eq!(response["error"]["code"], code, "case {case}: {response}");
+        }
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let db = provider.provider().unwrap();
+        for block_id in [99, 100] {
+            assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(block_id).unwrap(), None);
+        }
+        assert_eq!(
+            db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
+            None
         );
-
-        assert_eq!(envelope.block_value, U256::from(7_u64));
+        assert_eq!(db.tx_ref().get::<BatchToLastBlock>(9).unwrap(), None);
     }
 
-    #[test]
-    fn pre_unzen_payload_preserves_original_block_value() {
-        let chain_spec = pre_unzen_chain_spec();
-        let built_payload = sample_built_payload(U256::from(7_u64), U256::from(1_u64), 1);
-
-        let envelope = convert_built_payload_to_execution_payload_envelope_v2(
-            chain_spec.as_ref(),
-            built_payload,
-        );
-
-        assert_eq!(envelope.block_value, U256::from(1_u64));
-    }
-
-    fn unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
-        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(0));
-        Arc::new(chain_spec)
-    }
-
-    fn pre_unzen_chain_spec() -> Arc<alethia_reth_chainspec::spec::TaikoChainSpec> {
-        let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-        chain_spec.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(10));
-        Arc::new(chain_spec)
-    }
-
-    fn sample_built_payload(difficulty: U256, fees: U256, timestamp: u64) -> EthBuiltPayload {
-        let block = sample_unzen_block(difficulty, timestamp);
-        let recovered_block =
-            Arc::new(reth_primitives_traits::RecoveredBlock::new_unhashed(block, Vec::new()));
-
-        EthBuiltPayload::new(recovered_block, fees, None, None)
+    #[tokio::test]
+    async fn new_payload_v4_normalization_and_fork_checks() {
+        use alethia_reth_primitives::engine::osaka::TaikoExecutionPayloadV3;
+        let (module, _, _) = rpc_fixture();
+        for timestamp in [49, 99, 100] {
+            let mut block = sample_unzen_block(U256::ZERO, timestamp);
+            block.header.blob_gas_used = Some(0);
+            block.header.excess_blob_gas = Some(0);
+            block.header.requests_hash = Some(alloy_eips::eip7685::EMPTY_REQUESTS_HASH);
+            let root = if timestamp == 100 { B256::with_last_byte(42) } else { B256::ZERO };
+            block.header.parent_beacon_block_root = Some(root);
+            let wire = TaikoExecutionPayloadV3 {
+                execution_payload: alloy_rpc_types_engine::ExecutionPayloadV3::from_block_unchecked(
+                    block.header.hash_slow(),
+                    &block,
+                ),
+                header_difficulty: 0,
+                extra_fields: Default::default(),
+            };
+            let response =
+                rpc_call(&module, "engine_newPayloadV4", serde_json::json!([wire, [], root, []]))
+                    .await;
+            if timestamp == 49 {
+                assert_eq!(response["error"]["code"], -38005, "{response}");
+                continue;
+            }
+            assert_eq!(response["result"]["status"], "VALID", "{response}");
+            if timestamp == 100 {
+                // One JSON-RPC pin per -32602 class: a malformed argument, an unsupported
+                // property, and a nonempty Etna side array. osaka.rs and validator.rs pin each
+                // field.
+                let wire = serde_json::to_value(&wire).unwrap();
+                let mut missing = wire.clone();
+                missing.as_object_mut().unwrap().remove("headerDifficulty");
+                let mut legacy = wire.clone();
+                legacy["txHash"] = serde_json::json!("0x01");
+                for params in [
+                    serde_json::json!([missing, [], root, []]),
+                    serde_json::json!([legacy, [], root, []]),
+                    serde_json::json!([wire, [], root, ["0x01"]]),
+                ] {
+                    let response = rpc_call(&module, "engine_newPayloadV4", params).await;
+                    assert_eq!(response["error"]["code"], -32602, "{response}");
+                }
+            }
+        }
     }
 
     fn sample_unzen_block(difficulty: U256, timestamp: u64) -> reth_ethereum::Block {

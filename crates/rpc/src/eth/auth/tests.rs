@@ -3,12 +3,15 @@ use super::{
     *,
 };
 use alethia_reth_block::{executor::TaikoBlockExecutor, factory::TaikoBlockExecutionCtx};
-use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
+use alethia_reth_chainspec::{
+    TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoChainSpec,
+};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
     StoredL1OriginTable,
 };
+use alethia_reth_evm::env::TaikoEvmEnv;
 use alethia_reth_primitives::decode_shasta_proposal_id;
 use alloy_consensus::{BlockBody, Header, TxLegacy};
 use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
@@ -34,6 +37,7 @@ use reth_revm::{State, db::InMemoryDB};
 use std::{path::PathBuf, sync::Arc};
 
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+use alloy_hardforks::ForkCondition;
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -62,7 +66,7 @@ fn anchor_v4_input() -> Bytes {
 }
 
 /// Builds a ProviderFactory wired with both reth and Taiko tables for lookup tests.
-fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
+pub(crate) fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
     create_taiko_test_provider_factory_with_chain_spec(MAINNET.clone())
 }
 
@@ -214,11 +218,18 @@ fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
     assert!(super::combined_tx_lists_gas_limit(u64::MAX, 2).is_err());
 }
 
+/// Returns a devnet chain spec whose Etna rules activate at timestamp 100.
+fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
+    let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
+    chain_spec
+}
+
 #[test]
 fn reserves_anchor_zk_gas_for_tx_pool_selection() {
     let mut state =
         State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
     let evm = TaikoEvmFactory.create_evm(&mut state, env);
     let ctx = TaikoBlockExecutionCtx {
@@ -238,8 +249,15 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
         TAIKO_DEVNET.clone(),
         RethReceiptBuilder::default(),
     );
+    let chain_spec = chain_spec_with_etna_at_100();
 
-    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor)
+    // An Etna parent is followed by no anchor, so preselection reserves nothing.
+    let parent = |timestamp| Header { timestamp, ..Default::default() };
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, &parent(100))
+        .expect("an Etna parent reserves nothing");
+    assert_eq!(ctx.finalized_block_zk_gas(), 0);
+
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, &parent(99))
         .expect("tx-pool anchor reserve should fit");
 
     assert_eq!(ctx.finalized_block_zk_gas(), super::TX_POOL_ANCHOR_ZK_GAS_RESERVE);

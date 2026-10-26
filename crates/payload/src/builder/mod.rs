@@ -409,6 +409,7 @@ where
 
             let ctx = PoolExecutionContext {
                 anchor_tx: attributes.anchor_transaction.as_ref(),
+                forced_tx: attributes.forced_transaction.as_ref(),
                 parent_header: &parent_header,
                 block_state_seed,
                 block_timestamp: attributes.timestamp(),

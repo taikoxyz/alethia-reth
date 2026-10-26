@@ -198,6 +198,50 @@ The Etna build mode follows from presence:
 | absent | absent | Pool |
 | present | present | Rejected with `-32602` |
 
+[Build modes](#build-modes) describes how each mode fills the block.
+
+### Build modes
+
+Every Etna build starts from the parent's state after the block-start EIP-2935 and EIP-4788 calls,
+with the block's full gas limit, the full zk-gas budget, and a transaction byte budget derived from
+`maxBlockBytes` ([byte limit](#byte-limit)). A transaction that is left out leaves no state,
+receipt, or fee behind. An ordinary EVM revert or out-of-gas is included and charged as usual.
+
+- **Given list.** The list runs in order. A transaction is left out for a transaction-level reason:
+  an unsupported type, a size above the remaining byte budget, a nonce, balance, base-fee, or
+  intrinsic-gas failure against the current state, or a gas limit above the block's remaining gas.
+  The first transaction that exceeds the zk-gas limit is discarded and ends the list. A given-list
+  build of `[tx]` therefore returns either a block holding `tx` or an empty block, never an error
+  for a transaction-level reason; only failures unrelated to the transactions, such as a state read
+  error, fail the build.
+- **Pool.** The builder selects from its own transaction pool by effective tip, within the gas,
+  zk-gas, and byte budgets left. As build policy, not a consensus rule, a pool transaction that
+  exceeds the zk-gas limit is discarded together with its sender's later nonces and selection
+  continues with other senders; the builder remembers such transactions and bounds the work it
+  spends re-running them.
+- **Mixed.** The forced transaction runs first, at position 0, on the parent's state with the full
+  budgets, exactly as the given-list build of `[forcedTransaction]` with the same attributes runs
+  it. It is transaction 0 exactly when that build would include it, and pool selection then
+  continues from the state after it with the gas and bytes it left. Otherwise it is absent, the
+  block holds only pool transactions, and the pool gets the full budgets; the given-list build of
+  the forced transaction alone on the same parent and attributes is then empty as well, which is the
+  execution-layer condition for skipping the entry. The pool's remembered zk-gas overflows never
+  apply to the forced transaction. If the pool also holds the forced transaction, it still appears
+  only once, at position 0, and its sender's next nonce can follow from the pool. Drivers detect
+  inclusion by comparing keccak256 of transaction 0's EIP-2718 encoding with the entry's `txHash`.
+
+#### Byte limit
+
+`maxBlockBytes` bounds the block's executionBlock, `rlp([header, [tx…]])`, including its outer list
+header and with transactions in block-body form: a typed transaction counts as its EIP-2718 bytes
+plus their RLP string header. The bound is inclusive. The header is sealed only after execution, so
+the builder reserves room for the longest header the job can seal: the job's own header fields,
+fixed-size roots and bloom, `gasUsed` equal to `gasLimit`, and a `difficulty` of `u64::MAX`. What
+remains after that reserve and the list headers is the transaction byte budget, which the forced
+transaction and the selected transactions share. In every mode a transaction larger than what is
+left is left out and the build moves on. Before returning a block, the builder checks its exact
+executionBlock length and fails the job rather than return a block above `maxBlockBytes`.
+
 ## `taikoAuth` preselection
 
 `taikoAuth_txPoolContent` and `taikoAuth_txPoolContentWithMinTip` keep their existing parameters.

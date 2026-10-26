@@ -846,7 +846,7 @@ fn transact_meters_each_run_from_zero_on_a_reused_evm() {
 
     evm.transact(tx_env(100_000)).expect("first run should execute");
     let first_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
-    assert!(first_run > 0, "the metered run must charge zk gas");
+    assert!(first_run > TX_INTRINSIC_ZK_GAS, "the metered run must charge opcode zk gas");
 
     evm.transact(tx_env(100_000)).expect("second run should execute");
     let second_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
@@ -868,7 +868,7 @@ fn inspected_transact_meters_each_run_from_zero_on_a_reused_evm() {
 
     evm.transact(tx_env(100_000)).expect("first run should execute");
     let first_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
-    assert!(first_run > 0, "the metered run must charge zk gas");
+    assert!(first_run > TX_INTRINSIC_ZK_GAS, "the metered run must charge opcode zk gas");
 
     evm.transact(tx_env(100_000)).expect("second run should execute");
     let second_run = evm.meter().expect("Unzen should install a meter").tx_zk_gas_used();
@@ -971,6 +971,44 @@ fn standalone_transact_reports_the_zk_limit_for_opcode_and_direct_precompile_ove
 }
 
 #[test]
+fn standalone_transact_reports_the_zk_limit_when_the_intrinsic_does_not_fit() {
+    // The standalone intrinsic comes out of the same block budget as execution. With one zk gas
+    // short of it left, the call is rejected before it runs and nothing is charged; with exactly
+    // the intrinsic left, the intrinsic is charged and the first opcode overflows instead. A
+    // system call skips the intrinsic, so it still runs on the short budget.
+    let system_address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
+    for spec in [TaikoSpecId::UNZEN, TaikoSpecId::ETNA] {
+        let block_limit = schedule_for(spec).expect("metered spec has a schedule").block_limit;
+        for inspected in [false, true] {
+            let mut evm =
+                metered_evm(spec, inspected, db_with_contract(simple_arithmetic_bytecode()));
+            evm.reserve_block_zk_gas(block_limit - TX_INTRINSIC_ZK_GAS + 1).expect("reserve fits");
+            let result = evm.transact(tx_env(100_000));
+            assert!(
+                matches!(&result, Err(EVMError::Custom(msg)) if msg == ZK_GAS_LIMIT_ERR),
+                "{spec:?} inspected={inspected}: {result:?}"
+            );
+            assert_eq!(evm.meter().expect("metered spec installs a meter").tx_zk_gas_used(), 0);
+            evm.transact_system_call(system_address, BENCH_TARGET, Bytes::new())
+                .expect("a system call charges no intrinsic and fits");
+
+            let mut evm =
+                metered_evm(spec, inspected, db_with_contract(simple_arithmetic_bytecode()));
+            evm.reserve_block_zk_gas(block_limit - TX_INTRINSIC_ZK_GAS).expect("reserve fits");
+            let result = evm.transact(tx_env(100_000));
+            assert!(
+                matches!(&result, Err(EVMError::Custom(msg)) if msg == ZK_GAS_LIMIT_ERR),
+                "{spec:?} inspected={inspected}: {result:?}"
+            );
+            assert_eq!(
+                evm.meter().expect("metered spec installs a meter").tx_zk_gas_used(),
+                TX_INTRINSIC_ZK_GAS
+            );
+        }
+    }
+}
+
+#[test]
 fn system_calls_skip_the_standalone_intrinsic() {
     // A system call is not a block transaction: on a standalone EVM it meters its execution
     // without the intrinsic charge, and the next ordinary transact charges it again.
@@ -985,10 +1023,11 @@ fn system_calls_skip_the_standalone_intrinsic() {
             assert!(system_call > 0, "{spec:?} inspected={inspected}: must meter execution");
             assert!(system_call < TX_INTRINSIC_ZK_GAS, "{spec:?} inspected={inspected}");
 
+            // The same code runs again, now with the intrinsic charged.
             evm.transact(tx_env(100_000)).expect("ordinary run should execute");
-            assert!(
-                evm.meter().expect("metered spec installs a meter").tx_zk_gas_used() >=
-                    TX_INTRINSIC_ZK_GAS,
+            assert_eq!(
+                evm.meter().expect("metered spec installs a meter").tx_zk_gas_used(),
+                system_call + TX_INTRINSIC_ZK_GAS,
                 "{spec:?} inspected={inspected}: ordinary transacts charge the intrinsic again"
             );
         }
@@ -1068,7 +1107,8 @@ fn reused_evm_replays_a_heavy_tx_without_tripping_the_block_limit() {
 
 /// Executes `bytecode` on Unzen through the production (no-inspector) and the inspected
 /// metered path, asserting both halt with `expected_halt` and returning the per-tx zk gas
-/// charged by each.
+/// charged by each. Both EVMs disable the per-transact reset, as the block executor does, so the
+/// readings are the executor's per-transaction metering without the intrinsic it adds separately.
 fn metered_paths_zk_gas_for_halting_tx(
     bytecode: Bytecode,
     gas_limit: u64,
@@ -1076,6 +1116,7 @@ fn metered_paths_zk_gas_for_halting_tx(
 ) -> (u64, u64) {
     let mut production_evm =
         TaikoEvmFactory.create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
+    production_evm.set_per_transact_zk_gas_reset_enabled(false);
     let result = production_evm.transact(tx_env(gas_limit)).expect("production path executes");
     assert!(
         matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
@@ -1090,6 +1131,7 @@ fn metered_paths_zk_gas_for_halting_tx(
         evm_env(TaikoSpecId::UNZEN),
         NoOpInspector {},
     );
+    inspector_evm.set_per_transact_zk_gas_reset_enabled(false);
     let result = inspector_evm.transact(tx_env(gas_limit)).expect("inspector path executes");
     assert!(
         matches!(&result.result, ExecutionResult::Halt { reason, .. } if expected_halt(reason)),
@@ -1109,13 +1151,12 @@ fn metered_paths_charge_forfeited_gas_for_an_oog_halting_step() {
     // (`Interpreter::halt` spends it), and that forfeiture is part of the step's zk gas
     // charge: pre-2.4.0 revm ran `halt_oog()` (spend-all) inside `step` itself, and
     // taiko-geth's zk mirror follows that reference behavior. These committed values feed
-    // `header.difficulty` on Unzen, so any drift here is a consensus change. Both standalone
-    // readings also carry the one intrinsic charge every transaction pays.
+    // `header.difficulty` on Unzen, so any drift here is a consensus change.
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let push_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::PUSH1)]);
     let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
     let forfeited_gas = 1;
-    let expected = TX_INTRINSIC_ZK_GAS + 2 * 3 * push_multiplier + forfeited_gas * add_multiplier;
+    let expected = 2 * 3 * push_multiplier + forfeited_gas * add_multiplier;
 
     let (production_zk_gas, inspector_zk_gas) =
         metered_paths_zk_gas_for_halting_tx(simple_arithmetic_bytecode(), 21_000 + 7, |reason| {
@@ -1137,11 +1178,10 @@ fn metered_paths_charge_static_gas_zk_gas_for_a_stack_underflow_step() {
     // `ADD` on an empty stack: the GasTable static charge (3 gas) lands before revm validates
     // the stack, so the halting step contributes `3 x multiplier`. Known cross-client
     // divergence: taiko-geth validates the stack before charging gas and meters 0 for this
-    // step; the fix is tracked on the geth side, so this pins reth's committed value. Both
-    // standalone readings also carry the one intrinsic charge every transaction pays.
+    // step; the fix is tracked on the geth side, so this pins reth's committed value.
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
     let add_multiplier = u64::from(schedule.opcode_multipliers[usize::from(opcode::ADD)]);
-    let expected = TX_INTRINSIC_ZK_GAS + 3 * add_multiplier;
+    let expected = 3 * add_multiplier;
 
     let (production_zk_gas, inspector_zk_gas) =
         metered_paths_zk_gas_for_halting_tx(stack_underflow_bytecode(), 100_000, |reason| {

@@ -197,6 +197,7 @@ where
         min_tip: 0,
         locals: vec![],
         state_seed,
+        max_tx_bytes_per_list: None,
     };
 
     match select_and_execute_pool_transactions(builder, pool, &config, ctx.zk_overflows, || {

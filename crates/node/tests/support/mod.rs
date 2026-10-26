@@ -30,7 +30,11 @@ use reth_node_builder::{
 use reth_provider::providers::BlockchainProvider;
 use reth_rpc::eth::EthApiTypes;
 use serde_json::Value;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 type TestTypes = RethFullAdapter<Arc<TempDatabase<DatabaseEnv>>, TaikoNode>;
 pub type TestNode = FullNode<NodeAdapter<TestTypes>, <TaikoNode as Node<TestTypes>>::AddOns>;
@@ -111,16 +115,93 @@ impl TableSet for TaikoTables {
 }
 
 pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<TestNode> {
+    let path = tempdir_path();
+    // The database owns the directory and removes it when the node is dropped.
+    Ok(launch(chain_spec, &path, path.clone(), EngineMode::Normal).await?.node)
+}
+
+/// The engine flags a node launches with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineMode {
+    /// Stock engine flags, as every validator and lander EL runs.
+    Normal,
+    /// The one-shot rewind flags of the governance-recovery procedure:
+    /// `--engine.allow-unwind-canonical-header` and
+    /// `--engine.always-process-payload-attributes-on-canonical-head`.
+    Rewind,
+}
+
+/// A data directory that outlives the nodes launched on it; removed when dropped.
+pub struct Datadir(PathBuf);
+
+impl Datadir {
+    pub fn new() -> Self {
+        Self(tempdir_path())
+    }
+}
+
+impl Drop for Datadir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A node on a [`Datadir`] that can be stopped and launched again on the same data.
+pub struct RestartableNode {
+    pub node: TestNode,
+    runtime: Runtime,
+    database: Weak<TempDatabase<DatabaseEnv>>,
+}
+
+impl RestartableNode {
+    /// Shuts the node down the way SIGTERM does (the engine persists its canonical blocks) and
+    /// waits until the database is closed, so the next launch can open it again.
+    pub async fn stop(self) -> eyre::Result<()> {
+        let Self { node, runtime, database } = self;
+        drop(node);
+        let stopped = tokio::task::spawn_blocking(move || {
+            runtime.graceful_shutdown_with_timeout(Duration::from_secs(5))
+        })
+        .await?;
+        eyre::ensure!(stopped, "node shutdown timed out");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while database.strong_count() > 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("the stopped node still holds its database"))
+    }
+}
+
+/// Launches a node on `datadir`, reopening whatever earlier launches left there.
+pub async fn launch_at(
+    chain_spec: Arc<TaikoChainSpec>,
+    datadir: &Datadir,
+    mode: EngineMode,
+) -> eyre::Result<RestartableNode> {
+    // Point the database's delete-on-drop path at a directory that never exists, so stopping
+    // the node keeps the data for the next launch; `Datadir` removes it at the end.
+    launch(chain_spec, &datadir.0, datadir.0.join("kept"), mode).await
+}
+
+async fn launch(
+    chain_spec: Arc<TaikoChainSpec>,
+    path: &Path,
+    remove_on_drop: PathBuf,
+    mode: EngineMode,
+) -> eyre::Result<RestartableNode> {
     let runtime = Runtime::test();
     TEST_RUNTIMES.lock().unwrap().push(runtime.clone());
-    let path = tempdir_path();
+    let path = path.to_path_buf();
     let database: Arc<TempDatabase<DatabaseEnv>> = Arc::new(TempDatabase::new(
         init_db_for::<PathBuf, TaikoTables>(
             path.clone(),
             DatabaseArguments::new(ClientVersion::default()),
         )?,
-        path.clone(),
+        remove_on_drop,
     ));
+    let weak_database = Arc::downgrade(&database);
     let mut config =
         NodeConfig::new(chain_spec).with_unused_ports().with_disabled_discovery().with_rpc(
             RpcServerArgs::default()
@@ -135,7 +216,7 @@ pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<T
     let taiko = TaikoNode;
     let builder = NodeBuilder::new(config)
         .with_database(database)
-        .with_launch_context(runtime)
+        .with_launch_context(runtime.clone())
         .with_types_and_provider::<TaikoNode, BlockchainProvider<_>>()
         .with_components(taiko.components_builder())
         .with_add_ons(taiko.add_ons());
@@ -161,16 +242,22 @@ pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<T
     let handle = tokio::time::timeout(
         Duration::from_secs(30),
         builder.launch_with_fn(|builder| {
+            let rewind = mode == EngineMode::Rewind;
+            // The same two settings reth derives from the two `--engine.*` flags.
+            let tree = TreeConfig::default()
+                .with_cross_block_cache_size(1024 * 1024)
+                .with_always_process_payload_attributes_on_canonical_head(rewind)
+                .with_unwind_canonical_header(rewind);
             let launcher = EngineNodeLauncher::new(
                 builder.task_executor().clone(),
                 builder.config().datadir(),
-                TreeConfig::default().with_cross_block_cache_size(1024 * 1024),
+                tree,
             );
             builder.launch_with(launcher)
         }),
     )
     .await??;
-    Ok(handle.node)
+    Ok(RestartableNode { node: handle.node, runtime, database: weak_database })
 }
 
 pub async fn fcu(
@@ -281,6 +368,27 @@ pub fn rpc_error_code(error: &eyre::Report) -> Option<i32> {
     }
 }
 
+/// The node's head number from `eth_blockNumber`.
+pub async fn head_number(http: &impl ClientT) -> eyre::Result<u64> {
+    let number: alloy_primitives::U64 = http.request("eth_blockNumber", rpc_params![]).await?;
+    Ok(number.to())
+}
+
+/// The canonical block hash at `number` from `eth_getBlockByNumber`, `None` when absent.
+pub async fn hash_at(http: &impl ClientT, number: u64) -> eyre::Result<Option<B256>> {
+    block_hash(http, serde_json::to_value(alloy_primitives::U64::from(number))?).await
+}
+
+/// The block hash `eth_getBlockByNumber` reports for a tag such as `"finalized"`.
+pub async fn hash_of_tag(http: &impl ClientT, tag: &str) -> eyre::Result<Option<B256>> {
+    block_hash(http, tag.into()).await
+}
+
+async fn block_hash(http: &impl ClientT, block: Value) -> eyre::Result<Option<B256>> {
+    let block: Value = http.request("eth_getBlockByNumber", rpc_params![block, false]).await?;
+    Ok(if block.is_null() { None } else { Some(serde_json::from_value(block["hash"].clone())?) })
+}
+
 pub fn with_txs(
     mut attrs: TaikoPayloadAttributes,
     txs: &[reth_ethereum_primitives::TransactionSigned],
@@ -301,22 +409,35 @@ pub async fn build(
     client: &impl ClientT,
     spec: Arc<TaikoChainSpec>,
     parent: &alloy_consensus::Header,
+    attrs: TaikoPayloadAttributes,
+) -> eyre::Result<Built> {
+    use reth_chainspec::EthChainSpec;
+    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
+    // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
+    let finalized = spec.genesis_hash();
+    build_at(client, spec, parent, 0, finalized, attrs).await
+}
+
+/// Builds on `parent` with an FCU whose safe and finalized hashes are `finalized`.
+pub async fn build_at(
+    client: &impl ClientT,
+    spec: Arc<TaikoChainSpec>,
+    parent: &alloy_consensus::Header,
+    grandparent_timestamp: u64,
+    finalized: B256,
     mut attrs: TaikoPayloadAttributes,
 ) -> eyre::Result<Built> {
     use alethia_reth_consensus::eip4396::{MIN_BASE_FEE, calculate_next_block_eip4396_base_fee};
     use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
-    use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
-    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
-    // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
-        parent.timestamp,
+        parent.timestamp - grandparent_timestamp,
         parent.base_fee_per_gas.unwrap(),
         MIN_BASE_FEE,
     ));
     attrs.l1_origin.block_id = U256::from(parent.number + 1);
-    let status = fcu(client, spec.genesis_hash(), parent.hash_slow(), Some(attrs.clone())).await?;
+    let status = fcu(client, finalized, parent.hash_slow(), Some(attrs.clone())).await?;
     assert!(status.payload_status.status.is_valid(), "{status:?}");
     let id = status.payload_id.unwrap();
     let root = attrs.payload_attributes.parent_beacon_block_root.unwrap();

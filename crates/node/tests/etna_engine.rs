@@ -342,3 +342,151 @@ fn etna_mixed_build_puts_the_forced_transaction_first_within_the_byte_limit() ->
         Ok(())
     })
 }
+
+/// Builds empty Etna blocks at `timestamps` on the node's head `chain.last()`, each made canonical
+/// with head = safe = finalized, as a driver with instant finality sends them.
+async fn extend_finalized(
+    client: &impl jsonrpsee::core::client::ClientT,
+    spec: std::sync::Arc<alethia_reth_chainspec::spec::TaikoChainSpec>,
+    chain: &mut Vec<alloy_consensus::Header>,
+    timestamps: &[u64],
+) -> eyre::Result<()> {
+    for &timestamp in timestamps {
+        let parent = chain.last().unwrap();
+        let grandparent_timestamp = chain.iter().rev().nth(1).map_or(0, |header| header.timestamp);
+        let built = build_at(
+            client,
+            spec.clone(),
+            parent,
+            grandparent_timestamp,
+            parent.hash_slow(),
+            fixture_attributes(timestamp),
+        )
+        .await?;
+        canonicalize(client, built.block.hash(), &built).await?;
+        chain.push(built.block.header().clone());
+    }
+    Ok(())
+}
+
+#[test]
+fn etna_one_shot_rewind_moves_the_head_back_and_survives_restarts() -> eyre::Result<()> {
+    run_live_test(async {
+        use reth_provider::{BlockNumReader, DatabaseProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let datadir = Datadir::new();
+
+        // A normal EL follows a driver with instant finality to block 3.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let mut chain = vec![spec.genesis_header().clone()];
+        extend_finalized(&client, spec.clone(), &mut chain, &[100, 101, 102]).await?;
+        let (c, old_child) = (chain[1].hash_slow(), chain[2].hash_slow());
+        // Without the flags the rewind FCU (head = safe = finalized = c) is VALID but moves
+        // nothing, so the driver must check that block c + 1 is gone.
+        let status = fcu(&client, c, c, None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        assert_eq!(head_number(&http).await?, 3);
+        assert_eq!(hash_at(&http, 2).await?, Some(old_child));
+        el.stop().await?;
+
+        // One restart with the rewind flags serves exactly one FCU: the rewind to c. The
+        // shutdown persisted blocks 1..3, so the rewind removes blocks from disk.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Rewind).await?;
+        assert_eq!(el.node.provider.database_provider_ro()?.last_block_number()?, 3);
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        let status = fcu(&client, c, c, None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        assert_eq!(status.payload_id, None);
+        assert_eq!(head_number(&http).await?, 1);
+        assert_eq!(hash_at(&http, 1).await?, Some(c));
+        assert_eq!(hash_at(&http, 2).await?, None);
+        el.stop().await?;
+
+        // A normal restart keeps the rewind, with c as the latest, safe and finalized block.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        assert_eq!(el.node.provider.database_provider_ro()?.last_block_number()?, 1);
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        assert_eq!(head_number(&http).await?, 1);
+        assert_eq!(hash_at(&http, 1).await?, Some(c));
+        assert_eq!(hash_at(&http, 2).await?, None);
+        for tag in ["safe", "finalized"] {
+            assert_eq!(hash_of_tag(&http, tag).await?, Some(c), "{tag}");
+        }
+        // Repeating the rewind FCU is now a no-op, and c + 1 is built on c as usual.
+        let status = fcu(&client, c, c, None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        chain.truncate(2);
+        extend_finalized(&client, spec.clone(), &mut chain, &[110]).await?;
+        let new_child = chain[2].hash_slow();
+        assert_ne!(new_child, old_child);
+        assert_eq!(chain[2].parent_hash, c);
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 2).await?, Some(new_child));
+        el.stop().await?;
+
+        // Another normal restart keeps the new chain.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 1).await?, Some(c));
+        assert_eq!(hash_at(&http, 2).await?, Some(new_child));
+        assert_eq!(hash_at(&http, 3).await?, None);
+        el.stop().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn etna_fcu_to_a_canonical_ancestor_builds_on_it_and_unwinds_only_with_the_rewind_flags()
+-> eyre::Result<()> {
+    run_live_test(async {
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let datadir = Datadir::new();
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let mut chain = vec![spec.genesis_header().clone()];
+        extend_finalized(&client, spec.clone(), &mut chain, &[100, 101, 102]).await?;
+        let c = chain[1].hash_slow();
+        let child_of_c = fixture_attributes(110);
+        // A normal EL answers an FCU with attributes to c, below the finalized block 3, with a
+        // build on c (never -38006) and keeps its head.
+        let probe =
+            build_at(&client, spec.clone(), &chain[1], chain[0].timestamp, c, child_of_c.clone())
+                .await?;
+        assert_eq!(probe.block.parent_hash, c);
+        assert_eq!(head_number(&http).await?, 3);
+        el.stop().await?;
+
+        // With the flags the same FCU also moves the head back to c at once, which is why they
+        // must never stay on.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Rewind).await?;
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        let built =
+            build_at(&client, spec.clone(), &chain[1], chain[0].timestamp, c, child_of_c).await?;
+        assert_eq!(built.block.hash(), probe.block.hash());
+        assert_eq!(head_number(&http).await?, 1);
+        assert_eq!(hash_at(&http, 2).await?, None);
+        canonicalize(&client, built.block.hash(), &built).await?;
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 2).await?, Some(built.block.hash()));
+        el.stop().await?;
+
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 2).await?, Some(built.block.hash()));
+        assert_eq!(hash_at(&http, 3).await?, None);
+        el.stop().await?;
+        Ok(())
+    })
+}

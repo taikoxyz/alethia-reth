@@ -83,12 +83,6 @@ Use `--chain` with one of the supported presets:
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
-## Design Documentation
-
-- [zkGas Shadow pricing model](docs/zk-gas-pricing-model.md) describes the non-consensus SP1 PGU
-  model behind `--zkgas-mode shadow` (separate from the enforced Unzen zk gas limit), its ownership
-  rules, and what is live today versus unwired completion inputs.
-
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

@@ -361,6 +361,8 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-serde",
+ "alloy-signer",
+ "alloy-signer-local",
  "async-trait",
  "eyre",
  "jsonrpsee",

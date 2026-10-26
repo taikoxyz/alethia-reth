@@ -886,6 +886,10 @@ mod tests {
     fn signed_forced_transaction() -> Bytes {
         use alloy_consensus::{SignableTransaction, Signed, TxEip1559};
         use alloy_eips::eip2718::Encodable2718;
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        let signer =
+            PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("test key is valid");
         let tx = TxEip1559 {
             chain_id: 167_001,
             gas_limit: 21_000,
@@ -893,11 +897,7 @@ mod tests {
             to: alloy_primitives::TxKind::Call(Address::with_last_byte(0x21)),
             ..Default::default()
         };
-        let signature = alloy_consensus::crypto::secp256k1::sign_message(
-            B256::repeat_byte(0x11),
-            tx.signature_hash(),
-        )
-        .expect("test tx signs");
+        let signature = signer.sign_hash_sync(&tx.signature_hash()).expect("test tx signs");
         reth_ethereum::TransactionSigned::from(Signed::new_unhashed(tx, signature))
             .encoded_2718()
             .into()
@@ -907,13 +907,31 @@ mod tests {
     async fn invalid_fcu_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
         // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
-        // remaining cases fail Taiko's rules (-32602). Cases 8, 9, 14 and 15 target Unzen.
-        let expected = [
-            -38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003, -32602, -32602, -32602,
-            -32602, -32602, -32602, -32602, -32602,
+        // remaining cases fail Taiko's rules (-32602). Cases 8, 9, 14 and 15 target Unzen. reth
+        // reports invalid params as the message "Invalid params" with the validation error text
+        // under `data.err`, which is pinned for the Etna-only build fields on an Unzen target.
+        let build_fields_before_etna =
+            format!("Invalid params: {}", EtnaBuildFieldsBeforeEtna::MESSAGE);
+        let expected: [(i32, Option<&str>); 16] = [
+            (-38003, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, None),
+            (-38003, None),
+            (-32602, None),
+            (-38003, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, None),
+            (-32602, Some(&build_fields_before_etna)),
+            (-32602, Some(&build_fields_before_etna)),
         ];
         let raw = signed_forced_transaction();
-        for (case, code) in expected.into_iter().enumerate() {
+        for (case, (code, data_err)) in expected.into_iter().enumerate() {
             let mut attrs = fcu_attributes(100, false);
             match case {
                 0 => attrs.payload_attributes.parent_beacon_block_root = None,
@@ -954,14 +972,8 @@ mod tests {
             )
             .await;
             assert_eq!(response["error"]["code"], code, "case {case}: {response}");
-            if case >= 14 {
-                // reth reports invalid params as the message "Invalid params" with the
-                // validation error text under `data.err`.
-                assert_eq!(
-                    response["error"]["data"]["err"],
-                    format!("Invalid params: {}", EtnaBuildFieldsBeforeEtna::MESSAGE),
-                    "case {case}: {response}"
-                );
+            if let Some(data_err) = data_err {
+                assert_eq!(response["error"]["data"]["err"], data_err, "case {case}: {response}");
             }
         }
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);

@@ -24,7 +24,7 @@ use alethia_reth_block::{
         advance_selection_state, select_and_execute_pool_transactions,
     },
 };
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
 use alethia_reth_primitives::transaction::is_allowed_tx_type;
 
@@ -43,10 +43,10 @@ pub(super) enum ExecutionOutcome {
     Completed(U256),
 }
 
-/// Context for executing transactions in new mode (anchor + pool transactions).
+/// Context for selecting pool transactions under the target fork's anchor policy.
 pub(super) struct PoolExecutionContext<'a> {
-    /// Prebuilt anchor transaction for new mode.
-    pub(super) anchor_tx: &'a Recovered<EthTransactionSigned>,
+    /// Prebuilt anchor transaction required before Etna and forbidden after activation.
+    pub(super) anchor_tx: Option<&'a Recovered<EthTransactionSigned>>,
     /// The parent block header.
     pub(super) parent_header: &'a RethHeader,
     /// Digest of the parent and the block environment this payload executes in, before the
@@ -120,9 +120,11 @@ pub(super) fn execute_provided_transactions(
     Ok(ExecutionOutcome::Completed(total_fees))
 }
 
-/// Executes new-mode transactions: injects the anchor transaction, then pulls
-/// from the mempool until exhaustion or cancellation.
-pub(super) fn execute_anchor_and_pool_transactions<Client, Pool>(
+/// Executes fork-aware pool transactions until exhaustion or cancellation.
+///
+/// Legacy payloads validate and execute their supplied anchor before pool selection. Etna payloads
+/// require no anchor and begin ordinary selection with the caller-supplied full gas budget.
+pub(super) fn execute_pool_transactions<Client, Pool>(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives, Executor: TxSelectionExecutor>,
     pool: &Pool,
     client: &Client,
@@ -139,43 +141,53 @@ where
             >,
         >,
 {
-    debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
-
     let chain_spec = client.chain_spec();
-    validate_anchor_transaction(
-        ctx.anchor_tx.inner(),
-        chain_spec.as_ref(),
-        AnchorValidationContext {
-            timestamp: ctx.block_timestamp,
-            block_number: ctx.parent_header.number + 1,
-            base_fee_per_gas: ctx.base_fee,
-        },
-    )
-    .map_err(PayloadBuilderError::other)?;
+    let state_seed = if chain_spec.is_etna_active(ctx.block_timestamp) {
+        // Etna attribute normalization already rejects an anchor, so selection starts directly.
+        debug!(target: "payload_builder", id=%ctx.payload_id, "selecting anchorless Etna transactions");
+        ctx.block_state_seed
+    } else {
+        let anchor_tx = ctx.anchor_tx.ok_or_else(|| {
+            warn!(target: "payload_builder", id=%ctx.payload_id, "missing prebuilt anchor transaction in new mode");
+            PayloadBuilderError::MissingPayload
+        })?;
+        debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
 
-    // Execute the anchor transaction as the first transaction in the block
-    // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
-    match builder.execute_transaction(ctx.anchor_tx.clone()) {
-        Ok(gas_output) => {
-            // Note: Anchor transaction has zero priority fee (tip), so no fees to add
-            debug!(target: "payload_builder", id=%ctx.payload_id, gas_used = gas_output.tx_gas_used(), "anchor transaction executed successfully");
-        }
-        Err(err) if is_zk_gas_limit_exceeded(&err) => {
-            debug!(
-                target: "payload_builder",
-                id=%ctx.payload_id,
-                "stopping new-mode payload after anchor hit the zk gas limit"
-            );
-            return Err(PayloadBuilderError::evm(err));
-        }
-        Err(err) => {
-            warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
-            return Err(PayloadBuilderError::evm(err));
-        }
-    }
+        validate_anchor_transaction(
+            anchor_tx.inner(),
+            chain_spec.as_ref(),
+            AnchorValidationContext {
+                timestamp: ctx.block_timestamp,
+                block_number: ctx.parent_header.number + 1,
+                base_fee_per_gas: ctx.base_fee,
+            },
+        )
+        .map_err(PayloadBuilderError::other)?;
 
-    // Use the shared transaction selection logic for pool transactions. Selection starts after
-    // the anchor, so the anchor hash is part of the state seed.
+        // The legacy anchor does not contribute to the pool DA-size calculation.
+        match builder.execute_transaction(anchor_tx.clone()) {
+            Ok(gas_output) => {
+                debug!(target: "payload_builder", id=%ctx.payload_id, gas_used = gas_output.tx_gas_used(), "anchor transaction executed successfully");
+            }
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
+                debug!(
+                    target: "payload_builder",
+                    id=%ctx.payload_id,
+                    "stopping new-mode payload after anchor hit the zk gas limit"
+                );
+                return Err(PayloadBuilderError::evm(err));
+            }
+            Err(err) => {
+                warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
+                return Err(PayloadBuilderError::evm(err));
+            }
+        }
+
+        // The anchor committed above, so selection starts from the state after it.
+        advance_selection_state(ctx.block_state_seed, *anchor_tx.tx_hash())
+    };
+
+    // Use the shared transaction selection logic for pool transactions.
     let config = TxSelectionConfig {
         base_fee: ctx.base_fee,
         gas_limit_per_list: ctx.gas_limit,
@@ -184,8 +196,7 @@ where
         max_lists: 1,
         min_tip: 0,
         locals: vec![],
-        // The anchor committed above, so selection starts from the state after it.
-        state_seed: advance_selection_state(ctx.block_state_seed, *ctx.anchor_tx.tx_hash()),
+        state_seed,
     };
 
     match select_and_execute_pool_transactions(builder, pool, &config, ctx.zk_overflows, || {
@@ -212,14 +223,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll, Waker},
+    };
 
     use super::*;
     use alloy_consensus::{
-        SignableTransaction, Signed, TxEip1559,
+        SignableTransaction, Signed, TxEip1559, TxLegacy,
         transaction::{SignerRecoverable, TxHashable},
     };
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, B256, Bytes, Signature};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth::revm::State;
@@ -244,7 +259,8 @@ mod tests {
         executor::{TaikoBlockExecutor, ZkGasLimitExceeded},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, ExecutorBackedBuilder, db_with_contracts,
-            insert_contract, recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            etna_chain_spec, etna_evm_env, etna_execution_ctx, insert_contract, recovered_tx,
+            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
         tx_selection::selection_state_seed,
     };
@@ -283,6 +299,17 @@ mod tests {
 
     fn test_client(chain_spec: TaikoChainSpec) -> MockEthProvider<EthPrimitives, TaikoChainSpec> {
         MockEthProvider::default().with_chain_spec(chain_spec)
+    }
+
+    fn block_on_ready<F: Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
     }
 
     struct FirstTxZkGasErrorBuilder<E> {
@@ -393,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_anchor_and_pool_transactions_errors_when_anchor_hits_zk_gas_limit() {
+    fn execute_pool_transactions_errors_when_legacy_anchor_hits_zk_gas_limit() {
         let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
@@ -417,12 +444,12 @@ mod tests {
         let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
         let overflows = ZkOverflowMemory::default();
 
-        let result = execute_anchor_and_pool_transactions(
+        let result = execute_pool_transactions(
             &mut builder,
             &pool,
             &client,
             &PoolExecutionContext {
-                anchor_tx: &anchor_tx,
+                anchor_tx: Some(&anchor_tx),
                 parent_header: &parent_header,
                 block_state_seed: B256::ZERO,
                 block_timestamp: 1,
@@ -494,12 +521,12 @@ mod tests {
         let gas_limit = 29_000_000;
         let overflows = ZkOverflowMemory::default();
 
-        let outcome = execute_anchor_and_pool_transactions(
+        let outcome = execute_pool_transactions(
             &mut builder,
             &pool,
             &client,
             &PoolExecutionContext {
-                anchor_tx: &anchor_tx,
+                anchor_tx: Some(&anchor_tx),
                 parent_header: &parent_header,
                 block_state_seed,
                 block_timestamp: 1,
@@ -580,12 +607,12 @@ mod tests {
         let parent_header = RethHeader { timestamp: 0, number: 0, ..Default::default() };
         let env = test_env_attributes(timestamp, Address::ZERO);
 
-        let outcome = execute_anchor_and_pool_transactions(
+        let outcome = execute_pool_transactions(
             &mut builder,
             pool,
             &test_client((**chain_spec).clone()),
             &PoolExecutionContext {
-                anchor_tx,
+                anchor_tx: Some(anchor_tx),
                 parent_header: &parent_header,
                 block_state_seed: selection_state_seed(B256::repeat_byte(0x66), &env, &[]),
                 block_timestamp: timestamp,
@@ -623,5 +650,72 @@ mod tests {
         assert_eq!(committed_in_new_mode_at(&chain_spec, &pool, &anchor_tx, 2, &fresh), 2);
         assert_eq!(committed_in_new_mode_at(&chain_spec, &pool, &anchor_tx, 2, &remembered), 2);
         assert_eq!(remembered.state(&switch_hash), None);
+    }
+
+    #[test]
+    fn etna_pool_zk_gas_exhaustion_preserves_empty_and_completed_prefixes() {
+        for prefix_len in [0, 1] {
+            let caller = Address::with_last_byte(0x44);
+            let spec = Arc::new(etna_chain_spec());
+            let mut state = State::builder()
+                .with_database(db_with_contracts(&[(caller, 0)]))
+                .with_bundle_update()
+                .build();
+            let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+            let executor = TaikoBlockExecutor::new(
+                evm,
+                etna_execution_ctx(B256::with_last_byte(1)),
+                spec.clone(),
+                RethReceiptBuilder::default(),
+            );
+            let mut builder = ExecutorBackedBuilder { executor };
+            builder.apply_pre_execution_changes().unwrap();
+            let pool = testing_pool();
+            // A single nonce chain fixes ordering: optional success, real zk exhaustion, then
+            // a transaction that must remain unexecuted. The real executor emits Etna Validation.
+            for nonce in 0..prefix_len + 2 {
+                let target =
+                    if nonce == prefix_len { BENCH_LIMIT_TARGET } else { BENCH_SUCCESS_TARGET };
+                let tx = Recovered::new_unchecked(
+                    Signed::new_unhashed(
+                        TxLegacy {
+                            chain_id: Some(167),
+                            nonce,
+                            gas_price: 10,
+                            gas_limit: 5_000_000,
+                            to: target.into(),
+                            ..Default::default()
+                        },
+                        Signature::new(U256::from(1), U256::from(2), false),
+                    )
+                    .into(),
+                    caller,
+                );
+                block_on_ready(pool.add_consensus_transaction(tx, TransactionOrigin::External))
+                    .expect("transaction should enter the pool");
+            }
+            let outcome = execute_pool_transactions(
+                &mut builder,
+                &pool,
+                &test_client((*spec).clone()),
+                &PoolExecutionContext {
+                    anchor_tx: None,
+                    parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
+                    block_state_seed: B256::ZERO,
+                    block_timestamp: 1,
+                    payload_id: format!("etna-zk-limit-{prefix_len}"),
+                    base_fee: 0,
+                    gas_limit: 30_000_000,
+                    zk_overflows: &ZkOverflowMemory::default(),
+                },
+                &CancelOnDrop::default(),
+            )
+            .expect("ordinary zk exhaustion should stop selection cleanly");
+            let ExecutionOutcome::Completed(_) = outcome else {
+                panic!("zk exhaustion should not report cancellation")
+            };
+            // A zk overflow leaves out that sender's later nonces; selection does not fail.
+            assert_eq!(builder.executor.receipts().len(), prefix_len as usize);
+        }
     }
 }

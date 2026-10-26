@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, codex/tbd-anchorless-osaka, codex/etna-custom-genesis]
+    branches: [main, codex/tbd-anchorless-osaka, codex/etna-custom-genesis, feat/etna-block-bytes-mixed-build]
   release:
     types: [published]
 

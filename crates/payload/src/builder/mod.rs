@@ -22,6 +22,7 @@ use alethia_reth_block::{
     assembler::TaikoBlockAssembler,
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
+    tx_selection::{ZkOverflowMemory, selection_state_seed},
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
 use alethia_reth_consensus::validation::ANCHOR_V3_V4_GAS_LIMIT;
@@ -39,7 +40,7 @@ use self::execution::{
 mod execution;
 
 /// Taiko payload builder.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct TaikoPayloadBuilder<Client, Pool, EvmConfig = TaikoEvmConfig> {
     /// Client providing access to node state.
     client: Client,
@@ -47,12 +48,15 @@ pub struct TaikoPayloadBuilder<Client, Pool, EvmConfig = TaikoEvmConfig> {
     pool: Pool,
     /// EVM configuration for payload building.
     evm_config: EvmConfig,
+    /// Zk gas overflows remembered across mempool selections; clones share the same memory.
+    zk_overflows: Arc<ZkOverflowMemory>,
 }
 
 impl<Client, Pool, EvmConfig> TaikoPayloadBuilder<Client, Pool, EvmConfig> {
-    /// Creates a new payload builder with the given client, pool, and EVM config.
-    pub const fn new(client: Client, pool: Pool, evm_config: EvmConfig) -> Self {
-        Self { client, pool, evm_config }
+    /// Creates a new payload builder with the given client, pool, and EVM config, and an empty
+    /// zk gas overflow memory.
+    pub fn new(client: Client, pool: Pool, evm_config: EvmConfig) -> Self {
+        Self { client, pool, evm_config, zk_overflows: Arc::default() }
     }
 }
 
@@ -100,7 +104,7 @@ where
         &self,
         args: BuildArguments<TaikoPayloadAttributes, EthBuiltPayload>,
     ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError> {
-        taiko_payload(&self.evm_config, &self.client, &self.pool, args)
+        taiko_payload(&self.evm_config, &self.client, &self.pool, &self.zk_overflows, args)
     }
 
     /// Invoked when the payload job is being resolved and there is no payload yet.
@@ -167,11 +171,14 @@ fn ensure_amsterdam_inactive(
 }
 
 /// Build a Taiko payload for the given parent/header and job attributes.
+///
+/// `zk_overflows` carries zk gas overflows from earlier mempool selections into this one.
 #[inline]
 fn taiko_payload<EvmConfig, Client, Pool>(
     evm_config: &EvmConfig,
     client: &Client,
     pool: &Pool,
+    zk_overflows: &ZkOverflowMemory,
     args: BuildArguments<TaikoPayloadAttributes, EthBuiltPayload>,
 ) -> Result<BuildOutcome<EthBuiltPayload>, PayloadBuilderError>
 where
@@ -220,20 +227,19 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
+    let env_attributes = TaikoNextBlockEnvAttributes {
+        timestamp: attributes.timestamp(),
+        suggested_fee_recipient: attributes.beneficiary,
+        prev_randao: attributes.mix_hash,
+        gas_limit: attributes.gas_limit,
+        extra_data: attributes.extra_data.clone(),
+        base_fee_per_gas: attributes.base_fee_per_gas,
+        parent_beacon_block_root: attributes.parent_beacon_block_root,
+    };
+    // New-mode pool selection starts from this payload's parent and block environment.
+    let block_state_seed = selection_state_seed(parent_header.hash(), &env_attributes, &[]);
     let mut builder = evm_config
-        .builder_for_next_block(
-            &mut db,
-            &parent_header,
-            TaikoNextBlockEnvAttributes {
-                timestamp: attributes.timestamp(),
-                suggested_fee_recipient: attributes.beneficiary,
-                prev_randao: attributes.mix_hash,
-                gas_limit: attributes.gas_limit,
-                extra_data: attributes.extra_data.clone(),
-                base_fee_per_gas: attributes.base_fee_per_gas,
-                parent_beacon_block_root: attributes.parent_beacon_block_root,
-            },
-        )
+        .builder_for_next_block(&mut db, &parent_header, env_attributes)
         .map_err(PayloadBuilderError::other)?;
 
     // If we have a state-root task, wire a state hook that streams per-tx state diffs. Hooks
@@ -266,10 +272,12 @@ where
             let ctx = PoolExecutionContext {
                 anchor_tx,
                 parent_header: &parent_header,
+                block_state_seed,
                 block_timestamp: attributes.timestamp(),
                 payload_id: payload_id.to_string(),
                 base_fee,
                 gas_limit: attributes.gas_limit.saturating_sub(ANCHOR_V3_V4_GAS_LIMIT),
+                zk_overflows,
             };
 
             match execute_anchor_and_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)?

@@ -35,8 +35,8 @@ use alethia_reth_block::{
     executor::TaikoBlockExecutor,
     factory::TaikoBlockExecutorFactory,
     tx_selection::{
-        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig,
-        select_and_execute_pool_transactions,
+        DEFAULT_DA_ZLIB_GUARD_BYTES, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
+        select_and_execute_pool_transactions, selection_state_seed,
     },
 };
 use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -160,12 +160,16 @@ pub struct TaikoAuthExt<Pool, Eth, Evm, Provider: DatabaseProviderFactory> {
     tx_resp_builder: Eth,
     /// EVM configuration used to construct candidate payload environments.
     evm_config: Evm,
+    /// Zk gas overflows remembered across candidate-list selections; clones share the same
+    /// memory.
+    zk_overflows: Arc<ZkOverflowMemory>,
 }
 
 impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, Evm, Provider> {
-    /// Creates a new instance of `TaikoAuthExt` with the given provider.
+    /// Creates a new instance of `TaikoAuthExt` with the given provider and an empty zk gas
+    /// overflow memory.
     pub fn new(provider: Provider, pool: Pool, tx_resp_builder: Eth, evm_config: Evm) -> Self {
-        Self { provider, pool, tx_resp_builder, evm_config }
+        Self { provider, pool, tx_resp_builder, evm_config, zk_overflows: Arc::default() }
     }
 
     /// Stores the current L1 head origin block id.
@@ -357,24 +361,24 @@ where
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
         // Create the block builder based on the parent block and the provided attributes.
+        let env_attributes = TaikoNextBlockEnvAttributes {
+            timestamp: parent.timestamp(),
+            suggested_fee_recipient: beneficiary,
+            prev_randao: parent.mix_hash().unwrap_or_default(),
+            gas_limit: combined_gas_limit,
+            extra_data: parent.extra_data().clone(),
+            base_fee_per_gas: base_fee,
+            parent_beacon_block_root: None,
+        };
+        // Selection starts from the state this simulation runs in: the parent and the block
+        // environment it executes with.
+        let state_seed = selection_state_seed(parent.hash(), &env_attributes, &[]);
         let mut builder = self
             .evm_config
-            .builder_for_next_block(
-                &mut db,
-                parent,
-                TaikoNextBlockEnvAttributes {
-                    timestamp: parent.timestamp(),
-                    suggested_fee_recipient: beneficiary,
-                    prev_randao: parent.mix_hash().unwrap_or_default(),
-                    gas_limit: combined_gas_limit,
-                    extra_data: parent.extra_data().clone(),
-                    base_fee_per_gas: base_fee,
-                    parent_beacon_block_root: None,
-                },
-            )
+            .builder_for_next_block(&mut db, parent, env_attributes)
             .map_err(|_| {
-                EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
-            })?;
+            EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
+        })?;
 
         reserve_anchor_zk_gas_for_tx_pool_selection(builder.executor_mut())
             .map_err(|err| EthApiError::Internal(err.into()))?;
@@ -390,9 +394,16 @@ where
             max_lists: max_transactions_lists as usize,
             min_tip,
             locals: locals.unwrap_or_default(),
+            state_seed,
         };
 
-        match select_and_execute_pool_transactions(&mut builder, &self.pool, &config, || false) {
+        match select_and_execute_pool_transactions(
+            &mut builder,
+            &self.pool,
+            &config,
+            &self.zk_overflows,
+            || false,
+        ) {
             Ok(SelectionOutcome::Completed(lists)) => {
                 // Convert ExecutedTxList to PreBuiltTxList with RPC transactions
                 lists

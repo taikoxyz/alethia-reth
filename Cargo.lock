@@ -128,7 +128,6 @@ dependencies = [
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-network-peers",
- "reth-primitives-traits",
  "reth-revm",
  "serde",
  "serde_json",

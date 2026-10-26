@@ -22,6 +22,8 @@ hardfork!(
         Shasta,
         /// Unzen protocol upgrade.
         Unzen,
+        /// Etna anchorless Osaka protocol upgrade.
+        Etna,
     }
 );
 
@@ -55,6 +57,11 @@ pub trait TaikoHardforks: EthereumHardforks {
     /// Convenience method to check if [`TaikoHardfork::Unzen`] is active at the given timestamp.
     fn is_unzen_active(&self, timestamp: u64) -> bool {
         self.taiko_fork_activation(TaikoHardfork::Unzen).active_at_timestamp(timestamp)
+    }
+
+    /// Convenience method to check if [`TaikoHardfork::Etna`] is active at the given timestamp.
+    fn is_etna_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Etna).active_at_timestamp(timestamp)
     }
 }
 
@@ -292,5 +299,14 @@ mod test {
         let unzen = TAIKO_HOODI_HARDFORKS.fork(TaikoHardfork::Unzen);
         assert!(unzen.is_timestamp(), "unzen activation should be timestamp-based");
         assert_eq!(unzen, ForkCondition::Timestamp(1_781_787_600));
+    }
+
+    #[test]
+    fn test_built_in_chains_leave_etna_disabled() {
+        for hardforks in
+            [&*TAIKO_MAINNET_HARDFORKS, &*TAIKO_HOODI_HARDFORKS, &*TAIKO_DEVNET_HARDFORKS]
+        {
+            assert_eq!(hardforks.fork(TaikoHardfork::Etna), ForkCondition::Never);
+        }
     }
 }

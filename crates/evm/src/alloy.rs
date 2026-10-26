@@ -250,7 +250,9 @@ where
     I: Inspector<TaikoEvmContext<DB>>,
     P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
 {
-    /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
+    /// Enables or disables the automatic in-flight zk gas reset at the start of every transact,
+    /// together with the intrinsic zk gas charge that follows it on every transact other than a
+    /// system call.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool) {
         self.reset_zk_gas_per_transact = enabled;
     }

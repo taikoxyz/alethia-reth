@@ -346,6 +346,7 @@ mod tests {
     use reth_node_api::PayloadBuilderError;
 
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
+    use alethia_reth_primitives::etna::EtnaBuildFieldsBeforeEtna;
     use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::{EthereumHardfork, ForkCondition};
@@ -707,13 +708,37 @@ mod tests {
         }
     }
 
+    /// Returns the raw EIP-2718 bytes of a signed, recoverable EIP-1559 transaction.
+    fn signed_forced_transaction() -> Bytes {
+        use alloy_consensus::{SignableTransaction, Signed, TxEip1559};
+        use alloy_eips::eip2718::Encodable2718;
+        let tx = TxEip1559 {
+            chain_id: 167_001,
+            gas_limit: 21_000,
+            max_fee_per_gas: 1_000_000_000,
+            to: alloy_primitives::TxKind::Call(Address::with_last_byte(0x21)),
+            ..Default::default()
+        };
+        let signature = alloy_consensus::crypto::secp256k1::sign_message(
+            B256::repeat_byte(0x11),
+            tx.signature_hash(),
+        )
+        .expect("test tx signs");
+        reth_ethereum::TransactionSigned::from(Signed::new_unhashed(tx, signature))
+            .encoded_2718()
+            .into()
+    }
+
     #[tokio::test]
     async fn invalid_fcu_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
         // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
-        // remaining cases fail Taiko's rules (-32602). The last two target Unzen.
-        let expected =
-            [-38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003, -32602, -32602];
+        // remaining cases fail Taiko's rules (-32602). Cases 8, 9, 14 and 15 target Unzen.
+        let expected = [
+            -38003, -32602, -32602, -32602, -32602, -38003, -32602, -38003, -32602, -32602, -32602,
+            -32602, -32602, -32602, -32602, -32602,
+        ];
+        let raw = signed_forced_transaction();
         for (case, code) in expected.into_iter().enumerate() {
             let mut attrs = fcu_attributes(100, false);
             match case {
@@ -726,10 +751,26 @@ mod tests {
                 6 => attrs.payload_attributes.target_gas_limit = Some(1),
                 7 => attrs.payload_attributes.withdrawals = None,
                 // An Unzen target building at an Etna timestamp, or at one wider than `u64`.
-                _ => {
+                8 | 9 => {
                     attrs = fcu_attributes(99, false);
                     attrs.block_metadata.timestamp =
                         if case == 8 { U256::from(100) } else { U256::MAX };
+                }
+                10 => attrs.max_block_bytes = None,
+                11 => attrs.max_block_bytes = Some(1_023),
+                12 => {
+                    attrs.forced_transaction = Some(raw.clone());
+                    attrs.block_metadata.tx_list = Some(Bytes::from_static(&[0xc0]));
+                }
+                13 => attrs.forced_transaction = Some(Bytes::from_static(&[0x02])),
+                // Etna-only build fields on an Unzen target.
+                14 => {
+                    attrs = fcu_attributes(99, false);
+                    attrs.max_block_bytes = Some(124_000);
+                }
+                _ => {
+                    attrs = fcu_attributes(99, false);
+                    attrs.forced_transaction = Some(raw.clone());
                 }
             }
             let response = rpc_call(
@@ -739,6 +780,15 @@ mod tests {
             )
             .await;
             assert_eq!(response["error"]["code"], code, "case {case}: {response}");
+            if case >= 14 {
+                // reth reports invalid params as the message "Invalid params" with the
+                // validation error text under `data.err`.
+                assert_eq!(
+                    response["error"]["data"]["err"],
+                    format!("Invalid params: {}", EtnaBuildFieldsBeforeEtna::MESSAGE),
+                    "case {case}: {response}"
+                );
+            }
         }
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
         let db = provider.provider().unwrap();

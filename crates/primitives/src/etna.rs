@@ -87,9 +87,10 @@ pub fn validate_etna_extra_data(
 
 /// Error returned when a pre-Etna payload job carries an Etna-only build attribute.
 ///
-/// `forcedTransaction` and `maxBlockBytes` exist only for Etna targets. Both payload-job
-/// normalization and Engine API attribute validation reject them before Etna with this error, which
-/// drivers receive as an invalid-parameters (`-32602`) response.
+/// `forcedTransaction` and `maxBlockBytes` exist only for Etna targets. Engine API attribute
+/// validation rejects either one before Etna with this error, which drivers receive as an
+/// invalid-parameters (`-32602`) response before any payload job starts. Payload-job
+/// normalization applies the same rule and reports [`Self::MESSAGE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EtnaBuildFieldsBeforeEtna;
 

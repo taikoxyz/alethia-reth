@@ -407,6 +407,32 @@ pub async fn hash_at(http: &impl ClientT, number: u64) -> eyre::Result<Option<B2
     block_hash(http, serde_json::to_value(alloy_primitives::U64::from(number))?).await
 }
 
+/// Polls `eth_getBlockByNumber(number)` every 50 ms until it returns null, for at most 30 s.
+///
+/// A rewind moves the head at once, but the node removes the persisted blocks above the new head
+/// in the background, so they stay readable for a while.
+pub async fn wait_until_absent(http: &impl ClientT, number: u64) {
+    let mut poll = tokio::time::interval(Duration::from_millis(50));
+    let mut last = String::new();
+    let removed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            poll.tick().await;
+            match hash_at(http, number).await {
+                Ok(None) => break,
+                Ok(Some(hash)) => last = format!("block {hash}"),
+                // A read that races the removal counts as not yet removed.
+                Err(error) => last = format!("read error {error:#}"),
+            }
+        }
+    })
+    .await;
+    assert!(
+        removed.is_ok(),
+        "block {number} was still readable 30 s after the rewind (last answer: {last}): the \
+         background removal of the blocks above the new head did not finish"
+    );
+}
+
 /// The block hash `eth_getBlockByNumber` reports for a tag such as `"finalized"`.
 pub async fn hash_of_tag(http: &impl ClientT, tag: &str) -> eyre::Result<Option<B256>> {
     block_hash(http, tag.into()).await

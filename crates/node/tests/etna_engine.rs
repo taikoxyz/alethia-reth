@@ -402,9 +402,10 @@ fn etna_one_shot_rewind_moves_the_head_back_and_survives_restarts() -> eyre::Res
         let status = fcu(&client, c, c, None).await?;
         assert!(status.payload_status.status.is_valid(), "{status:?}");
         assert_eq!(status.payload_id, None);
+        // The head moves before the FCU answers; the blocks above it leave the disk later.
         assert_eq!(head_number(&http).await?, 1);
         assert_eq!(hash_at(&http, 1).await?, Some(c));
-        assert_eq!(hash_at(&http, 2).await?, None);
+        wait_until_absent(&http, 2).await;
         el.stop().await?;
 
         // A normal restart keeps the rewind, with c as the latest, safe and finalized block.
@@ -475,7 +476,7 @@ fn etna_fcu_to_a_canonical_ancestor_builds_on_it_and_unwinds_only_with_the_rewin
             build_at(&client, spec.clone(), &chain[1], chain[0].timestamp, c, child_of_c).await?;
         assert_eq!(built.block.hash(), probe.block.hash());
         assert_eq!(head_number(&http).await?, 1);
-        assert_eq!(hash_at(&http, 2).await?, None);
+        wait_until_absent(&http, 2).await;
         canonicalize(&client, built.block.hash(), &built).await?;
         assert_eq!(head_number(&http).await?, 2);
         assert_eq!(hash_at(&http, 2).await?, Some(built.block.hash()));

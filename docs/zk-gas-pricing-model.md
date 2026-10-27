@@ -155,6 +155,13 @@ receipt report, quote, SP1 report and measurement status. Those digests identify
 experiment files; the compact manifest does not contain their full witnesses or independently
 replay them during generation. Two subsequently selected holdouts are outside the fit manifest.
 
+The exact 30 fit inputs, two holdouts, original observations and successor quotes are preserved in
+the immutable [MULMOD fixture Release](https://github.com/taikoxyz/raiko2-atlas/releases/tag/fixture-unzen-mulmod-operand-boundaries-v1).
+Its [pinned metadata](https://github.com/taikoxyz/raiko2-atlas/tree/e01443f794fe52af864ea0081d0d4d9b01e41514/fixtures/benchmarks/unzen-mulmod-operand-boundaries-v1)
+records compressed/decoded lengths, checksums and archive-relative sample paths. The optional
+historical asset adds successor observations and references the existing mainnet input archive;
+it does not duplicate those inputs or prescribe a regression runner.
+
 For each record, let `Q` be its parent complete-proposal price before ceiling, `A` its actual PGU,
 `N` its observed MULMOD count and `C = 269.073027078518685466`. The required per-event price is
 `max(C, C + (A - Q) / N)`. The chosen floor is `ceil_to_100(max(required) * 5/4)`, computed with

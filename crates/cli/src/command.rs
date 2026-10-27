@@ -111,8 +111,8 @@ impl<C: ChainSpecParser, Ext: clap::Args + fmt::Debug> TaikoNodeCommand<C, Ext> 
 
 /// Applies `--devnet-etna-timestamp` to `chain`.
 ///
-/// Only the canonical Taiko devnet accepts the override. Any other chain keeps its schedule and
-/// logs a warning, so a misconfigured node does not silently start with Etna off.
+/// Canonical Taiko devnet and alloc-only variants accept the override. Other chains keep their
+/// schedule and log a warning, so a misconfigured node does not silently start with Etna off.
 fn apply_devnet_etna_override<S: TaikoDevnetConfigExt>(chain: &mut Arc<S>, timestamp: Option<u64>) {
     let Some(timestamp) = timestamp else { return };
     match chain.clone_with_devnet_etna_timestamp(timestamp) {
@@ -120,7 +120,7 @@ fn apply_devnet_etna_override<S: TaikoDevnetConfigExt>(chain: &mut Arc<S>, times
         None => tracing::warn!(
             target: "reth::taiko::cli",
             timestamp,
-            "Ignoring --devnet-etna-timestamp: it applies only to the canonical Taiko devnet"
+            "Ignoring --devnet-etna-timestamp: Genesis fields outside alloc must match canonical Taiko devnet"
         ),
     }
 }
@@ -221,6 +221,71 @@ mod tests {
     use alloy_hardforks::ForkCondition;
 
     use super::apply_devnet_etna_override;
+
+    #[test]
+    fn parsed_custom_devnet_json_requires_the_explicit_etna_flag() {
+        use std::io::Write;
+
+        use alloy_consensus::BlockHeader;
+        use clap::Parser;
+        use reth::chainspec::EthChainSpec;
+        use reth_cli_commands::NodeCommand;
+
+        use crate::{TaikoChainSpecParser, TaikoCliExtArgs, command::TaikoNodeExtArgs};
+
+        // Parsing `NodeCommand` directly locks reth's global engine defaults; set them first, as
+        // the production entrypoints do.
+        crate::command::disable_state_masking_by_default();
+        let _lock = crate::tests::env_lock();
+        unsafe { std::env::remove_var("ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP") };
+        let mut json = serde_json::to_value(TAIKO_DEVNET.genesis()).unwrap();
+        json["alloc"]["0x1670010000000000000000000000000000010001"] = serde_json::json!({
+            "balance": "0x2a", "nonce": "0x1", "code": "0x60015f5500"
+        });
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "{json}").unwrap();
+        let path = file.path().to_str().unwrap();
+        let mut plain = NodeCommand::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_from([
+            "alethia-reth",
+            "--chain",
+            path,
+        ])
+        .unwrap();
+        let original = plain.chain.clone();
+        apply_devnet_etna_override(&mut plain.chain, plain.ext.devnet_etna_timestamp());
+        assert!(Arc::ptr_eq(&plain.chain, &original));
+        assert!(!plain.chain.is_etna_active(u64::MAX));
+        assert!(!plain.chain.is_unzen_active(0));
+        assert_eq!(plain.chain.genesis_header().requests_hash, None);
+
+        for timestamp in ["0", "100"] {
+            let mut command =
+                NodeCommand::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_from([
+                    "alethia-reth",
+                    "--chain",
+                    path,
+                    "--devnet-etna-timestamp",
+                    timestamp,
+                ])
+                .unwrap();
+            apply_devnet_etna_override(&mut command.chain, command.ext.devnet_etna_timestamp());
+            let timestamp: u64 = timestamp.parse().unwrap();
+            assert!(command.chain.is_unzen_active(0));
+            assert_eq!(command.chain.is_etna_active(0), timestamp == 0);
+            if timestamp > 0 {
+                assert!(!command.chain.is_etna_active(timestamp - 1));
+            }
+            assert!(command.chain.is_etna_active(timestamp));
+            assert_eq!(command.chain.genesis(), original.genesis());
+            assert_eq!(
+                command.chain.genesis_header().state_root(),
+                original.genesis_header().state_root()
+            );
+            assert_ne!(command.chain.genesis_hash(), original.genesis_hash());
+            assert_ne!(command.chain.genesis_hash(), TAIKO_DEVNET.genesis_hash());
+            assert!(command.chain.genesis_header().requests_hash.is_some());
+        }
+    }
 
     #[test]
     fn devnet_etna_override_applies_only_to_the_canonical_devnet() {

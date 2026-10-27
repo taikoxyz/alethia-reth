@@ -259,6 +259,22 @@ where
 /// the persisted boundary wait for it, so chunks stay small enough to release it within seconds.
 pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 2_000;
 
+/// Outcome of [`backfill_proof_history_window`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProofHistoryBackfill {
+    /// Storage retains the full window.
+    Complete,
+    /// Reth's persisted best block is below the stored earliest block, so the block the backfill
+    /// continues from is not on disk. A reorg below the persisted boundary does this: reth unwinds
+    /// its database and keeps the replacement blocks in memory until the next persistence.
+    WaitForPersistedEarliest {
+        /// Stored earliest block the backfill continues from.
+        earliest: u64,
+        /// Reth's persisted best block.
+        on_disk_best: u64,
+    },
+}
+
 /// Extends proof-history storage backward from reth changesets until it retains the window the
 /// pruner keeps.
 ///
@@ -277,6 +293,11 @@ pub(super) const PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS: u64 = 2_000;
 /// the window is already full. Runs in chunks of `chunk_blocks` blocks, each against a fresh reth
 /// provider, and logs the overall progress once per chunk.
 ///
+/// Returns [`ProofHistoryBackfill::WaitForPersistedEarliest`] without touching storage while
+/// reth's persisted best block is below the stored earliest block. Backfilling then would read
+/// headers and changesets reth no longer has on disk; the caller retries once reth persists past
+/// the earliest block again.
+///
 /// The backfill does not observe node shutdown: a first backfill over a large window can outlast a
 /// container's termination grace period and be killed. That is safe, since a kill loses at most
 /// the open batch and the next start resumes from the stored earliest block.
@@ -285,7 +306,7 @@ pub(super) fn backfill_proof_history_window<Provider, Storage>(
     storage: Storage,
     window: u64,
     chunk_blocks: u64,
-) -> eyre::Result<()>
+) -> eyre::Result<ProofHistoryBackfill>
 where
     Provider: DatabaseProviderFactory,
     Provider::Provider: BlockHashReader
@@ -304,7 +325,13 @@ where
         let on_disk_best = db_provider.best_block_number()?;
         let target = latest.number.max(on_disk_best).saturating_sub(window);
         if earliest.number <= target {
-            return Ok(());
+            return Ok(ProofHistoryBackfill::Complete);
+        }
+        if on_disk_best < earliest.number {
+            return Ok(ProofHistoryBackfill::WaitForPersistedEarliest {
+                earliest: earliest.number,
+                on_disk_best,
+            });
         }
 
         let chunk_target = target.max(earliest.number.saturating_sub(chunk_blocks.max(1)));
@@ -721,6 +748,55 @@ mod tests {
         assert_eq!(earliest(&storage), 2);
 
         backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap();
+        assert_eq!(earliest(&storage), 1);
+    }
+
+    #[test]
+    fn backfill_waits_while_reth_db_is_below_stored_earliest() {
+        use reth_provider::BlockExecutionWriter;
+
+        let (factory, headers) = chain_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let storage = open_proof_history_storage(dir.path()).unwrap();
+        initialize_proof_history_storage(&factory, storage.clone()).unwrap();
+        assert_eq!(earliest(&storage), 4);
+
+        // A reorg below the persisted boundary unwinds reth's database under the initialized
+        // store: blocks 3 and 4 leave the disk while the store still starts at 4.
+        let provider_rw = factory.provider_rw().unwrap();
+        provider_rw.remove_block_and_execution_above(2).unwrap();
+        provider_rw.commit().unwrap();
+        assert_eq!(factory.database_provider_ro().unwrap().best_block_number().unwrap(), 2);
+
+        assert_eq!(
+            backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap(),
+            ProofHistoryBackfill::WaitForPersistedEarliest { earliest: 4, on_disk_best: 2 }
+        );
+        let ro = storage.provider_ro().unwrap();
+        assert_eq!(ro.get_earliest_block().unwrap(), BlockNumHash::new(4, headers[4].hash()));
+        assert_eq!(ro.get_latest_block().unwrap(), BlockNumHash::new(4, headers[4].hash()));
+        drop(ro);
+
+        // Once reth persists blocks 3 and 4 again, the backfill fills the window.
+        let mut data = BlockchainTestData::default();
+        data.blocks.truncate(4);
+        let provider_rw = factory.provider_rw().unwrap();
+        for (block, outcome) in &data.blocks[2..] {
+            provider_rw
+                .append_blocks_with_state(
+                    vec![block.clone()],
+                    outcome,
+                    outcome.hash_state_slow::<KeccakKeyHasher>().into_sorted(),
+                )
+                .unwrap();
+        }
+        provider_rw.update_pipeline_stages(4, false).unwrap();
+        provider_rw.commit().unwrap();
+
+        assert_eq!(
+            backfill_proof_history_window(&factory, storage.clone(), 3, 1).unwrap(),
+            ProofHistoryBackfill::Complete
+        );
         assert_eq!(earliest(&storage), 1);
     }
 }

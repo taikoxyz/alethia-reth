@@ -48,10 +48,6 @@ pub(super) enum ExecutionOutcome {
 pub(super) struct PoolExecutionContext<'a> {
     /// Prebuilt anchor transaction required before Etna and forbidden after activation.
     pub(super) anchor_tx: Option<&'a Recovered<EthTransactionSigned>>,
-    /// Forced transaction of an Etna mixed build, executed at position 0 before pool selection
-    /// (see [`execute_forced_transaction`]). `None` for a pool build, and always `None` before
-    /// Etna, where attribute normalization rejects it.
-    pub(super) forced_tx: Option<&'a Recovered<EthTransactionSigned>>,
     /// The parent block header.
     pub(super) parent_header: &'a RethHeader,
     /// Digest of the parent and the block environment this payload executes in, before the
@@ -73,76 +69,11 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) tx_bytes_budget: Option<u64>,
 }
 
-/// How a transaction from a given list fared against the block being built.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ListedTxOutcome {
-    /// The transaction executed and is committed to the block.
-    Included {
-        /// Gas the transaction used.
-        gas_used: u64,
-        /// Block-body size of the transaction in bytes, its [`Encodable::length`].
-        tx_bytes: u64,
-    },
-    /// The transaction was left out for a transaction-level reason (unsupported type, larger
-    /// than the remaining byte budget, invalid against the current state, or a gas limit above
-    /// the block's remaining gas); it left no state and no receipt.
-    LeftOut,
-    /// The transaction exceeded the block zk gas limit and was not committed.
-    ZkOverflow,
-}
-
-/// Executes one transaction from a given list and classifies the result.
-///
-/// A transaction whose block-body size exceeds `remaining_tx_bytes` is left out without being
-/// executed; `None` disables the byte check and the bound is inclusive. Transaction-level failures
-/// are outcomes, never errors: only a failure that is not about the transaction itself (for
-/// example a state read error) is returned as `Err`, so it fails the build.
-pub(super) fn execute_listed_transaction(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
-    tx: &Recovered<EthTransactionSigned>,
-    remaining_tx_bytes: Option<u64>,
-) -> Result<ListedTxOutcome, PayloadBuilderError> {
-    if !is_allowed_tx_type(tx.inner()) {
-        trace!(target: "payload_builder", ?tx, "leaving out unsupported transaction type");
-        return Ok(ListedTxOutcome::LeftOut);
-    }
-
-    let tx_bytes = tx.inner().length() as u64;
-    if let Some(remaining) = remaining_tx_bytes &&
-        tx_bytes > remaining
-    {
-        trace!(target: "payload_builder", ?tx, tx_bytes, remaining, "leaving out transaction larger than the remaining byte budget");
-        return Ok(ListedTxOutcome::LeftOut);
-    }
-
-    match builder.execute_transaction(tx.clone()) {
-        Ok(gas_output) => {
-            Ok(ListedTxOutcome::Included { gas_used: gas_output.tx_gas_used(), tx_bytes })
-        }
-        Err(err) if is_zk_gas_limit_exceeded(&err) => {
-            trace!(target: "payload_builder", ?tx, "listed transaction exceeded the zk gas limit");
-            Ok(ListedTxOutcome::ZkOverflow)
-        }
-        Err(BlockExecutionError::Validation(
-            BlockValidationError::InvalidTx { .. } |
-            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
-        )) => {
-            trace!(target: "payload_builder", ?tx, "leaving out invalid transaction");
-            Ok(ListedTxOutcome::LeftOut)
-        }
-        Err(err) => {
-            warn!(target: "payload_builder", ?tx, %err, "fatal error executing transaction");
-            Err(PayloadBuilderError::evm(err))
-        }
-    }
-}
-
 /// Executes a given transaction list in order.
 ///
-/// Each transaction goes through [`execute_listed_transaction`] with what is left of
-/// `tx_bytes_budget` (`None` disables the byte bound): a left-out transaction is skipped, the
-/// first zk overflow ends the list, and a non-transaction error fails the build. Cancellation is
-/// checked before every transaction.
+/// Transactions larger than the remaining `tx_bytes_budget` are left out (`None` disables the
+/// byte bound). Transaction validation failures are skipped, the first zk overflow ends the
+/// list, and non-transaction errors fail the build. Cancellation is checked before each item.
 pub(super) fn execute_provided_transactions(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
     transactions: &[Recovered<EthTransactionSigned>],
@@ -158,96 +89,42 @@ pub(super) fn execute_provided_transactions(
             return Ok(ExecutionOutcome::Cancelled);
         }
 
-        match execute_listed_transaction(builder, tx, remaining_tx_bytes)? {
-            ListedTxOutcome::Included { gas_used, tx_bytes } => {
-                let miner_fee = tx
-                    .effective_tip_per_gas(base_fee)
-                    .ok_or_else(|| missing_tip_error(base_fee))?;
-                total_fees += U256::from(miner_fee) * U256::from(gas_used);
-                remaining_tx_bytes = remaining_tx_bytes.map(|left| left.saturating_sub(tx_bytes));
-            }
-            ListedTxOutcome::LeftOut => {}
-            ListedTxOutcome::ZkOverflow => {
+        if !is_allowed_tx_type(tx.inner()) {
+            trace!(target: "payload_builder", ?tx, "leaving out unsupported transaction type");
+            continue;
+        }
+        let tx_bytes = tx.inner().length() as u64;
+        if remaining_tx_bytes.is_some_and(|remaining| tx_bytes > remaining) {
+            trace!(target: "payload_builder", ?tx, tx_bytes, "leaving out transaction larger than the remaining byte budget");
+            continue;
+        }
+        let gas_used = match builder.execute_transaction(tx.clone()) {
+            Ok(gas_output) => gas_output.tx_gas_used(),
+            Err(err) if is_zk_gas_limit_exceeded(&err) => {
                 debug!(target: "payload_builder", ?tx, "stopping given-list payload after zk gas exhaustion");
                 break;
             }
-        }
+            Err(BlockExecutionError::Validation(
+                BlockValidationError::InvalidTx { .. } |
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. },
+            )) => {
+                trace!(target: "payload_builder", ?tx, "leaving out invalid transaction");
+                continue;
+            }
+            Err(err) => return Err(PayloadBuilderError::evm(err)),
+        };
+        let tip = tx.effective_tip_per_gas(base_fee).ok_or_else(|| missing_tip_error(base_fee))?;
+        total_fees += U256::from(tip) * U256::from(gas_used);
+        remaining_tx_bytes = remaining_tx_bytes.map(|left| left.saturating_sub(tx_bytes));
     }
 
     Ok(ExecutionOutcome::Completed(total_fees))
 }
 
-/// Where pool selection starts: the execution state, the budgets left to pool transactions, and
-/// the fees already collected.
-#[derive(Debug, Clone, Copy)]
-struct PoolSelectionStart {
-    /// Digest of the execution state the first pool candidate runs against.
-    state_seed: B256,
-    /// Gas left to pool transactions, passed to selection as
-    /// [`TxSelectionConfig::gas_limit_per_list`].
-    gas_limit: u64,
-    /// Transaction bytes left to pool transactions, passed to selection as
-    /// [`TxSelectionConfig::max_tx_bytes_per_list`]; `None` disables the bound.
-    tx_bytes_budget: Option<u64>,
-    /// Tips collected from transactions executed before pool selection.
-    fees: U256,
-}
-
-/// Executes the forced transaction of an Etna mixed build at position 0 and returns where pool
-/// selection starts after it.
-///
-/// `full` holds the build's full budgets and the selection state before any transaction. The
-/// forced transaction runs on the real pre-block state through [`execute_listed_transaction`] with
-/// `full.tx_bytes_budget`, exactly as the given-list build of that transaction alone runs it, so
-/// it is included exactly when that build includes it:
-/// - Included: its tip is collected, the selection state advances past it, and its gas and bytes
-///   come off the pool's budgets.
-/// - Left out or zk overflow: it is not at position 0 and the pool keeps `full`. After a zk
-///   overflow the exhaustion is cleared, so pool selection can run. A copy the pool also holds may
-///   still be selected later in the block, as an ordinary pool transaction.
-///
-/// Remembered zk overflows apply to pool candidates only; the forced transaction runs first on the
-/// real pre-block state, so this step takes no overflow memory.
-fn execute_forced_transaction(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives, Executor: TxSelectionExecutor>,
-    forced_tx: &Recovered<EthTransactionSigned>,
-    base_fee: u64,
-    full: PoolSelectionStart,
-    payload_id: &str,
-) -> Result<PoolSelectionStart, PayloadBuilderError> {
-    let tx_hash = *forced_tx.tx_hash();
-    match execute_listed_transaction(builder, forced_tx, full.tx_bytes_budget)? {
-        ListedTxOutcome::Included { gas_used, tx_bytes } => {
-            debug!(target: "payload_builder", id=%payload_id, ?tx_hash, gas_used, tx_bytes, "included the forced transaction at position 0");
-            let tip = forced_tx
-                .effective_tip_per_gas(base_fee)
-                .ok_or_else(|| missing_tip_error(base_fee))?;
-            Ok(PoolSelectionStart {
-                state_seed: advance_selection_state(full.state_seed, tx_hash),
-                gas_limit: full.gas_limit.saturating_sub(gas_used),
-                tx_bytes_budget: full.tx_bytes_budget.map(|left| left.saturating_sub(tx_bytes)),
-                fees: full.fees + U256::from(tip) * U256::from(gas_used),
-            })
-        }
-        ListedTxOutcome::LeftOut => {
-            debug!(target: "payload_builder", id=%payload_id, ?tx_hash, "left out the forced transaction");
-            Ok(full)
-        }
-        ListedTxOutcome::ZkOverflow => {
-            debug!(target: "payload_builder", id=%payload_id, ?tx_hash, "left out the forced transaction after it exceeded the zk gas limit");
-            builder.executor_mut().clear_zk_gas_exhaustion();
-            Ok(full)
-        }
-    }
-}
-
 /// Executes fork-aware pool transactions until exhaustion or cancellation.
 ///
 /// Legacy payloads validate and execute their supplied anchor before pool selection. Etna payloads
-/// require no anchor. An Etna mixed build first runs its forced transaction
-/// ([`execute_forced_transaction`]); pool selection then gets the gas and transaction bytes it
-/// left, or the full budgets ([`PoolExecutionContext::gas_limit`] and
-/// [`PoolExecutionContext::tx_bytes_budget`]) when it was left out or there is none.
+/// require no anchor and begin ordinary selection with the caller-supplied full gas budget.
 pub(super) fn execute_pool_transactions<Client, Pool>(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives, Executor: TxSelectionExecutor>,
     pool: &Pool,
@@ -266,24 +143,11 @@ where
         >,
 {
     let chain_spec = client.chain_spec();
-    let full = PoolSelectionStart {
-        state_seed: ctx.block_state_seed,
-        gas_limit: ctx.gas_limit,
-        tx_bytes_budget: ctx.tx_bytes_budget,
-        fees: U256::ZERO,
-    };
-    let start = if chain_spec.is_etna_active(ctx.block_timestamp) {
-        // Etna attribute normalization already rejects an anchor, so only a mixed build's forced
-        // transaction runs before selection.
-        debug!(target: "payload_builder", id=%ctx.payload_id, mixed = ctx.forced_tx.is_some(), "selecting anchorless Etna transactions");
-        match ctx.forced_tx {
-            Some(forced_tx) => {
-                execute_forced_transaction(builder, forced_tx, ctx.base_fee, full, &ctx.payload_id)?
-            }
-            None => full,
-        }
+    let state_seed = if chain_spec.is_etna_active(ctx.block_timestamp) {
+        // Etna attribute normalization already rejects an anchor, so selection starts directly.
+        debug!(target: "payload_builder", id=%ctx.payload_id, "selecting anchorless Etna transactions");
+        ctx.block_state_seed
     } else {
-        debug_assert!(ctx.forced_tx.is_none(), "forced transactions are Etna only");
         let anchor_tx = ctx.anchor_tx.ok_or_else(|| {
             warn!(target: "payload_builder", id=%ctx.payload_id, "missing prebuilt anchor transaction in new mode");
             PayloadBuilderError::MissingPayload
@@ -320,27 +184,21 @@ where
             }
         }
 
-        // The anchor committed above, so selection starts from the state after it. The legacy
-        // anchor's gas is already reserved out of `ctx.gas_limit`.
-        PoolSelectionStart {
-            state_seed: advance_selection_state(ctx.block_state_seed, *anchor_tx.tx_hash()),
-            ..full
-        }
+        // The anchor committed above, so selection starts from the state after it.
+        advance_selection_state(ctx.block_state_seed, *anchor_tx.tx_hash())
     };
 
-    // Use the shared transaction selection logic for pool transactions. The gas limit is the gas
-    // left after any forced transaction, so selection's own gas check, not the executor's block
-    // gas error, rejects a pool transaction that no longer fits.
+    // Use the shared transaction selection logic for pool transactions.
     let config = TxSelectionConfig {
         base_fee: ctx.base_fee,
-        gas_limit_per_list: start.gas_limit,
+        gas_limit_per_list: ctx.gas_limit,
         max_da_bytes_per_list: BYTES_PER_BLOB as u64,
         da_size_zlib_guard_bytes: DEFAULT_DA_ZLIB_GUARD_BYTES,
         max_lists: 1,
         min_tip: 0,
         locals: vec![],
-        state_seed: start.state_seed,
-        max_tx_bytes_per_list: start.tx_bytes_budget,
+        state_seed,
+        max_tx_bytes_per_list: ctx.tx_bytes_budget,
     };
 
     match select_and_execute_pool_transactions(builder, pool, &config, ctx.zk_overflows, || {
@@ -348,16 +206,16 @@ where
     }) {
         Ok(SelectionOutcome::Cancelled) => Ok(ExecutionOutcome::Cancelled),
         Ok(SelectionOutcome::Completed(lists)) => {
-            // Add the fees of the executed pool transactions to those collected before selection.
+            // Calculate total fees from the executed transactions.
             let total_fees = match lists.first() {
-                Some(list) => list.transactions.iter().try_fold(start.fees, |acc, etx| {
+                Some(list) => list.transactions.iter().try_fold(U256::ZERO, |acc, etx| {
                     let tip = etx
                         .tx
                         .effective_tip_per_gas(ctx.base_fee)
                         .ok_or_else(|| missing_tip_error(ctx.base_fee))?;
                     Ok::<_, PayloadBuilderError>(acc + U256::from(tip) * U256::from(etx.gas_used))
                 })?,
-                None => start.fees,
+                None => U256::ZERO,
             };
             Ok(ExecutionOutcome::Completed(total_fees))
         }
@@ -594,7 +452,6 @@ mod tests {
             &client,
             &PoolExecutionContext {
                 anchor_tx: Some(&anchor_tx),
-                forced_tx: None,
                 parent_header: &parent_header,
                 block_state_seed: B256::ZERO,
                 block_timestamp: 1,
@@ -673,7 +530,6 @@ mod tests {
             &client,
             &PoolExecutionContext {
                 anchor_tx: Some(&anchor_tx),
-                forced_tx: None,
                 parent_header: &parent_header,
                 block_state_seed,
                 block_timestamp: 1,
@@ -761,7 +617,6 @@ mod tests {
             &test_client((**chain_spec).clone()),
             &PoolExecutionContext {
                 anchor_tx: Some(anchor_tx),
-                forced_tx: None,
                 parent_header: &parent_header,
                 block_state_seed: selection_state_seed(B256::repeat_byte(0x66), &env, &[]),
                 block_timestamp: timestamp,
@@ -851,7 +706,6 @@ mod tests {
                 &test_client((*spec).clone()),
                 &PoolExecutionContext {
                     anchor_tx: None,
-                    forced_tx: None,
                     parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
                     block_state_seed: B256::ZERO,
                     block_timestamp: 1,
@@ -944,23 +798,27 @@ mod tests {
     }
 
     #[test]
-    fn execute_listed_transaction_classifies_each_outcome() {
+    fn singleton_given_list_includes_valid_transactions_and_leaves_invalid_ones_empty() {
         let funded = Address::with_last_byte(0x50);
         let unfunded = Address::with_last_byte(0x51);
         let success = recovered_tx(funded, BENCH_SUCCESS_TARGET, 0, 1);
         let success_len = success.inner().length() as u64;
 
-        // An executed transaction reports its gas and its block-body size; the byte bound is
-        // inclusive.
+        // A singleton build includes a valid transaction at the inclusive byte bound.
         for remaining in [None, Some(success_len)] {
             let mut builder = etna_builder(&[(funded, 0)]);
-            let outcome = execute_listed_transaction(&mut builder, &success, remaining)
-                .expect("a valid transaction should execute");
-            let ListedTxOutcome::Included { gas_used, tx_bytes } = outcome else {
-                panic!("a valid transaction should be included, got {outcome:?}")
+            let outcome = execute_provided_transactions(
+                &mut builder,
+                std::slice::from_ref(&success),
+                0,
+                remaining,
+                &CancelOnDrop::default(),
+            )
+            .expect("a valid transaction should execute");
+            let ExecutionOutcome::Completed(fees) = outcome else {
+                panic!("a singleton build must complete")
             };
-            assert!(gas_used > 0);
-            assert_eq!(tx_bytes, success_len);
+            assert!(fees > U256::ZERO);
             assert_eq!(builder.executor.receipts().len(), 1);
             assert_eq!(nonce_of(&mut builder, funded), 1);
         }
@@ -991,24 +849,54 @@ mod tests {
         ];
         for (case, tx, remaining) in cases {
             let mut builder = etna_builder(&[(funded, 0)]);
-            let outcome = execute_listed_transaction(&mut builder, &tx, remaining)
-                .unwrap_or_else(|err| panic!("{case}: a transaction-level failure errored: {err}"));
-            assert_eq!(outcome, ListedTxOutcome::LeftOut, "{case}");
+            let outcome = execute_provided_transactions(
+                &mut builder,
+                std::slice::from_ref(&tx),
+                0,
+                remaining,
+                &CancelOnDrop::default(),
+            )
+            .unwrap_or_else(|err| panic!("{case}: a transaction-level failure errored: {err}"));
+            assert!(
+                matches!(outcome, ExecutionOutcome::Completed(fees) if fees == U256::ZERO),
+                "{case}"
+            );
             assert!(builder.executor.receipts().is_empty(), "{case}: left a receipt");
             assert_eq!(nonce_of(&mut builder, tx.signer()), 0, "{case}: left state behind");
         }
 
+        let mut env = etna_evm_env();
+        env.block_env.basefee = 10;
+        let mut builder = etna_builder_with_env(&[(funded, 0)], env);
+        let outcome = execute_provided_transactions(
+            &mut builder,
+            std::slice::from_ref(&success),
+            10,
+            None,
+            &CancelOnDrop::default(),
+        )
+        .expect("a fee below the base fee produces an empty singleton build");
+        assert!(matches!(outcome, ExecutionOutcome::Completed(fees) if fees == U256::ZERO));
+        assert!(builder.executor.receipts().is_empty());
+        assert_eq!(nonce_of(&mut builder, funded), 0);
+
         let mut builder = etna_builder(&[(funded, 0)]);
         let limit = recovered_tx(funded, BENCH_LIMIT_TARGET, 0, 1);
-        let outcome = execute_listed_transaction(&mut builder, &limit, None)
-            .expect("a zk overflow is a transaction-level outcome");
-        assert_eq!(outcome, ListedTxOutcome::ZkOverflow);
+        let outcome = execute_provided_transactions(
+            &mut builder,
+            &[limit],
+            0,
+            None,
+            &CancelOnDrop::default(),
+        )
+        .expect("a zk overflow produces a completed empty singleton build");
+        assert!(matches!(outcome, ExecutionOutcome::Completed(fees) if fees == U256::ZERO));
         assert!(builder.executor.receipts().is_empty());
         assert_eq!(nonce_of(&mut builder, funded), 0);
     }
 
     #[test]
-    fn execute_listed_transaction_keeps_non_transaction_errors() {
+    fn singleton_given_list_keeps_non_transaction_errors() {
         let caller = Address::with_last_byte(0x52);
         let tx = recovered_tx(caller, BENCH_SUCCESS_TARGET, 0, 1);
         let builder_failing_with = |next_error| FirstTxErrorBuilder {
@@ -1018,9 +906,15 @@ mod tests {
 
         // The pre-Etna wrapping of a zk overflow is still an overflow.
         let mut builder = builder_failing_with(BlockExecutionError::other(ZkGasLimitExceeded));
-        let outcome = execute_listed_transaction(&mut builder, &tx, None)
-            .expect("a legacy-wrapped zk overflow is a transaction-level outcome");
-        assert_eq!(outcome, ListedTxOutcome::ZkOverflow);
+        let outcome = execute_provided_transactions(
+            &mut builder,
+            std::slice::from_ref(&tx),
+            0,
+            None,
+            &CancelOnDrop::default(),
+        )
+        .expect("a legacy-wrapped zk overflow produces an empty singleton build");
+        assert!(matches!(outcome, ExecutionOutcome::Completed(fees) if fees == U256::ZERO));
 
         // A failure that is not about the transaction is never turned into a left-out
         // transaction, whichever error shape carries it: an internal error, a fatal EVM error
@@ -1049,8 +943,15 @@ mod tests {
         ];
         for (case, failure) in failures {
             let mut builder = builder_failing_with(failure);
-            let err = execute_listed_transaction(&mut builder, &tx, None)
-                .expect_err("a non-transaction failure must fail the build");
+            let err = execute_provided_transactions(
+                &mut builder,
+                std::slice::from_ref(&tx),
+                0,
+                None,
+                &CancelOnDrop::default(),
+            )
+            .err()
+            .expect("a non-transaction failure must fail the build");
             assert!(err.to_string().contains("state read failed"), "{case}: {err}");
         }
     }
@@ -1114,7 +1015,6 @@ mod tests {
                 &test_client(etna_chain_spec()),
                 &PoolExecutionContext {
                     anchor_tx: None,
-                    forced_tx: None,
                     parent_header: &RethHeader { timestamp: 0, number: 0, ..Default::default() },
                     block_state_seed: B256::ZERO,
                     block_timestamp: 1,
@@ -1149,23 +1049,21 @@ mod tests {
         assert_eq!(b_nonce, 0);
     }
 
-    /// Parent header of the Etna pool and mixed-build tests; Etna selection does not read it.
+    /// Parent header of the Etna pool-build tests; Etna selection does not read it.
     static ETNA_PARENT: LazyLock<RethHeader> = LazyLock::new(RethHeader::default);
 
     /// Transaction byte budget of the Etna build tests that do not exercise the byte bound.
     const ETNA_TX_BYTES_BUDGET: Option<u64> = Some(100_000);
 
-    /// Returns the context of an Etna build: a mixed build of `forced_tx` when it is `Some` and a
-    /// pool build otherwise, with a zero base fee, the 30M gas limit of the Etna test environment,
+    /// Returns the context of an Etna pool build with a zero base fee and the 30M gas limit of
+    /// the Etna test environment,
     /// [`ETNA_TX_BYTES_BUDGET`], `zk_overflows` and `block_state_seed`.
     fn etna_build_ctx<'a>(
-        forced_tx: Option<&'a Recovered<EthTransactionSigned>>,
         zk_overflows: &'a ZkOverflowMemory,
         block_state_seed: B256,
     ) -> PoolExecutionContext<'a> {
         PoolExecutionContext {
             anchor_tx: None,
-            forced_tx,
             parent_header: &ETNA_PARENT,
             block_state_seed,
             block_timestamp: 1,
@@ -1230,11 +1128,8 @@ mod tests {
         let overflows = ZkOverflowMemory::default();
         let mut builder = etna_builder(&[(l_caller, 0), (s_caller, 0)]);
 
-        let total_fees = run_etna_build(
-            &mut builder,
-            &pool,
-            &etna_build_ctx(None, &overflows, block_state_seed),
-        );
+        let total_fees =
+            run_etna_build(&mut builder, &pool, &etna_build_ctx(&overflows, block_state_seed));
 
         // `l` overflowed and was left out; `s`, from another sender, was still selected.
         let receipts = builder.executor.receipts().to_vec();
@@ -1243,297 +1138,5 @@ mod tests {
         assert_eq!(nonce_of(&mut builder, l_caller), 0);
         assert_eq!(nonce_of(&mut builder, s_caller), 1);
         assert_eq!(overflows.state(&l_hash), Some(block_state_seed));
-    }
-
-    #[test]
-    fn mixed_build_includes_the_forced_transaction_exactly_when_its_singleton_build_does() {
-        let [fi_caller, unfunded, p_caller] = [0x62, 0x63, 0x64].map(Address::with_last_byte);
-        let accounts = [(fi_caller, 0), (p_caller, 0)];
-        // The forced transaction's calldata makes its gas differ from `p`'s.
-        let forced = |caller, to, nonce| {
-            recovered_tx_with_input(caller, to, nonce, 1, Bytes::from_static(&[1; 32]))
-        };
-        let cases = [
-            ("fits", 0, forced(fi_caller, BENCH_SUCCESS_TARGET, 0), true),
-            ("nonce gap", 0, forced(fi_caller, BENCH_SUCCESS_TARGET, 1), false),
-            ("unfunded sender", 0, forced(unfunded, BENCH_SUCCESS_TARGET, 0), false),
-            ("fee below the base fee", 10, forced(fi_caller, BENCH_SUCCESS_TARGET, 0), false),
-            ("zk overflow", 0, forced(fi_caller, BENCH_LIMIT_TARGET, 0), false),
-        ];
-        for (case, base_fee, fi, expect_included) in cases {
-            let mut env = etna_evm_env();
-            env.block_env.basefee = base_fee;
-            // `p` pays a tip of 10 above the base fee.
-            let pool = pool_with([recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, base_fee + 10)]);
-
-            let mut mixed = etna_builder_with_env(&accounts, env.clone());
-            let overflows = ZkOverflowMemory::default();
-            let mut ctx = etna_build_ctx(Some(&fi), &overflows, B256::ZERO);
-            ctx.base_fee = base_fee;
-            run_etna_build(&mut mixed, &pool, &ctx);
-
-            // The given-list build of the forced transaction alone, on the same pre-state.
-            let mut singleton = etna_builder_with_env(&accounts, env);
-            execute_provided_transactions(
-                &mut singleton,
-                std::slice::from_ref(&fi),
-                base_fee,
-                ETNA_TX_BYTES_BUDGET,
-                &CancelOnDrop::default(),
-            )
-            .unwrap_or_else(|err| panic!("{case}: the singleton build errored: {err}"));
-            let singleton_receipts = singleton.executor.receipts().to_vec();
-            assert_eq!(singleton_receipts.len() == 1, expect_included, "{case}: singleton");
-
-            let included = nonce_of(&mut mixed, fi.signer()) == 1;
-            assert_eq!(included, singleton_receipts.len() == 1, "{case}: mixed vs singleton");
-            assert_eq!(nonce_of(&mut mixed, p_caller), 1, "{case}: pool transaction");
-            let mixed_receipts = mixed.executor.receipts();
-            assert_eq!(mixed_receipts.len(), 1 + usize::from(included), "{case}");
-            if included {
-                // Receipt 0 is the forced transaction's, on the same pre-state: its gas matches the
-                // singleton build's and differs from `p`'s.
-                let fi_gas = singleton_receipts[0].cumulative_gas_used;
-                let p_gas =
-                    mixed_receipts[1].cumulative_gas_used - mixed_receipts[0].cumulative_gas_used;
-                assert_eq!(mixed_receipts[0].cumulative_gas_used, fi_gas, "{case}");
-                assert_ne!(fi_gas, p_gas, "{case}");
-            }
-        }
-    }
-
-    #[test]
-    fn mixed_build_never_skips_the_forced_transaction_for_a_remembered_overflow() {
-        let fi_caller = Address::with_last_byte(0x65);
-        // The test pool takes no fee cap below 7 wei.
-        let fi = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 10);
-        let fi_hash = *fi.tx_hash();
-        let block_state_seed = B256::repeat_byte(0x66);
-        // The forced transaction is remembered as overflowing at the very state it now runs on.
-        let overflows = ZkOverflowMemory::default();
-        overflows.record(fi_hash, block_state_seed);
-        // The pool holds it too, so pool selection keeps the memory entry.
-        let pool = pool_with([fi.clone()]);
-        let mut builder = etna_builder(&[(fi_caller, 0)]);
-
-        run_etna_build(
-            &mut builder,
-            &pool,
-            &etna_build_ctx(Some(&fi), &overflows, block_state_seed),
-        );
-
-        // It runs and fits; its pooled copy is not included again.
-        assert_eq!(builder.executor.receipts().len(), 1);
-        assert_eq!(nonce_of(&mut builder, fi_caller), 1);
-        assert_eq!(overflows.state(&fi_hash), Some(block_state_seed));
-    }
-
-    #[test]
-    fn mixed_build_leaves_out_a_failing_forced_transaction_and_selects_from_the_unadvanced_seed() {
-        let [fi_caller, l_caller, p_caller] = [0x66, 0x67, 0x73].map(Address::with_last_byte);
-        // `l` pays the higher tip, so it is the first pool candidate.
-        let l = recovered_tx(l_caller, BENCH_LIMIT_TARGET, 0, 20);
-        let l_hash = *l.tx_hash();
-        let pool = pool_with([l, recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10)]);
-        let block_state_seed = B256::repeat_byte(0x66);
-        let cases = [
-            ("zk overflow", recovered_tx(fi_caller, BENCH_LIMIT_TARGET, 0, 1)),
-            ("nonce gap", recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 1, 1)),
-        ];
-        for (case, fi) in cases {
-            let overflows = ZkOverflowMemory::default();
-            let mut builder = etna_builder(&[(fi_caller, 0), (l_caller, 0), (p_caller, 0)]);
-
-            // The step that runs the forced transaction never receives the overflow memory.
-            let total_fees = run_etna_build(
-                &mut builder,
-                &pool,
-                &etna_build_ctx(Some(&fi), &overflows, block_state_seed),
-            );
-
-            // The forced transaction is left out, and any zk gas exhaustion it caused is cleared,
-            // so `p` still runs and is the block's only transaction.
-            let receipts = builder.executor.receipts().to_vec();
-            assert_eq!(receipts.len(), 1, "{case}");
-            assert_eq!(total_fees, U256::from(10 * receipts[0].cumulative_gas_used), "{case}");
-            assert_eq!(nonce_of(&mut builder, fi_caller), 0, "{case}");
-            assert_eq!(nonce_of(&mut builder, p_caller), 1, "{case}");
-            // Pool selection starts from the state before any transaction: `l` overflowed there.
-            assert_eq!(overflows.state(&l_hash), Some(block_state_seed), "{case}");
-        }
-    }
-
-    #[test]
-    fn mixed_build_may_select_a_pooled_copy_of_a_left_out_forced_transaction_later() {
-        let fi_caller = Address::with_last_byte(0x74);
-        // The forced transaction is one nonce ahead of its sender, so it is left out of position
-        // 0. The pool holds a copy of it and the sender's transaction at the current nonce, and
-        // the copy's calldata makes its gas differ from that transaction's.
-        let current = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 10);
-        let fi = recovered_tx_with_input(
-            fi_caller,
-            BENCH_SUCCESS_TARGET,
-            1,
-            10,
-            Bytes::from_static(&[1; 32]),
-        );
-        let pool = pool_with([current, fi.clone()]);
-        let overflows = ZkOverflowMemory::default();
-        let mut builder = etna_builder(&[(fi_caller, 0)]);
-
-        run_etna_build(&mut builder, &pool, &etna_build_ctx(Some(&fi), &overflows, B256::ZERO));
-
-        // The pool runs the current nonce at position 0 and then the copy at position 1, as an
-        // ordinary pool transaction.
-        let receipts = builder.executor.receipts();
-        assert_eq!(receipts.len(), 2);
-        let first_gas = receipts[0].cumulative_gas_used;
-        assert!(first_gas < receipts[1].cumulative_gas_used - first_gas, "{receipts:?}");
-        assert_eq!(nonce_of(&mut builder, fi_caller), 2);
-    }
-
-    #[test]
-    fn mixed_build_seeds_pool_selection_after_the_forced_transaction() {
-        let [fi_caller, l_caller, p_caller] = [0x68, 0x69, 0x6a].map(Address::with_last_byte);
-        let fi = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 1);
-        // `l` pays the higher tip, so it is the first pool candidate after the forced transaction.
-        let l = recovered_tx(l_caller, BENCH_LIMIT_TARGET, 0, 20);
-        let p = recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10);
-        let l_hash = *l.tx_hash();
-        let pool = pool_with([l, p]);
-        let block_state_seed = B256::repeat_byte(0x66);
-        let overflows = ZkOverflowMemory::default();
-        let mut builder = etna_builder(&[(fi_caller, 0), (l_caller, 0), (p_caller, 0)]);
-
-        run_etna_build(
-            &mut builder,
-            &pool,
-            &etna_build_ctx(Some(&fi), &overflows, block_state_seed),
-        );
-
-        // The forced transaction and `p`; `l` overflowed at the state right after the forced
-        // transaction.
-        assert_eq!(builder.executor.receipts().len(), 2);
-        assert_eq!(
-            overflows.state(&l_hash),
-            Some(advance_selection_state(block_state_seed, *fi.tx_hash()))
-        );
-    }
-
-    #[test]
-    fn mixed_build_gives_pool_selection_only_the_gas_left_after_the_forced_transaction() {
-        let [fi_caller, p_caller] = [0x6b, 0x6c].map(Address::with_last_byte);
-        // Both transactions have a 5M gas limit, so `p` cannot follow the forced transaction in a
-        // 5.01M gas block.
-        let fi = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 1);
-        let pool = pool_with([recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10)]);
-        let mut env = etna_evm_env();
-        env.block_env.gas_limit = 5_010_000;
-        let mut builder = etna_builder_with_env(&[(fi_caller, 0), (p_caller, 0)], env);
-        let overflows = ZkOverflowMemory::default();
-        let mut ctx = etna_build_ctx(Some(&fi), &overflows, B256::ZERO);
-        ctx.gas_limit = 5_010_000;
-
-        // Selection's own gas check leaves `p` out; the executor's block gas error would be fatal.
-        run_etna_build(&mut builder, &pool, &ctx);
-
-        assert_eq!(builder.executor.receipts().len(), 1);
-        assert_eq!(nonce_of(&mut builder, fi_caller), 1);
-        assert_eq!(nonce_of(&mut builder, p_caller), 0);
-    }
-
-    #[test]
-    fn mixed_build_gives_pool_selection_only_the_bytes_left_after_the_forced_transaction() {
-        let [fi_caller, p_caller] = [0x6d, 0x6e].map(Address::with_last_byte);
-        let fi = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 1);
-        let p = recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10);
-        let pool = pool_with([p.clone()]);
-        let fi_len = fi.inner().length() as u64;
-        let p_len = pooled_len(&pool, &p);
-
-        // The bound is inclusive: both fit in exactly their summed length, and `p` does not fit
-        // in one byte less.
-        for (budget, p_included) in [(fi_len + p_len, true), (fi_len + p_len - 1, false)] {
-            let mut builder = etna_builder(&[(fi_caller, 0), (p_caller, 0)]);
-            let overflows = ZkOverflowMemory::default();
-            let mut ctx = etna_build_ctx(Some(&fi), &overflows, B256::ZERO);
-            ctx.tx_bytes_budget = Some(budget);
-
-            run_etna_build(&mut builder, &pool, &ctx);
-
-            assert_eq!(nonce_of(&mut builder, fi_caller), 1, "budget {budget}");
-            assert_eq!(nonce_of(&mut builder, p_caller), u64::from(p_included), "budget {budget}");
-        }
-    }
-
-    #[test]
-    fn mixed_build_gives_pool_selection_the_full_budgets_when_the_forced_transaction_is_left_out() {
-        let [fi_caller, p_caller] = [0x6f, 0x70].map(Address::with_last_byte);
-        let p = recovered_tx(p_caller, BENCH_SUCCESS_TARGET, 0, 10);
-        let pool = pool_with([p.clone()]);
-        let p_len = pooled_len(&pool, &p);
-        let large_input = Bytes::from(vec![0_u8; p_len as usize]);
-        let cases = [
-            ("nonce gap", recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 1, 1)),
-            ("zk overflow", recovered_tx(fi_caller, BENCH_LIMIT_TARGET, 0, 1)),
-            (
-                "larger than the byte budget",
-                recovered_tx_with_input(fi_caller, BENCH_SUCCESS_TARGET, 0, 1, large_input),
-            ),
-        ];
-        // The first two fit the byte budget, so they are left out only after running.
-        assert!(cases[..2].iter().all(|(_, fi)| fi.inner().length() as u64 <= p_len));
-        for (case, fi) in cases {
-            // Every transaction has a 5M gas limit and `p` alone fills the byte budget, so `p`
-            // fits only if the forced transaction leaves the gas and the bytes in full.
-            let mut env = etna_evm_env();
-            env.block_env.gas_limit = 5_010_000;
-            let mut builder = etna_builder_with_env(&[(fi_caller, 0), (p_caller, 0)], env);
-            let overflows = ZkOverflowMemory::default();
-            let mut ctx = etna_build_ctx(Some(&fi), &overflows, B256::ZERO);
-            ctx.gas_limit = 5_010_000;
-            ctx.tx_bytes_budget = Some(p_len);
-
-            run_etna_build(&mut builder, &pool, &ctx);
-
-            assert_eq!(builder.executor.receipts().len(), 1, "{case}");
-            assert_eq!(nonce_of(&mut builder, fi_caller), 0, "{case}");
-            assert_eq!(nonce_of(&mut builder, p_caller), 1, "{case}");
-        }
-    }
-
-    #[test]
-    fn mixed_build_with_an_empty_pool_builds_only_the_forced_transaction() {
-        let fi_caller = Address::with_last_byte(0x71);
-        let fi = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 7);
-        let overflows = ZkOverflowMemory::default();
-        let mut builder = etna_builder(&[(fi_caller, 0)]);
-
-        let total_fees = run_etna_build(
-            &mut builder,
-            &testing_pool(),
-            &etna_build_ctx(Some(&fi), &overflows, B256::ZERO),
-        );
-
-        let receipts = builder.executor.receipts();
-        assert_eq!(receipts.len(), 1);
-        assert!(receipts[0].success);
-        assert_eq!(total_fees, U256::from(7 * receipts[0].cumulative_gas_used));
-    }
-
-    #[test]
-    fn mixed_build_keeps_a_pooled_copy_of_the_forced_transaction_out_and_its_next_nonce_in() {
-        let fi_caller = Address::with_last_byte(0x72);
-        let fi = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 0, 10);
-        let next = recovered_tx(fi_caller, BENCH_SUCCESS_TARGET, 1, 10);
-        let pool = pool_with([fi.clone(), next]);
-        let overflows = ZkOverflowMemory::default();
-        let mut builder = etna_builder(&[(fi_caller, 0)]);
-
-        run_etna_build(&mut builder, &pool, &etna_build_ctx(Some(&fi), &overflows, B256::ZERO));
-
-        // The forced transaction once, at position 0, then its sender's next nonce.
-        assert_eq!(builder.executor.receipts().len(), 2);
-        assert_eq!(nonce_of(&mut builder, fi_caller), 2);
     }
 }

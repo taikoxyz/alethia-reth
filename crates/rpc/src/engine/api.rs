@@ -667,7 +667,6 @@ mod tests {
                 signature: [0; 65],
             },
             anchor_transaction: None,
-            forced_transaction: None,
             max_block_bytes: (timestamp >= 100).then_some(124_000),
         }
     }
@@ -882,37 +881,16 @@ mod tests {
         assert_missing_payload(&fcu_on(&module, hashes[1], 101).await);
     }
 
-    /// Returns the raw EIP-2718 bytes of a signed, recoverable EIP-1559 transaction.
-    fn signed_forced_transaction() -> Bytes {
-        use alloy_consensus::{SignableTransaction, Signed, TxEip1559};
-        use alloy_eips::eip2718::Encodable2718;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        let signer =
-            PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).expect("test key is valid");
-        let tx = TxEip1559 {
-            chain_id: 167_001,
-            gas_limit: 21_000,
-            max_fee_per_gas: 1_000_000_000,
-            to: alloy_primitives::TxKind::Call(Address::with_last_byte(0x21)),
-            ..Default::default()
-        };
-        let signature = signer.sign_hash_sync(&tx.signature_hash()).expect("test tx signs");
-        reth_ethereum::TransactionSigned::from(Signed::new_unhashed(tx, signature))
-            .encoded_2718()
-            .into()
-    }
-
     #[tokio::test]
     async fn invalid_fcu_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
         // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
-        // remaining cases fail Taiko's rules (-32602). Cases 8, 9, 14 and 15 target Unzen. reth
+        // remaining cases fail Taiko's rules (-32602). Cases 8, 9 and 12 target Unzen. reth
         // reports invalid params as the message "Invalid params" with the validation error text
         // under `data.err`, which is pinned for the Etna-only build fields on an Unzen target.
         let build_fields_before_etna =
             format!("Invalid params: {}", EtnaBuildFieldsBeforeEtna::MESSAGE);
-        let expected: [(i32, Option<&str>); 16] = [
+        let expected: [(i32, Option<&str>); 13] = [
             (-38003, None),
             (-32602, None),
             (-32602, None),
@@ -925,12 +903,8 @@ mod tests {
             (-32602, None),
             (-32602, None),
             (-32602, None),
-            (-32602, None),
-            (-32602, None),
-            (-32602, Some(&build_fields_before_etna)),
             (-32602, Some(&build_fields_before_etna)),
         ];
-        let raw = signed_forced_transaction();
         for (case, (code, data_err)) in expected.into_iter().enumerate() {
             let mut attrs = fcu_attributes(100, false);
             match case {
@@ -950,19 +924,10 @@ mod tests {
                 }
                 10 => attrs.max_block_bytes = None,
                 11 => attrs.max_block_bytes = Some(1_023),
-                12 => {
-                    attrs.forced_transaction = Some(raw.clone());
-                    attrs.block_metadata.tx_list = Some(Bytes::from_static(&[0xc0]));
-                }
-                13 => attrs.forced_transaction = Some(Bytes::from_static(&[0x02])),
-                // Etna-only build fields on an Unzen target.
-                14 => {
-                    attrs = fcu_attributes(99, false);
-                    attrs.max_block_bytes = Some(124_000);
-                }
+                // The Etna-only byte bound on an Unzen target.
                 _ => {
                     attrs = fcu_attributes(99, false);
-                    attrs.forced_transaction = Some(raw.clone());
+                    attrs.max_block_bytes = Some(124_000);
                 }
             }
             let response = rpc_call(

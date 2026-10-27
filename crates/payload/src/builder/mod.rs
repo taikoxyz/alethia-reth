@@ -366,7 +366,6 @@ where
 
             let ctx = PoolExecutionContext {
                 anchor_tx: attributes.anchor_transaction.as_ref(),
-                forced_tx: attributes.forced_transaction.as_ref(),
                 parent_header: &parent_header,
                 block_state_seed,
                 block_timestamp: attributes.timestamp(),
@@ -485,7 +484,6 @@ mod tests {
                 signature: [0; 65],
             },
             anchor_transaction: None,
-            forced_transaction: None,
             max_block_bytes: None,
         };
 
@@ -640,7 +638,6 @@ mod tests {
 
         assert!(attributes.transactions.is_none());
         assert!(attributes.anchor_transaction.is_none());
-        assert!(attributes.forced_transaction.is_none());
         assert_eq!(attributes.max_block_bytes, Some(124_000));
     }
 

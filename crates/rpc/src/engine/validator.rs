@@ -410,11 +410,8 @@ where
         // Before Etna, attributes are not normalized here, so the Etna-only build fields are
         // rejected explicitly before a payload job can start or an L1 origin can be written.
         if let PayloadOrAttributes::PayloadAttributes(attributes) = &payload_or_attrs {
-            ensure_no_etna_build_fields(
-                attributes.forced_transaction.is_some(),
-                attributes.max_block_bytes.is_some(),
-            )
-            .map_err(|err| EngineObjectValidationError::InvalidParams(Box::new(err)))?;
+            ensure_no_etna_build_fields(attributes.max_block_bytes.is_some())
+                .map_err(|err| EngineObjectValidationError::InvalidParams(Box::new(err)))?;
         }
         // Before Etna, payload conversion rebuilds Unzen headers with a zero root, so a nonzero
         // root would be committed into an unimportable block. Fail closed before a payload job
@@ -906,7 +903,6 @@ mod tests {
                 signature: [0; 65],
             },
             anchor_transaction: None,
-            forced_transaction: None,
             max_block_bytes: None,
         }
     }

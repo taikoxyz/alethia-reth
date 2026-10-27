@@ -92,7 +92,6 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             signature: [0; 65],
         },
         anchor_transaction: None,
-        forced_transaction: None,
         // Every Etna target carries the driver's block-size bound.
         max_block_bytes: (timestamp >= 100).then_some(124_000),
     }
@@ -362,7 +361,7 @@ pub fn signed_tx_with_key(
     sign_eip1559(key, nonce, 7, target, input)
 }
 
-/// The raw EIP-2718 bytes a driver sends as `forcedTransaction`.
+/// The raw EIP-2718 bytes submitted to the transaction pool.
 pub fn raw_2718(tx: &reth_ethereum_primitives::TransactionSigned) -> Bytes {
     use alloy_eips::eip2718::Encodable2718;
     tx.encoded_2718().into()
@@ -376,14 +375,12 @@ pub async fn send_raw(
     Ok(http.request("eth_sendRawTransaction", rpc_params![raw_2718(tx)]).await?)
 }
 
-/// Pool (no `forced`) or mixed (`forced`) Etna attributes with the given byte bound.
+/// Pool-only Etna attributes with the given byte bound.
 pub fn pool_mode(
     mut attrs: TaikoPayloadAttributes,
-    forced: Option<&reth_ethereum_primitives::TransactionSigned>,
     max_block_bytes: u64,
 ) -> TaikoPayloadAttributes {
     attrs.block_metadata.tx_list = None;
-    attrs.forced_transaction = forced.map(raw_2718);
     attrs.max_block_bytes = Some(max_block_bytes);
     attrs
 }

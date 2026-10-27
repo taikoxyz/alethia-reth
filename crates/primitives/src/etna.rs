@@ -89,8 +89,8 @@ pub fn validate_etna_extra_data(
 
 /// Error returned when pre-Etna build attributes carry an Etna-only field.
 ///
-/// `forcedTransaction` and `maxBlockBytes` exist only for Etna targets. Engine API attribute
-/// validation rejects either one before Etna with this error, which drivers receive as an
+/// `maxBlockBytes` exists only for Etna targets. Engine API attribute validation rejects it
+/// before Etna with this error, which drivers receive as an
 /// invalid-parameters (`-32602`) response before any payload job starts. Payload-job
 /// normalization applies the same rule and reports [`Self::MESSAGE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,11 +99,11 @@ pub struct EtnaBuildFieldsBeforeEtna;
 impl EtnaBuildFieldsBeforeEtna {
     /// The error text, also usable where only a `&'static str` fits (such as
     /// `alloy_rlp::Error::Custom`).
-    pub const MESSAGE: &'static str = "forcedTransaction and maxBlockBytes require Etna";
+    pub const MESSAGE: &'static str = "maxBlockBytes requires Etna";
 }
 
 impl fmt::Display for EtnaBuildFieldsBeforeEtna {
-    /// Names the two Etna-only build attributes.
+    /// Names the Etna-only byte bound.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(Self::MESSAGE)
     }
@@ -111,14 +111,13 @@ impl fmt::Display for EtnaBuildFieldsBeforeEtna {
 
 impl core::error::Error for EtnaBuildFieldsBeforeEtna {}
 
-/// Rejects pre-Etna build attributes that carry `forcedTransaction` or `maxBlockBytes`.
+/// Rejects pre-Etna build attributes that carry `maxBlockBytes`.
 ///
-/// Call it only for targets before Etna; on an Etna target both attributes are valid inputs.
+/// Call it only for targets before Etna; on an Etna target the byte bound is required.
 pub const fn ensure_no_etna_build_fields(
-    has_forced_transaction: bool,
     has_max_block_bytes: bool,
 ) -> Result<(), EtnaBuildFieldsBeforeEtna> {
-    if has_forced_transaction || has_max_block_bytes {
+    if has_max_block_bytes {
         return Err(EtnaBuildFieldsBeforeEtna);
     }
     Ok(())
@@ -354,19 +353,9 @@ mod tests {
 
     #[test]
     fn etna_build_fields_are_rejected_before_etna() {
-        assert_eq!(ensure_no_etna_build_fields(false, false), Ok(()));
-        for (has_forced_transaction, has_max_block_bytes) in
-            [(true, false), (false, true), (true, true)]
-        {
-            assert_eq!(
-                ensure_no_etna_build_fields(has_forced_transaction, has_max_block_bytes),
-                Err(EtnaBuildFieldsBeforeEtna)
-            );
-        }
-        assert_eq!(
-            EtnaBuildFieldsBeforeEtna.to_string(),
-            "forcedTransaction and maxBlockBytes require Etna"
-        );
+        assert_eq!(ensure_no_etna_build_fields(false), Ok(()));
+        assert_eq!(ensure_no_etna_build_fields(true), Err(EtnaBuildFieldsBeforeEtna));
+        assert_eq!(EtnaBuildFieldsBeforeEtna.to_string(), "maxBlockBytes requires Etna");
         let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(EtnaBuildFieldsBeforeEtna);
         assert_eq!(boxed.to_string(), EtnaBuildFieldsBeforeEtna::MESSAGE);
     }

@@ -109,10 +109,8 @@ fingerprint with stored origins to detect blocks they already inserted, so a cha
 would re-insert blocks preconfirmed before the upgrade. An Etna job's fingerprint is the same
 preimage with version byte 2 plus its nonzero `parentBeaconBlockRoot`, hashed between the withdrawals
 and the transaction-list hash; `extraData` is hashed for every job. After `extraData`, an Etna job
-hashes `0x01 ‖ u64_be(maxBlockBytes)` (big-endian, eight bytes) and then, only when present,
-`0x02 ‖ keccak256(forcedTransaction)` over the raw transaction bytes, so mixed and pool jobs that
-differ only in these fields get distinct IDs. Pre-Etna jobs carry neither field, so their IDs are
-unchanged. alethia-reth stamps every payload ID this way, so its FCUv3 IDs for Unzen jobs keep their
+hashes `0x01 ‖ u64_be(maxBlockBytes)` (big-endian, eight bytes), so jobs with different byte
+bounds get distinct IDs. Pre-Etna jobs carry no byte bound, so their IDs are unchanged. alethia-reth stamps every payload ID this way, so its FCUv3 IDs for Unzen jobs keep their
 V2-era values. taiko-client-rs computes the fingerprint with alethia-reth's `payload_id_taiko`, so it
 must move to this alethia-reth version together with its FCUv3 switch: earlier versions also hash a
 zero root, which changes every Unzen fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
@@ -157,9 +155,7 @@ internal payload ranking still uses actual fees.
 | FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp` | JSON-RPC `-32602` |
 | Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current) |
 | Etna FCUv3 attributes without `maxBlockBytes` or with `maxBlockBytes` below 1,024 | JSON-RPC `-32602` |
-| Etna FCUv3 attributes with both `forcedTransaction` and `blockMetadata.txList` | JSON-RPC `-32602` |
-| A `forcedTransaction` that is not exactly one EIP-2718 transaction or whose signer cannot be recovered | JSON-RPC `-32602` |
-| FCUv3 attributes with `forcedTransaction` or `maxBlockBytes` before Etna | JSON-RPC `-32602` |
+| FCUv3 attributes with `maxBlockBytes` before Etna | JSON-RPC `-32602` |
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
 | An Unzen payload with withdrawals, blob gas, or nonempty side arrays | Payload status `INVALID` |
 | Wrong Etna `extraData` length on import | Payload status `INVALID` |
@@ -242,24 +238,15 @@ bytes of `blockMetadata.extraData`. That field keeps its Base64 encoding; do not
 An explicit transaction list, including an empty one, is derived input; an absent list selects from
 the transaction pool.
 
-Etna attributes carry two more top-level members next to `anchorTransaction`. Omit a member to
-leave it absent; sending either one for a pre-Etna target is rejected:
+Etna attributes carry one additional top-level member next to `anchorTransaction`:
 
 | Member | Type | Rule |
 | --- | --- | --- |
-| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with transactions in block-body form, is at most this many bytes. |
-| `forcedTransaction` | `0x`-hex | The raw EIP-2718 bytes whose keccak256 is the forced-inclusion entry's `txHash`, not the RLP-wrapped network form. They must decode as exactly one transaction, with no trailing bytes, whose signer recovers. The transaction type is not checked here: a type Etna does not accept, such as a blob transaction, is left out of position 0 as in a given list. |
+| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with transactions in block-body form, is at most this many bytes. Rejected before Etna. |
 
-The Etna build mode follows from presence:
-
-| `blockMetadata.txList` | `forcedTransaction` | Build |
-| --- | --- | --- |
-| present | absent | Given list: the list is derived input |
-| absent | present | Mixed: the forced transaction is executed first, then the pool fills the block |
-| absent | absent | Pool |
-| present | present | Rejected with `-32602` |
-
-[Build modes](#build-modes) describes how each mode fills the block.
+The existing `blockMetadata.txList` selects the build mode: present (including an empty list)
+means a given-list build; absent means a pool build. FI ordering and queue decisions belong to
+the driver, using the same generic given-list interface described below.
 
 ### Build modes
 
@@ -282,19 +269,23 @@ receipt, or fee behind. An ordinary EVM revert or out-of-gas is included and cha
   overflowing trials: once the gas limits of remembered transactions that overflow again add up to
   the pool's gas budget, it skips remembered transactions, and once those of first-time overflows
   do, it stops selecting.
-- **Mixed.** The forced transaction runs first, at position 0, on the parent's state with the full
-  budgets, exactly as the given-list build of `[forcedTransaction]` with the same attributes runs
-  it. Inclusion means transaction 0 only. The forced transaction is transaction 0 exactly when that
-  build would include it; pool selection then continues from the state after it with the gas and
-  bytes it left, and a copy of it in the pool is not included again, though its sender's next nonce
-  can follow. Otherwise it is left out of position 0 and the pool fills the block with the full
-  budgets; the given-list build of the forced transaction alone on the same parent and attributes is
-  then empty as well, which is the execution-layer condition for skipping the entry. A copy of a
-  left-out forced transaction that the pool also holds may still be selected later in the block, for
-  example after an earlier pool transaction fills its sender's nonce gap or funds its sender; that
-  copy is an ordinary pool transaction, not an inclusion. The pool's remembered zk-gas overflows
-  never apply to the forced transaction. Drivers detect inclusion by comparing keccak256 of
-  transaction 0's EIP-2718 encoding with the entry's `txHash`.
+
+#### Driver-owned forced inclusion
+
+The driver authenticates and classifies the FI entry, obtains ordinary candidates if desired,
+and submits an ordered `blockMetadata.txList` of `[FI, ordinary…]`. The EL applies ordinary
+given-list execution and byte limits; it does not know the FI queue or select pool transactions
+after a privileged first transaction. With the protocol's 124,000-byte block limit, an eligible
+FI transaction of at most 8,192 bytes fits before optional ordinary transactions consume bytes.
+
+The driver detects inclusion by comparing the keccak256 of transaction 0's EIP-2718 encoding
+with the entry's `txHash`. To establish a legal skip, it builds `[FI]` alone on the committed
+parent with the same block attributes, `maxBlockBytes=124000`, and full gas/zk-gas budgets.
+Only a completed empty singleton build can authorize skipping an otherwise eligible transaction;
+an omission from a longer candidate list or an RPC failure is not skip evidence. If the FI
+attempt yields an empty block, the driver may request a separate pool build for ordinary work.
+Candidate acquisition, retries, queue progression and inclusion/skip validation stay in the
+ABCI application; the EL supplies bounded execution and the failure classifications above.
 
 #### Byte limit
 
@@ -303,9 +294,9 @@ header and with transactions in block-body form: a typed transaction counts as i
 plus their RLP string header. The bound is inclusive. The header is sealed only after execution, so
 the builder reserves room for the longest header the job can seal: the job's own header fields,
 fixed-size roots and bloom, `gasUsed` equal to `gasLimit`, and a `difficulty` of `u64::MAX`. What
-remains after that reserve and the list headers is the transaction byte budget, which the forced
-transaction and the selected transactions share. In every mode a transaction larger than what is
-left is left out and the build moves on. Before returning a block, the builder checks its exact
+remains after that reserve and the list headers is the transaction byte budget shared by the
+transactions in the given list or selected from the pool. In every mode a transaction larger than
+what is left is left out and the build moves on. Before returning a block, the builder checks its exact
 executionBlock length and fails the job rather than return a block above `maxBlockBytes`.
 
 ## `taikoAuth` preselection

@@ -205,23 +205,27 @@ Rewind with this one-shot procedure:
    `--engine.always-process-payload-attributes-on-canonical-head`.
 2. Send exactly one `engine_forkchoiceUpdatedV3` with `headBlockHash`, `safeBlockHash`, and
    `finalizedBlockHash` all set to the hash of block `c`, and `null` attributes. It answers `VALID`
-   without a payload ID, and the head is `c` at once: `eth_blockNumber` returns `c` and
-   `eth_getBlockByNumber` returns `null` for `c + 1`. The node removes the blocks above `c` from
-   disk in the background.
-3. Stop the node gracefully (SIGTERM, which lets it finish the removal) and restart it without the
-   two flags. `eth_blockNumber` returns `c`, block `c` keeps its hash, block `c + 1` is absent, and
-   the `safe` and `finalized` tags resolve to block `c`. If block `c + 1` is still present, for
-   example after an ungraceful stop, repeat from step 1.
+   without a payload ID, and from then on `eth_blockNumber` returns `c`. The node removes the
+   persisted blocks above `c` in the background, so `eth_getBlockByNumber` can keep returning block
+   `c + 1` for a while. Poll it until it returns `null`, with a time bound that allows for the
+   number of blocks above `c`; a non-null answer before the bound runs out is not a failure. If
+   block `c + 1` is still present when the bound runs out, halt and hand the node to an operator,
+   who continues with step 3.
+3. Stop the node gracefully (SIGTERM, which lets it finish a removal still in progress) and restart
+   it without the two flags. `eth_blockNumber` returns `c`, block `c` keeps its hash, block `c + 1`
+   is absent, and the `safe` and `finalized` tags resolve to block `c`. If block `c + 1` is still
+   present, for example after an ungraceful stop, repeat from step 1.
 4. Resume normal driving. Repeating the step 2 FCU is now a no-op, and an FCU with attributes on `c`
    builds block `c + 1`, which `engine_newPayloadV4` and an FCU make canonical as usual. Later
    restarts keep the new chain.
 
-Without the unwind flag, the step 2 FCU still answers `VALID` but leaves the head in place, so
-drivers must confirm that block `c + 1` is gone before building on `c`. The second flag changes
-nothing on alethia-reth, whose forkchoice handling already processes attributes on canonical
-ancestors at any depth; it is part of the procedure so the procedure does not rely on that. With or
-without the flags, an FCU with attributes to a canonical ancestor below the finalized block builds
-on it instead of answering `-38006`; with the flags, it also unwinds the head to that ancestor.
+Without the unwind flag, the step 2 FCU still answers `VALID`, but `eth_blockNumber` keeps the old
+head and block `c + 1` never goes away, so drivers must check both before building on `c`. The
+second flag changes nothing on alethia-reth, whose forkchoice handling already processes attributes
+on canonical ancestors at any depth; it is part of the procedure so the procedure does not rely on
+that. With or without the flags, an FCU with attributes to a canonical ancestor below the finalized
+block builds on it instead of answering `-38006`; with the flags, it also unwinds the head to that
+ancestor.
 
 The rewind does not touch alethia-reth's L1-origin records: `taiko_headL1Origin` keeps naming the
 old head until the next build that is not a preconfirmation records an origin, and the records above

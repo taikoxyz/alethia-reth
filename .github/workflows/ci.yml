@@ -35,7 +35,8 @@ jobs:
           just-version: 1.5.0
       - name: Verify zk gas runtime specification and generated pricing table
         run: |
-          python3 -m unittest crates/evm/src/zk_gas/pricing/generate_test.py
+          python3 -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
+          python3 crates/evm/src/zk_gas/pricing/successor.py --check
           python3 crates/evm/src/zk_gas/pricing/generate.py --check
       - name: Run tests
         run: just test

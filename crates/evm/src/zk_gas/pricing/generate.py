@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import pathlib
 import re
@@ -13,9 +14,10 @@ from collections.abc import Mapping
 from typing import Any
 
 
-RUNTIME_SPEC_SHA256 = (
-    "93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046"
-)
+BASE = pathlib.Path(__file__).resolve().parent
+# A separate acceptance record avoids a cycle between this script's provenance
+# digest in the successor and the accepted successor's own content address.
+RUNTIME_SPEC_SHA256 = (BASE / "accepted-runtime-spec.sha256").read_text().strip()
 
 
 def canonical_json(payload: Mapping[str, Any]) -> bytes:
@@ -42,6 +44,20 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
         raise ValueError(
             "artifact_sha256 is not the accepted runtime specification: "
             f"{claimed!r}"
+        )
+    module_spec = importlib.util.spec_from_file_location(
+        "zk_gas_pricing_successor", BASE / "successor.py"
+    )
+    assert module_spec is not None and module_spec.loader is not None
+    successor = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(successor)
+    if claimed == successor.PARENT_SHA256:
+        successor.validate_parent(payload)
+    else:
+        successor.validate_successor(
+            payload,
+            json.loads((BASE / "successors/parent-93d04edd.json").read_text()),
+            json.loads((BASE / "successors/mulmod-evidence-v1.json").read_text()),
         )
     return actual
 

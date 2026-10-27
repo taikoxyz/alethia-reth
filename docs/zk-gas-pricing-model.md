@@ -4,13 +4,14 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046` and was introduced by
-[alethia-reth PR #253](https://github.com/taikoxyz/alethia-reth/pull/253). If
+`e52997d764b67791dfc4bc9031ace4d6b5a2898dec818ed2df85347265b7be61`. It is a conservative
+MULMOD successor of parent `93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046`,
+introduced by [alethia-reth PR #253](https://github.com/taikoxyz/alethia-reth/pull/253). If
 `RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
 
-The artifact calls itself `accepted_runtime_export`. In this document, that means only that the
-raiko2 calibration pipeline selected it for this runtime integration. It is not a protocol
-specification, governance approval, admission rule, or consensus rule. The words
+The parent calls itself `accepted_runtime_export`; the successor calls itself
+`conservative_runtime_successor`. These identify calibration and runtime integration artifacts,
+not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
 
@@ -70,7 +71,13 @@ This document is the human-readable guide. The checked-in sources divide authori
   parts of the separate consensus Unzen meter, as do `adapter.rs`, `alloy.rs`, and `evm.rs`; edits to
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
-  generates the Rust route table. It does not recreate coefficients from calibration measurements.
+  exact successor replay, then generates the Rust route table.
+- [`successor.py`](../crates/evm/src/zk_gas/pricing/successor.py) deterministically derives the
+  MULMOD floor from the immutable parent snapshot and versioned local measurement evidence in
+  [`successors/`](../crates/evm/src/zk_gas/pricing/successors/). It preserves all fitted parent
+  coefficients and every other route.
+- [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
+  pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
 If prose conflicts with code, the executable evaluator and extractor control current behavior. The
 JSON content address covers the canonical JSON fields; it does not cryptographically bind evaluator
@@ -94,11 +101,14 @@ The current design aims for:
   polluting the committed prefix; and
 - conservative safety taking priority over mean prediction error.
 
-The current export was calibrated against normalized SP1 `ExecutionReport::gas()` values, called
-PGU here. The artifact embeds a production proposal ELF hash and VK hash, but it does not identify a
+The parent was calibrated against normalized SP1 `ExecutionReport::gas()` values, called PGU
+here. The artifact retains the parent's production proposal ELF hash and VK hash, but does not identify a
 public raiko2 release or tag for that guest. It therefore cannot establish from public material that
 a currently deployed guest still matches. Resolving that provenance is required before promotion
 to admission.
+
+The successor's new MULMOD evidence uses a different frozen local proposal ELF and SDK, as detailed
+below. It does not establish parity with that parent calibration guest or a deployed production SDK.
 
 The model does not claim to price RISC0 cycles, wall-clock proof latency, or another SP1 guest. A
 different backend, guest, cost-bearing trace schema, or coefficient set requires independent
@@ -124,6 +134,72 @@ instead of copying their current numbers into integrations.
 `artifact_sha256` field removed. Reports carry this address so completion cannot silently combine
 different JSON artifacts. The address does not cover the surrounding Rust semantics described in
 the source-of-truth section.
+
+### MULMOD operand-cost successor
+
+Ordinary, normally executed `opcode:0x09` events now use the existing route-aggregate maximum
+composition with a structural floor of **1,600 PGU per event**, selected by
+`constant_one_per_event`. The fitted accepted model remains
+`12.974884691486860714 + 32.012267798378978094 * interpreter_raw_gas`, or
+`269.073027078518685466 PGU` for MULMOD's raw gas of eight. The route maximum retains whichever
+candidate is larger. Feature-error events retain their separate original conservative fallback;
+they do not also receive the normal-event floor. All other routes, selectors, discounts, limits,
+runtime collection, selected-but-undispatched spawn handling and public APIs remain unchanged.
+
+The versioned [evidence manifest](../crates/evm/src/zk_gas/pricing/successors/mulmod-evidence-v1.json)
+contains 30 accepted synthetic local execution records: 16 original arithmetic/proposal cases,
+12 operand/modulus boundaries and two promoted larger boundary cases. It records explicit
+32-byte operands, counts observed by native execution, canonical input/public-value hashes,
+unrounded parent complete-proposal prices, actual PGU and digests of the original request, native
+receipt report, quote, SP1 report and measurement status. Those digests identify retained external
+experiment files; the compact manifest does not contain their full witnesses or independently
+replay them during generation. Two subsequently selected holdouts are outside the fit manifest.
+
+For each record, let `Q` be its parent complete-proposal price before ceiling, `A` its actual PGU,
+`N` its observed MULMOD count and `C = 269.073027078518685466`. The required per-event price is
+`max(C, C + (A - Q) / N)`. The chosen floor is `ceil_to_100(max(required) * 5/4)`, computed with
+exact rational arithmetic. The maximum required value is
+`890599921653913252718984671 / 720000000000000000000000`, approximately `1236.944335630435`,
+from the 32-block, 90,000-MULMOD-per-block wide-operand/modulus-193 case. This yields 1,600.
+This is an empirical conservative flat floor for these constructed cases, not a universal upper
+bound on every possible operand, guest, instruction mix or proposal.
+
+All 30 records use SDK/core executor **6.3.0**, frozen ELF
+`416f5a475b17aa15914fb9387159d9eae9ecd474e7104da65ac22512ab56da2e` and unchanged estimator
+options (gas-trace chunk threshold 134,217,728; two slots). The inherited parent calibration ELF is
+`ba5ab7026643730c4416550a069fd0776f0e11ae09155ec5fce413acbe5e59c7`; production SDK 6.1.0
+parity has not been established. Execution is local gas estimation, without proof generation.
+
+The successor binds the canonical evidence digest and both generator source digests. Its complete
+parent snapshot is authenticated against the pinned parent content address, and exact replay rejects
+scope changes or weakened floors. `parent_generator`, `parent_validation`, `authorities`, `sources`
+and `execution_identity` retain parent provenance. The successor's `validation` reports projected
+local coverage and zero historical replay results embedded during generation; it does not assert
+that historical replay was repeated for the successor. Later independent execution/replay reports
+remain external evidence and do not mutate this frozen model identity.
+
+An independently rebuilt native collector and quote tool replayed all 30 fit inputs plus the two
+holdouts. Every complete quote covered its corresponding local SP1 observation. The wide 32-block
+case changed as follows; the program and observation remained fixed:
+
+| Surface | Parent PGU | Successor PGU | Local SP1 observation PGU |
+| --- | --- | --- | --- |
+| Node-known proposal sum | 1,315,914,592 | 5,148,984,274 | 4,283,103,975 |
+| Complete proposal, startup once | 1,495,634,607 | 5,328,704,289 | 4,283,103,975 |
+
+The node sum is intentionally incomplete; the full observation is shown for context, not as a
+claim that both surfaces have the same scope. The complete successor quote is 1.244x the local
+observation. The small-operand control has the same successor quote and a 1,613,748,933 PGU
+observation: conservative flat pricing deliberately overprices this constructed cheap case.
+
+Native replay of another 90 historical mainnet proposals (17,280 blocks, October 23–26, 2026)
+preserved all canonical input identities, public outputs, Unzen scores and non-MULMOD pricing
+components. It identified 315 normal MULMOD events through exact scaled tariff differences.
+Fourteen proposals and 25 blocks changed price. Maximum complete-proposal uplift was 0.0033674%;
+maximum block node-known uplift was 0.0408478%. Medians were zero. These are parent/successor
+pricing-impact measurements; they neither select an admission limit nor certify production
+SDK parity. The replay used the complete GuestInputs preserved by
+[Raiko2 Atlas](https://github.com/taikoxyz/raiko2-atlas/releases/tag/fixture-mainnet-sp1-20261023-26-v1).
 
 Coefficients are fixed-point PGU values using the artifact's `arithmetic.scale`. The exporter has
 already rounded coefficient numerators upward. Evaluation uses checked signed arithmetic; selector
@@ -233,11 +309,11 @@ Authenticated routes use three namespaces:
 The JSON's `block_local.operation_routes` array is the exhaustive route and model-family map. The
 route accumulator has four candidate fields, but one event does not generally emit all four:
 
-- a normally modeled opcode emits its `accepted_absolute` and any configured `incremental`
-  candidate;
+- a normally modeled opcode emits its `accepted_absolute` and any configured `incremental` or
+  `structural` candidate; ordinary MULMOD emits the 1,600 PGU event floor;
 - a supported opcode whose typed extraction fails, that halts exceptionally, or whose REVERT has
   nonzero raw gas emits `feature_error` instead of its normal candidates;
-- `structural` floors exist on precompile routes, which do not have `feature_error`; and
+- precompile routes can also emit `structural` floors and do not have `feature_error`; and
 - undefined opcode bytes have no route at all and turn the block report into a
   `collector_unknown_route` diagnostic.
 
@@ -269,6 +345,8 @@ inferring a model from the opcode name.
 
 Important current exceptions are:
 
+- `opcode:0x09` (MULMOD) takes the maximum of its fitted accepted price and the 1,600 PGU
+  normal-event structural floor. Its feature-error path remains separate.
 - `opcode:0x39` (CODECOPY) uses a flat aggressive tariff inside its raw-gas envelope and switches
   to a raw-gas fallback above it. The transition is not monotone.
 - Only LOG1 and LOG2 use the LOG-piecewise family. LOG0 is a raw-gas linear floor; LOG3 and LOG4 use
@@ -288,6 +366,7 @@ Shadow subtotals include:
 
 | Route | Conservative body or floor (PGU per event) |
 | --- | --- |
+| `opcode:0x09` (normally executed MULMOD) | 1,600 structural floor |
 | `opcode:0x32` (ORIGIN), `opcode:0x38` (CODESIZE), `opcode:0xfd` (normal REVERT), `opcode:0x39` (CODECOPY within its raw-gas envelope) | 5,000,000 |
 | `opcode:0xa3`, `opcode:0xa4` (LOG3/LOG4) | 5,000,000 plus shared memory |
 | `opcode:0x3b` (EXTCODESIZE) | 1,000,000 |
@@ -459,20 +538,22 @@ composed with complete block scaled values by an external owner.
 
 ## Calibration and evidence
 
-The JSON embeds relative source paths, file hashes, authority hashes, guest hashes, and recorded
-validation. The source paths do not identify a fetchable repository and commit, and the named
-calibration files and exporter are not vendored here. The guest hashes likewise do not map to a
-named public raiko2 release in the artifact or this repository's documentation.
+The immutable parent embeds relative source paths, file hashes, authority hashes, guest hashes and
+historical validation. Its original calibration files and exporter are not vendored here; recreating
+those fitted coefficients from raw measurements requires the external parent experiment material.
 
-Alethia-reth vendors the runtime JSON, the JSON-to-Rust generator, and the executable evaluator. The
-checked-in commands can verify the JSON's self-address and reproduce `generated.rs` from that JSON.
-They cannot recreate the runtime JSON or its coefficients from raw measurements. Public
-re-derivation is therefore impossible with the material currently linked here.
+This repository vendors the parent JSON, the 30-row MULMOD evidence manifest, the successor transform,
+the JSON-to-Rust generator and the executable evaluator. The checked-in commands reproduce the
+successor JSON from its compact evidence, verify its address and regenerate the Rust table. The
+evidence manifest authenticates observation identities but does not rerun SP1 or vendor full
+GuestInputs. Repeating those measurements additionally requires the external fixture inputs and
+the recorded program/SDK; raw execution cannot be reconstructed from PGU summaries alone.
 
-The artifact's `validation` object is the source for recorded replay counts and underquote results.
-Its historical-block count is consistent with expanding the same recorded proposal replays, not
-evidence of an independent corpus. Those fields validate only the frozen evidence claimed by the
-artifact; they are not a mathematical statement about future blocks, proof latency, or capacity.
+`parent_validation` preserves the parent's historical replay counts and underquote results. Its
+historical-block count expands the same recorded proposal replays rather than an independent corpus.
+The successor's `validation` records projected coverage of its 30 local fit observations and which
+results were embedded at generation. Later native replay results are documented above separately.
+None of these fields is a mathematical statement about future blocks, proof latency or capacity.
 A real SP1 comparison also requires exact/proposal producers and attributable block/proposal output
 beyond this repository's EVM-local log and prover-outcome reports.
 
@@ -502,7 +583,8 @@ Before adding admission, a reviewed change must at least provide:
 Verify the checked JSON address and generated Rust table with:
 
 ```bash
-python3 -m unittest crates/evm/src/zk_gas/pricing/generate_test.py
+python3 -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
+python3 crates/evm/src/zk_gas/pricing/successor.py --check
 python3 crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
@@ -513,9 +595,11 @@ python3 crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
 
-A new runtime JSON requires updating the expected hash in `generate.py`, the identity line at the
-top of this document, and the pinned assertions in `crates/evm/src/zk_gas/tests.rs` (identity, scale,
-and route count), then regenerating and validating the table. Changes to evaluator constants,
+A refinement requires versioned evidence and an explicitly reviewed successor derivation. Preserve
+the existing immutable parent/evidence records. Reproduce the successor JSON with its transform,
+then update `accepted-runtime-spec.sha256`, the identity line in this document and the pinned
+assertions in `crates/evm/src/zk_gas/tests.rs` (identity, scale and route count). Regenerate and
+validate the table; rerun targeted unit and replay checks. Changes to evaluator constants,
 extraction, ownership, hard-coded domains, or selector bounds also change effective semantics even
 when the JSON address does not change; they require explicit review, compatibility evidence, and a
 deliberate identity/version decision.

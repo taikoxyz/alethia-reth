@@ -1,0 +1,643 @@
+{
+  "measurement_identity": {
+    "elf_sha256": "416f5a475b17aa15914fb9387159d9eae9ecd474e7104da65ac22512ab56da2e",
+    "estimator_sha256": "475d00bdc5e88909abc1b6f1f782a62ec12782155c7d22298e844570c28208f7",
+    "executor_opts_sha256": "1fabe34edc34ec2a536390c7afb7cd023c7fb9fd29867dc9b272f5c0539fbb8f",
+    "sp1_core_executor_version": "6.3.0",
+    "sp1_sdk_version": "6.3.0"
+  },
+  "measurements": [
+    {
+      "actual_pgu": 166828402,
+      "block_count": 1,
+      "canonical_input_sha256": "c96bf9a9b1ffa9eb996c53b7e78661ff93e7e18ab9dac84ce05778e935971b3c",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "b": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000011"
+      },
+      "parent_total_scaled": 169575669571681810530168964,
+      "public_values_sha256": "3cf962c4425b6befb7ab8c1938168448275c4c7fa043225123a8b3540b02693d",
+      "sample_id": "arithmetic-run/mulmod-small-n8192",
+      "source_sha256": {
+        "construction_request": "e6b2cbe50026eec8e0666143d15d93ffd0d14c0c8f51b96803720528e45ae7e4",
+        "measurement_status": "a124c3eedd70979653894c0dee4318dac9311f60b797bdf0fdb0b3828677b8ef",
+        "native_report": "5501db9117dbd1c0519454c9de0c70db744721bcd328389991fc39262b1e50b8",
+        "quote_report": "390556ebda73b5a2182e5521b079111e56f9d516995219fe9290d7a3f6c71413",
+        "sp1_report": "d8ca7c329ea034912e376fd07d8d70b4671a056dc676683ef8ba77e4c644a6f2"
+      }
+    },
+    {
+      "actual_pgu": 172293728,
+      "block_count": 1,
+      "canonical_input_sha256": "245973b54dfaac0446081140f56cea322bdea55b7d62845fe7a0672ef8ce02eb",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x80000000000000000000000000000000ffffffffffffffffffffffffffffff61"
+      },
+      "parent_total_scaled": 169575669571681810530168964,
+      "public_values_sha256": "5faf1255f71d98cfc119347a8e1139783042797e7975b96c2e07d8a8d3ac8c58",
+      "sample_id": "arithmetic-run/mulmod-wide256-n8192",
+      "source_sha256": {
+        "construction_request": "5c6f79e1c3bf172733ab513bf36fa3c7c780989054a2a4a335e5fe6003613f57",
+        "measurement_status": "1a84dbb62da82df4064037d9284015c70611f1dc418c0cbf4f53df4b9236716e",
+        "native_report": "9e2d5a34ef638f31c3216d36fa52bf3b4dd929efc97b1b1a10b90b1cad42cfbd",
+        "quote_report": "0068196958f5c07c7cca8a6562d03058d84ce6389d1205809fd335a600ba8b3d",
+        "sp1_report": "3f19a02ddc94cbc62cff9c679a0253d3d061d8c24e7157e04131884bdd93b883"
+      }
+    },
+    {
+      "actual_pgu": 174263774,
+      "block_count": 1,
+      "canonical_input_sha256": "7e1a903c9f024f063c084830ecb6d9cf72ff0fb8d38a8c429b60dc5e0a87e0c8",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x0000000000000000000000000000000100000000000000000000000000000033"
+      },
+      "parent_total_scaled": 169575669571681810530168964,
+      "public_values_sha256": "f8282197e85876d51b16542a18a532af5e5609eac526b25c18c26a44c618f946",
+      "sample_id": "arithmetic-run/mulmod-mod129-n8192",
+      "source_sha256": {
+        "construction_request": "2dcf439277831f280dfaafbce09c262641c709103992d3e6ecd09886f1c2e917",
+        "measurement_status": "ed4fbc165928ccb1669e3e6ac6546b5829649cab1203fa946f55a1c5eb6f97b0",
+        "native_report": "dfb9d21b16aff539dc5aea4fe7f46d5e36539970d8ea5b122943507636219d59",
+        "quote_report": "b2a65483fc8c789292fb65cc36d833bbab181d1e5b6617eb202e21bebf106894",
+        "sp1_report": "b7d415d1f12d934178c4af5273b422520e7802dd6f2017a14d741f0c298f64c2"
+      }
+    },
+    {
+      "actual_pgu": 170017786,
+      "block_count": 1,
+      "canonical_input_sha256": "b74bfd4359f2e913e4a4852687a89d745d8131b7a0e13bc7ed08292231d66ef5",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x0000000000000000000000000000000000000000000000008000000000000033"
+      },
+      "parent_total_scaled": 169575669571681810530168964,
+      "public_values_sha256": "83fb91cf90cd7b918d85e758184ad39a1812d769f6d55467266e397c45107f0b",
+      "sample_id": "arithmetic-run/mulmod-mod64-n8192",
+      "source_sha256": {
+        "construction_request": "a3323f0d2463454c1ab0d00460a5df644873df3a739d7cb63c07be8d5ea48476",
+        "measurement_status": "727bccf28b9768bb3f5071c54e0149638d2059315c1b1865847b54ff59b9a638",
+        "native_report": "e4ca9829b7f8cecef8031fefcff656b741a6d26cfde6d72af9600ecfb0e27959",
+        "quote_report": "12c05e17b4b842b7873763de75e07eeae0242b9d3e255fab96edfc319cec6fcc",
+        "sp1_report": "91b081435af94c16e9352f0e04beb41eb3b26a9d84e6ea0a04cc841c58752797"
+      }
+    },
+    {
+      "actual_pgu": 162136360,
+      "block_count": 1,
+      "canonical_input_sha256": "1eb181921f280fc4a78822f86b292938cee7a2f0d5651ba6a90f906414fb9e54",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "b": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000011"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "720ae626d80fdcba50fbaf9fd923061f5e9cc8bba82a96f18387e6d12652ac11",
+      "sample_id": "arithmetic-run/mulmod-dup4-small-n8192",
+      "source_sha256": {
+        "construction_request": "e7eaaff72e4b353815236ee48352ae9004b29d4b9ac0a929715700408dde5ce4",
+        "measurement_status": "e483a13efcda20880f8432bd2407983232737a1a6bc054a9abc39a7267138e5e",
+        "native_report": "cdae718f954f51f9d6d279a1d39e1167015749de4389eb2be690366fd1772ba4",
+        "quote_report": "82b5b605f5c342ecf353a79815f0aa826be609401eaadf78e01ea27dec3002c1",
+        "sp1_report": "77252e123da1f94edc8425b52f09d40f9997930149bd6b36788a6013cfa4cb9a"
+      }
+    },
+    {
+      "actual_pgu": 167601541,
+      "block_count": 1,
+      "canonical_input_sha256": "d3614bcea7acc75602fdeccd1e462c7a999fb1e46d8f83e573c496f98f1bc5b5",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x80000000000000000000000000000000ffffffffffffffffffffffffffffff61"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "46c8d7974bb9d0f37d03c97f3d25833988194d5b54c66620a4b958b4baf9f327",
+      "sample_id": "arithmetic-run/mulmod-dup4-wide256-n8192",
+      "source_sha256": {
+        "construction_request": "ee8e5d711767511adc42ffff4ff1695be2f34c7e70582f9bbf63a5dfaef032ab",
+        "measurement_status": "36332ad32f6259d09b1bb2336ad9e549cbcc9f88319bcf78ea352f13f60e522c",
+        "native_report": "6caec5c41f6696d7e3994dde5b2c50e815e394d0398d44b5a64a53eda615a22d",
+        "quote_report": "fc90a8ba6026359724529cc86a3098d0fe530ef0c4490d4d9a3983f8d8ad0fab",
+        "sp1_report": "28fb5ab3f3a8c5e72669f0301928801b93ef735ab9004af133e6f664d6196f84"
+      }
+    },
+    {
+      "actual_pgu": 169571551,
+      "block_count": 1,
+      "canonical_input_sha256": "59d9c3dbfc76361706d98a0e8e82c479dd188cec7bd3765926055265f4b12882",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x0000000000000000000000000000000100000000000000000000000000000033"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "4213070a0aacdd0b76d782201232c25d7dd8af452458414c165a0d5529e4a800",
+      "sample_id": "arithmetic-run/mulmod-dup4-mod129-n8192",
+      "source_sha256": {
+        "construction_request": "9067edf9094c7d26fbc5acd82c066c1edd8fd7deaee49be0a1a4b3e7b82dfe84",
+        "measurement_status": "7def3bbc3ab543da0db912694c064e44a1498dbf53c437174c316b41f9fd6665",
+        "native_report": "ce3f4856285f3076338f660bffe791f2d4ecd490a67f49a6f26ba3f8317e8f91",
+        "quote_report": "d9101ff057ba43667ea8bbaea3998f8fec84ba2388108918fcd1e79111ecaeae",
+        "sp1_report": "7c801944082312bb540621c8eb400b9f0b7032e46a5dfe6614dc6a763ef21e60"
+      }
+    },
+    {
+      "actual_pgu": 165325709,
+      "block_count": 1,
+      "canonical_input_sha256": "b2ab6681e754a6667e8660a9246aeb6a0dcdb3e5458fe0615883ae46db2e2fe9",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x0000000000000000000000000000000000000000000000008000000000000033"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "2869e5ca80d8641ad6651287da4e5521e4a904a59d26fa388b3f0e30cd14cf24",
+      "sample_id": "arithmetic-run/mulmod-dup4-mod64-n8192",
+      "source_sha256": {
+        "construction_request": "f28c05a4cb4cc2d9c65ea40a4341a4bd582c15d74f3e80fa39fe9372435cafc8",
+        "measurement_status": "275adedb6aae45552c57a0a5021c8eec78293835af2912a9d3b0f438e39efdc9",
+        "native_report": "6a57ae57fcebd952f4df2e54e56abf3284c453385222ebcf68f768b0ab3a098f",
+        "quote_report": "247f1e3288ed9aa2f12c9734cf098737d21306d7d3776aa0aafe4d1f9b534ef3",
+        "sp1_report": "c05d14e3976384fc39d8cb6bad6b2071276092c435c7d9892979f4d9206d3ff9"
+      }
+    },
+    {
+      "actual_pgu": 169723438,
+      "block_count": 1,
+      "canonical_input_sha256": "478c383acfa168dc466e5302f37875d05cead8e42b883ec666ff9f45a7a92f72",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x00000000000000010000000000000000ffffffffffffffffffffffffffffff43"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "f6bcbfc6efc38ceb03f9afedd3d3a5cf000c76cd48ed1f0c8460f9f54da87b02",
+      "sample_id": "arithmetic-run/mulmod-dup4-mod193-n8192",
+      "source_sha256": {
+        "construction_request": "d83df4ba4091a7bef987034e7d1217472a6b94c3135f0beb32cf02fbe2b0cdb7",
+        "measurement_status": "4f488591361f285e342505c59cc789701dd7d04c9ba9e0a4cb8c39d4ae11b528",
+        "native_report": "1c275df09b3b9bb50916dce88c31861411165f096b794d21a87a40667f01a95e",
+        "quote_report": "2cece0f6a2348a2520448c1ac6c55a92826d247fd26623474de0ff462a304ac9",
+        "sp1_report": "7808db2632a388d2e8e6c6464f664c844cca906a240fdceb96fdd37790c94742"
+      }
+    },
+    {
+      "actual_pgu": 189234710,
+      "block_count": 1,
+      "canonical_input_sha256": "34adc73c85ce7a22ce0233c3dddf0afe8dffde020c0ff43a163f98eaad222df2",
+      "executed_mulmod_count": 65536,
+      "operands": {
+        "a": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "b": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000011"
+      },
+      "parent_total_scaled": 188484166055209574057626119,
+      "public_values_sha256": "62d4e12ef406bed5ee558794585e355f4aa902c17019edca5b602a87d300bc90",
+      "sample_id": "arithmetic-run/mulmod-dup4-small-n65536",
+      "source_sha256": {
+        "construction_request": "7c14ec09d0fe68ce16ed3d485126f40e8dbef7aab8b3584545010463eb135f25",
+        "measurement_status": "ebb3dadc5d05cb3ea29c8b8020c1aab870d2bf75e267a932a6b2b9bf0fb187de",
+        "native_report": "aa636db8e1714725309c9d6866da89493a1db2b06f09aca6852e0cf33e1398d7",
+        "quote_report": "0a0f793ddfb69a1aad3b5d063265152580362cbf502d2350898cb042b66f49d7",
+        "sp1_report": "c95ae8f56abffd42334cf238ec99b10d6c8e65b7986ba84e151f5941397c96a0"
+      }
+    },
+    {
+      "actual_pgu": 248717377,
+      "block_count": 1,
+      "canonical_input_sha256": "9c097e3f27b8c8f5ff61d19d08300bf744b19b0d29df55c4969969886bb70d10",
+      "executed_mulmod_count": 65536,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x0000000000000000000000000000000100000000000000000000000000000033"
+      },
+      "parent_total_scaled": 188484166055209574057626119,
+      "public_values_sha256": "4d392d062fef03d8e2b9fa67942342c6e5d8f683ad8ea75540173202942575b9",
+      "sample_id": "arithmetic-run/mulmod-dup4-mod129-n65536",
+      "source_sha256": {
+        "construction_request": "0bf90530fd09e9b51144565f5b6b65ea12d87dc9596b02283f359ece52ff21b0",
+        "measurement_status": "3a62ff40f03190e90c51bbfaa683f441ec928fac57850226e417ee14b132b96e",
+        "native_report": "109d7c4a87932a4f43c80414e5a1b77547042f23c1bc7a777f1ee0c62627a144",
+        "quote_report": "79a6420666da58e596d1db170ddc3c046848e022a68db25841337f22deadc081",
+        "sp1_report": "c6289a45a8edb5ec7f655f194deaec652eb94148eaaf5de1c2f1211854809a37"
+      }
+    },
+    {
+      "actual_pgu": 249931452,
+      "block_count": 1,
+      "canonical_input_sha256": "38b45c3e8db0d6067f13abb1e27c0e7b274bf241656590ff7f401eee9094e8f8",
+      "executed_mulmod_count": 65536,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x00000000000000010000000000000000ffffffffffffffffffffffffffffff43"
+      },
+      "parent_total_scaled": 188484166055209574057626119,
+      "public_values_sha256": "39873f9f82f91058fa1bd73323f1762f9c7b8053270464ebf7feb0899a45a464",
+      "sample_id": "arithmetic-run/mulmod-dup4-mod193-n65536",
+      "source_sha256": {
+        "construction_request": "c824595c0b33dcd1ee180462af9c651126a8443829a77be81b8746012de0af58",
+        "measurement_status": "e57c67e2e39a5840e0662702d60010f32948a521d3fb1e370f9af77e9d4d5b15",
+        "native_report": "f3dc794751d5aadf44f9124732f9b8d03b81c491c0193a83aef7467eaf8d8428",
+        "quote_report": "80cfab5224aaccf7e0ba61ede5fd923e5bb8938d6c3ce8626915869eb2c80864",
+        "sp1_report": "44b9415b805f6a2ffe374b90135c16ce5e2cd4bc820fea98a97039e08f377fd4"
+      }
+    },
+    {
+      "actual_pgu": 200795390,
+      "block_count": 1,
+      "canonical_input_sha256": "f1617281ddd044b15aa09810bb9683a5b93c1c5034501beae821b8be87b9a577",
+      "executed_mulmod_count": 90000,
+      "operands": {
+        "a": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "b": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000011"
+      },
+      "parent_total_scaled": 198776883703409810016102017,
+      "public_values_sha256": "83246e2f3858c29738b8175576db93c6a0e709cab0cf3624d4dc9582ef569dba",
+      "sample_id": "proposal-arithmetic-run/mulmod-dup4-small-n90000-b1",
+      "source_sha256": {
+        "construction_request": "d2c77c3f01d0115f046f877b25c3754b4d91c4783de9ee71ced0d524814a5471",
+        "measurement_status": "675b467096dc7cd9e78d02f474bfd2e34965243252d42bd0cbb6d598d8afb20e",
+        "native_report": "73871340c1e67903e3f5b35f053aa7cf8ea08a77243eec498b037ea5960ba6cb",
+        "quote_report": "7ae1b1dd234777cb871f9181984d5e5a451569a721c617dae13c17ca4e8174fe",
+        "sp1_report": "307cfd3e38ba6617410e71bdcfdbd9e8d8fdc8a4a742210056462c84d3550bfb"
+      }
+    },
+    {
+      "actual_pgu": 284149530,
+      "block_count": 1,
+      "canonical_input_sha256": "22fe30852cfde9f4cc50462a1e8cc9dc295370e82fb37c0ed0410eaf02aa8548",
+      "executed_mulmod_count": 90000,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x00000000000000010000000000000000ffffffffffffffffffffffffffffff43"
+      },
+      "parent_total_scaled": 198776883703409810016102017,
+      "public_values_sha256": "e0f0745380153b28af4026168fe7ad570d85a4593d654d77736c55435ad26680",
+      "sample_id": "proposal-arithmetic-run/mulmod-dup4-mod193-n90000-b1",
+      "source_sha256": {
+        "construction_request": "ea0bbf76bb7d79c87e46896c5d03aaa76329abd45dc4e8c6cec7dd897f1abd35",
+        "measurement_status": "2d97474367a74fe8a8d8630703e7732ce0133fcbee81d8ca3af4745401635770",
+        "native_report": "155283d3aeb7fcb41e68e16c44f16dbab6d3ebdcfedfb28cf80c5331b5b30f78",
+        "quote_report": "d28dfcdff8030c5b07b143b58c658a0632c0bca3b5b57cba76253164e9900786",
+        "sp1_report": "924980c953def081a238b052c832ff9c6f767d55596b307930bdbc70d6083849"
+      }
+    },
+    {
+      "actual_pgu": 1613748933,
+      "block_count": 32,
+      "canonical_input_sha256": "9fa4352f06736297ac4d130e0e893f48c09565fd54912f750325b347ae5bd92f",
+      "executed_mulmod_count": 2880000,
+      "operands": {
+        "a": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "b": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000011"
+      },
+      "parent_total_scaled": 1495634606370480803266141316,
+      "public_values_sha256": "d7a63b3ddcc1f354e8a47b81b4b5ef797931efa4e0886c06c626b0dde4b3216c",
+      "sample_id": "proposal-arithmetic-run/mulmod-dup4-small-n90000-b32",
+      "source_sha256": {
+        "construction_request": "66e51bc4cf4523d30878f67030d4f5834c83fb242c41a56e5924c85d6e23c291",
+        "measurement_status": "2d0e6a2710ae06c4cbf93e08543cbe4be56ac639c35e31c5ddb77aaf193dd05f",
+        "native_report": "d7f1eab7dac1e34416d9a0306483af9ac7b34bf976e0a95b0467a1933832c2af",
+        "quote_report": "3e4cd1f846732dd243799f97e6b6575d5aed9bba58592fcc8c737430bd28c880",
+        "sp1_report": "6d6a306b547340f4df5cc16ccb33955c6f8c7bec7f62492530ac590c9460de65"
+      }
+    },
+    {
+      "actual_pgu": 4283103975,
+      "block_count": 32,
+      "canonical_input_sha256": "d536189d3e4f7aa2293373ae75a682ecb98afbb59dc6da6b20b4e2a7e73881ab",
+      "executed_mulmod_count": 2880000,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff43",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc9",
+        "modulus": "0x00000000000000010000000000000000ffffffffffffffffffffffffffffff43"
+      },
+      "parent_total_scaled": 1495634606370480803266141316,
+      "public_values_sha256": "92d57a036b3733740a09b3023769b794f0238bcc1fa5f83ed0a7c9875dc0d70c",
+      "sample_id": "proposal-arithmetic-run/mulmod-dup4-mod193-n90000-b32",
+      "source_sha256": {
+        "construction_request": "871d81cc77e2c7f55c365607334e0a3b721c86253bf4b78bcc101370fc414743",
+        "measurement_status": "91f5f8fe9447fa0e334cbee7820b050fabb7dfce8a4e30d2af55b67f0bfb61d0",
+        "native_report": "46cf5bc093306e73862d7d8f9d0038e021bbe3940a8ee6979dfd4029c3fb5f18",
+        "quote_report": "85cb6260a11a9fef626c1d9abd8fe2185f482e4cc1c0b6ab8187b562652d3d1b",
+        "sp1_report": "408e3c09dbde43bb5e6f8554c4ab2391d5089d3d0cb33a50633092f360bd5250"
+      }
+    },
+    {
+      "actual_pgu": 162244278,
+      "block_count": 1,
+      "canonical_input_sha256": "9a358d282e67142215f37764f85e40f59014454e90ca282d023380578a3fab24",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "a4db2814fc180fe4abfffd2447046d9f37606011949158c713bfd29f7f59d9ad",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-zero-n8192-b1",
+      "source_sha256": {
+        "construction_request": "4caff018f6f2ef0035cb5fddbcc46de9b91f6fd49b378d94e7ab1b6fb9a7f176",
+        "measurement_status": "e89312e35055733d2daa9f558a0b3c466f0ba2087c14b5a8284c0ddf56079e47",
+        "native_report": "fa2f826a20848b118b7aa52ddcc5411caa7aa527e808deee8aaff96539a5a4c3",
+        "quote_report": "8db75ee69979dc16888aaaf255c29a3ea791446a1458cc9c55c9d6391abd7eb1",
+        "sp1_report": "1def20b3f172173d6388bf0c1b97bdf2dd37a04da3d3dedcd90631ea90690383"
+      }
+    },
+    {
+      "actual_pgu": 165626970,
+      "block_count": 1,
+      "canonical_input_sha256": "d02ae0430431fe4de6a491282c578e2d1c767dbfc5b2bc883c2b5d00e606c770",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "c288a91c531fc9bd843917d65e540bf7d94417cf74a9cf1c752eed16d000cd95",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-one-n8192-b1",
+      "source_sha256": {
+        "construction_request": "7fef242b6899a779233a9a0b114a852aba20f0cf9f6a08c0fda6c2cea9ecf1b0",
+        "measurement_status": "70045932b31768950d3181bb863184f5958941b6d2dcef8c9532adc144846788",
+        "native_report": "bcb3b4294d491b8d10b93f525cb223866d91ab4fc984c2ab93b716a6e8b43565",
+        "quote_report": "1a01dba216215039f784c47313e7b0d7e14a550beeecb328a1ea50bef7fe7a25",
+        "sp1_report": "ca60650948b535416dd65d379fe4138eb70f2e1385b198533dce0df2f4449ee7"
+      }
+    },
+    {
+      "actual_pgu": 165622519,
+      "block_count": 1,
+      "canonical_input_sha256": "8b8e1effcddeb602f477f38c3874e4a227059c6f202fd0789635c9e368b52b52",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000000000000000000000000000000000000000000000000000003"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "68d4d4d956fa03fdddc455fc2d2b5a49393b70adeb27ac6ecaa4fb16f416e6c1",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-three-n8192-b1",
+      "source_sha256": {
+        "construction_request": "b3767e04709f630e47b41fbcd0efd97a97c9ef43bd8bf37786202e44e2445da1",
+        "measurement_status": "d2379967920832ad4c344e6993e7fa0dc17e64deabd1f3a290d9e1074577759b",
+        "native_report": "e3c405cc246dfd4564b19fee906db206dd9afa819a9a0a0fa7cfcbd9bf3271e4",
+        "quote_report": "33ce902139fe05f8b6a1525a4e34cf374f39457fbfb7c7e65f144ce7cd9b29dc",
+        "sp1_report": "7688d8686f900f042bcec3abc2971badc78c2055aa6a887f830e5f0feea788d1"
+      }
+    },
+    {
+      "actual_pgu": 165325585,
+      "block_count": 1,
+      "canonical_input_sha256": "54f74da2294d82aaa92efca3c2bb5a8db09688a61f134a670296d1ce759fac1d",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x000000000000000000000000000000000000000000000000ffffffffffffffff"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "2f2b0e06f6d5dd0667d93bc194a294b713fa587a0ddb91464cbe7c24bb62b0ba",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-64-max-n8192-b1",
+      "source_sha256": {
+        "construction_request": "3c12d4a200c573cb292fcedde1a14906eb0319d553f6b58521647f97ecd1c905",
+        "measurement_status": "52ba8a635a48956de054abc78535a3db6dc00e841a3d8ea4fa848b164e7260f9",
+        "native_report": "72716f9cc1e6880dc35104b1ce0a6aab3436f3ea569718c81254840915e7e825",
+        "quote_report": "60c9ae964dc38197cf447f14763c305dd6775513d31d7ef2dd92eda5e945e739",
+        "sp1_report": "1bcb69a15bc8811daeb37a81b0222ddbdee96f7d252419db5a88b8893845a063"
+      }
+    },
+    {
+      "actual_pgu": 166632720,
+      "block_count": 1,
+      "canonical_input_sha256": "c84e5e4812c6e5d6b141235a04438738ea1633b2112159558bdfe4bb65799bdb",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000000000000000000000000000000000000010000000000000001"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "eb6f9c39e3fb434ed5c993d0d6ba4657c1b70e53b5d259953bc205b486435d97",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-65-edge-n8192-b1",
+      "source_sha256": {
+        "construction_request": "0a361024024b21da9592f4aa15c8e79f900a94be691c464595dd2d3e836483a0",
+        "measurement_status": "dcf38cb8c54319ed076d8aab22a6f6cf0f0fe1bb48efb6266d462baa136d296a",
+        "native_report": "1d0af68e67d76210975a2ecfb25ff3cd518a23e2b53bca9bc239d63737c58191",
+        "quote_report": "d25624c841856e3413344a041073efcbcf7e5a4853eff01731cbb5c10c5c803d",
+        "sp1_report": "fcc587d5af293809c32fc054ea0c1b2576f91af646872f8bf4c7ff6704e18445"
+      }
+    },
+    {
+      "actual_pgu": 166190449,
+      "block_count": 1,
+      "canonical_input_sha256": "baba7a49c711306466c023ab4419de58a699d1f9b40f43102a48f0903dadcbba",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xe753c342d04152673a9afc3b2ad5f61b56c8fa8c59ff984d1dece877604a25ed",
+        "b": "0xd0c5ea335f0e7f43301a4ff6788286ab7d9e558b9ded203d060b948165f351b5",
+        "modulus": "0x00000000000000000000000000000000af3b585c2d7cb89c8c2e301737186ed5"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "583cb006e1fa184640858adef02feb8eb26dfe6f303ed39355e6bf20fa5f2062",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-128-seeded-n8192-b1",
+      "source_sha256": {
+        "construction_request": "f0e9b4ac0dd8d8bf43d31746dfdf2990c8ceb6e9b3041466eeeef9e6860b3a3a",
+        "measurement_status": "034da82cdfe21e8188d2d5c4f7e22aed61c18ce9efc8571f97b788a9d9494d35",
+        "native_report": "609fa778b9bab2b0f5bde3852e5cb811578bbad9ff9b4fd0b6cfb7a10f8984ff",
+        "quote_report": "f28176589cb10edd5cfbce8184b86e02665648411ac1a4b1998cc2e3e3cd1d50",
+        "sp1_report": "5b49cd98170388d866097d8e13a46c0f7d2540d4b8f627022e928a024fb6154d"
+      }
+    },
+    {
+      "actual_pgu": 169568521,
+      "block_count": 1,
+      "canonical_input_sha256": "701e5a4c633c82519ea0877a6ba9d71a245b19de068ec493b7eed1f8fb28bb9f",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000000000000000000000100000000000000000000000000000001"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "4d42e44162c4738f37fd3ece081c75215cc051d7049af2ad1264116497f1c818",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-129-edge-n8192-b1",
+      "source_sha256": {
+        "construction_request": "e7b6fd1ac4dcdaf1fda2ade63dd70994a49424b3510565a00ccf56aa210a14ee",
+        "measurement_status": "e5918e7fa707c52ada443598c65f6b10f53a54ab4ee5ca504fbd285ef2019ade",
+        "native_report": "ad24f5632e984fb21340a39a70af7aab941b1770b2aa5aa6f7a36fd7406942da",
+        "quote_report": "e597ae7b6e5d18d1a866f130e917339e1122657b5414dba0a98c09cfce32d519",
+        "sp1_report": "197c8524cc5fc155570b694e498c2ecb0215087d359544dd2a396ddedf028dc7"
+      }
+    },
+    {
+      "actual_pgu": 167729662,
+      "block_count": 1,
+      "canonical_input_sha256": "bee15b28a181de7a4569f2a89448fe0d481f16ae425d352f3f81bbeb9591e597",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xbdaac72bd302aafd6834168af270dd0259cc18e601ed6b6f3e1b20ecfb17d02d",
+        "b": "0x9bf5aa737c1914baa1ba83d1d99a90fe36391c711b1fb9780b13cc34c77e04a3",
+        "modulus": "0x0000000000000000dcf2326ddd466bef4d56793a787962aff20a9b3b32690c6f"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "4b76959fa5c3f99dcc4ce08268b77daf50e39441749385e314de2784726da177",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-192-seeded-n8192-b1",
+      "source_sha256": {
+        "construction_request": "337a3e5235a89363b10258edcb72df80ed31de1a80f98ead3faa08cdad476340",
+        "measurement_status": "12d003a4772fe25902524cc1859eb1be1de8cd8a3467f0e020c053ee2d48fd60",
+        "native_report": "67ef7cbd3fee6f6fb66b17edfa61057efd6c39a3ae5d6e2acfb213771e31e0a6",
+        "quote_report": "3562ffb46554d162204d5182d5e4664369ae3fbcadb1ba31ade7924209dd57c7",
+        "sp1_report": "6ff6d6ae01b6dcc1ee9c8c0e0aba8b975c2d5c5f4b76f37e7ae0a3a2e2943362"
+      }
+    },
+    {
+      "actual_pgu": 169141508,
+      "block_count": 1,
+      "canonical_input_sha256": "4d9bfc4ca042736e236f408b23cc0e7e8d31c9e3df3c2409f1afca5c5a5f59fa",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000001000000000000000000000000000000000000000000000001"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "16d222c340f934de1d93092d0d1cc75ce20fcf4aa3dbd440ea6b94640dccd76e",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-193-edge-n8192-b1",
+      "source_sha256": {
+        "construction_request": "5992a447255e1625963cda8957c45e47ba0a1797f0e56398a74ecc1dd06fc2c2",
+        "measurement_status": "fa0c85300ec1b2d0557af78f84a1cd9f03c6396585adcddf452cf010b7009590",
+        "native_report": "b54be401db0993c02649eced1ad9338cf6a8f63f2b2a7856edcb265b460d5e8d",
+        "quote_report": "a61f21cfa676147e8f61a4a1b8df3184576398167e2ba2713404126564ea54f3",
+        "sp1_report": "7458c00e9e0851de663795823db73d1225c02ef4dd89172cdd83486c09db48b7"
+      }
+    },
+    {
+      "actual_pgu": 169710633,
+      "block_count": 1,
+      "canonical_input_sha256": "bb518c05f3014fcde0e0d6fedc200e4b42c48cfd6f690c4c2c1c6a59dcf95f30",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0x89a05997027be4ee137984d9b084f99c5c3f86714ea4fc3e25c83e69a59b8053",
+        "b": "0xa05f286dab9bbe8a53e2e3421240188b6ccdbe60cfd1bdcb7f03093dbccb9379",
+        "modulus": "0x47860b880d1f1498cf2a12ef11ebcf29eb4f52dfefbec696f545848ccec0f9b1"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "c8c781c61458c0d123123784461c43efab950adebc8c709dceb61dd9f73399a8",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-255-seeded-n8192-b1",
+      "source_sha256": {
+        "construction_request": "80717b79ae8644fb322323bc0c66021abc7f6079c2a5ffba2fec6f75e4674b23",
+        "measurement_status": "b0294cae9e93b109f50c7ef6c47a9d057819a0294770037a3977c2154860ccc8",
+        "native_report": "cb167fd0e52a24a5dd42d0f4f61eb2fb1b1c1b1088ce2bdaa69e5b0be80d5efb",
+        "quote_report": "985677979f6319aa75bb3c72672fcc87d2cd713a720a7c81a04aaa979aa7dc45",
+        "sp1_report": "23a775dc795527d5de8f7c083d8bf9a534395d17cfcb1961f509eb3004778104"
+      }
+    },
+    {
+      "actual_pgu": 167674189,
+      "block_count": 1,
+      "canonical_input_sha256": "8917dc3d8ca9c3ed5652ab36051f3e9ece7b2743c8b7f4a38bd45033c9c90312",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0x830a143dd326b1878ccabccfc0cecea8a98108cd485cb3703155b98352db426d",
+        "b": "0xa2e3b8478169a39353796c2d2c1d12b699173a7210589475931009d29a6e2b15",
+        "modulus": "0x873aed8430c3d88f8ca0d3bb00b8e6fff5dc3ab47947f13e7bb4dc2dad2b5941"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "4787d45fd870c7770ae51a0089ec3562824eebc0817f78b77c5221cfe2daf2ca",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-256-seeded-n8192-b1",
+      "source_sha256": {
+        "construction_request": "4710aba574e15e3519da03fe0e657304f37b86da495fc932a38485f4892da348",
+        "measurement_status": "de0538b9ce54931993c2c7355fcf1374e99bc50206eb09d538b516165e0316a2",
+        "native_report": "b2da88240517f68bbccf5f1fe94836e7d922a456cf0cf5e62faf0b675f59a8f4",
+        "quote_report": "7f7348b083a9c4c5d446c13ae81974e3d7262ea70d21b892515ef3c2e69cad40",
+        "sp1_report": "45fc2136566afc34bb9d9cd8207ea9a09076ae4ff9627232a9c71afabed1abdb"
+      }
+    },
+    {
+      "actual_pgu": 163864676,
+      "block_count": 1,
+      "canonical_input_sha256": "ee28b49e5624a173b3c62e1420d87770e0f9f6241e81225fa1dbcd44168fe704",
+      "executed_mulmod_count": 8192,
+      "operands": {
+        "a": "0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff",
+        "b": "0x000000000000000000000000000000007fffffffffffffffffffffffffffffff",
+        "modulus": "0x8000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "parent_total_scaled": 164357874327838975185698311,
+      "public_values_sha256": "ad26bbdd751cdfc368d4aa9dd32d00a6658cdb772ea74c32ac38dc08218322e0",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-quotient-zero-n8192-b1",
+      "source_sha256": {
+        "construction_request": "12b1dc7a1255761fe9ccb076154490278202a3d8cff480bd178670811c7a4b72",
+        "measurement_status": "488acf6bc7f002cf0daaf50b27ca7809424e03fdb1ee44396e042eaf78bcf315",
+        "native_report": "e8076a4cf3fc67267101ec2179fca0e7025bcaf3f9a5d7f8b88ae083449fcb36",
+        "quote_report": "32835c74f0489efe1ea1caa082334bc824d9b8d90382daf22c175bdb8ac3d687",
+        "sp1_report": "caf25bcd1cf1a1e8a02c8ce77608e156a83ff06273d987c2839012a081014b9d"
+      }
+    },
+    {
+      "actual_pgu": 249828381,
+      "block_count": 1,
+      "canonical_input_sha256": "b9b143a1d9063498e321c5d70f202b9b3fca9457db7c32fc460b93ab1d59ea7f",
+      "executed_mulmod_count": 65536,
+      "operands": {
+        "a": "0x89a05997027be4ee137984d9b084f99c5c3f86714ea4fc3e25c83e69a59b8053",
+        "b": "0xa05f286dab9bbe8a53e2e3421240188b6ccdbe60cfd1bdcb7f03093dbccb9379",
+        "modulus": "0x47860b880d1f1498cf2a12ef11ebcf29eb4f52dfefbec696f545848ccec0f9b1"
+      },
+      "parent_total_scaled": 188484166055209574057626119,
+      "public_values_sha256": "8d346f67deb2ec4acd4b17f7bfedbb3302d4b7268e9e77789424faebc241669e",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-255-seeded-n65536-b1",
+      "source_sha256": {
+        "construction_request": "7a9bcf016647a566726aed783df3f2f0b656e7a37892e31b3c71f1f18b0a03f5",
+        "measurement_status": "126b0694d00c7eb0141443981305227ca259193a2a766010cf98345146b57a20",
+        "native_report": "5bb531960ba3a70743834b0091bc43b6674776c4808b1770a8290e35750830b0",
+        "quote_report": "ab53ba57d2f3bf9008da3a70e039ae9e42edda2ecd9abfa05cd3b848031dfa41",
+        "sp1_report": "2b4f87cd073481a5858cfbe4c1949b7e257c92128bf9968ba9eac77c8b587011"
+      }
+    },
+    {
+      "actual_pgu": 248691725,
+      "block_count": 1,
+      "canonical_input_sha256": "9a38615ec7acf9c8b002f282f766da81a4d761ba79bc4915056bb1cea68691e1",
+      "executed_mulmod_count": 65536,
+      "operands": {
+        "a": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "b": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "modulus": "0x0000000000000000000000000000000100000000000000000000000000000001"
+      },
+      "parent_total_scaled": 188484166055209574057626119,
+      "public_values_sha256": "85babe0e861467df81d541890db95991de8b8935fb8175d8ada16e6469ce6be7",
+      "sample_id": "mulmod-refine-run/mulmod-dup4-boundary-mod-129-edge-n65536-b1",
+      "source_sha256": {
+        "construction_request": "24704c69941a3cab2b3b0045eb863ffd607811a33282f0c643a8fefa354b6e97",
+        "measurement_status": "c39375bc7380ba624f4d0ae1b3b7d3d641d4687cf7858f15277bc50326ea9dab",
+        "native_report": "d373f26e79f7765aed8f8f0400ddb281c262e421f7ea108b8016465ddf6c1dfa",
+        "quote_report": "fec2b3abf0830dbb06b1d3ea8f650f1ce05ac0c11959f7128fc4b186e74cd010",
+        "sp1_report": "34df2a7e7a4524e730af7bf3f9cbd642338ae7e77226eeea6f3463f17d7b830b"
+      }
+    }
+  ],
+  "parent_artifact_sha256": "93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046",
+  "schema_version": 1
+}

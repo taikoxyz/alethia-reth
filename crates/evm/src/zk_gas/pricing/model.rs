@@ -1048,6 +1048,105 @@ fn ceil_scaled(value: i128) -> Result<u128, ZkGasError> {
 mod tests {
     use super::*;
 
+    fn normal_mulmod() -> OperationPricingInput {
+        OperationPricingInput {
+            route: OperationRoute::Opcode(0x09),
+            interpreter_raw_gas: Some(8),
+            native_gas: None,
+            model_input: OperationModelInput::StaticRawGas { raw_gas: 8 },
+            feature_error: false,
+        }
+    }
+
+    #[test]
+    fn zk_gas_mulmod_preserves_parent_accepted_raw_eight_and_adds_event_floor() {
+        let priced = ZkGasModel.price_operation(&normal_mulmod()).expect("normal MULMOD");
+        assert_eq!(priced.accepted_absolute_scaled, 269_073_027_078_518_685_466);
+        assert_eq!(priced.incremental_scaled, 0);
+        assert_eq!(priced.structural_scaled, 1_600 * FIXED_POINT_SCALE);
+        assert_eq!(priced.total_scaled, priced.structural_scaled);
+        assert_eq!(priced.feature_error_scaled, 0);
+    }
+
+    #[test]
+    fn zk_gas_mulmod_floor_composes_as_route_aggregate_maximum() {
+        let priced = ZkGasModel
+            .price_block_without_mpt(&KnownBlockPricingInput {
+                started_non_anchor_transactions: 0,
+                native_value_transfers: 0,
+                operation_routes: &[OperationRoutePricingInput {
+                    route: OperationRoute::Opcode(0x09),
+                    accepted_absolute_scaled: 269_073_027_078_518_685_466 * 2,
+                    incremental_scaled: 0,
+                    structural_scaled: 3_200 * FIXED_POINT_SCALE,
+                    feature_error_scaled: 5_000_000 * FIXED_POINT_SCALE,
+                }],
+                resources: ResourceSelectors::default(),
+            })
+            .expect("aggregate MULMOD candidates price");
+        assert_eq!(priced.operations_scaled(), 5_003_200 * FIXED_POINT_SCALE);
+        assert_eq!(priced.feature_error_scaled(), 5_000_000 * FIXED_POINT_SCALE);
+    }
+
+    #[test]
+    fn zk_gas_mulmod_feature_error_and_namespace_validation_are_preserved() {
+        let mut input = normal_mulmod();
+        input.model_input = OperationModelInput::None;
+        input.feature_error = true;
+        let priced = ZkGasModel.price_operation(&input).expect("existing fallback");
+        assert_eq!(priced.total_scaled, 5_000_000 * FIXED_POINT_SCALE);
+        assert_eq!(priced.feature_error_scaled, priced.total_scaled);
+        assert_eq!(priced.structural_scaled, 0);
+        assert_eq!(priced.accepted_absolute_scaled, 0);
+
+        let mut mismatch = normal_mulmod();
+        mismatch.model_input = OperationModelInput::StaticRawGas { raw_gas: 7 };
+        assert_eq!(
+            ZkGasModel.price_operation(&mismatch),
+            Err(ZkGasError::InvalidInput("static_raw_gas"))
+        );
+        let mut wrong_namespace = normal_mulmod();
+        wrong_namespace.route = OperationRoute::ConfirmedSpawn(0x09);
+        assert_eq!(
+            ZkGasModel.price_operation(&wrong_namespace),
+            Err(ZkGasError::UnknownRoute(OperationRoute::ConfirmedSpawn(0x09)))
+        );
+    }
+
+    #[test]
+    fn zk_gas_mulmod_successor_does_not_change_add_or_addmod() {
+        let mut input = normal_mulmod();
+        input.route = OperationRoute::Opcode(0x08);
+        let addmod = ZkGasModel.price_operation(&input).expect("ADDMOD unchanged");
+        assert_eq!(addmod.total_scaled, 242_712_467_364_060_641_026);
+        assert_eq!(addmod.structural_scaled, 0);
+        input.route = OperationRoute::Opcode(0x01);
+        input.interpreter_raw_gas = Some(3);
+        input.model_input = OperationModelInput::StaticRawGas { raw_gas: 3 };
+        let add = ZkGasModel.price_operation(&input).expect("ADD unchanged");
+        assert_eq!(add.total_scaled, 42_682_295_930_216_867_992);
+        assert_eq!(add.structural_scaled, 0);
+    }
+
+    #[test]
+    fn zk_gas_mulmod_floor_does_not_charge_a_selected_undispatched_spawn() {
+        use super::super::{TransactionMetadata, ZkGasAccumulator};
+
+        let mut collector = ZkGasAccumulator::default();
+        collector.begin_transaction(TransactionMetadata::default()).expect("transaction");
+        collector.select_spawn(0xf1).expect("CALL selected but never dispatched");
+        collector.commit_transaction().expect("commit scope");
+        assert!(collector.committed_snapshot().operation_routes.is_empty());
+
+        collector.begin_transaction(TransactionMetadata::default()).expect("next transaction");
+        collector.observe_step(normal_mulmod()).expect("completed MULMOD");
+        collector.commit_transaction().expect("commit operation");
+        let snapshot = collector.committed_snapshot();
+        assert_eq!(snapshot.operation_routes.len(), 1);
+        assert_eq!(snapshot.operation_routes[0].route, OperationRoute::Opcode(0x09));
+        assert_eq!(snapshot.operation_routes[0].structural_scaled, 1_600 * FIXED_POINT_SCALE);
+    }
+
     #[test]
     fn zk_gas_model_checked_arithmetic_returns_the_typed_overflow_error() {
         assert_eq!(checked_add(i128::MAX, 1), Err(ZkGasError::ArithmeticOverflow));

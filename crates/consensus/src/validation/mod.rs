@@ -2,7 +2,8 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
+    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH,
+    constants::{EMPTY_WITHDRAWALS, MAXIMUM_EXTRA_DATA_SIZE},
 };
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::B256;
@@ -23,7 +24,11 @@ use crate::eip4396::{
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
-use alethia_reth_primitives::{SHASTA_EXTRA_DATA_LEN, transaction::is_allowed_tx_type};
+use alethia_reth_primitives::{
+    SHASTA_EXTRA_DATA_LEN,
+    etna::{validate_etna_extra_data, validate_etna_root},
+    transaction::is_allowed_tx_type,
+};
 
 /// Anchor transaction selectors, gas rules, and validation functions.
 mod anchor;
@@ -110,6 +115,7 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
     ///
     /// - Compares the ommer hash in the block header to the block body
     /// - Compares the transactions root in the block header to the block body
+    /// - Rejects blob transactions, and withdrawals in Etna block bodies
     fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
         let ommers_hash = block.ommers_hash();
 
@@ -133,6 +139,14 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         }
         validate_no_blob_transactions(block.body().transactions())?;
 
+        // Etna execution never applies body withdrawals, so a body carrying them would otherwise
+        // import unchanged on paths that skip `newPayloadV4` conversion.
+        if self.chain_spec.is_etna_active(block.header().timestamp()) &&
+            block.body().withdrawals().is_some_and(|withdrawals| !withdrawals.is_empty())
+        {
+            return Err(ConsensusError::msg("Etna block body must not contain withdrawals"));
+        }
+
         Ok(())
     }
 }
@@ -146,6 +160,12 @@ where
     /// This is called on standalone header to check if all hashes are correct.
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
+        let is_etna_active = self.chain_spec.is_etna_active(header.timestamp());
+        validate_etna_root(is_etna_active, header.number(), header.parent_beacon_block_root())
+            .map_err(ConsensusError::msg)?;
+        if is_etna_active && header.number() != 0 {
+            validate_etna_body_commitments(header)?;
+        }
 
         if !self.chain_spec.is_unzen_active(header.timestamp()) && !header.difficulty().is_zero() {
             return Err(ConsensusError::TheMergeDifficultyIsNotZero);
@@ -161,11 +181,15 @@ where
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
 
-        // Shasta extraData must be the 7-byte [pctg | proposalId(6)] layout — the only shape the
-        // drivers produce and the live chains carry. Reject anything else at import so a
-        // misbehaving block producer fails loudly here instead of minting headers whose embedded
-        // proposalId consumers cannot decode.
-        if self.chain_spec.is_shasta_active(header.timestamp()) &&
+        // Non-genesis Etna headers use the 13-byte [pctg | proposalId(6) | anchorBlockNumber(6)]
+        // layout, and Shasta/Unzen headers the 7-byte [pctg | proposalId(6)] layout — the only
+        // shapes the drivers produce. Reject anything else at import so a misbehaving block
+        // producer fails loudly here instead of minting headers whose fields consumers cannot
+        // decode.
+        if is_etna_active {
+            validate_etna_extra_data(true, header.number(), header.extra_data())
+                .map_err(ConsensusError::msg)?;
+        } else if self.chain_spec.is_shasta_active(header.timestamp()) &&
             header.extra_data().len() != SHASTA_EXTRA_DATA_LEN
         {
             return Err(ConsensusError::msg(format!(
@@ -292,6 +316,30 @@ where
     Err(ConsensusError::msg(format!(
         "Unzen block body extends past zk gas truncation point: body has {body_transaction_count} transactions but execution committed {committed_receipt_count}"
     )))
+}
+
+/// Requires a non-genesis Etna header to commit to empty withdrawals and zero blob gas.
+///
+/// `engine_newPayloadV4` rejects Etna payloads with withdrawals or blob gas during conversion, but
+/// P2P downloads, backfill, and staged sync import blocks without that conversion. Taiko
+/// execution ignores both commitments (block contexts drop body withdrawals and the blob fee
+/// environment is fixed), so without this rule those paths would accept header variants that the
+/// Engine API rejects.
+fn validate_etna_body_commitments<H: BlockHeader>(header: &H) -> Result<(), ConsensusError> {
+    if header.withdrawals_root() != Some(EMPTY_WITHDRAWALS) {
+        return Err(ConsensusError::msg(format!(
+            "Etna block must commit to empty withdrawals: have withdrawals root {:?}",
+            header.withdrawals_root()
+        )));
+    }
+    if header.blob_gas_used() != Some(0) || header.excess_blob_gas() != Some(0) {
+        return Err(ConsensusError::msg(format!(
+            "Etna block blob gas fields must be zero: have blob gas used {:?}, excess blob gas {:?}",
+            header.blob_gas_used(),
+            header.excess_blob_gas()
+        )));
+    }
+    Ok(())
 }
 
 /// Validates that the header has a base fee set (required after EIP-4396).

@@ -1,6 +1,8 @@
 //! Taiko execution payload and sidecar representations.
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
-use alloy_rpc_types_engine::{ExecutionPayload, ExecutionPayloadV1};
+use alloy_rpc_types_engine::{
+    ExecutionPayload, ExecutionPayloadV1, ExecutionPayloadV2, ExecutionPayloadV3,
+};
 use alloy_rpc_types_eth::Withdrawal;
 use reth_payload_primitives::ExecutionPayload as ExecutionPayloadTr;
 
@@ -20,7 +22,16 @@ pub struct TaikoExecutionData {
 impl TaikoExecutionData {
     /// Creates a new instance of `ExecutionPayload`.
     pub fn into_payload(self) -> ExecutionPayload {
-        ExecutionPayload::V1(self.execution_payload.into())
+        let Self { execution_payload, taiko_sidecar } = self;
+        let payload_inner = ExecutionPayloadV1::from(execution_payload);
+        match taiko_sidecar.osaka {
+            Some(osaka) => ExecutionPayload::V3(ExecutionPayloadV3 {
+                payload_inner: ExecutionPayloadV2 { payload_inner, withdrawals: osaka.withdrawals },
+                blob_gas_used: osaka.blob_gas_used,
+                excess_blob_gas: osaka.excess_blob_gas,
+            }),
+            None => ExecutionPayload::V1(payload_inner),
+        }
     }
 }
 
@@ -54,6 +65,30 @@ pub struct TaikoExecutionDataSidecar {
         serde(default, skip_serializing, with = "alloy_serde::quantity::opt")
     )]
     pub slot_number: Option<u64>,
+    /// Hash-relevant Osaka payload fields retained for lossless block reconstruction.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub osaka: Option<TaikoOsakaPayloadFields>,
+}
+
+/// Hash-relevant V3 payload and `newPayloadV4` side parameters retained internally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct TaikoOsakaPayloadFields {
+    /// Withdrawals whose trie root is committed by the reconstructed block header.
+    pub withdrawals: Vec<Withdrawal>,
+    /// Blob gas consumed by the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub blob_gas_used: u64,
+    /// Excess blob gas carried into the block.
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
+    pub excess_blob_gas: u64,
+    /// Parent beacon block root committed by the block header.
+    pub parent_beacon_block_root: B256,
+    /// Blob hashes supplied alongside `newPayloadV4` for transaction consistency checks.
+    pub expected_blob_versioned_hashes: Vec<B256>,
+    /// Opaque EIP-7685 request values supplied alongside `newPayloadV4`.
+    pub execution_requests: Vec<Bytes>,
 }
 
 impl ExecutionPayloadTr for TaikoExecutionData {
@@ -74,7 +109,7 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 
     /// Returns the withdrawals associated with the block, if any.
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
-        None
+        self.taiko_sidecar.osaka.as_ref().map(|osaka| &osaka.withdrawals)
     }
 
     /// Returns the access list associated with the block, if any.
@@ -84,7 +119,7 @@ impl ExecutionPayloadTr for TaikoExecutionData {
 
     /// Returns the parent beacon block root, if applicable.
     fn parent_beacon_block_root(&self) -> Option<B256> {
-        None
+        self.taiko_sidecar.osaka.as_ref().map(|osaka| osaka.parent_beacon_block_root)
     }
 
     /// Returns the timestamp of the block.
@@ -198,5 +233,49 @@ impl From<TaikoExecutionPayloadV1> for ExecutionPayloadV1 {
             block_hash: val.block_hash,
             transactions: val.transactions.unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::{TaikoExecutionData, TaikoExecutionDataSidecar, TaikoExecutionPayloadV1};
+    use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+    use serde_json::json;
+
+    #[test]
+    fn legacy_execution_data_json_has_no_osaka_fields() {
+        let data = TaikoExecutionData {
+            execution_payload: TaikoExecutionPayloadV1 {
+                parent_hash: B256::ZERO,
+                fee_recipient: Address::ZERO,
+                state_root: B256::ZERO,
+                receipts_root: B256::ZERO,
+                logs_bloom: Bloom::ZERO,
+                prev_randao: B256::ZERO,
+                block_number: 1,
+                gas_limit: 2,
+                gas_used: 3,
+                timestamp: 4,
+                extra_data: Bytes::new(),
+                base_fee_per_gas: U256::from(5),
+                block_hash: B256::ZERO,
+                transactions: Some(Vec::new()),
+            },
+            taiko_sidecar: TaikoExecutionDataSidecar {
+                tx_hash: B256::ZERO,
+                withdrawals_hash: None,
+                header_difficulty: Some(U256::from(6)),
+                taiko_block: Some(true),
+                block_access_list: None,
+                slot_number: None,
+                osaka: None,
+            },
+        };
+
+        let value = serde_json::to_value(data).unwrap();
+        assert!(value.get("osaka").is_none(), "{value}");
+        assert_eq!(value["headerDifficulty"], json!("0x6"));
+        assert_eq!(value.get("withdrawalsHash"), Some(&json!(null)));
+        assert_eq!(value["taikoBlock"], json!(true));
     }
 }

@@ -6,6 +6,8 @@ pub mod addresses;
 #[cfg(feature = "net")]
 /// Engine API payload and type definitions.
 pub mod engine;
+/// Etna fork invariants shared by payload construction and validation.
+pub mod etna;
 /// Helpers for decoding Taiko extra-data fields.
 pub mod extra_data;
 /// Payload-attribute and builder primitive types.
@@ -14,5 +16,6 @@ pub mod payload;
 pub mod transaction;
 
 pub use extra_data::{
-    SHASTA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg, decode_shasta_proposal_id,
+    ETNA_EXTRA_DATA_LEN, SHASTA_EXTRA_DATA_LEN, decode_shasta_basefee_sharing_pctg,
+    decode_shasta_proposal_id,
 };

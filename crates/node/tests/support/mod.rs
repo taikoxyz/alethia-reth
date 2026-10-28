@@ -361,6 +361,30 @@ pub fn signed_tx_with_key(
     sign_eip1559(key, nonce, 7, target, input)
 }
 
+/// A legacy EIP-155 transaction on the fixture chain with a 1,000,000 gas limit and a 1 gwei gas
+/// price, signed by `key`.
+pub fn signed_legacy_tx_with_key(
+    key: &str,
+    nonce: u64,
+    target: Address,
+    input: Bytes,
+) -> reth_ethereum_primitives::TransactionSigned {
+    use alloy_consensus::{SignableTransaction, Signed, TxLegacy};
+    use alloy_signer::SignerSync;
+    let signer: alloy_signer_local::PrivateKeySigner = key.parse().unwrap();
+    let tx = TxLegacy {
+        chain_id: Some(167001),
+        nonce,
+        gas_price: 1_000_000_000,
+        gas_limit: 1_000_000,
+        to: target.into(),
+        value: U256::ZERO,
+        input,
+    };
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    Signed::new_unhashed(tx, signature).into()
+}
+
 /// The raw EIP-2718 bytes submitted to the transaction pool.
 pub fn raw_2718(tx: &reth_ethereum_primitives::TransactionSigned) -> Bytes {
     use alloy_eips::eip2718::Encodable2718;

@@ -3,11 +3,10 @@
 //! This module provides a unified interface for selecting and executing transactions
 //! from the mempool, used by both the payload builder and the RPC pre-building endpoint.
 
-use alethia_reth_primitives::transaction::is_allowed_tx_type;
+use alethia_reth_primitives::{etna::etna_tx_length, transaction::is_allowed_tx_type};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256};
-use alloy_rlp::Encodable;
 use op_alloy_flz::tx_estimated_size_fjord_bytes;
 use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
@@ -85,12 +84,12 @@ pub struct TxSelectionConfig {
     pub locals: Vec<Address>,
     /// Digest of the execution state selection starts from; see [`selection_state_seed`].
     pub state_seed: B256,
-    /// Maximum total size, in bytes, of one list's transactions in block-body form: the sum of
-    /// their [`alloy_rlp::Encodable::length`], where a legacy transaction counts its RLP list and
-    /// a typed transaction its EIP-2718 bytes plus the RLP string header around them. The bound is
-    /// inclusive. A transaction that does not fit the current list starts a new one while
-    /// `max_lists` allows; otherwise it is left out and selection moves on to the next candidate.
-    /// `None` disables the cap.
+    /// Maximum total size, in bytes, of one list's transactions as an Etna executionBlock carries
+    /// them: the sum of their [`etna_tx_length`], where every transaction, legacy included, counts
+    /// its EIP-2718 bytes plus the RLP string header around them. The bound is inclusive. A
+    /// transaction that does not fit the current list starts a new one while `max_lists` allows;
+    /// otherwise it is left out and selection moves on to the next candidate. `None` disables the
+    /// cap; only Etna builds set it.
     pub max_tx_bytes_per_list: Option<u64>,
 }
 
@@ -114,8 +113,8 @@ pub struct ExecutedTxList {
     pub total_gas_used: u64,
     /// Total DA bytes used by all transactions in this list.
     pub total_da_bytes: u64,
-    /// Total block-body size, in bytes, of the transactions in this list; see
-    /// [`TxSelectionConfig::max_tx_bytes_per_list`].
+    /// Total size, in bytes, of the transactions in this list as an Etna executionBlock carries
+    /// them; see [`TxSelectionConfig::max_tx_bytes_per_list`].
     pub total_tx_bytes: u64,
 }
 
@@ -226,7 +225,7 @@ where
             continue;
         }
 
-        // 4. Calculate DA size and block-body size upfront (needed for limit checks)
+        // 4. Calculate DA size and Etna executionBlock size upfront (needed for limit checks)
         let tx = pool_tx.to_consensus();
         if !is_allowed_tx_type(tx.inner()) {
             best_txs.mark_invalid(
@@ -236,7 +235,7 @@ where
             continue;
         }
         let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
-        let tx_bytes = tx.inner().length() as u64;
+        let tx_bytes = etna_tx_length(tx.inner()) as u64;
 
         // 5. Early reject transactions that cannot fit in any list
         if pool_tx.gas_limit() > config.gas_limit_per_list {
@@ -409,7 +408,7 @@ mod tests {
 
     use super::{
         ExecutedTxList, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
-        advance_selection_state, select_and_execute_pool_transactions,
+        advance_selection_state, etna_tx_length, select_and_execute_pool_transactions,
     };
     use crate::{
         executor::TaikoBlockExecutor,
@@ -527,9 +526,9 @@ mod tests {
         pool.get(tx.tx_hash()).expect("test tx should be in the pool").to_consensus()
     }
 
-    /// Returns the block-body length of `tx`, its [`Encodable::length`].
-    fn body_len(tx: &Recovered<TransactionSigned>) -> u64 {
-        tx.inner().length() as u64
+    /// Returns the length `tx` adds to an Etna executionBlock, its [`etna_tx_length`].
+    fn etna_len(tx: &Recovered<TransactionSigned>) -> u64 {
+        etna_tx_length(tx.inner()) as u64
     }
 
     /// Returns the length of the RLP header of a byte string with `payload_len` bytes.
@@ -933,13 +932,13 @@ mod tests {
 
         // `b` does not fit after `a`, so it is left out and `c`, which fits, is still selected.
         let config = TxSelectionConfig {
-            max_tx_bytes_per_list: Some(body_len(&a) + body_len(&c)),
+            max_tx_bytes_per_list: Some(etna_len(&a) + etna_len(&c)),
             ..overflow_test_config(1, B256::ZERO)
         };
         let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
         assert_eq!(lists.len(), 1);
         assert_eq!(list_hashes(&lists[0]), hashes([&a, &c]));
-        assert_eq!(lists[0].total_tx_bytes, body_len(&a) + body_len(&c));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&a) + etna_len(&c));
         assert_eq!(receipts, 2);
         // A transaction left out for the byte budget is not a zk gas overflow, and it stays in
         // the pool for a later block.
@@ -948,13 +947,13 @@ mod tests {
 
         // One byte less leaves room for `a` only.
         let config = TxSelectionConfig {
-            max_tx_bytes_per_list: Some(body_len(&a) + body_len(&c) - 1),
+            max_tx_bytes_per_list: Some(etna_len(&a) + etna_len(&c) - 1),
             ..overflow_test_config(1, B256::ZERO)
         };
         let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
         assert_eq!(lists.len(), 1);
         assert_eq!(list_hashes(&lists[0]), hashes([&a]));
-        assert_eq!(lists[0].total_tx_bytes, body_len(&a));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&a));
         assert_eq!(receipts, 1);
         assert!(overflows.is_empty());
     }
@@ -966,38 +965,38 @@ mod tests {
         let pool = testing_pool();
         add_to_pool(&pool, txs.clone());
         let [a, b, c] = txs.each_ref().map(|tx| pooled(&pool, tx));
-        assert_eq!(body_len(&a), body_len(&b), "a and b differ only in a one-byte tip");
+        assert_eq!(etna_len(&a), etna_len(&b), "a and b differ only in a one-byte tip");
         let overflows = ZkOverflowMemory::default();
 
         // `b` does not fit after `a`, so it opens the second list, which `c` then joins.
         let config = TxSelectionConfig {
-            max_tx_bytes_per_list: Some(body_len(&a) + body_len(&c)),
+            max_tx_bytes_per_list: Some(etna_len(&a) + etna_len(&c)),
             ..overflow_test_config(2, B256::ZERO)
         };
         let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
         assert_eq!(lists.len(), 2);
         assert_eq!(list_hashes(&lists[0]), hashes([&a]));
         assert_eq!(list_hashes(&lists[1]), hashes([&b, &c]));
-        assert_eq!(lists[0].total_tx_bytes, body_len(&a));
-        assert_eq!(lists[1].total_tx_bytes, body_len(&b) + body_len(&c));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&a));
+        assert_eq!(lists[1].total_tx_bytes, etna_len(&b) + etna_len(&c));
         assert_eq!(receipts, 3);
 
         // `a` and `b` are each larger than the whole budget, so they are rejected before the list
         // checks and no second list is opened for them.
         let config = TxSelectionConfig {
-            max_tx_bytes_per_list: Some(body_len(&c)),
+            max_tx_bytes_per_list: Some(etna_len(&c)),
             ..overflow_test_config(2, B256::ZERO)
         };
         let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
         assert_eq!(lists.len(), 1);
         assert_eq!(list_hashes(&lists[0]), hashes([&c]));
-        assert_eq!(lists[0].total_tx_bytes, body_len(&c));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&c));
         assert_eq!(receipts, 1);
         assert!(overflows.is_empty());
     }
 
     #[test]
-    fn tx_selection_byte_budget_counts_typed_transactions_in_body_form_inclusively() {
+    fn tx_selection_byte_budget_counts_typed_transactions_as_byte_strings_inclusively() {
         let txs = [
             recovered_eip1559_tx(BENCH_INCLUDED_CALLER, 20, Bytes::from(vec![0; 100])),
             recovered_eip1559_tx(BENCH_LATE_CALLER, 10, Bytes::default()),
@@ -1008,14 +1007,16 @@ mod tests {
         let [t1, t2] = txs.each_ref().map(|tx| pooled(&pool, tx));
         let overflows = ZkOverflowMemory::default();
 
-        // A typed transaction counts its EIP-2718 bytes plus the RLP string header around them.
+        // A typed transaction counts its EIP-2718 bytes plus the RLP string header around them,
+        // which is also its block-body length.
         for tx in [&t1, &t2] {
             let eip2718_len = tx.inner().encode_2718_len();
-            assert_eq!(body_len(tx), (eip2718_len + rlp_string_header_len(eip2718_len)) as u64);
+            assert_eq!(etna_len(tx), (eip2718_len + rlp_string_header_len(eip2718_len)) as u64);
+            assert_eq!(etna_len(tx), tx.inner().length() as u64);
         }
 
         // The budget is inclusive: exactly `len(t1) + len(t2)` holds both.
-        let budget = body_len(&t1) + body_len(&t2);
+        let budget = etna_len(&t1) + etna_len(&t2);
         let config = TxSelectionConfig {
             max_tx_bytes_per_list: Some(budget),
             ..overflow_test_config(1, B256::ZERO)
@@ -1032,8 +1033,58 @@ mod tests {
         };
         let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
         assert_eq!(list_hashes(&lists[0]), hashes([&t1]));
-        assert_eq!(lists[0].total_tx_bytes, body_len(&t1));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&t1));
         assert_eq!(receipts, 1);
+    }
+
+    #[test]
+    fn tx_selection_byte_budget_counts_legacy_transactions_as_byte_strings() {
+        let tx = |caller, tip| {
+            recovered_tx_with_input(
+                caller,
+                BENCH_SUCCESS_TARGET,
+                0,
+                tip,
+                Bytes::from(vec![0; 3_000]),
+            )
+        };
+        let txs = [
+            tx(BENCH_INCLUDED_CALLER, 30),
+            tx(BENCH_LATE_CALLER, 20),
+            tx(BENCH_SUCCESS_CALLER, 10),
+        ];
+        let accounts = senders(&txs);
+        let pool = testing_pool();
+        add_to_pool(&pool, txs.clone());
+        let [a, b, c] = txs.each_ref().map(|tx| pooled(&pool, tx));
+        let overflows = ZkOverflowMemory::default();
+
+        // A legacy transaction's block-body form is its bare RLP list, which is also its EIP-2718
+        // encoding. The executionBlock carries it as a byte string, so it counts the string
+        // header as well.
+        for tx in [&a, &b, &c] {
+            assert!(tx.inner().is_legacy());
+            let eip2718_len = tx.inner().encode_2718_len();
+            assert_eq!(tx.inner().length(), eip2718_len);
+            assert_eq!(etna_len(tx), (eip2718_len + rlp_string_header_len(eip2718_len)) as u64);
+        }
+
+        // A budget that holds all three in block-body form holds only two as the executionBlock
+        // carries them.
+        let body_form_budget: u64 = [&a, &b, &c].map(|tx| tx.inner().length() as u64).iter().sum();
+        assert!(etna_len(&a) + etna_len(&b) <= body_form_budget);
+        assert!(etna_len(&a) + etna_len(&b) + etna_len(&c) > body_form_budget);
+        let config = TxSelectionConfig {
+            max_tx_bytes_per_list: Some(body_form_budget),
+            ..overflow_test_config(1, B256::ZERO)
+        };
+        let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(list_hashes(&lists[0]), hashes([&a, &b]));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&a) + etna_len(&b));
+        assert_eq!(receipts, 2);
+        assert!(overflows.is_empty());
+        assert!(pool.contains(c.tx_hash()));
     }
 
     #[test]

@@ -3,7 +3,6 @@
 use alloy_consensus::Transaction;
 use alloy_eips::eip4844::BYTES_PER_BLOB;
 use alloy_primitives::B256;
-use alloy_rlp::Encodable;
 use reth::{
     providers::{ChainSpecProvider, StateProviderFactory},
     revm::{cancelled::CancelOnDrop, primitives::U256},
@@ -27,7 +26,7 @@ use alethia_reth_block::{
 };
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_consensus::validation::{AnchorValidationContext, validate_anchor_transaction};
-use alethia_reth_primitives::transaction::is_allowed_tx_type;
+use alethia_reth_primitives::{etna::etna_tx_length, transaction::is_allowed_tx_type};
 
 /// Creates an error for when a transaction's effective tip cannot be calculated.
 fn missing_tip_error(base_fee: u64) -> PayloadBuilderError {
@@ -63,7 +62,7 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) gas_limit: u64,
     /// Zk gas overflows remembered across this builder's selection calls.
     pub(super) zk_overflows: &'a ZkOverflowMemory,
-    /// Cap on the summed block-body length of the selected transactions, passed to selection as
+    /// Cap on the summed [`etna_tx_length`] of the selected transactions, passed to selection as
     /// [`TxSelectionConfig::max_tx_bytes_per_list`]: `Some` on Etna builds, derived from
     /// `maxBlockBytes` and the header reserve, and `None` before Etna.
     pub(super) tx_bytes_budget: Option<u64>,
@@ -71,9 +70,10 @@ pub(super) struct PoolExecutionContext<'a> {
 
 /// Executes a given transaction list in order.
 ///
-/// Transactions larger than the remaining `tx_bytes_budget` are left out (`None` disables the
-/// byte bound). Transaction validation failures are skipped, the first zk overflow ends the
-/// list, and non-transaction errors fail the build. Cancellation is checked before each item.
+/// Transactions whose [`etna_tx_length`] is larger than the remaining `tx_bytes_budget` are left
+/// out (`None` disables the byte bound). Transaction validation failures are skipped, the first
+/// zk overflow ends the list, and non-transaction errors fail the build. Cancellation is checked
+/// before each item.
 pub(super) fn execute_provided_transactions(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
     transactions: &[Recovered<EthTransactionSigned>],
@@ -93,7 +93,7 @@ pub(super) fn execute_provided_transactions(
             trace!(target: "payload_builder", ?tx, "leaving out unsupported transaction type");
             continue;
         }
-        let tx_bytes = tx.inner().length() as u64;
+        let tx_bytes = etna_tx_length(tx.inner()) as u64;
         if remaining_tx_bytes.is_some_and(|remaining| tx_bytes > remaining) {
             trace!(target: "payload_builder", ?tx, tx_bytes, "leaving out transaction larger than the remaining byte budget");
             continue;
@@ -269,7 +269,11 @@ mod tests {
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR};
     use alethia_reth_evm::{env::TaikoEvmEnv, factory::TaikoEvmFactory};
-    use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
+    use alethia_reth_primitives::{
+        addresses::TAIKO_GOLDEN_TOUCH_ADDRESS,
+        etna::{execution_block_len, execution_block_length},
+    };
+    use alloy_rlp::Encodable;
 
     const BENCH_SUCCESS_CALLER: Address = Address::with_last_byte(0x30);
     const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x31);
@@ -802,7 +806,7 @@ mod tests {
         let funded = Address::with_last_byte(0x50);
         let unfunded = Address::with_last_byte(0x51);
         let success = recovered_tx(funded, BENCH_SUCCESS_TARGET, 0, 1);
-        let success_len = success.inner().length() as u64;
+        let success_len = etna_tx_length(success.inner()) as u64;
 
         // A singleton build includes a valid transaction at the inclusive byte bound.
         for remaining in [None, Some(success_len)] {
@@ -959,11 +963,11 @@ mod tests {
     #[test]
     fn etna_given_list_skips_transactions_beyond_the_byte_budget() {
         let [a_caller, b_caller, c_caller] = [0x53, 0x54, 0x55].map(Address::with_last_byte);
-        let large_input = Bytes::from(vec![0_u8; 2_961]);
+        let large_input = Bytes::from(vec![0_u8; 2_958]);
         let a = recovered_tx_with_input(a_caller, BENCH_SUCCESS_TARGET, 0, 1, large_input.clone());
         let b = recovered_tx_with_input(b_caller, BENCH_SUCCESS_TARGET, 0, 1, large_input);
         let c = recovered_tx(c_caller, BENCH_SUCCESS_TARGET, 0, 1);
-        let [a_len, b_len, c_len] = [&a, &b, &c].map(|tx| tx.inner().length() as u64);
+        let [a_len, b_len, c_len] = [&a, &b, &c].map(|tx| etna_tx_length(tx.inner()) as u64);
         assert!(a_len == 3_000 && b_len == 3_000 && c_len <= 100, "{a_len} {b_len} {c_len}");
         let mut builder = etna_builder(&[(a_caller, 0), (b_caller, 0), (c_caller, 0)]);
 
@@ -1049,6 +1053,77 @@ mod tests {
         assert_eq!(b_nonce, 0);
     }
 
+    #[test]
+    fn etna_byte_budget_counts_legacy_transactions_as_the_execution_block_carries_them() {
+        let callers = [0x59, 0x5a, 0x5b].map(Address::with_last_byte);
+        let [a, b, c] =
+            [(callers[0], 30), (callers[1], 20), (callers[2], 10)].map(|(caller, tip)| {
+                recovered_tx_with_input(
+                    caller,
+                    BENCH_SUCCESS_TARGET,
+                    0,
+                    tip,
+                    Bytes::from(vec![0_u8; 3_000]),
+                )
+            });
+        let pool = pool_with([a.clone(), b.clone(), c.clone()]);
+        // Both modes run the copies selection sees, so every length below is theirs.
+        let txs = [&a, &b, &c].map(|tx| pooled_tx(&pool, tx));
+        let body_form_len: usize = txs.iter().map(|tx| tx.inner().length()).sum();
+        // A legacy transaction's block-body form is its bare RLP list; the executionBlock wraps it
+        // in a 3-byte string header.
+        for tx in &txs {
+            assert!(tx.inner().is_legacy());
+            assert_eq!(etna_tx_length(tx.inner()), tx.inner().length() + 3);
+        }
+
+        // With this header, `maxBlockBytes` holds all three exactly in block-body form, but only
+        // two as the executionBlock carries them.
+        let header = RethHeader {
+            gas_limit: 30_000_000,
+            extra_data: Bytes::from(vec![0; 13]),
+            base_fee_per_gas: Some(0),
+            parent_beacon_block_root: Some(B256::with_last_byte(1)),
+            ..Default::default()
+        };
+        let execution_block = |txs: &[Recovered<EthTransactionSigned>]| {
+            let txs: Vec<_> = txs.iter().map(|tx| tx.inner().clone()).collect();
+            execution_block_length(&header, &txs) as u64
+        };
+        let max_block_bytes = execution_block_len(header.length(), body_form_len) as u64;
+        let budget = super::super::etna_tx_bytes_budget(header.length(), max_block_bytes)
+            .expect("the header fits");
+        assert_eq!(budget, body_form_len as u64);
+        assert!(execution_block(&txs) > max_block_bytes);
+        assert!(execution_block(&txs[..2]) <= max_block_bytes);
+
+        // Pool mode stops at two, leaving the lowest tip out.
+        let accounts = callers.map(|caller| (caller, 0));
+        let zk_overflows = ZkOverflowMemory::default();
+        let ctx = PoolExecutionContext {
+            tx_bytes_budget: Some(budget),
+            ..etna_build_ctx(&zk_overflows, B256::ZERO)
+        };
+        let mut builder = etna_builder(&accounts);
+        run_etna_build(&mut builder, &pool, &ctx);
+        assert_eq!(builder.executor.receipts().len(), 2);
+        assert_eq!(callers.map(|caller| nonce_of(&mut builder, caller)), [1, 1, 0]);
+
+        // A given list of the same three stops at two as well.
+        let mut builder = etna_builder(&accounts);
+        let outcome = execute_provided_transactions(
+            &mut builder,
+            &txs,
+            0,
+            Some(budget),
+            &CancelOnDrop::default(),
+        )
+        .expect("a transaction beyond the byte budget should be left out, not fail the build");
+        assert!(matches!(outcome, ExecutionOutcome::Completed(_)));
+        assert_eq!(builder.executor.receipts().len(), 2);
+        assert_eq!(callers.map(|caller| nonce_of(&mut builder, caller)), [1, 1, 0]);
+    }
+
     /// Parent header of the Etna pool-build tests; Etna selection does not read it.
     static ETNA_PARENT: LazyLock<RethHeader> = LazyLock::new(RethHeader::default);
 
@@ -1109,11 +1184,18 @@ mod tests {
         pool
     }
 
-    /// Returns the block-body length of the copy of `tx` that `pool` hands to selection; the test
-    /// pool re-signs what it stores.
+    /// Returns the copy of `tx` that `pool` hands to selection; the test pool re-signs what it
+    /// stores.
+    fn pooled_tx(
+        pool: &TestPool,
+        tx: &Recovered<EthTransactionSigned>,
+    ) -> Recovered<EthTransactionSigned> {
+        pool.get(tx.tx_hash()).expect("test tx should be in the pool").to_consensus()
+    }
+
+    /// Returns the [`etna_tx_length`] of the copy of `tx` that `pool` hands to selection.
     fn pooled_len(pool: &TestPool, tx: &Recovered<EthTransactionSigned>) -> u64 {
-        let pooled = pool.get(tx.tx_hash()).expect("test tx should be in the pool");
-        pooled.to_consensus().inner().length() as u64
+        etna_tx_length(pooled_tx(pool, tx).inner()) as u64
     }
 
     #[test]

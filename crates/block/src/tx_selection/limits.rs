@@ -48,8 +48,8 @@ impl PoolTransactionError for DaLimitExceeded {
 /// Error raised when a transaction does not fit the list's transaction byte budget.
 #[derive(Debug)]
 struct BlockBytesExceeded {
-    /// The block-body size, in bytes, that exceeded the budget: the candidate alone, or the list's
-    /// transactions with the candidate added.
+    /// The Etna executionBlock size, in bytes, that exceeded the budget: the candidate alone, or
+    /// the list's transactions with the candidate added.
     size: u64,
     /// The transaction byte budget that was exceeded.
     limit: u64,
@@ -229,7 +229,7 @@ pub(super) struct ListLimitCheck {
     pub(super) exceeds_gas: bool,
     /// The DA size (estimated or actual) that exceeds the per-list DA limit, if any.
     pub(super) exceeds_da: Option<u64>,
-    /// The block-body size of the list's transactions plus the candidate, if it exceeds
+    /// The Etna executionBlock size of the list's transactions plus the candidate, if it exceeds
     /// [`TxSelectionConfig::max_tx_bytes_per_list`].
     pub(super) exceeds_bytes: Option<u64>,
 }
@@ -242,7 +242,7 @@ impl ListLimitCheck {
 }
 
 /// Returns which per-list limits `list` would exceed with `tx` added, given the candidate's gas
-/// limit, estimated DA size and block-body size `tx_bytes`.
+/// limit, estimated DA size and Etna executionBlock size `tx_bytes`.
 pub(super) fn exceeds_list_limits(
     list: &ExecutedTxList,
     tx: &Recovered<TransactionSigned>,

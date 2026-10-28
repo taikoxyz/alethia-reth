@@ -201,18 +201,19 @@ fn next_block_env_attributes(
     }
 }
 
-/// Returns the transaction byte budget of an Etna build: the largest summed block-body length of
+/// Returns the transaction byte budget of an Etna build: the largest summed [`etna_tx_length`] of
 /// its transactions whose executionBlock, with a `header_reserve`-byte header, still fits in
 /// `max_block_bytes`.
 ///
-/// The budget counts transaction bodies only, as [`TxSelectionConfig::max_tx_bytes_per_list`]
-/// does; the list headers are accounted for here.
+/// The budget counts the transactions only, each as an RLP byte string of its EIP-2718 bytes, as
+/// [`TxSelectionConfig::max_tx_bytes_per_list`] does; the list headers are accounted for here.
 ///
 /// # Errors
 ///
 /// An internal error whose text contains `maxBlockBytes` when even a block without transactions
 /// does not fit.
 ///
+/// [`etna_tx_length`]: alethia_reth_primitives::etna::etna_tx_length
 /// [`TxSelectionConfig::max_tx_bytes_per_list`]:
 ///     alethia_reth_block::tx_selection::TxSelectionConfig::max_tx_bytes_per_list
 fn etna_tx_bytes_budget(
@@ -228,8 +229,8 @@ fn etna_tx_bytes_budget(
 }
 
 /// Checks that the sealed block's executionBlock, `rlp([header, [tx…]])` including its outer list
-/// header and with transactions in block-body form, is at most `max_block_bytes` long. The bound
-/// is inclusive.
+/// header and with every transaction, legacy included, an RLP byte string of its EIP-2718 bytes,
+/// is at most `max_block_bytes` long. The bound is inclusive.
 ///
 /// # Errors
 ///
@@ -430,7 +431,10 @@ mod tests {
     use super::*;
     use alethia_reth_block::testutil::etna_chain_spec;
     use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
+    use alethia_reth_primitives::{
+        etna::execution_block_len,
+        payload::attributes::{RpcL1Origin, TaikoBlockMetadata},
+    };
     use alloy_consensus::{Header, Signed, TxLegacy, TxType};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_genesis::{ChainConfig, Genesis};
@@ -612,6 +616,20 @@ mod tests {
         let exact = execution_block_length(block.header(), &block.body().transactions) as u64;
 
         assert!(ensure_within_max_block_bytes(&block, exact).is_ok());
+        // The block's legacy transaction also counts the byte-string header its block-body form
+        // leaves out, so a bound at the block-body-form length fails the build.
+        let tx = &block.body().transactions[0];
+        assert!(tx.is_legacy());
+        let body_form = execution_block_len(
+            block.header().length(),
+            block.body().transactions.iter().map(Encodable::length).sum(),
+        ) as u64;
+        assert_eq!(
+            exact - body_form,
+            alloy_rlp::Header { list: false, payload_length: tx.eip2718_encoded_length() }.length()
+                as u64
+        );
+        assert!(ensure_within_max_block_bytes(&block, body_form).is_err());
         let message = ensure_within_max_block_bytes(&block, exact - 1)
             .expect_err("one byte over maxBlockBytes must fail the build")
             .to_string();

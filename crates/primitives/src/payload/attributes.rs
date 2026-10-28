@@ -96,7 +96,8 @@ pub struct TaikoPayloadAttributes {
     /// Required on every Etna build, given-list builds included, at least
     /// [`ETNA_MIN_MAX_BLOCK_BYTES`](crate::etna::ETNA_MIN_MAX_BLOCK_BYTES), and forbidden before
     /// Etna. The built block's `rlp([header, [tx…]])`, including its outer list header and with
-    /// transactions in block-body form, is at most this many bytes.
+    /// every transaction, legacy included, an RLP byte string of its EIP-2718 bytes, is at most
+    /// this many bytes.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
     pub max_block_bytes: Option<u64>,
 }

@@ -242,7 +242,7 @@ Etna attributes carry one additional top-level member next to `anchorTransaction
 
 | Member | Type | Rule |
 | --- | --- | --- |
-| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with transactions in block-body form, is at most this many bytes. Rejected before Etna. |
+| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with every transaction as an RLP byte string of its EIP-2718 bytes ([byte limit](#byte-limit)), is at most this many bytes. Rejected before Etna. |
 
 The existing `blockMetadata.txList` selects the build mode: present (including an empty list)
 means a given-list build; absent means a pool build. FI ordering and queue decisions belong to
@@ -290,8 +290,11 @@ ABCI application; the EL supplies bounded execution and the failure classificati
 #### Byte limit
 
 `maxBlockBytes` bounds the block's executionBlock, `rlp([header, [tx…]])`, including its outer list
-header and with transactions in block-body form: a typed transaction counts as its EIP-2718 bytes
-plus their RLP string header. The bound is inclusive. The header is sealed only after execution, so
+header. Every transaction, legacy included, counts as an RLP byte string holding its EIP-2718
+bytes, the form in which the consensus envelope and the published blob carry it. Ethereum's
+block-body form keeps a legacy transaction as a bare RLP list, so here a legacy transaction also
+counts the RLP string header around that list; a typed transaction counts the same in both forms.
+The bound is inclusive. The header is sealed only after execution, so
 the builder reserves room for the longest header the job can seal: the job's own header fields,
 fixed-size roots and bloom, `gasUsed` equal to `gasLimit`, and a `difficulty` of `u64::MAX`. What
 remains after that reserve and the list headers is the transaction byte budget shared by the
@@ -306,8 +309,9 @@ Preselection simulates the next block under the parent's fork rules and `extraDa
 applies pre-execution system calls. On an Etna parent it drops the legacy 2,000,000 zk-gas anchor
 reserve. At the boundary the parent is still pre-Etna, so the first Etna block is selected with that
 reserve. Results are estimates; the builder enforces the actual gas and zk-gas limits. Etna builds
-also enforce `maxBlockBytes`, the inclusive bound on the executionBlock's RLP length with
-transactions in block-body form ([byte limit](#byte-limit)), which preselection does not apply.
+also enforce `maxBlockBytes`, the inclusive bound on the executionBlock's RLP length with every
+transaction as an RLP byte string of its EIP-2718 bytes ([byte limit](#byte-limit)), which
+preselection does not apply.
 Drivers' Etna branches that send a trailing `blockContext` argument get no error from alethia-reth,
 which ignores extra positional parameters and simulates under the parent's rules. taiko-geth rejects
 the extra argument, so drivers must stop sending it.

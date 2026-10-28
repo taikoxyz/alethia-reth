@@ -325,6 +325,77 @@ fn etna_given_list_preserves_driver_order_and_both_modes_obey_the_byte_limit() -
     })
 }
 
+#[test]
+fn etna_byte_limit_counts_legacy_transactions_as_the_envelope_carries_them() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::etna::execution_block_length;
+        use alloy_primitives::{Address, Bytes};
+        use alloy_rlp::Encodable;
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        // The envelope carries each legacy transaction in a 3-byte string header that block-body
+        // form leaves out: 18 bytes for six, more than the at most 16 bytes the header reserve
+        // leaves unused.
+        let target = Address::with_last_byte(0x21);
+        let txs: Vec<_> = (0..6)
+            .map(|nonce| {
+                signed_legacy_tx_with_key(
+                    POOL_SENDER_KEY,
+                    nonce,
+                    target,
+                    Bytes::from(vec![0; 3_000]),
+                )
+            })
+            .collect();
+        let tx_hashes: Vec<_> = txs.iter().map(|tx| *tx.tx_hash()).collect();
+        let attrs = fixture_attributes(100);
+        let build_on_genesis = |attrs| build(&client, spec.clone(), spec.genesis_header(), attrs);
+        let hashes = |built: &Built| {
+            built.block.body().transactions.iter().map(|tx| *tx.tx_hash()).collect::<Vec<_>>()
+        };
+        // `rlp([header, txs])` from the header and the encoded transaction list.
+        let execution_block = |built: &Built, txs_rlp_len: usize| {
+            let payload_length = built.block.header().length() + txs_rlp_len;
+            alloy_rlp::Header { list: true, payload_length }.length_with_payload() as u64
+        };
+        // The consensus client's measure: every transaction a byte string of its EIP-2718 bytes.
+        let length_of = |built: &Built| {
+            let raw: Vec<Bytes> = built.block.body().transactions.iter().map(raw_2718).collect();
+            execution_block(built, raw.length())
+        };
+        let listed = |max_block_bytes: u64| {
+            let mut attrs = with_txs(attrs.clone(), &txs);
+            attrs.max_block_bytes = Some(max_block_bytes);
+            attrs
+        };
+
+        let full = build_on_genesis(listed(124_000)).await?;
+        assert_eq!(hashes(&full), tx_hashes);
+        let length = length_of(&full);
+        let body = &full.block.body().transactions;
+        assert_eq!(execution_block_length(full.block.header(), body) as u64, length);
+        // Block-body form keeps each legacy transaction a bare RLP list.
+        assert_eq!(length - execution_block(&full, body.length()), 18);
+
+        // One byte below the block's length the last transaction no longer fits, in either mode,
+        // although all six would in block-body form.
+        let tight = build_on_genesis(listed(length - 1)).await?;
+        assert_eq!(hashes(&tight), tx_hashes[..5].to_vec());
+        assert!(length_of(&tight) < length, "{} >= {length}", length_of(&tight));
+        for tx in &txs {
+            assert_eq!(send_raw(&http, tx).await?, *tx.tx_hash());
+        }
+        let pool = build_on_genesis(pool_mode(attrs.clone(), length - 1)).await?;
+        assert_eq!(hashes(&pool), tx_hashes[..5].to_vec());
+        assert!(length_of(&pool) < length, "{} >= {length}", length_of(&pool));
+        Ok(())
+    })
+}
+
 /// Builds empty Etna blocks at `timestamps` on the node's head `chain.last()`, each made canonical
 /// with head = safe = finalized, as a driver with instant finality sends them.
 async fn extend_finalized(

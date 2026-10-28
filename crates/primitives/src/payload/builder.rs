@@ -64,7 +64,8 @@ pub struct TaikoPayloadBuilderAttributes {
     /// Optional prebuilt anchor transaction required for pre-Etna pool selection.
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
     /// Upper bound on the built block's executionBlock length, `rlp([header, [tx…]])` including
-    /// its outer list header and with transactions in block-body form.
+    /// its outer list header and with every transaction, legacy included, an RLP byte string of
+    /// its EIP-2718 bytes.
     ///
     /// `Some` (at least [`ETNA_MIN_MAX_BLOCK_BYTES`]) on every Etna job, whatever its build mode,
     /// and `None` before Etna.

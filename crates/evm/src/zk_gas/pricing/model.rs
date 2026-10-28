@@ -12,7 +12,7 @@ use super::{
         AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,
         OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
         PricingBreakdown, ProposalPricingInput, ResourceSelectors, SELECTOR_BOUND, StorageBranch,
-        ValueClass, ZkGasError,
+        TransactionPayloadSelectors, ValueClass, ZkGasError,
     },
 };
 
@@ -24,6 +24,8 @@ pub(super) struct KnownBlockPricingInput<'a> {
     pub(super) native_value_transfers: u64,
     /// Committed operation aggregates in canonical route order.
     pub(super) operation_routes: &'a [OperationRoutePricingInput],
+    /// Canonical payload already attributed to the committed block scope.
+    pub(super) transaction_payload: TransactionPayloadSelectors,
     /// Block-global unique execution resources.
     pub(super) resources: ResourceSelectors,
 }
@@ -263,6 +265,7 @@ impl ZkGasModel {
             native_value_transfers: input.native_value_transfers,
             operation_routes: input.operation_routes,
             resources: input.resources,
+            transaction_payload: input.transaction_payload,
         })?;
         let mpt = price_mpt(input.mpt, MPT_TARIFFS)?;
         let total = checked_add(known.evm_local_known_subtotal_scaled(), mpt)?;
@@ -272,6 +275,7 @@ impl ZkGasModel {
             operations_scaled: known.operations_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: known.evm_local_resources_scaled(),
+            transaction_payload_scaled: known.transaction_payload_scaled(),
             mpt_scaled: mpt,
             total_scaled: total,
             total_pgu: Some(ceil_scaled(total)?),
@@ -304,14 +308,20 @@ impl ZkGasModel {
         validate_exact_resources_cover_local(exact_resources, known.evm_local_resources())?;
         let resources = price_resources(exact_resources)?;
         let mpt = price_mpt(exact_mpt, MPT_TARIFFS)?;
-        let total =
-            checked_sum(&[known.fixed_scaled(), known.operations_scaled(), resources, mpt])?;
+        let total = checked_sum(&[
+            known.fixed_scaled(),
+            known.operations_scaled(),
+            resources,
+            mpt,
+            known.transaction_payload_scaled(),
+        ])?;
         ensure_nonnegative(total, "block")?;
         Ok(PricingBreakdown {
             fixed_scaled: known.fixed_scaled(),
             operations_scaled: known.operations_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: resources,
+            transaction_payload_scaled: known.transaction_payload_scaled(),
             mpt_scaled: mpt,
             total_scaled: total,
             total_pgu: Some(ceil_scaled(total)?),
@@ -369,7 +379,8 @@ impl ZkGasModel {
         }
 
         let resources = price_resources(input.resources)?;
-        let known_subtotal = checked_sum(&[fixed, operations, resources])?;
+        let payload = self.price_transaction_payload(input.transaction_payload)?.total_scaled;
+        let known_subtotal = checked_sum(&[fixed, operations, resources, payload])?;
         ensure_nonnegative(known_subtotal, "known_block_subtotal")?;
         Ok(ZkGasKnownBlockBreakdown::new(
             fixed,
@@ -377,18 +388,25 @@ impl ZkGasModel {
             feature_errors,
             input.resources,
             resources,
+            input.transaction_payload,
+            payload,
             known_subtotal,
             ceil_scaled(known_subtotal)?,
         ))
     }
 
-    /// Prices proposal-once selectors and applies the proposal-scope ceiling once.
-    pub fn price_proposal_once(
+    /// Prices canonical signed payload once for either a block or additional proposal input.
+    ///
+    /// Uses the same authenticated byte/nonempty tariffs in both ownership scopes. Empty block
+    /// payload is valid; nonempty transactions cannot exceed the number of encoded bytes.
+    pub fn price_transaction_payload(
         self,
-        input: &ProposalPricingInput<'_>,
+        input: TransactionPayloadSelectors,
     ) -> Result<PricingBreakdown, ZkGasError> {
-        validate_blob_source_domain(input)?;
-        let transaction_payload = checked_dot(&[
+        if input.nonempty_payload_transactions > input.canonical_transaction_bytes {
+            return Err(ZkGasError::InvalidInput("nonempty_payload_transactions"));
+        }
+        let total = checked_dot(&[
             (
                 TRANSACTION_PAYLOAD_TARIFFS[0],
                 bounded("canonical_transaction_bytes", input.canonical_transaction_bytes)?,
@@ -397,11 +415,32 @@ impl ZkGasModel {
                 TRANSACTION_PAYLOAD_TARIFFS[1],
                 bounded("nonempty_payload_transactions", input.nonempty_payload_transactions)?,
             ),
-            (
+        ])?;
+        Ok(PricingBreakdown {
+            transaction_payload_scaled: total,
+            total_scaled: total,
+            total_pgu: Some(ceil_scaled(total)?),
+            ..Default::default()
+        })
+    }
+
+    /// Prices proposal-once selectors and applies the proposal-scope ceiling once.
+    pub fn price_proposal_once(
+        self,
+        input: &ProposalPricingInput<'_>,
+    ) -> Result<PricingBreakdown, ZkGasError> {
+        validate_blob_source_domain(input)?;
+        let transaction_payload = checked_add(
+            self.price_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: input.canonical_transaction_bytes,
+                nonempty_payload_transactions: input.nonempty_payload_transactions,
+            })?
+            .total_scaled,
+            checked_mul(
                 TRANSACTION_PAYLOAD_TARIFFS[2],
                 bounded("true_unattempted_transactions", input.true_unattempted_transactions)?,
-            ),
-        ])?;
+            )?,
+        )?;
         let total_blobs = input.source_blob_counts.iter().try_fold(0_u64, |total, value| {
             total.checked_add(*value).ok_or(ZkGasError::ArithmeticOverflow)
         })?;
@@ -449,6 +488,11 @@ fn validate_shadow_report(
     if price_resources(known.evm_local_resources())? != known.evm_local_resources_scaled() {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("evm_local_resources_scaled"));
     }
+    if ZkGasModel.price_transaction_payload(known.transaction_payload())?.total_scaled !=
+        known.transaction_payload_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("transaction_payload_scaled"));
+    }
     if known.feature_error_scaled() > known.operations_scaled() {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("feature_error_scaled"));
     }
@@ -456,6 +500,7 @@ fn validate_shadow_report(
         known.fixed_scaled(),
         known.operations_scaled(),
         known.evm_local_resources_scaled(),
+        known.transaction_payload_scaled(),
     ])?;
     if recomputed != known.evm_local_known_subtotal_scaled() {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown(
@@ -1072,6 +1117,7 @@ mod tests {
     fn zk_gas_mulmod_floor_composes_as_route_aggregate_maximum() {
         let priced = ZkGasModel
             .price_block_without_mpt(&KnownBlockPricingInput {
+                transaction_payload: TransactionPayloadSelectors::default(),
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 operation_routes: &[OperationRoutePricingInput {

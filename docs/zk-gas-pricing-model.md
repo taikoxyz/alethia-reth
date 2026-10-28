@@ -4,7 +4,7 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`e52997d764b67791dfc4bc9031ace4d6b5a2898dec818ed2df85347265b7be61`. It is a conservative
+`0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885`. It is a conservative
 MULMOD successor of parent `93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046`,
 introduced by [alethia-reth PR #253](https://github.com/taikoxyz/alethia-reth/pull/253). If
 `RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
@@ -242,6 +242,7 @@ block_price =
   + native_value_transfer_tariff * native_value_transfers
   + operation_price
   + exact_unique_resource_price
+  + committed_transaction_payload_price
   + exact_block_mpt_price
 ```
 
@@ -256,8 +257,8 @@ The proposal-once fixed-point price is:
 ```text
 proposal_once_price =
     proposal_startup
-  + canonical_transaction_byte_tariff * canonical_transaction_bytes
-  + nonempty_payload_transaction_tariff * nonempty_payload_transactions
+  + canonical_transaction_byte_tariff * additional_canonical_transaction_bytes
+  + nonempty_payload_transaction_tariff * additional_nonempty_payload_transactions
   + true_unattempted_transaction_tariff * true_unattempted_transactions
   + extra_blob_tariff * extra_blob_count
   + extra_source_tariff * extra_source_count
@@ -469,11 +470,29 @@ portable contract; callers must not invent per-transaction path-depth approximat
 
 ## Proposal payload and blob/source terms
 
-`price_proposal_once` takes a count of canonical signed EIP-2718 encoded bytes
-(`canonical_transaction_bytes`), a nonempty-payload transaction count, and a true-unattempted
-transaction count. No in-repository production producer or complete operational definition for
-these selectors is currently published, including treatment of undecodable or zero-signer
-transactions. They are API inputs, not live observations.
+The block executor records `TransactionSigned::encode_2718_len()` and whether calldata is
+nonempty after each execution scope opens and before that scope is committed or discarded.
+`TransactionPayloadSelectors` is staged with the transaction: included Anchor, REVERT and HALT
+receipts retain their bytes; rejected/omitted transactions do not enter the committed prefix.
+The separate attempted prefix retains started scopes. Raw `TxEnv`/RPC execution has no signed
+envelope and produces `MissingSignedTransactionPayload` instead of a zero payload quote.
+
+`ZkGasModel::price_transaction_payload` uses the existing 256 PGU/byte and 16,384 PGU/nonempty
+calldata tariffs for both block-local and additional-input work. The model artifact names
+`block.transaction_payload` ownership explicitly. The coefficients remain stored once under
+`proposal_once.transaction_payload_tariffs`; their storage path does not imply proposal-only
+ownership. The known block report seals both selectors and their price, and completion
+revalidates them before composing exact resources/MPT.
+
+`price_proposal_once` retains its `canonical_transaction_bytes` and
+`nonempty_payload_transactions` field names, but they now mean **additional input payload not
+already charged in committed block scopes**. The consumer must reconcile exact committed
+canonical transactions against the block report and charge only the remaining candidate/input
+bytes. It must reject mismatches rather than clamp a negative residual to zero. The separate
+true-unattempted transaction tariff remains prover-only. This preserves the complete proposal
+price while making the committed portion observable at the node, without distributing startup,
+blob topology or parent witness cost backward to blocks. Future admission activation remains a
+separate change; default Unzen limits and difficulty behavior are unchanged.
 
 The blob/source evaluator accepts the artifact's BPO2 topology; “BPO2” is an unexpanded internal
 label in the current source. The exact source/blob domain is declared in

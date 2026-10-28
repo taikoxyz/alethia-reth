@@ -28,8 +28,8 @@ use crate::{
         adapter::ZkGasInspector,
         meter::{ZkGasMeter, ZkGasOutcome},
         pricing::{
-            StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError,
-            ZkGasAttemptedBlockSnapshot, ZkGasBlockSnapshot,
+            StateAccess, TransactionMetadata, TransactionPayloadSelectors, ZkGasAccumulator,
+            ZkGasAccumulatorError, ZkGasAttemptedBlockSnapshot, ZkGasBlockSnapshot,
         },
     },
 };
@@ -252,6 +252,12 @@ pub trait TaikoZkGasEvm {
     /// Enables or disables schema-9 selector collection.
     fn set_zk_gas_pricing_enabled(&mut self, enabled: bool);
 
+    /// Attaches canonical signed-envelope metadata to the current pricing scope.
+    ///
+    /// The block executor must provide this after transact and before commit/reset. Raw RPC
+    /// TxEnv callers lack the signed envelope and retain an explicit missing-payload diagnostic.
+    fn record_transaction_payload(&mut self, payload: TransactionPayloadSelectors);
+
     /// Commits the active pricing transaction selector scope.
     fn commit_transaction_zk_gas_pricing(&mut self) -> Result<(), ZkGasAccumulatorError>;
 
@@ -345,6 +351,14 @@ where
             self.base_evm_mut().inner.inspector.install_pricing(accumulator);
         } else {
             self.base_evm_mut().install_zk_gas_pricing(accumulator);
+        }
+    }
+
+    /// Records signed-envelope selectors without changing execution or legacy metering.
+    fn record_transaction_payload(&mut self, payload: TransactionPayloadSelectors) {
+        if let Some(accumulator) = self.zk_gas_pricing_mut() {
+            let result = accumulator.observe_transaction_payload(payload);
+            accumulator.retain_diagnostic(result.err());
         }
     }
 

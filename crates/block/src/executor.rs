@@ -29,7 +29,7 @@ use alethia_reth_evm::{
     zk_gas::{
         adapter::ZK_GAS_LIMIT_ERR,
         meter::ZkGasOutcome,
-        pricing::{ZkGasMode, ZkGasShadowReport, ZkGasShadowStatus},
+        pricing::{TransactionPayloadSelectors, ZkGasMode, ZkGasShadowReport, ZkGasShadowStatus},
     },
 };
 use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
@@ -549,7 +549,19 @@ where
             return Err(Self::zk_gas_limit_error());
         }
 
-        let result = match self.evm.transact(tx_env) {
+        // Only Shadow needs canonical signed-envelope metadata. Counting the encoded size
+        // does not serialize/copy large calldata, and Disabled keeps the legacy fast path.
+        let payload =
+            (self.zk_gas_mode == ZkGasMode::Shadow).then(|| TransactionPayloadSelectors {
+                canonical_transaction_bytes: u64::try_from(tx.tx().encode_2718_len())
+                    .unwrap_or(u64::MAX),
+                nonempty_payload_transactions: u64::from(!tx.tx().input().is_empty()),
+            });
+        let execution = self.evm.transact(tx_env);
+        if let Some(payload) = payload {
+            self.evm.record_transaction_payload(payload);
+        }
+        let result = match execution {
             Ok(result) => result,
             Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
                 self.zk_gas_exhausted = true;
@@ -1223,7 +1235,7 @@ mod test {
                 .expect("next block env should build");
             let evm = config.evm_factory().create_evm(db, evm_env);
 
-            TaikoBlockExecutor::new(
+            TaikoBlockExecutor::new_with_zk_gas_mode(
                 evm,
                 TaikoBlockExecutionCtx {
                     parent_hash: B256::ZERO,
@@ -1238,6 +1250,7 @@ mod test {
                 },
                 chain_spec.clone(),
                 RethReceiptBuilder::default(),
+                ZkGasMode::Shadow,
             )
         };
 
@@ -1252,6 +1265,7 @@ mod test {
         };
         let signature = Signature::new(U256::from(1), U256::from(2), false);
         let signed: TransactionSigned = Signed::new_unchecked(tx, signature, B256::ZERO).into();
+        let expected_payload_bytes = signed.encode_2718_len() as u64;
         let anchor_tx = signed.with_signer(golden_touch);
 
         let mut executor_without_init = make_executor();
@@ -1267,6 +1281,21 @@ mod test {
         assert!(
             executor_with_init.execute_transaction(anchor_tx).is_ok(),
             "pre-execution initialization should seed anchor detection from the golden-touch account nonce"
+        );
+        let snapshot = executor_with_init.evm.zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(snapshot.started_non_anchor_transactions, 0);
+        assert_eq!(
+            snapshot.transaction_payload.canonical_transaction_bytes,
+            expected_payload_bytes
+        );
+        assert_eq!(snapshot.transaction_payload.nonempty_payload_transactions, 0);
+        let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
+            panic!("anchor signed payload is known");
+        };
+        assert_eq!(
+            known.transaction_payload_scaled(),
+            256 * i128::from(expected_payload_bytes) *
+                alethia_reth_evm::zk_gas::pricing::FIXED_POINT_SCALE
         );
     }
 }

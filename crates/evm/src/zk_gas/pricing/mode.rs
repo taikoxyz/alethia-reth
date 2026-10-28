@@ -1,12 +1,12 @@
 //! Runtime mode and typed shadow-report contracts for zk gas pricing.
 
 use super::{
-    RUNTIME_SPEC_SHA256, ResourceSelectors, ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError,
-    ZkGasModel, model::KnownBlockPricingInput,
+    RUNTIME_SPEC_SHA256, ResourceSelectors, TransactionPayloadSelectors, ZkGasAccumulatorError,
+    ZkGasBlockSnapshot, ZkGasError, ZkGasModel, model::KnownBlockPricingInput,
 };
 use core::fmt;
 
-/// Priced block components observable from EVM-local hooks before block-end reconciliation.
+/// Priced block components observed from execution hooks and the signed transaction pipeline.
 ///
 /// The resource term is only the EVM-local subset: pre-block system calls and validation can load
 /// additional state directly into the block database cache. There is deliberately no exact
@@ -23,7 +23,12 @@ pub struct ZkGasKnownBlockBreakdown {
     evm_local_resources: ResourceSelectors,
     /// EVM-local unique-resource contribution in fixed-point units.
     evm_local_resources_scaled: i128,
-    /// EVM-local subtotal in fixed-point units, excluding exact block-end resources and MPT work.
+    /// Canonical committed signed-transaction payload selectors.
+    transaction_payload: TransactionPayloadSelectors,
+    /// Signed-transaction payload contribution in fixed-point units.
+    transaction_payload_scaled: i128,
+    /// Known block subtotal in fixed-point units, excluding exact block-end resources and MPT
+    /// work.
     evm_local_known_subtotal_scaled: i128,
     /// Ceiling of the EVM-local subtotal, excluding exact block-end resources and MPT work.
     evm_local_known_subtotal_pgu: u128,
@@ -31,12 +36,15 @@ pub struct ZkGasKnownBlockBreakdown {
 
 impl ZkGasKnownBlockBreakdown {
     /// Constructs the immutable report inside the sealed evaluator boundary.
+    #[allow(clippy::too_many_arguments)] // Mirrors the independently checked report components.
     pub(super) const fn new(
         fixed_scaled: i128,
         operations_scaled: i128,
         feature_error_scaled: i128,
         evm_local_resources: ResourceSelectors,
         evm_local_resources_scaled: i128,
+        transaction_payload: TransactionPayloadSelectors,
+        transaction_payload_scaled: i128,
         evm_local_known_subtotal_scaled: i128,
         evm_local_known_subtotal_pgu: u128,
     ) -> Self {
@@ -46,6 +54,8 @@ impl ZkGasKnownBlockBreakdown {
             feature_error_scaled,
             evm_local_resources,
             evm_local_resources_scaled,
+            transaction_payload,
+            transaction_payload_scaled,
             evm_local_known_subtotal_scaled,
             evm_local_known_subtotal_pgu,
         }
@@ -76,14 +86,35 @@ impl ZkGasKnownBlockBreakdown {
         self.evm_local_resources_scaled
     }
 
-    /// EVM-local subtotal excluding exact block-end resources and MPT work.
+    /// Canonical committed signed-transaction payload selectors.
+    pub const fn transaction_payload(self) -> TransactionPayloadSelectors {
+        self.transaction_payload
+    }
+
+    /// Signed-transaction payload contribution in fixed-point units.
+    pub const fn transaction_payload_scaled(self) -> i128 {
+        self.transaction_payload_scaled
+    }
+
+    /// Known block subtotal excluding exact block-end resources and MPT work.
     pub const fn evm_local_known_subtotal_scaled(self) -> i128 {
         self.evm_local_known_subtotal_scaled
     }
 
-    /// Ceiling of the EVM-local subtotal excluding exact block-end resources and MPT work.
+    /// Ceiling of the known block subtotal, including payload and excluding exact state/MPT.
     pub const fn evm_local_known_subtotal_pgu(self) -> u128 {
         self.evm_local_known_subtotal_pgu
+    }
+
+    #[cfg(test)]
+    pub(in crate::zk_gas) const fn with_payload_for_test(
+        mut self,
+        payload: TransactionPayloadSelectors,
+        scaled: i128,
+    ) -> Self {
+        self.transaction_payload = payload;
+        self.transaction_payload_scaled = scaled;
+        self
     }
 
     #[cfg(test)]
@@ -102,6 +133,11 @@ impl ZkGasKnownBlockBreakdown {
             feature_error_scaled,
             evm_local_resources,
             resources_scaled,
+            TransactionPayloadSelectors {
+                canonical_transaction_bytes: 0,
+                nonempty_payload_transactions: 0,
+            },
+            0,
             known_subtotal_scaled,
             known_subtotal_pgu,
         )
@@ -199,9 +235,9 @@ impl std::error::Error for ZkGasCompletionError {}
 /// Status of one block-local shadow evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZkGasShadowStatus {
-    /// EVM-local execution/resource components were priced, but the result is incomplete.
+    /// Execution, signed payload and local resources were priced, but the result is incomplete.
     Incomplete {
-        /// Non-enforcing fixed, operation, and EVM-local resource subtotal only.
+        /// Non-enforcing fixed, operation, signed payload and EVM-local resource subtotal.
         known: ZkGasKnownBlockBreakdown,
         /// Exact selector group that remains unavailable.
         missing: ZkGasIncompleteness,
@@ -287,7 +323,7 @@ impl ZkGasShadowReport {
 }
 
 impl ZkGasBlockSnapshot {
-    /// Evaluates the committed execution/resource prefix for Shadow mode.
+    /// Evaluates the committed execution, signed payload and resource prefix for Shadow mode.
     ///
     /// This never claims to be a complete block quote. Exact MPT selectors are unavailable, so a
     /// successful evaluation is explicitly tagged as incomplete and cannot drive admission.
@@ -299,6 +335,7 @@ impl ZkGasBlockSnapshot {
                 native_value_transfers: self.native_value_transfers,
                 operation_routes: &self.operation_routes,
                 resources: self.resources,
+                transaction_payload: self.transaction_payload,
             }) {
                 Ok(known) => ZkGasShadowStatus::Incomplete {
                     known,

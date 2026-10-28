@@ -238,6 +238,18 @@ pub struct MptSelectors {
     pub dropped_trie_nodes: u64,
 }
 
+/// Additive canonical signed-transaction payload selectors for one accounting scope.
+///
+/// The block pipeline supplies signed EIP-2718 sizes, not calldata-only sizes. Proposal
+/// completion supplies only input payload not already charged by committed block scopes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TransactionPayloadSelectors {
+    /// Sum of canonical signed EIP-2718 encoded transaction lengths, in bytes.
+    pub canonical_transaction_bytes: u64,
+    /// Number of transactions with nonempty calldata.
+    pub nonempty_payload_transactions: u64,
+}
+
 /// Complete block-local input; every slice entry must be committed.
 #[derive(Clone, Copy, Debug)]
 pub struct BlockPricingInput<'a> {
@@ -249,6 +261,8 @@ pub struct BlockPricingInput<'a> {
     pub operation_routes: &'a [OperationRoutePricingInput],
     /// Unique-resource selectors.
     pub resources: ResourceSelectors,
+    /// Payload of committed signed transactions, including Anchor and failed receipts.
+    pub transaction_payload: TransactionPayloadSelectors,
     /// Exact block-local MPT selectors.
     pub mpt: MptSelectors,
 }
@@ -256,9 +270,9 @@ pub struct BlockPricingInput<'a> {
 /// Proposal-once input disjoint from all block-local pricing.
 #[derive(Clone, Copy, Debug)]
 pub struct ProposalPricingInput<'a> {
-    /// Canonical signed EIP-2718 payload bytes across all transactions.
+    /// Additional canonical signed EIP-2718 bytes not already charged by block scopes.
     pub canonical_transaction_bytes: u64,
-    /// Transactions whose canonical payload is nonempty.
+    /// Additional nonempty-calldata transactions not already charged by block scopes.
     pub nonempty_payload_transactions: u64,
     /// Transactions truly unattempted by proposal execution.
     pub true_unattempted_transactions: u64,

@@ -6,7 +6,7 @@ use alloy_primitives::{Address, B256, U256};
 
 use super::{
     OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
-    ResourceSelectors, ZkGasError, ZkGasModel,
+    ResourceSelectors, TransactionPayloadSelectors, ZkGasError, ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -55,6 +55,10 @@ pub enum ZkGasAccumulatorError {
     TransactionAlreadyActive,
     /// An observation or commit occurred without an active transaction.
     NoActiveTransaction,
+    /// The signed transaction envelope was unavailable for an included/attempted scope.
+    MissingSignedTransactionPayload,
+    /// The same transaction scope received signed payload metadata more than once.
+    TransactionPayloadAlreadyRecorded,
     /// Checked aggregation overflowed.
     ArithmeticOverflow,
     /// A set size cannot be represented by the public selector type.
@@ -80,6 +84,12 @@ impl core::fmt::Display for ZkGasAccumulatorError {
             }
             Self::NoActiveTransaction => {
                 formatter.write_str("zk gas pricing transaction is not active")
+            }
+            Self::MissingSignedTransactionPayload => {
+                formatter.write_str("signed transaction payload unavailable")
+            }
+            Self::TransactionPayloadAlreadyRecorded => {
+                formatter.write_str("signed transaction payload already recorded")
             }
             Self::ArithmeticOverflow => formatter.write_str("zk gas pricing accumulator overflow"),
             Self::CountOverflow => formatter.write_str("zk gas pricing resource count overflow"),
@@ -276,6 +286,8 @@ impl ResourceSet {
 struct TransactionSelectors {
     /// Transaction-wide selector metadata.
     metadata: TransactionMetadata,
+    /// Signed envelope metadata, populated by the outer block pipeline.
+    transaction_payload: Option<TransactionPayloadSelectors>,
     /// Priced operation components keyed by canonical route.
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Exact resources touched by the transaction.
@@ -291,6 +303,7 @@ impl TransactionSelectors {
     fn new(metadata: TransactionMetadata) -> Self {
         Self {
             metadata,
+            transaction_payload: None,
             operation_routes: BTreeMap::new(),
             resources: ResourceSet::default(),
             diagnostic: None,
@@ -337,6 +350,8 @@ pub struct ZkGasBlockSnapshot {
     pub started_non_anchor_transactions: u64,
     /// Native value-transfer count in this prefix.
     pub native_value_transfers: u64,
+    /// Canonical payload of all included signed transactions.
+    pub transaction_payload: TransactionPayloadSelectors,
     /// Accumulated operation candidates in canonical route order.
     pub operation_routes: Vec<OperationRoutePricingInput>,
     /// Unique-resource selectors in this prefix.
@@ -374,6 +389,8 @@ struct SelectorPrefix {
     non_anchor_transactions: u64,
     /// Nonzero native-value transfer count.
     native_value_transfers: u64,
+    /// Additive canonical signed payload across this prefix.
+    transaction_payload: TransactionPayloadSelectors,
     /// Operation components aggregated by route.
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Block-global unique execution resources.
@@ -388,6 +405,10 @@ impl SelectorPrefix {
         if self.diagnostic.is_none() {
             self.diagnostic = transaction.diagnostic;
         }
+        let payload = transaction.transaction_payload.unwrap_or_else(|| {
+            self.diagnostic.get_or_insert(ZkGasAccumulatorError::MissingSignedTransactionPayload);
+            TransactionPayloadSelectors::default()
+        });
         let non_anchor = u64::from(!transaction.metadata.is_anchor);
         let native_transfer = u64::from(transaction.metadata.native_value_transfer);
         let prevalidated = (|| {
@@ -399,20 +420,40 @@ impl SelectorPrefix {
                 .native_value_transfers
                 .checked_add(native_transfer)
                 .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            let transaction_payload = TransactionPayloadSelectors {
+                canonical_transaction_bytes: self
+                    .transaction_payload
+                    .canonical_transaction_bytes
+                    .checked_add(payload.canonical_transaction_bytes)
+                    .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
+                nonempty_payload_transactions: self
+                    .transaction_payload
+                    .nonempty_payload_transactions
+                    .checked_add(payload.nonempty_payload_transactions)
+                    .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
+            };
+            ZkGasModel.price_transaction_payload(transaction_payload)?;
             let mut routes = Vec::with_capacity(transaction.operation_routes.len());
             for (key, row) in &transaction.operation_routes {
                 routes.push((*key, merged_route(self.operation_routes.get(key), *row)?));
             }
             let resources = self.resources.prevalidate_merge(&transaction.resources)?;
-            Ok((next_non_anchor, next_native_transfers, routes, resources))
+            Ok((next_non_anchor, next_native_transfers, transaction_payload, routes, resources))
         })();
-        let Ok((next_non_anchor, next_native_transfers, routes, resource_totals)) = prevalidated
+        let Ok((
+            next_non_anchor,
+            next_native_transfers,
+            transaction_payload,
+            routes,
+            resource_totals,
+        )) = prevalidated
         else {
             self.diagnostic.get_or_insert(prevalidated.unwrap_err());
             return;
         };
         self.non_anchor_transactions = next_non_anchor;
         self.native_value_transfers = next_native_transfers;
+        self.transaction_payload = transaction_payload;
         for (key, row) in routes {
             self.operation_routes.insert(key, row);
         }
@@ -424,6 +465,7 @@ impl SelectorPrefix {
         ZkGasBlockSnapshot {
             started_non_anchor_transactions: self.non_anchor_transactions,
             native_value_transfers: self.native_value_transfers,
+            transaction_payload: self.transaction_payload,
             operation_routes: self.operation_routes.values().copied().collect(),
             resources: self.resources.selectors(),
             diagnostic: self.diagnostic,
@@ -469,6 +511,28 @@ impl ZkGasAccumulator {
         }
         self.pending_spawn = None;
         self.in_flight = Some(TransactionSelectors::new(metadata));
+        Ok(())
+    }
+
+    /// Attaches the original signed envelope to the active execution scope exactly once.
+    ///
+    /// Call after EVM execution opens the scope and before commit/reset. Validation failures
+    /// remain attempted; missing metadata becomes a diagnostic rather than a zero payload quote.
+    pub fn observe_transaction_payload(
+        &mut self,
+        payload: TransactionPayloadSelectors,
+    ) -> Result<(), ZkGasAccumulatorError> {
+        if payload.canonical_transaction_bytes == 0 || payload.nonempty_payload_transactions > 1 {
+            return Err(ZkGasAccumulatorError::Pricing(ZkGasError::InvalidInput(
+                "transaction_payload",
+            )));
+        }
+        ZkGasModel.price_transaction_payload(payload)?;
+        let scope = self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
+        if scope.transaction_payload.is_some() {
+            return Err(ZkGasAccumulatorError::TransactionPayloadAlreadyRecorded);
+        }
+        scope.transaction_payload = Some(payload);
         Ok(())
     }
 

@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "e52997d764b67791dfc4bc9031ace4d6b5a2898dec818ed2df85347265b7be61";
+    "0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;

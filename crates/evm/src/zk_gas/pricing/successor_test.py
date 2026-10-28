@@ -15,6 +15,16 @@ SPEC.loader.exec_module(SUCCESSOR)
 
 
 class SuccessorTests(unittest.TestCase):
+    def test_payload_ownership_is_block_local_with_proposal_residual_only(self):
+        parent = json.loads((BASE / "successors/parent-93d04edd.json").read_text())
+        evidence = json.loads((BASE / "successors/mulmod-evidence-v1.json").read_text())
+        result = SUCCESSOR.transform(parent, evidence)
+        self.assertIn("block.transaction_payload", result["ownership"]["block_local"])
+        self.assertNotIn("proposal.transaction_payload", result["ownership"]["proposal_once"])
+        self.assertIn("proposal.additional_transaction_payload", result["ownership"]["proposal_once"])
+        self.assertEqual(result["proposal_once"]["transaction_payload_tariffs"],
+                         parent["proposal_once"]["transaction_payload_tariffs"])
+
     def setUp(self):
         self.parent = json.loads((BASE / "successors/parent-93d04edd.json").read_text())
         self.evidence = {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the conservative MULMOD-only successor of the immutable 93d parent.
+"""Reproduce the MULMOD floor and block-payload ownership successor of the 93d parent.
 
 Measurement records are compact, hash-bound summaries of previously accepted local
 executions, not newly performed executions or historical calibration replays.
@@ -136,7 +136,18 @@ def transform(parent, evidence):
     route = mulmod(result)
     route["composition"] = "max_incremental_accepted_absolute_and_structural"
     route["structural_floor"] = {"selector": "constant_one_per_event", "coefficient": floor * SCALE}
-    result["purpose"] = "schema9_mulmod_operand_cost_successor_v1"
+    result["purpose"] = "schema9_mulmod_operand_cost_and_block_payload_successor_v1"
+    result["ownership"]["block_local"].append("block.transaction_payload")
+    result["ownership"]["proposal_once"] = [
+        "proposal.additional_transaction_payload" if item == "proposal.transaction_payload" else item
+        for item in result["ownership"]["proposal_once"]
+    ]
+    result["ownership"]["transaction_payload"] = {
+        "block_local": "committed_canonical_signed_eip2718_bytes_and_nonempty_calldata_count",
+        "proposal_once": "additional_input_payload_not_already_charged_by_committed_blocks_and_true_unattempted_count",
+        "coefficient_owner": "proposal_once.transaction_payload_tariffs",
+        "coefficient_scope": "shared_authoritative_tariffs_for_disjoint_block_and_proposal_payload",
+    }
     result["status"] = "conservative_runtime_successor"
     result["parent_generator"] = result["generator"]
     result["generator"] = {
@@ -164,7 +175,7 @@ def transform(parent, evidence):
         "floor_policy": "ceil_to_100(max(parent_accepted_per_event,required_per_event)*5/4)",
         "measurement_identity": copy.deepcopy(evidence["measurement_identity"]),
         "production_sdk_elf_parity_established": False,
-        "scope": "normal_executed_mulmod_only;feature_error_and_unzen_unchanged",
+        "scope": "normal_executed_mulmod_floor_and_block_payload_ownership;payload_tariffs_feature_error_and_unzen_unchanged",
     }
     result["artifact_sha256"] = content_address(result)
     return result

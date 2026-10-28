@@ -53,6 +53,12 @@ fn zk_gas_shadow_report_marks_exact_resources_and_mpt_as_missing() {
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
+    accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(0x01),
             interpreter_raw_gas: Some(3),
@@ -81,6 +87,12 @@ fn zk_gas_attempted_snapshot_retains_discarded_execution_scope() {
     accumulator
         .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: false })
         .expect("transaction starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(opcode::KECCAK256),
@@ -117,6 +129,12 @@ fn zk_gas_successful_commit_counts_once_in_attempted_and_committed_snapshots() {
     accumulator
         .begin_transaction(TransactionMetadata { is_anchor: true, native_value_transfer: false })
         .expect("anchor starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(opcode::ADD),
@@ -158,6 +176,12 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
+    accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(0x01),
             interpreter_raw_gas: Some(3),
@@ -183,6 +207,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
         .expect("typed incomplete report plus exact MPT completes");
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
+            transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
             operation_routes: &snapshot.operation_routes,
@@ -202,6 +227,12 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
 
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(0x01),
@@ -237,6 +268,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
     assert!(completed.resources_scaled > before.evm_local_resources_scaled());
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
+            transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
             operation_routes: &snapshot.operation_routes,
@@ -270,6 +302,12 @@ fn zk_gas_pricing_completion_rejects_exact_resources_below_any_evm_local_dimensi
 
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator
         .observe_state_access(StateAccess::StorageWrite {
             address: Address::with_last_byte(0xaa),
@@ -475,6 +513,12 @@ fn zk_gas_shadow_report_preserves_typed_collector_diagnostic() {
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
     accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
+    accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(0x01),
             interpreter_raw_gas: Some(3),
@@ -520,6 +564,12 @@ fn zk_gas_pricing_accumulator_commits_only_finished_transactions() {
     accumulator
         .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: true })
         .expect("first transaction starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator.observe_step(operation).expect("operation prices");
     accumulator
         .observe_state_access(StateAccess::Account(Address::with_last_byte(1)))
@@ -544,6 +594,12 @@ fn zk_gas_pricing_accumulator_commits_only_finished_transactions() {
     accumulator
         .begin_transaction(TransactionMetadata::default())
         .expect("second transaction starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator.observe_step(operation).expect("operation prices");
     accumulator
         .observe_state_access(StateAccess::Account(Address::with_last_byte(9)))
@@ -567,6 +623,12 @@ fn zk_gas_pricing_accumulator_preserves_feature_error_attribution() {
 
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("transaction starts");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator
         .observe_step(OperationPricingInput {
             route: OperationRoute::Opcode(0x01),
@@ -597,6 +659,12 @@ fn zk_gas_pricing_resource_overflow_is_diagnostic_and_keeps_committed_prefix_ato
     let mut accumulator = ZkGasAccumulator::default();
     accumulator.begin_transaction(TransactionMetadata::default()).expect("first transaction");
     accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
+    accumulator
         .observe_state_access(StateAccess::Code {
             hash: B256::with_last_byte(1),
             byte_length: u64::MAX,
@@ -605,6 +673,12 @@ fn zk_gas_pricing_resource_overflow_is_diagnostic_and_keeps_committed_prefix_ato
     accumulator.commit_transaction().expect("first transaction commits");
 
     accumulator.begin_transaction(TransactionMetadata::default()).expect("second transaction");
+    accumulator
+        .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        })
+        .expect("synthetic signed envelope");
     accumulator
         .observe_state_access(StateAccess::Code { hash: B256::with_last_byte(2), byte_length: 1 })
         .expect("one-byte transaction delta is valid alone");
@@ -629,6 +703,10 @@ fn zk_gas_pricing_path_snapshots(
         "plain pricing execution: {plain_result:?}; meter={:?}",
         plain.meter().map(ZkGasMeter::tx_zk_gas_used)
     );
+    plain.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    });
     plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
     let plain = plain.zk_gas_pricing_snapshot().expect("plain pricing snapshot");
 
@@ -644,6 +722,10 @@ fn zk_gas_pricing_path_snapshots(
         "inspected pricing execution: {inspected_result:?}; meter={:?}",
         inspected.meter().map(ZkGasMeter::tx_zk_gas_used)
     );
+    inspected.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    });
     inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
     let inspected = inspected.zk_gas_pricing_snapshot().expect("inspected pricing snapshot");
     (plain, inspected)
@@ -657,6 +739,10 @@ fn zk_gas_pricing_collects_without_an_unzen_schedule_on_both_execution_paths() {
     assert!(plain.meter().is_none(), "Shasta must not install the legacy meter");
     plain.set_zk_gas_pricing_enabled(true);
     plain.transact(tx_env(100_000)).expect("plain pricing-only execution");
+    plain.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    });
     plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
     let plain = plain.zk_gas_pricing_snapshot().expect("plain collector is active");
 
@@ -668,6 +754,10 @@ fn zk_gas_pricing_collects_without_an_unzen_schedule_on_both_execution_paths() {
     assert!(inspected.meter().is_none(), "Shasta must not install the legacy meter");
     inspected.set_zk_gas_pricing_enabled(true);
     inspected.transact(tx_env(100_000)).expect("inspected pricing-only execution");
+    inspected.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    });
     inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
     let inspected = inspected.zk_gas_pricing_snapshot().expect("inspected collector is active");
 
@@ -1494,7 +1584,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "e52997d764b67791dfc4bc9031ace4d6b5a2898dec818ed2df85347265b7be61"
+        "0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -1762,6 +1852,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
     }];
     let block = ZkGasModel
         .price_block(&BlockPricingInput {
+            transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
             operation_routes: &accumulated,
@@ -1792,6 +1883,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
     };
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
             operation_routes: &[operation_route],
@@ -1826,6 +1918,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
 fn zk_gas_model_composes_route_aggregates_before_block_sum() {
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
             operation_routes: &[OperationRoutePricingInput {
@@ -1848,6 +1941,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
     let maximum = 1_000_000_000;
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
             operation_routes: &[],
@@ -1969,6 +2063,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
     }];
     assert_eq!(
         model.price_block(&BlockPricingInput {
+            transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
             operation_routes: &negative_route,
@@ -2595,6 +2690,10 @@ fn zk_gas_pricing_finalizes_executed_step_before_inner_step_end_mutation() {
         TaikoEvmFactory.create_evm(db_with_contract(code.clone()), evm_env(TaikoSpecId::UNZEN));
     plain.set_zk_gas_pricing_enabled(true);
     plain.transact(tx_env(100_000)).expect("plain STOP");
+    plain.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    });
     plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
 
     let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
@@ -2604,6 +2703,10 @@ fn zk_gas_pricing_finalizes_executed_step_before_inner_step_end_mutation() {
     );
     inspected.set_zk_gas_pricing_enabled(true);
     inspected.transact(tx_env(100_000)).expect("mutated STOP remains included");
+    inspected.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    });
     inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
 
     assert_eq!(plain.zk_gas_pricing_snapshot(), inspected.zk_gas_pricing_snapshot());
@@ -2806,6 +2909,10 @@ fn zk_gas_pricing_attempted_sstore_resources_match_on_static_and_oog_halts() {
         let mut plain = TaikoEvmFactory.create_evm(make_db(), evm_env(TaikoSpecId::UNZEN));
         plain.set_zk_gas_pricing_enabled(true);
         plain.transact(tx_env(200_000)).expect("plain included outer transaction");
+        plain.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
         plain.commit_transaction_zk_gas_pricing().expect("plain pricing commit");
         let plain = plain.zk_gas_pricing_snapshot().expect("plain pricing snapshot");
 
@@ -2816,6 +2923,10 @@ fn zk_gas_pricing_attempted_sstore_resources_match_on_static_and_oog_halts() {
         );
         inspected.set_zk_gas_pricing_enabled(true);
         inspected.transact(tx_env(200_000)).expect("inspected included outer transaction");
+        inspected.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
         inspected.commit_transaction_zk_gas_pricing().expect("inspected pricing commit");
         let inspected = inspected.zk_gas_pricing_snapshot().expect("inspected pricing snapshot");
 
@@ -3749,4 +3860,164 @@ fn unzen_schedule_meters_clz() {
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x1e], 14,
         "default Unzen schedule must meter clz at 14"
     );
+}
+
+#[test]
+fn payload_selectors_commit_and_discard_atomically() {
+    use super::pricing::{TransactionMetadata, TransactionPayloadSelectors, ZkGasAccumulator};
+    let mut collector = ZkGasAccumulator::default();
+    let payload = TransactionPayloadSelectors {
+        canonical_transaction_bytes: 1_048_700,
+        nonempty_payload_transactions: 1,
+    };
+    collector.begin_transaction(TransactionMetadata::default()).unwrap();
+    collector.observe_transaction_payload(payload).unwrap();
+    assert_eq!(collector.committed_snapshot().transaction_payload, Default::default());
+    collector.reset_transaction();
+    assert_eq!(collector.committed_snapshot().transaction_payload, Default::default());
+    assert_eq!(collector.attempted_snapshot().block.transaction_payload, payload);
+    collector.begin_transaction(TransactionMetadata::default()).unwrap();
+    collector.observe_transaction_payload(payload).unwrap();
+    collector.commit_transaction().unwrap();
+    assert_eq!(collector.committed_snapshot().transaction_payload, payload);
+    assert_eq!(
+        collector.attempted_snapshot().block.transaction_payload.canonical_transaction_bytes,
+        2 * payload.canonical_transaction_bytes
+    );
+    let ZkGasShadowStatus::Incomplete { known, .. } =
+        collector.committed_snapshot().shadow_report().status()
+    else {
+        panic!("committed signed payload must produce a known subtotal");
+    };
+    assert_eq!(known.transaction_payload(), payload);
+    assert_eq!(
+        known.transaction_payload_scaled(),
+        (256 * i128::from(payload.canonical_transaction_bytes) + 16_384) * FIXED_POINT_SCALE
+    );
+}
+
+#[test]
+fn missing_signed_payload_is_an_explicit_diagnostic() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+    let mut collector = ZkGasAccumulator::default();
+    collector.begin_transaction(TransactionMetadata::default()).unwrap();
+    collector.commit_transaction().unwrap();
+    assert!(matches!(
+        collector.committed_snapshot().shadow_report().status(),
+        ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Collector(
+            ZkGasAccumulatorError::MissingSignedTransactionPayload
+        ))
+    ));
+}
+
+#[test]
+fn transaction_payload_tariffs_are_additive_and_checked() {
+    use super::pricing::TransactionPayloadSelectors;
+    let a = TransactionPayloadSelectors {
+        canonical_transaction_bytes: 1_048_700,
+        nonempty_payload_transactions: 1,
+    };
+    let b = TransactionPayloadSelectors {
+        canonical_transaction_bytes: 120,
+        nonempty_payload_transactions: 0,
+    };
+    let combined = TransactionPayloadSelectors {
+        canonical_transaction_bytes: a.canonical_transaction_bytes + b.canonical_transaction_bytes,
+        nonempty_payload_transactions: 1,
+    };
+    let left = ZkGasModel.price_transaction_payload(a).unwrap();
+    let right = ZkGasModel.price_transaction_payload(b).unwrap();
+    assert_eq!(
+        left.total_scaled,
+        (256 * i128::from(a.canonical_transaction_bytes) + 16_384) * FIXED_POINT_SCALE
+    );
+    assert_eq!(
+        left.total_scaled + right.total_scaled,
+        ZkGasModel.price_transaction_payload(combined).unwrap().total_scaled
+    );
+    assert_eq!(ZkGasModel.price_transaction_payload(Default::default()).unwrap().total_scaled, 0);
+    assert!(
+        ZkGasModel
+            .price_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 0,
+                nonempty_payload_transactions: 1
+            })
+            .is_err()
+    );
+    assert!(
+        ZkGasModel
+            .price_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 1_000_000_001,
+                nonempty_payload_transactions: 0
+            })
+            .is_err()
+    );
+}
+
+#[test]
+fn payload_prefix_bound_failure_preserves_the_previous_prefix() {
+    use super::pricing::{TransactionMetadata, TransactionPayloadSelectors, ZkGasAccumulator};
+    let mut collector = ZkGasAccumulator::default();
+    collector.begin_transaction(TransactionMetadata::default()).unwrap();
+    collector
+        .observe_transaction_payload(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 1_000_000_000,
+            nonempty_payload_transactions: 0,
+        })
+        .unwrap();
+    collector.commit_transaction().unwrap();
+    let previous = collector.committed_snapshot();
+    collector.begin_transaction(TransactionMetadata::default()).unwrap();
+    collector
+        .observe_transaction_payload(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 1,
+            nonempty_payload_transactions: 0,
+        })
+        .unwrap();
+    collector.commit_transaction().unwrap();
+    let next = collector.committed_snapshot();
+    assert_eq!(next.transaction_payload, previous.transaction_payload);
+    assert_eq!(next.started_non_anchor_transactions, previous.started_non_anchor_transactions);
+    assert!(next.diagnostic.is_some());
+    assert!(matches!(next.shadow_report().status(), ZkGasShadowStatus::Diagnostic(_)));
+}
+
+#[test]
+fn completion_revalidates_sealed_payload_selectors_and_price() {
+    use super::pricing::{TransactionMetadata, TransactionPayloadSelectors, ZkGasAccumulator};
+    let payload = TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 1,
+    };
+    let mut collector = ZkGasAccumulator::default();
+    collector.begin_transaction(TransactionMetadata::default()).unwrap();
+    collector.observe_transaction_payload(payload).unwrap();
+    collector.commit_transaction().unwrap();
+    let report = collector.committed_snapshot().shadow_report();
+    let ZkGasShadowStatus::Incomplete { known, missing } = report.status() else {
+        panic!("known report");
+    };
+    for (selectors, scaled) in [
+        (payload, 0),
+        (
+            TransactionPayloadSelectors { canonical_transaction_bytes: 101, ..payload },
+            known.transaction_payload_scaled(),
+        ),
+    ] {
+        let forged = ZkGasShadowReport::from_parts_for_test(
+            RUNTIME_SPEC_SHA256,
+            ZkGasShadowStatus::Incomplete {
+                known: known.with_payload_for_test(selectors, scaled),
+                missing,
+            },
+        );
+        assert!(matches!(
+            ZkGasModel.complete_block_shadow_report(
+                &forged,
+                ResourceSelectors::default(),
+                MptSelectors::default()
+            ),
+            Err(ZkGasCompletionError::InconsistentKnownBreakdown("transaction_payload_scaled"))
+        ));
+    }
 }

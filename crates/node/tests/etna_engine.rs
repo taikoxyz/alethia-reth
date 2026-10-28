@@ -235,6 +235,312 @@ fn devnet_etna_genesis_serves_preselection_and_pending_simulation() -> eyre::Res
             http.request::<Value, _>("eth_getBlockByNumber", rpc_params!["pending", true]).await?,
             Value::Null
         );
+        // Simulation meters zk gas against the full block budget and reports the zk limit as an
+        // error, not a result: modexp with a 1,024-byte modulus and an all-ones 32-byte exponent
+        // costs ~8.4M gas, which at multiplier 154 is far above the 100M zk budget.
+        let mut input = Vec::with_capacity(96 + 32 + 32 + 1024);
+        for len in [32_u64, 32, 1024] {
+            input.extend_from_slice(&alloy_primitives::U256::from(len).to_be_bytes::<32>());
+        }
+        input.extend_from_slice(&[0x02; 32]);
+        input.extend_from_slice(&[0xff; 32]);
+        input.extend_from_slice(&[0x01; 1024]);
+        let modexp = json!({
+            "to": "0x0000000000000000000000000000000000000005",
+            "data": alloy_primitives::Bytes::from(input),
+            "gas": "0x989680",
+        });
+        for method in ["eth_call", "eth_estimateGas"] {
+            let result = http.request::<Value, _>(method, rpc_params![&modexp, "latest"]).await;
+            let Err(jsonrpsee::core::ClientError::Call(e)) = result else {
+                panic!("{method} must report the zk limit as a call error: {result:?}");
+            };
+            assert_eq!(e.code(), -32603, "{method}: {e:?}");
+            assert!(e.message().contains("zk gas limit exceeded"), "{method}: {e:?}");
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn etna_given_list_preserves_driver_order_and_both_modes_obey_the_byte_limit() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::etna::execution_block_length;
+        use alloy_primitives::{Address, Bytes};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let target = Address::with_last_byte(0x21);
+        let p = signed_tx_with_key(POOL_SENDER_KEY, 0, target, Bytes::from(vec![0; 2_000]));
+        assert_eq!(send_raw(&http, &p).await?, *p.tx_hash());
+        // The driver owns FI-first ordering and supplies it through the generic given list.
+        let fi = signed_tx(0, false, target, Bytes::new());
+        let (fi_hash, p_hash) = (*fi.tx_hash(), *p.tx_hash());
+        let attrs = fixture_attributes(100);
+        let build_on_genesis = |attrs| build(&client, spec.clone(), spec.genesis_header(), attrs);
+        let hashes = |built: &Built| {
+            built.block.body().transactions.iter().map(|tx| *tx.tx_hash()).collect::<Vec<_>>()
+        };
+        let listed = |txs: &[_], max_block_bytes: u64| {
+            let mut attrs = with_txs(attrs.clone(), txs);
+            attrs.max_block_bytes = Some(max_block_bytes);
+            attrs
+        };
+
+        let ordered = build_on_genesis(listed(&[fi.clone(), p.clone()], 124_000)).await?;
+        assert_eq!(hashes(&ordered), [fi_hash, p_hash]);
+        let length =
+            execution_block_length(ordered.block.header(), &ordered.block.body().transactions);
+        assert!(length <= 124_000, "{length}");
+        let length = u64::try_from(length)?;
+        let roomy = build_on_genesis(listed(&[fi.clone(), p.clone()], length + 16)).await?;
+        assert_eq!(roomy.block.hash(), ordered.block.hash());
+        let tight = build_on_genesis(listed(&[fi.clone(), p.clone()], length - 1)).await?;
+        assert_eq!(hashes(&tight), [fi_hash]);
+
+        let pool = build_on_genesis(pool_mode(attrs.clone(), 124_000)).await?;
+        assert_ne!(pool.id, ordered.id);
+        assert_eq!(hashes(&pool), [p_hash]);
+        let small_pool = build_on_genesis(pool_mode(attrs.clone(), 1_024)).await?;
+        assert!(hashes(&small_pool).is_empty());
+        let small_list = build_on_genesis(listed(std::slice::from_ref(&p), 1_024)).await?;
+        assert!(hashes(&small_list).is_empty());
+
+        // A driver can use the same generic interface for the deterministic FI skip check.
+        let fi_gap = signed_tx(5, false, target, Bytes::new());
+        let alone = build_on_genesis(listed(&[fi_gap], 124_000)).await?;
+        assert!(hashes(&alone).is_empty());
+
+        let mut unbounded = pool_mode(attrs.clone(), 124_000);
+        unbounded.max_block_bytes = None;
+        let error = fcu(&client, genesis, genesis, Some(unbounded))
+            .await
+            .expect_err("an Etna build without maxBlockBytes must be rejected");
+        assert_eq!(rpc_error_code(&error), Some(-32602), "{error:?}");
+        assert!(format!("{error:?}").contains("maxBlockBytes"), "{error:?}");
+        Ok(())
+    })
+}
+
+#[test]
+fn etna_byte_limit_counts_legacy_transactions_as_the_envelope_carries_them() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::etna::execution_block_length;
+        use alloy_primitives::{Address, Bytes};
+        use alloy_rlp::Encodable;
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        // The envelope carries each legacy transaction in a 3-byte string header that block-body
+        // form leaves out: 18 bytes for six, more than the at most 16 bytes the header reserve
+        // leaves unused.
+        let target = Address::with_last_byte(0x21);
+        let txs: Vec<_> = (0..6)
+            .map(|nonce| {
+                signed_legacy_tx_with_key(
+                    POOL_SENDER_KEY,
+                    nonce,
+                    target,
+                    Bytes::from(vec![0; 3_000]),
+                )
+            })
+            .collect();
+        let tx_hashes: Vec<_> = txs.iter().map(|tx| *tx.tx_hash()).collect();
+        let attrs = fixture_attributes(100);
+        let build_on_genesis = |attrs| build(&client, spec.clone(), spec.genesis_header(), attrs);
+        let hashes = |built: &Built| {
+            built.block.body().transactions.iter().map(|tx| *tx.tx_hash()).collect::<Vec<_>>()
+        };
+        // `rlp([header, txs])` from the header and the encoded transaction list.
+        let execution_block = |built: &Built, txs_rlp_len: usize| {
+            let payload_length = built.block.header().length() + txs_rlp_len;
+            alloy_rlp::Header { list: true, payload_length }.length_with_payload() as u64
+        };
+        // The consensus client's measure: every transaction a byte string of its EIP-2718 bytes.
+        let length_of = |built: &Built| {
+            let raw: Vec<Bytes> = built.block.body().transactions.iter().map(raw_2718).collect();
+            execution_block(built, raw.length())
+        };
+        let listed = |max_block_bytes: u64| {
+            let mut attrs = with_txs(attrs.clone(), &txs);
+            attrs.max_block_bytes = Some(max_block_bytes);
+            attrs
+        };
+
+        let full = build_on_genesis(listed(124_000)).await?;
+        assert_eq!(hashes(&full), tx_hashes);
+        let length = length_of(&full);
+        let body = &full.block.body().transactions;
+        assert_eq!(execution_block_length(full.block.header(), body) as u64, length);
+        // Block-body form keeps each legacy transaction a bare RLP list.
+        assert_eq!(length - execution_block(&full, body.length()), 18);
+
+        // One byte below the block's length the last transaction no longer fits, in either mode,
+        // although all six would in block-body form.
+        let tight = build_on_genesis(listed(length - 1)).await?;
+        assert_eq!(hashes(&tight), tx_hashes[..5].to_vec());
+        assert!(length_of(&tight) < length, "{} >= {length}", length_of(&tight));
+        for tx in &txs {
+            assert_eq!(send_raw(&http, tx).await?, *tx.tx_hash());
+        }
+        let pool = build_on_genesis(pool_mode(attrs.clone(), length - 1)).await?;
+        assert_eq!(hashes(&pool), tx_hashes[..5].to_vec());
+        assert!(length_of(&pool) < length, "{} >= {length}", length_of(&pool));
+        Ok(())
+    })
+}
+
+/// Builds empty Etna blocks at `timestamps` on the node's head `chain.last()`, each made canonical
+/// with head = safe = finalized, as a driver with instant finality sends them.
+async fn extend_finalized(
+    client: &impl jsonrpsee::core::client::ClientT,
+    spec: std::sync::Arc<alethia_reth_chainspec::spec::TaikoChainSpec>,
+    chain: &mut Vec<alloy_consensus::Header>,
+    timestamps: &[u64],
+) -> eyre::Result<()> {
+    for &timestamp in timestamps {
+        let parent = chain.last().unwrap();
+        let grandparent_timestamp = chain.iter().rev().nth(1).map_or(0, |header| header.timestamp);
+        let built = build_at(
+            client,
+            spec.clone(),
+            parent,
+            grandparent_timestamp,
+            parent.hash_slow(),
+            fixture_attributes(timestamp),
+        )
+        .await?;
+        canonicalize(client, built.block.hash(), &built).await?;
+        chain.push(built.block.header().clone());
+    }
+    Ok(())
+}
+
+#[test]
+fn etna_one_shot_rewind_moves_the_head_back_and_survives_restarts() -> eyre::Result<()> {
+    run_live_test(async {
+        use reth_provider::{BlockNumReader, DatabaseProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let datadir = Datadir::new();
+
+        // A normal EL follows a driver with instant finality to block 3.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let mut chain = vec![spec.genesis_header().clone()];
+        extend_finalized(&client, spec.clone(), &mut chain, &[100, 101, 102]).await?;
+        let (c, old_child) = (chain[1].hash_slow(), chain[2].hash_slow());
+        // Without the flags the rewind FCU (head = safe = finalized = c) is VALID but moves
+        // nothing, so the driver must check that block c + 1 is gone.
+        let status = fcu(&client, c, c, None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        assert_eq!(head_number(&http).await?, 3);
+        assert_eq!(hash_at(&http, 2).await?, Some(old_child));
+        el.stop().await?;
+
+        // One restart with the rewind flags serves exactly one FCU: the rewind to c. The
+        // shutdown persisted blocks 1..3, so the rewind removes blocks from disk.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Rewind).await?;
+        assert_eq!(el.node.provider.database_provider_ro()?.last_block_number()?, 3);
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        let status = fcu(&client, c, c, None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        assert_eq!(status.payload_id, None);
+        // The head moves before the FCU answers; the blocks above it leave the disk later.
+        assert_eq!(head_number(&http).await?, 1);
+        assert_eq!(hash_at(&http, 1).await?, Some(c));
+        wait_until_absent(&http, 2).await;
+        el.stop().await?;
+
+        // A normal restart keeps the rewind, with c as the latest, safe and finalized block.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        assert_eq!(el.node.provider.database_provider_ro()?.last_block_number()?, 1);
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        assert_eq!(head_number(&http).await?, 1);
+        assert_eq!(hash_at(&http, 1).await?, Some(c));
+        assert_eq!(hash_at(&http, 2).await?, None);
+        for tag in ["safe", "finalized"] {
+            assert_eq!(hash_of_tag(&http, tag).await?, Some(c), "{tag}");
+        }
+        // Repeating the rewind FCU is now a no-op, and c + 1 is built on c as usual.
+        let status = fcu(&client, c, c, None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        chain.truncate(2);
+        extend_finalized(&client, spec.clone(), &mut chain, &[110]).await?;
+        let new_child = chain[2].hash_slow();
+        assert_ne!(new_child, old_child);
+        assert_eq!(chain[2].parent_hash, c);
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 2).await?, Some(new_child));
+        el.stop().await?;
+
+        // Another normal restart keeps the new chain.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 1).await?, Some(c));
+        assert_eq!(hash_at(&http, 2).await?, Some(new_child));
+        assert_eq!(hash_at(&http, 3).await?, None);
+        el.stop().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn etna_fcu_to_a_canonical_ancestor_builds_on_it_and_unwinds_only_with_the_rewind_flags()
+-> eyre::Result<()> {
+    run_live_test(async {
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let datadir = Datadir::new();
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let mut chain = vec![spec.genesis_header().clone()];
+        extend_finalized(&client, spec.clone(), &mut chain, &[100, 101, 102]).await?;
+        let c = chain[1].hash_slow();
+        let child_of_c = fixture_attributes(110);
+        // A normal EL answers an FCU with attributes to c, below the finalized block 3, with a
+        // build on c (never -38006) and keeps its head.
+        let probe =
+            build_at(&client, spec.clone(), &chain[1], chain[0].timestamp, c, child_of_c.clone())
+                .await?;
+        assert_eq!(probe.block.parent_hash, c);
+        assert_eq!(head_number(&http).await?, 3);
+        el.stop().await?;
+
+        // With the flags the same FCU also moves the head back to c at once, which is why they
+        // must never stay on.
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Rewind).await?;
+        let client = el.node.auth_server_handle().http_client();
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        let built =
+            build_at(&client, spec.clone(), &chain[1], chain[0].timestamp, c, child_of_c).await?;
+        assert_eq!(built.block.hash(), probe.block.hash());
+        assert_eq!(head_number(&http).await?, 1);
+        wait_until_absent(&http, 2).await;
+        canonicalize(&client, built.block.hash(), &built).await?;
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 2).await?, Some(built.block.hash()));
+        el.stop().await?;
+
+        let el = launch_at(spec.clone(), &datadir, EngineMode::Normal).await?;
+        let http = el.node.rpc_server_handle().http_client().unwrap();
+        assert_eq!(head_number(&http).await?, 2);
+        assert_eq!(hash_at(&http, 2).await?, Some(built.block.hash()));
+        assert_eq!(hash_at(&http, 3).await?, None);
+        el.stop().await?;
         Ok(())
     })
 }

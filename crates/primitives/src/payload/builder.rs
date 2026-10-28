@@ -13,10 +13,17 @@ use sha2::{Digest, Sha256};
 use std::fmt::Debug;
 use tracing::debug;
 
-use crate::{extra_data::ETNA_EXTRA_DATA_LEN, payload::attributes::TaikoPayloadAttributes};
+use crate::{
+    etna::{ETNA_MIN_MAX_BLOCK_BYTES, EtnaBuildFieldsBeforeEtna, ensure_no_etna_build_fields},
+    extra_data::ETNA_EXTRA_DATA_LEN,
+    payload::attributes::TaikoPayloadAttributes,
+};
 
 /// Version byte stamped into every Taiko payload identifier, before and after Etna.
 pub const PAYLOAD_ID_VERSION_V2: u8 = 2;
+
+/// Payload-ID preimage tag that precedes the big-endian `maxBlockBytes` term.
+const PAYLOAD_ID_MAX_BLOCK_BYTES_TAG: u8 = 0x01;
 
 /// Taiko Payload Builder Attributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +63,13 @@ pub struct TaikoPayloadBuilderAttributes {
     pub extra_data: Bytes,
     /// Optional prebuilt anchor transaction required for pre-Etna pool selection.
     pub anchor_transaction: Option<Recovered<TransactionSigned>>,
+    /// Upper bound on the built block's executionBlock length, `rlp([header, [tx…]])` including
+    /// its outer list header and with every transaction, legacy included, an RLP byte string of
+    /// its EIP-2718 bytes.
+    ///
+    /// `Some` (at least [`ETNA_MIN_MAX_BLOCK_BYTES`]) on every Etna job, whatever its build mode,
+    /// and `None` before Etna.
+    pub max_block_bytes: Option<u64>,
 }
 
 #[cfg(feature = "net")]
@@ -103,10 +117,11 @@ impl TaikoPayloadBuilderAttributes {
     ///
     /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp, because the
     /// fork is chosen from the latter and the block is built at the former. Etna jobs also require
-    /// a non-zero beacon root, 13-byte extraData, empty withdrawals, and no anchor transaction.
-    /// Pre-Etna jobs pass `false`, as [`Self::try_new`] does, and of these rules keep only the root
-    /// check: a nonzero root is rejected. Every job also rejects a base fee above `u64::MAX` and an
-    /// anchor transaction that fails to decode or recover its signer.
+    /// a non-zero beacon root, 13-byte extraData, empty withdrawals, no anchor transaction, and a
+    /// `maxBlockBytes` of at least [`ETNA_MIN_MAX_BLOCK_BYTES`]. Pre-Etna jobs pass `false`, as
+    /// [`Self::try_new`] does: they reject `maxBlockBytes` and, of the other Etna rules, keep the
+    /// root check: a nonzero root is rejected. Every job also rejects a base fee above `u64::MAX`
+    /// and an anchor transaction that fails to decode or recover its signer.
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,
@@ -117,7 +132,7 @@ impl TaikoPayloadBuilderAttributes {
                 "block metadata timestamp must match payload attributes timestamp",
             ));
         }
-        if is_etna_active {
+        let max_block_bytes = if is_etna_active {
             if attributes
                 .payload_attributes
                 .parent_beacon_block_root
@@ -145,19 +160,34 @@ impl TaikoPayloadBuilderAttributes {
                     "Etna payload extra_data must contain exactly 13 bytes",
                 ));
             }
-        } else if attributes
-            .payload_attributes
-            .parent_beacon_block_root
-            .is_some_and(|root| !root.is_zero())
-        {
-            // Pre-Etna payload conversion reconstructs the Unzen zero-root convention. Although
-            // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a non-zero
-            // root here would build a header that pre-Etna import rejects. Re-check at job creation
-            // so callers outside the Engine RPC validation path retain the same invariant.
-            return Err(alloy_rlp::Error::Custom(
-                "non-zero parent_beacon_block_root is unsupported on Taiko",
-            ));
-        }
+            let max_block_bytes = attributes
+                .max_block_bytes
+                .ok_or(alloy_rlp::Error::Custom("Etna payload requires maxBlockBytes"))?;
+            if max_block_bytes < ETNA_MIN_MAX_BLOCK_BYTES {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload maxBlockBytes must be at least 1024",
+                ));
+            }
+            Some(max_block_bytes)
+        } else {
+            ensure_no_etna_build_fields(attributes.max_block_bytes.is_some())
+                .map_err(|_| alloy_rlp::Error::Custom(EtnaBuildFieldsBeforeEtna::MESSAGE))?;
+            if attributes
+                .payload_attributes
+                .parent_beacon_block_root
+                .is_some_and(|root| !root.is_zero())
+            {
+                // Pre-Etna payload conversion reconstructs the Unzen zero-root convention. Although
+                // `block_to_payload` preserves header roots in its Osaka sidecar, accepting a
+                // non-zero root here would build a header that pre-Etna import rejects. Re-check at
+                // job creation so callers outside the Engine RPC validation path retain the same
+                // invariant.
+                return Err(alloy_rlp::Error::Custom(
+                    "non-zero parent_beacon_block_root is unsupported on Taiko",
+                ));
+            }
+            None
+        };
 
         let id = payload_id_taiko(&parent, &attributes, PAYLOAD_ID_VERSION_V2);
 
@@ -216,6 +246,7 @@ impl TaikoPayloadBuilderAttributes {
             extra_data: attributes.block_metadata.extra_data,
             transactions,
             anchor_transaction,
+            max_block_bytes,
         };
 
         Ok(res)
@@ -264,7 +295,9 @@ impl TaikoPayloadBuilderAttributes {
 /// timestamp, `prev_randao`, suggested fee recipient, RLP withdrawals when present, a nonzero
 /// parent beacon block root, the transaction-list keccak (zero when absent), and the raw
 /// `extraData`. Etna jobs are therefore told apart by their nonzero root and their 13-byte
-/// `extraData` (`proposalId` and `anchorBlockNumber`).
+/// `extraData` (`proposalId` and `anchorBlockNumber`). After `extraData`, an Etna job adds
+/// `0x01 ‖ u64_be(maxBlockBytes)`, so jobs with different byte bounds get distinct IDs.
+/// Attributes without the bound (every pre-Etna job) keep their earlier IDs.
 pub fn payload_id_taiko(
     parent: &B256,
     attributes: &TaikoPayloadAttributes,
@@ -295,6 +328,10 @@ pub fn payload_id_taiko(
     hasher.update(tx_hash);
     hasher.update(attributes.block_metadata.extra_data.as_ref());
 
+    if let Some(max_block_bytes) = attributes.max_block_bytes {
+        hasher.update([PAYLOAD_ID_MAX_BLOCK_BYTES_TAG]);
+        hasher.update(max_block_bytes.to_be_bytes());
+    }
     let mut out = hasher.finalize();
     out[0] = payload_version;
     let mut id_bytes = [0u8; 8];
@@ -393,7 +430,94 @@ mod test {
             block_metadata: create_block_metadata(timestamp, tx_list),
             l1_origin: default_l1_origin(),
             anchor_transaction: None,
+            max_block_bytes: None,
         }
+    }
+
+    /// Valid Etna attributes with the requested byte bound.
+    fn etna_attrs(max_block_bytes: Option<u64>) -> TaikoPayloadAttributes {
+        let mut attributes = create_payload_attrs(1000, None, 1);
+        attributes.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+        attributes.block_metadata.extra_data =
+            Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+        attributes.max_block_bytes = max_block_bytes;
+        attributes
+    }
+
+    #[test]
+    fn try_new_for_fork_requires_etna_max_block_bytes() {
+        for (max_block_bytes, ok) in
+            [(None, false), (Some(1_023), false), (Some(1_024), true), (Some(124_000), true)]
+        {
+            let result = TaikoPayloadBuilderAttributes::try_new_for_fork(
+                B256::ZERO,
+                etna_attrs(max_block_bytes),
+                true,
+            );
+            match result {
+                Ok(attrs) => {
+                    assert!(ok, "{max_block_bytes:?} must be rejected");
+                    assert_eq!(attrs.max_block_bytes, max_block_bytes);
+                    assert!(attrs.transactions.is_none(), "no list selects a pool build");
+                }
+                Err(err) => {
+                    assert!(!ok, "{max_block_bytes:?} must be accepted: {err}");
+                    assert!(err.to_string().contains("maxBlockBytes"), "{err}");
+                }
+            }
+        }
+        assert_eq!(ETNA_MIN_MAX_BLOCK_BYTES, 1_024);
+        let err = TaikoPayloadBuilderAttributes::try_new_for_fork(
+            B256::ZERO,
+            etna_attrs(Some(ETNA_MIN_MAX_BLOCK_BYTES - 1)),
+            true,
+        )
+        .expect_err("a bound below the floor must be rejected");
+        assert!(err.to_string().contains(&ETNA_MIN_MAX_BLOCK_BYTES.to_string()), "{err}");
+
+        // Given-list builds need the bound too, and carry it unchanged.
+        let mut given = etna_attrs(None);
+        given.block_metadata.tx_list = Some(Bytes::from_static(&[0xc0]));
+        TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, given.clone(), true)
+            .expect_err("a given-list Etna build without maxBlockBytes must be rejected");
+        given.max_block_bytes = Some(124_000);
+        let attrs = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, given, true)
+            .expect("a given-list Etna build with maxBlockBytes must normalize");
+        assert_eq!(attrs.max_block_bytes, Some(124_000));
+        assert_eq!(attrs.transactions.as_deref(), Some([].as_slice()));
+    }
+
+    #[test]
+    fn pre_etna_attributes_reject_max_block_bytes() {
+        let mut attributes = create_payload_attrs(1000, None, 1);
+        attributes.max_block_bytes = Some(124_000);
+        for result in [
+            TaikoPayloadBuilderAttributes::try_new(B256::ZERO, attributes.clone()),
+            TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, attributes, false),
+        ] {
+            let err = result.expect_err("maxBlockBytes must be rejected before Etna");
+            assert_eq!(err.to_string(), EtnaBuildFieldsBeforeEtna::MESSAGE);
+        }
+        let attrs =
+            TaikoPayloadBuilderAttributes::try_new(B256::ZERO, create_payload_attrs(1000, None, 1))
+                .expect("pre-Etna attributes without the bound still normalize");
+        assert_eq!(attrs.max_block_bytes, None);
+    }
+
+    #[test]
+    fn payload_id_binds_max_block_bytes() {
+        let parent = B256::repeat_byte(0xaa);
+        let id = |max_block_bytes| {
+            payload_id_taiko(&parent, &etna_attrs(max_block_bytes), PAYLOAD_ID_VERSION_V2)
+        };
+        let base = id(None);
+        let max = id(Some(124_000));
+        assert_ne!(base, max);
+        assert_ne!(max, id(Some(123_999)));
+        // Pinned against an independent sha256 computation of the old preimage and the
+        // additional `0x01 ‖ u64_be(maxBlockBytes)` term.
+        assert_eq!(base, PayloadId::new([0x02, 0x34, 0xfc, 0x21, 0x78, 0x65, 0x63, 0x9c]));
+        assert_eq!(max, PayloadId::new([0x02, 0xa4, 0x74, 0xc7, 0x62, 0x62, 0x6a, 0x4a]));
     }
 
     #[test]

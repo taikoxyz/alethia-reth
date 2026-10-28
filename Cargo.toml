@@ -127,6 +127,7 @@ reth-payload-validator = { git = "https://github.com/ethereum-optimism/reth", re
 reth-primitives = { git = "https://github.com/ethereum-optimism/reth", package = "reth-ethereum-primitives", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false }
 reth-primitives-traits = { version = "0.7.1", default-features = false }
 reth-provider = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
+reth-prune-types = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-revm = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false, features = [
     "portable",
 ] }
@@ -138,6 +139,7 @@ reth-rpc-engine-api = { git = "https://github.com/ethereum-optimism/reth", rev =
 reth-rpc-eth-api = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-rpc-eth-types = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-rpc-server-types = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
+reth-stages-types = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }
 reth-storage-api = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false }
 reth-storage-errors = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93", default-features = false }
 reth-storage-overlay = { git = "https://github.com/ethereum-optimism/reth", rev = "d9bd9875fe88dcc0183d78b187ce2ceab0c93e93" }

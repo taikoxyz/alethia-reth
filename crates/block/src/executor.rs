@@ -693,8 +693,8 @@ mod test {
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
             BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, etna_chain_spec,
-            etna_evm_env, etna_execution_ctx, insert_contract, recovered_tx, unzen_chain_spec,
-            unzen_evm_env, unzen_execution_ctx,
+            etna_evm_env, etna_execution_ctx, insert_contract, recovered_tx,
+            recovered_tx_with_input, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
@@ -1042,6 +1042,41 @@ mod test {
             finalized >= TX_INTRINSIC_ZK_GAS,
             "finalized block zk gas ({finalized}) must include the per-tx intrinsic charge ({TX_INTRINSIC_ZK_GAS})"
         );
+    }
+
+    #[test]
+    fn etna_direct_precompile_transaction_charges_only_intrinsic_and_precompile_zk_gas() {
+        // Spec 3.1: a transaction that targets a precompile directly is metered by the precompile's
+        // multiplier; there is no synthetic CALL and no spawn estimate. identity (0x04), 32-byte
+        // input: 15 + 3 = 18 gas × multiplier 6 = 108 zk gas, plus the 243,000 intrinsic.
+        let caller = BENCH_CALLER;
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(caller, 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let ctx = etna_execution_ctx(B256::with_last_byte(7));
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx.clone(),
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().expect("Etna pre-execution should succeed");
+        let before = ctx.finalized_block_zk_gas();
+
+        executor
+            .execute_transaction(recovered_tx_with_input(
+                caller,
+                Address::with_last_byte(0x04),
+                0,
+                0,
+                Bytes::from(vec![0u8; 32]),
+            ))
+            .expect("the direct precompile transaction should commit");
+
+        assert!(executor.receipts()[0].success, "the identity precompile call should succeed");
+        assert_eq!(ctx.finalized_block_zk_gas() - before, TX_INTRINSIC_ZK_GAS + 18 * 6);
     }
 
     #[cfg(feature = "prover")]

@@ -90,6 +90,16 @@ pub struct TaikoPayloadAttributes {
     /// instead of building an anchor transaction from checkpoint parameters.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub anchor_transaction: Option<AlloyBytes>,
+    /// Upper bound on the built block's executionBlock length (wire name `maxBlockBytes`, a JSON
+    /// number).
+    ///
+    /// Required on every Etna build, given-list builds included, at least
+    /// [`ETNA_MIN_MAX_BLOCK_BYTES`](crate::etna::ETNA_MIN_MAX_BLOCK_BYTES), and forbidden before
+    /// Etna. The built block's `rlp([header, [tx…]])`, including its outer list header and with
+    /// every transaction, legacy included, an RLP byte string of its EIP-2718 bytes, is at most
+    /// this many bytes.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub max_block_bytes: Option<u64>,
 }
 
 #[cfg(feature = "net")]
@@ -243,6 +253,7 @@ where
                 signature: [0; 65],
             },
             anchor_transaction: None,
+            max_block_bytes: None,
         }
     }
 }
@@ -276,6 +287,31 @@ mod tests {
         // L1 origin defaults remain zeroed and stable.
         assert_eq!(first.l1_origin.block_id, U256::ZERO);
         assert_eq!(first.l1_origin, second.l1_origin);
+
+        // Local dev-mode builds never use the Etna build fields.
+        assert_eq!(first.max_block_bytes, None);
+    }
+
+    #[test]
+    fn etna_attributes_round_trip_max_block_bytes() {
+        let builder = LocalPayloadAttributesBuilder::new(Arc::new(ChainSpec::<Header>::default()));
+        let mut attributes: TaikoPayloadAttributes =
+            builder.build(&SealedHeader::seal_slow(Header::default()));
+        attributes.max_block_bytes = Some(124_000);
+
+        let json = serde_json::to_value(&attributes).expect("attributes serialize");
+        assert_eq!(json["maxBlockBytes"], 124_000);
+        assert!(json["maxBlockBytes"].is_u64());
+        let decoded: TaikoPayloadAttributes =
+            serde_json::from_value(json).expect("attributes deserialize");
+        assert_eq!(decoded, attributes);
+
+        attributes.max_block_bytes = None;
+        let json = serde_json::to_value(&attributes).expect("attributes serialize");
+        assert!(!json.as_object().unwrap().contains_key("maxBlockBytes"));
+        let decoded: TaikoPayloadAttributes =
+            serde_json::from_value(json).expect("attributes without the bound deserialize");
+        assert_eq!(decoded.max_block_bytes, None);
     }
 
     #[test]

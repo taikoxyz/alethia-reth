@@ -1,4 +1,4 @@
-//! Adaptive DA-size limit helpers for transaction selection.
+//! Per-list limit helpers for transaction selection: gas, adaptive DA size and transaction bytes.
 
 use alloy_consensus::transaction::Recovered;
 use alloy_rlp::{encode_list, list_length};
@@ -35,6 +35,38 @@ impl Error for DaLimitExceeded {}
 
 impl PoolTransactionError for DaLimitExceeded {
     /// Indicates that this error does not represent a bad transaction.
+    fn is_bad_transaction(&self) -> bool {
+        false
+    }
+
+    /// Allows downcasting to the concrete error type.
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Error raised when a transaction does not fit the list's transaction byte budget.
+#[derive(Debug)]
+struct BlockBytesExceeded {
+    /// The Etna executionBlock size, in bytes, that exceeded the budget: the candidate alone, or
+    /// the list's transactions with the candidate added.
+    size: u64,
+    /// The transaction byte budget that was exceeded.
+    limit: u64,
+}
+
+impl Display for BlockBytesExceeded {
+    /// Formats the byte budget exceeded error message.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "transaction list byte size {} exceeds limit {}", self.size, self.limit)
+    }
+}
+
+impl Error for BlockBytesExceeded {}
+
+impl PoolTransactionError for BlockBytesExceeded {
+    /// Indicates that this error does not represent a bad transaction: the transaction only does
+    /// not fit this list's byte budget.
     fn is_bad_transaction(&self) -> bool {
         false
     }
@@ -190,18 +222,42 @@ fn exceeds_da_limit(
     None
 }
 
-/// Returns whether the list exceeds gas and the DA limit (if exceeded).
+/// Which per-list limits a candidate transaction would exceed if added to a list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ListLimitCheck {
+    /// Whether the list's gas used plus the candidate's gas limit exceeds the per-list gas limit.
+    pub(super) exceeds_gas: bool,
+    /// The DA size (estimated or actual) that exceeds the per-list DA limit, if any.
+    pub(super) exceeds_da: Option<u64>,
+    /// The Etna executionBlock size of the list's transactions plus the candidate, if it exceeds
+    /// [`TxSelectionConfig::max_tx_bytes_per_list`].
+    pub(super) exceeds_bytes: Option<u64>,
+}
+
+impl ListLimitCheck {
+    /// Returns true if the candidate exceeds at least one per-list limit.
+    pub(super) const fn exceeds_any(&self) -> bool {
+        self.exceeds_gas || self.exceeds_da.is_some() || self.exceeds_bytes.is_some()
+    }
+}
+
+/// Returns which per-list limits `list` would exceed with `tx` added, given the candidate's gas
+/// limit, estimated DA size and Etna executionBlock size `tx_bytes`.
 pub(super) fn exceeds_list_limits(
     list: &ExecutedTxList,
     tx: &Recovered<TransactionSigned>,
     tx_gas_limit: u64,
     tx_da_estimated: u64,
+    tx_bytes: u64,
     state: &mut DaRatioState,
     config: &TxSelectionConfig,
-) -> (bool, Option<u64>) {
+) -> ListLimitCheck {
     let exceeds_gas = list.total_gas_used.saturating_add(tx_gas_limit) > config.gas_limit_per_list;
     let exceeds_da = exceeds_da_limit(list, tx, tx_da_estimated, state, config);
-    (exceeds_gas, exceeds_da)
+    let bytes_after = list.total_tx_bytes.saturating_add(tx_bytes);
+    let exceeds_bytes =
+        config.max_tx_bytes_per_list.and_then(|limit| (bytes_after > limit).then_some(bytes_after));
+    ListLimitCheck { exceeds_gas, exceeds_da, exceeds_bytes }
 }
 
 /// Wraps a DA limit error in a pool error for logging and pruning.
@@ -209,13 +265,20 @@ pub(super) fn da_limit_error(size: u64, limit: u64) -> InvalidPoolTransactionErr
     InvalidPoolTransactionError::Other(Box::new(DaLimitExceeded { size, limit }))
 }
 
+/// Wraps a transaction byte budget error in a pool error that does not mark the transaction as
+/// bad.
+pub(super) fn block_bytes_error(size: u64, limit: u64) -> InvalidPoolTransactionError {
+    InvalidPoolTransactionError::Other(Box::new(BlockBytesExceeded { size, limit }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_eips::Encodable2718;
-    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxHash, TxKind, U256};
     use op_alloy_flz::tx_estimated_size_fjord_bytes;
+    use reth_transaction_pool::error::PoolError;
 
     fn make_signed_legacy_tx(input: Bytes) -> TransactionSigned {
         let tx = TxLegacy {
@@ -271,6 +334,7 @@ mod tests {
             min_tip: 0,
             locals: vec![],
             state_seed: B256::ZERO,
+            max_tx_bytes_per_list: None,
         };
 
         assert!(actual > config.max_da_bytes_per_list);
@@ -291,10 +355,28 @@ mod tests {
             min_tip: 0,
             locals: vec![],
             state_seed: B256::ZERO,
+            max_tx_bytes_per_list: None,
         };
 
         assert!(!should_check_zlib_da_size(&config, 899));
         assert!(should_check_zlib_da_size(&config, 900));
+    }
+
+    #[test]
+    fn block_bytes_error_is_not_a_bad_transaction() {
+        let err = block_bytes_error(124_001, 124_000);
+
+        let InvalidPoolTransactionError::Other(inner) = &err else {
+            panic!("the byte budget error should be a custom pool error")
+        };
+        assert!(!inner.is_bad_transaction());
+        let inner = inner
+            .as_any()
+            .downcast_ref::<BlockBytesExceeded>()
+            .expect("the custom pool error should be BlockBytesExceeded");
+        assert_eq!((inner.size, inner.limit), (124_001, 124_000));
+        // The pool's penalization check sees the same verdict.
+        assert!(!PoolError::new(TxHash::ZERO, err).is_bad_transaction());
     }
 
     #[test]

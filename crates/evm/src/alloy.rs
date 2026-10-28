@@ -26,7 +26,7 @@ use crate::{
     handler::{TaikoEvmHandler, get_treasury_address},
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::ZkGasInspector,
+        adapter::{ZK_GAS_LIMIT_ERR, ZkGasInspector},
         meter::{ZkGasMeter, ZkGasOutcome},
     },
 };
@@ -58,12 +58,25 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
+    /// Whether [`Evm::transact_raw`] charges the fixed per-transaction intrinsic zk gas right
+    /// after the entry reset, so standalone simulation meters a call the way the block executor
+    /// meters a block transaction. Only read while [`Self::reset_zk_gas_per_transact`] is on;
+    /// the block executor turns that off and charges the intrinsic in its own bracket.
+    /// Enabled by default; [`Evm::transact_system_call`] turns it off for its inner transact
+    /// because a system call is not a block transaction.
+    charge_intrinsic_per_transact: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
+        Self {
+            inner: evm,
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+            charge_intrinsic_per_transact: true,
+        }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -193,9 +206,12 @@ pub trait TaikoZkGasEvm {
     /// Enabled by default: RPC-style consumers reuse one EVM across transacts
     /// (`eth_estimateGas` re-runs the same transaction; `eth_callBundle` and the intra-block
     /// replay helpers execute a transaction sequence), and each run must meter from zero
-    /// instead of inheriting earlier runs' usage. The block executor disables it because it
-    /// drives the meter through its own reset/intrinsic-charge/commit bracket, which an entry
-    /// reset would corrupt by wiping the intrinsic charged before execution.
+    /// instead of inheriting earlier runs' usage. While enabled, every transact other than a
+    /// system call also charges the fixed per-transaction intrinsic zk gas after the reset, so
+    /// standalone simulation meters a call like a block transaction. The block executor
+    /// disables it because it drives the meter through its own reset/intrinsic-charge/commit
+    /// bracket, which an entry reset would corrupt by wiping the intrinsic charged before
+    /// execution; with it disabled, transact charges no intrinsic.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool);
 
     /// Discards any in-flight zk gas recorded for the current transaction.
@@ -234,7 +250,9 @@ where
     I: Inspector<TaikoEvmContext<DB>>,
     P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
 {
-    /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
+    /// Enables or disables the automatic in-flight zk gas reset at the start of every transact,
+    /// together with the intrinsic zk gas charge that follows it on every transact other than a
+    /// system call.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool) {
         self.reset_zk_gas_per_transact = enabled;
     }
@@ -393,6 +411,14 @@ where
         // reach the meter through the block executor.
         if self.reset_zk_gas_per_transact {
             self.reset_transaction_zk_gas();
+            // Standalone simulation meters a call like a block transaction: the same intrinsic
+            // charge the block executor adds before execution, against the full block budget.
+            // Running out here is the same explicit zk-limit error execution reports.
+            if self.charge_intrinsic_per_transact &&
+                let Err(ZkGasOutcome::LimitExceeded) = self.charge_tx_intrinsic_zk_gas()
+            {
+                return Err(EVMError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
+            }
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
         self.ctx_mut().set_tx(tx);
@@ -502,6 +528,7 @@ where
         let mut gas_limit = tx.gas_limit;
         let mut basefee = 0;
         let mut disable_nonce_check = true;
+        let mut charge_intrinsic = false;
 
         // ensure the block gas limit is >= the tx
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
@@ -509,6 +536,8 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // disable the nonce check
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        // a system call is not a block transaction, so standalone metering skips the intrinsic
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         let mut res = self.transact(tx);
 
@@ -518,6 +547,8 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // swap back to the previous nonce check flag
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        // swap back to the previous intrinsic charge flag
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         // NOTE: We assume that only the contract storage is modified. Revm currently marks the
         // caller and block beneficiary accounts as "touched" when we do the above transact calls,

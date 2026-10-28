@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import pathlib
 import unittest
 
@@ -48,6 +49,15 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(
             GENERATOR.generated_matches(GENERATOR.render(payload), generated.read_text())
         )
+
+    def test_exp_floor_is_an_accepted_per_event_coefficient(self) -> None:
+        payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
+        route = copy.deepcopy(next(row for row in payload["block_local"]["operation_routes"]
+                                   if row["route_key"] == "opcode:0x0a"))
+        route["accepted_absolute_model"]["parameters"]["per_event_raw_gas_floor"] = 24 * 10**18
+        kind, coefficients, *_ = GENERATOR.accepted_model(route)
+        self.assertEqual(kind, "ModelKind::Exp")
+        self.assertEqual(coefficients[5], 24 * 10**18)
 
 
 if __name__ == "__main__":

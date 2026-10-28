@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "80459b4dd85741f04703e2ab6b4760f2a6a5736c6c77fd69a5dd98b61e2d325d";
+    "67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -368,7 +368,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
             610951399062201807322,
             24402853724587964740,
             2690301949630540620694,
-            0,
+            24000000000000000000,
             0,
             0,
             0,

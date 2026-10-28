@@ -207,7 +207,7 @@ def accepted_model(
             ),
             "exp": (
                 "ModelKind::Exp",
-                ["constant", "exponent_byte", "exponent_byte_sq", "small_bucket_body"],
+                ["constant", "exponent_byte", "exponent_byte_sq", "small_bucket_body", "per_event_raw_gas_floor"],
             ),
             "keccak": (
                 "ModelKind::Keccak",

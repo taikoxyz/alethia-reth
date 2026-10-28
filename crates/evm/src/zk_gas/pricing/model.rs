@@ -598,6 +598,9 @@ fn price_accepted(route: &RouteSpec, input: &OperationPricingInput) -> Result<i1
             let OperationModelInput::Exp { exponent_byte_length } = input.model_input else {
                 return Err(ZkGasError::MissingInput("exp"));
             };
+            if exponent_byte_length > 32 {
+                return Err(ZkGasError::InvalidInput("exponent_byte_length"));
+            }
             let length = bounded("exponent_byte_length", exponent_byte_length)?;
             let square_u64 = exponent_byte_length
                 .checked_mul(exponent_byte_length)
@@ -612,7 +615,14 @@ fn price_accepted(route: &RouteSpec, input: &OperationPricingInput) -> Result<i1
                     checked_mul(c[3], square)?,
                 ])?)
             };
-            checked_add(c[0], body)
+            // Apply the conservative byte-length floor per executed EXP, before
+            // route accumulation. A route-level max would lose a winning floor
+            // when lengths whose original curve dominates occur in the same block.
+            // Canonical EXP gas is 10 + 50 * exponent bytes; derive it from the
+            // typed selector rather than introducing another pricing input.
+            let original = checked_add(c[0], body)?;
+            let canonical_raw_gas = 10 + 50 * exponent_byte_length;
+            Ok(original.max(checked_mul(c[5], canonical_raw_gas)?))
         }
         ModelKind::Keccak => {
             let OperationModelInput::Keccak { input_length, memory } = input.model_input else {
@@ -1092,6 +1102,56 @@ fn ceil_scaled(value: i128) -> Result<u128, ZkGasError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exp_input(length: u64) -> OperationPricingInput {
+        OperationPricingInput {
+            route: OperationRoute::Opcode(0x0a),
+            interpreter_raw_gas: Some(10 + 50 * length),
+            native_gas: None,
+            model_input: OperationModelInput::Exp { exponent_byte_length: length },
+            feature_error: false,
+        }
+    }
+
+    #[test]
+    fn zk_gas_exp_floor_applies_before_accumulation_and_preserves_parent_curve() {
+        let mut route = *lookup_route(OperationRoute::Opcode(0x0a)).expect("EXP route");
+        route.coefficients[5] = 24 * FIXED_POINT_SCALE;
+        let mut parent = route;
+        parent.coefficients[5] = 0;
+        for length in [0, 1, 2, 3, 4, 5, 24, 25, 32] {
+            let input = exp_input(length);
+            let original = price_accepted(&parent, &input).expect("parent curve");
+            let floor = (10 + 50 * length) as i128 * 24 * FIXED_POINT_SCALE;
+            assert_eq!(price_accepted(&route, &input).expect("EXP price"), original.max(floor));
+        }
+        let small = price_accepted(&route, &exp_input(2)).expect("small EXP");
+        let medium = price_accepted(&route, &exp_input(4)).expect("medium EXP");
+        let old_small = price_accepted(&parent, &exp_input(2)).expect("parent small");
+        let old_medium = price_accepted(&parent, &exp_input(4)).expect("parent medium");
+        let sum_of_event_maxima = small + medium;
+        let max_of_sums = (old_small + old_medium).max((110 + 210) * 24 * FIXED_POINT_SCALE);
+        assert!(
+            sum_of_event_maxima > max_of_sums,
+            "mixed lengths retain each event's winning candidate"
+        );
+    }
+
+    #[test]
+    fn zk_gas_exp_rejects_impossible_byte_lengths_and_preserves_feature_error() {
+        assert_eq!(
+            ZkGasModel.price_operation(&exp_input(33)),
+            Err(ZkGasError::InvalidInput("exponent_byte_length"))
+        );
+        let mut input = exp_input(0);
+        input.model_input = OperationModelInput::None;
+        assert_eq!(ZkGasModel.price_operation(&input), Err(ZkGasError::MissingInput("exp")));
+        input.feature_error = true;
+        let priced = ZkGasModel.price_operation(&input).expect("unchanged feature-error route");
+        assert_eq!(priced.feature_error_scaled, 5_000_000 * FIXED_POINT_SCALE);
+        assert_eq!(priced.accepted_absolute_scaled, 0);
+        assert_eq!(priced.total_scaled, priced.feature_error_scaled);
+    }
 
     fn normal_mulmod() -> OperationPricingInput {
         OperationPricingInput {

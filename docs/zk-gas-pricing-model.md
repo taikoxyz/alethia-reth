@@ -4,10 +4,10 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`80459b4dd85741f04703e2ab6b4760f2a6a5736c6c77fd69a5dd98b61e2d325d`. It refines arithmetic
-and MCOPY costs from immutable parent
-`0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885`, preserving that parent's
-MULMOD floor and block-payload ownership. This remains the current initial Shadow model; it adds
+`67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9`. It adds a per-event EXP
+floor to immutable parent
+`80459b4dd85741f04703e2ab6b4760f2a6a5736c6c77fd69a5dd98b61e2d325d`, preserving that parent's
+arithmetic floors, MCOPY cost, MULMOD floor and block-payload ownership. This remains the current initial Shadow model; it adds
 no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
 
 The original calibration calls itself `accepted_runtime_export`; the current artifact and its
@@ -175,13 +175,13 @@ identity does not establish parity with the inherited calibration ELF or product
 Generation records projected fit coverage only; historical mainnet replay and prospective holdout
 results must be reported separately and do not mutate these retained observation identities.
 
-### Current validation checkpoint (2026-10-28)
+### Arithmetic/copy validation checkpoint (2026-10-28)
 
 After sealing model `80459b4d…`, native re-quoting checked 298 retained inputs, including 297 with
 accepted SP1 observations. All measured cases in the six refined routes received complete quotes
 covering their observations. Overall complete underquotes fell from 56 to three rows representing
-two distinct dense EXP cases (exponent lengths four and five); those unchanged routes remain an
-explicit later refinement task. Canonical inputs, public outputs, gas/Unzen scores and non-price
+two distinct dense EXP cases (exponent lengths four and five), motivating the subsequent EXP
+refinement below. Canonical inputs, public outputs, gas/Unzen scores and non-price
 selectors were unchanged. These are complete-proposal coverage checks; node-known subtotals keep
 their narrower scope.
 
@@ -195,7 +195,7 @@ Paired native replay of two disjoint historical mainnet cohorts covered 180 prop
 blocks. Statistical medians below average the two central quote/actual ratios within each cohort;
 weighted ratios divide total complete quote by total observed PGU.
 
-| Mainnet cohort | Proposals / blocks | Median complete quote/actual, parent → current | Weighted complete quote/actual, parent → current | Maximum proposal price uplift | Complete underquotes, parent → current |
+| Mainnet cohort | Proposals / blocks | Median complete quote/actual, model0a3 → model80459 | Weighted complete quote/actual, model0a3 → model80459 | Maximum proposal price uplift | Complete underquotes, model0a3 → model80459 |
 | --- | --- | --- | --- | --- | --- |
 | October 19–22, 2026 | 90 / 17,280 | 2.006040 → 2.031883 | 2.085497 → 2.105347 | 1.450460% | 0 → 0 |
 | October 23–26, 2026 | 90 / 17,280 | 2.102982 → 2.128748 | 2.144603 → 2.164265 | 1.447198% | 0 → 0 |
@@ -211,6 +211,51 @@ not rerun SP1 or embed these replay outcomes. Historical actuals retain their or
 identities. The fresh local observations use frozen ELF `416f5a47…` and SDK/core executor 6.3.0;
 neither native re-quoting nor these local measurements establishes production SDK/ELF parity,
 proof validity, or a universal PGU upper bound. No guest rebuild, activation or deployment occurred.
+
+### EXP per-event cost refinement
+
+The [EXP evidence](../crates/evm/src/zk_gas/pricing/successors/exp-evidence-v1.json) retains 29
+canonical inputs with the same local ELF/SDK identity. It covers dense exponents of 3–16 bytes,
+32-byte dense/sparse exponents, matched equal-popcount exponent shapes, and repetitions over
+1, 4 and 16 blocks. All source identities, parent quotes, normal EXP counts and public outputs
+were validated before sealing. Twenty-one complete parent quotes underpriced their observations;
+the eight already-covered rows validate the candidate without constraining a higher floor.
+
+For a normal EXP with typed exponent byte length `L` in `0..=32`, the accepted event price is:
+
+```text
+max(original accepted event price(L), 24 * (10 + 50 * L)) PGU
+```
+
+The original dispatch, small-bucket and quadratic coefficients remain unchanged. The gas-shaped
+term uses the already-collected byte length, so it adds no input selector. It is a calibrated
+conservative floor, not a claim that Ethereum gas captures every aspect of SP1 execution. The
+frozen guest's exponent loop includes conditional multiplication and a byte-scanning zero test;
+bit density and zero-run placement affect actual cost even at equal byte length.
+
+The generator derives the coefficient with exact fractions. For each underquoted observation,
+solve `R = (C + (A - Q) / N) / (10 + 50 * L)`, where `C` is the original accepted event price,
+`A` is actual PGU, `Q` is the unrounded complete parent quote, and `N` is the observed normal EXP
+count. Take the maximum `R`, multiply by `5/4`, and round upward to an integer: **24 PGU per
+canonical EXP gas unit**. Already-covered rows impose no new floor because their original event
+curve is retained. Replacing only the EXP contribution projects complete coverage of all 29.
+Fresh holdouts and native historical replay qualify the implementation separately from this fit.
+
+Independent native replay checked all 29 fit/control inputs, six fresh shape/mixed-length
+holdouts excluded from fitting, and 13 retained EXP observations. All 48 complete quotes cover
+their saved actuals; the fresh six have complete quote/actual ratios 1.1597–1.2361. Every block's
+price delta equals the sum of its event-wise EXP increases, with non-EXP prices and execution
+selectors unchanged. Paired replay of the two 90-proposal mainnet cohorts above (34,560 blocks)
+produces identical node and complete prices under model80459 and the EXP successor; complete
+underquotes remain zero in each cohort. This is empirical coverage in those workloads, not a
+universal bound or production SDK qualification.
+
+The maximum is applied **per event before summing**, retaining `Composition::Accepted`. A maximum
+of route-wide sums could dilute the floor when small/large exponents choose the original curve
+while intermediate lengths choose the floor. Feature-error fallback remains separate and unchanged.
+Impossible typed lengths above 32 are rejected. The initial Shadow model name, default modes,
+Unzen meter, limits and every unrelated route remain unchanged. Node-known subtotal remains the
+workload-search denominator; complete-proposal coverage does not make that subtotal a full quote.
 
 ### Inherited MULMOD operand-cost refinement
 
@@ -652,19 +697,20 @@ The immutable parent embeds relative source paths, file hashes, authority hashes
 historical validation. Its original calibration files and exporter are not vendored here; recreating
 those fitted coefficients from raw measurements requires the external parent experiment material.
 
-This repository vendors the immutable model0a3 parent JSON, the sealed 127-row block-cost evidence,
-the historical 93d parent and 30-row MULMOD evidence, the single current successor transform,
+This repository vendors the immutable model80459 parent JSON and sealed 29-row EXP evidence,
+the earlier model0a3 parent and 127-row block-cost evidence, the historical 93d parent and 30-row MULMOD evidence, the single current successor transform,
 the JSON-to-Rust generator and the executable evaluator. The checked-in commands reproduce the
 successor JSON from its compact evidence, verify its address and regenerate the Rust table. The
 evidence manifest authenticates observation identities but does not rerun SP1 or vendor full
 GuestInputs. Repeating those measurements additionally requires the external fixture inputs and
 the recorded program/SDK; raw execution cannot be reconstructed from PGU summaries alone.
 
-`parent_validation` preserves the immediate parent's projected 30-row MULMOD validation. The
+`parent_validation` preserves the immediate parent's projected 127-row block-cost validation. The
 immutable model0a3 snapshot retains that model's inherited historical calibration counts and
 underquote results in its own `parent_validation`; its historical-block count expands the same
 recorded proposal replays rather than an independent corpus. The current artifact's `validation`
-records projected coverage of 127 retained observations (123 fit rows and four zero-word controls)
+records projected coverage of 29 retained EXP observations (21 deficit fit rows and eight
+already-covered validation rows)
 and which results were embedded at generation. Later native replay results are reported separately.
 None of these fields is a mathematical statement about future blocks, proof latency or capacity.
 A real SP1 comparison also requires exact/proposal producers and attributable block/proposal output

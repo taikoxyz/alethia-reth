@@ -1160,18 +1160,105 @@ mod tests {
     }
 
     #[test]
-    fn zk_gas_mulmod_successor_does_not_change_add_or_addmod() {
+    fn zk_gas_arithmetic_refinement_preserves_accepted_addmod_and_add() {
         let mut input = normal_mulmod();
         input.route = OperationRoute::Opcode(0x08);
-        let addmod = ZkGasModel.price_operation(&input).expect("ADDMOD unchanged");
-        assert_eq!(addmod.total_scaled, 242_712_467_364_060_641_026);
-        assert_eq!(addmod.structural_scaled, 0);
+        let addmod = ZkGasModel.price_operation(&input).expect("ADDMOD");
+        assert_eq!(addmod.accepted_absolute_scaled, 242_712_467_364_060_641_026);
+        assert_eq!(addmod.total_scaled, 1_100 * FIXED_POINT_SCALE);
+        assert_eq!(addmod.structural_scaled, addmod.total_scaled);
         input.route = OperationRoute::Opcode(0x01);
         input.interpreter_raw_gas = Some(3);
         input.model_input = OperationModelInput::StaticRawGas { raw_gas: 3 };
         let add = ZkGasModel.price_operation(&input).expect("ADD unchanged");
         assert_eq!(add.total_scaled, 42_682_295_930_216_867_992);
         assert_eq!(add.structural_scaled, 0);
+    }
+
+    #[test]
+    fn zk_gas_arithmetic_event_floors_keep_feature_errors_separate() {
+        for (opcode, raw, floor) in
+            [(0x04, 5, 800), (0x05, 5, 900), (0x06, 5, 800), (0x07, 5, 800), (0x08, 8, 1_100)]
+        {
+            let mut input = OperationPricingInput {
+                route: OperationRoute::Opcode(opcode),
+                interpreter_raw_gas: Some(raw),
+                native_gas: None,
+                model_input: OperationModelInput::StaticRawGas { raw_gas: raw },
+                feature_error: false,
+            };
+            let normal = ZkGasModel.price_operation(&input).expect("normal arithmetic");
+            assert_eq!(normal.structural_scaled, floor * FIXED_POINT_SCALE);
+            assert_eq!(normal.total_scaled, normal.structural_scaled);
+            assert!(normal.accepted_absolute_scaled < normal.total_scaled);
+            input.feature_error = true;
+            input.model_input = OperationModelInput::None;
+            let error = ZkGasModel.price_operation(&input).expect("feature error");
+            assert_eq!(error.total_scaled, 5_000_000 * FIXED_POINT_SCALE);
+            assert_eq!(error.structural_scaled, 0);
+            assert_eq!(error.accepted_absolute_scaled, 0);
+            assert_eq!(error.feature_error_scaled, error.total_scaled);
+            let aggregate = ZkGasModel
+                .price_block_without_mpt(&KnownBlockPricingInput {
+                    transaction_payload: TransactionPayloadSelectors::default(),
+                    started_non_anchor_transactions: 0,
+                    native_value_transfers: 0,
+                    operation_routes: &[OperationRoutePricingInput {
+                        route: input.route,
+                        accepted_absolute_scaled: 2 * normal.accepted_absolute_scaled,
+                        incremental_scaled: 0,
+                        structural_scaled: 2 * normal.structural_scaled,
+                        feature_error_scaled: error.feature_error_scaled,
+                    }],
+                    resources: ResourceSelectors::default(),
+                })
+                .expect("mixed normal and feature-error route aggregate");
+            assert_eq!(aggregate.operations_scaled(), (2 * floor + 5_000_000) * FIXED_POINT_SCALE);
+        }
+    }
+
+    #[test]
+    fn zk_gas_mcopy_word_price_keeps_dispatch_constant_and_memory_additive() {
+        let route = lookup_route(OperationRoute::Opcode(0x5e)).expect("MCOPY route");
+        let price = |words, memory| {
+            ZkGasModel
+                .price_operation(&OperationPricingInput {
+                    route: OperationRoute::Opcode(0x5e),
+                    interpreter_raw_gas: Some(3 + 3 * words),
+                    native_gas: None,
+                    model_input: OperationModelInput::MemoryCopy { copy_words: words, memory },
+                    feature_error: false,
+                })
+                .expect("MCOPY")
+        };
+        let zero = price(0, MemorySelectors::default());
+        assert_eq!(zero.total_scaled, route.coefficients[0] + route.coefficients[1]);
+        assert!(zero.total_scaled > 0);
+        let words = price(129, MemorySelectors::default());
+        assert_eq!(words.total_scaled - zero.total_scaled, 129 * 48 * FIXED_POINT_SCALE);
+        assert_eq!(words.structural_scaled, 0);
+        let memory =
+            MemorySelectors { growth_events: 1, evm_gas_delta: 200, boundary_4k_events: 1 };
+        let grown = price(129, memory);
+        assert_eq!(
+            grown.total_scaled - words.total_scaled,
+            price_memory(route.memory, memory).unwrap()
+        );
+        let mut error_input = OperationPricingInput {
+            route: OperationRoute::Opcode(0x5e),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: OperationModelInput::None,
+            feature_error: true,
+        };
+        let error = ZkGasModel.price_operation(&error_input).expect("MCOPY feature error");
+        assert_eq!(error.total_scaled, 5_000_000 * FIXED_POINT_SCALE);
+        assert_eq!(error.accepted_absolute_scaled, 0);
+        error_input.feature_error = false;
+        assert_eq!(
+            ZkGasModel.price_operation(&error_input),
+            Err(ZkGasError::MissingInput("memory_copy"))
+        );
     }
 
     #[test]

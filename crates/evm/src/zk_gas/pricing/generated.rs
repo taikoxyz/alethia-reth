@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885";
+    "80459b4dd85741f04703e2ab6b4760f2a6a5736c6c77fd69a5dd98b61e2d325d";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -174,7 +174,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     },
     RouteSpec {
         route: OperationRoute::Opcode(0x4),
-        composition: Composition::Accepted,
+        composition: Composition::Maximum,
         model_kind: ModelKind::StaticRawGas,
         coefficients: [12974884691486860714, 44506892429409457038, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients {
@@ -190,7 +190,12 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         return_boundary_chunk_bytes: None,
         return_raw_gas_coefficient: None,
         incremental: None,
-        structural: None,
+        structural: Some(LinearRule {
+            selector: Selector::Event,
+            coefficient: 800000000000000000000,
+            constant: 0,
+            minimum: 0,
+        }),
         feature_error: Some(LinearRule {
             selector: Selector::InterpreterRawGas,
             coefficient: 6412506190924469986242,
@@ -200,7 +205,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     },
     RouteSpec {
         route: OperationRoute::Opcode(0x5),
-        composition: Composition::Accepted,
+        composition: Composition::Maximum,
         model_kind: ModelKind::StaticRawGas,
         coefficients: [12974884691486860714, 48029144289378855341, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients {
@@ -216,7 +221,12 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         return_boundary_chunk_bytes: None,
         return_raw_gas_coefficient: None,
         incremental: None,
-        structural: None,
+        structural: Some(LinearRule {
+            selector: Selector::Event,
+            coefficient: 900000000000000000000,
+            constant: 0,
+            minimum: 0,
+        }),
         feature_error: Some(LinearRule {
             selector: Selector::InterpreterRawGas,
             coefficient: 6581256353843534985880,
@@ -226,7 +236,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     },
     RouteSpec {
         route: OperationRoute::Opcode(0x6),
-        composition: Composition::Accepted,
+        composition: Composition::Maximum,
         model_kind: ModelKind::StaticRawGas,
         coefficients: [12974884691486860714, 44506892429409457038, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients {
@@ -242,7 +252,12 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         return_boundary_chunk_bytes: None,
         return_raw_gas_coefficient: None,
         incremental: None,
-        structural: None,
+        structural: Some(LinearRule {
+            selector: Selector::Event,
+            coefficient: 800000000000000000000,
+            constant: 0,
+            minimum: 0,
+        }),
         feature_error: Some(LinearRule {
             selector: Selector::InterpreterRawGas,
             coefficient: 5568755376329144988053,
@@ -252,7 +267,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     },
     RouteSpec {
         route: OperationRoute::Opcode(0x7),
-        composition: Composition::Accepted,
+        composition: Composition::Maximum,
         model_kind: ModelKind::StaticRawGas,
         coefficients: [12974884691486860714, 47858025206970245223, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients {
@@ -268,7 +283,12 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         return_boundary_chunk_bytes: None,
         return_raw_gas_coefficient: None,
         incremental: None,
-        structural: None,
+        structural: Some(LinearRule {
+            selector: Selector::Event,
+            coefficient: 800000000000000000000,
+            constant: 0,
+            minimum: 0,
+        }),
         feature_error: Some(LinearRule {
             selector: Selector::InterpreterRawGas,
             coefficient: 2362502280866909994932,
@@ -278,7 +298,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     },
     RouteSpec {
         route: OperationRoute::Opcode(0x8),
-        composition: Composition::Accepted,
+        composition: Composition::Maximum,
         model_kind: ModelKind::StaticRawGas,
         coefficients: [12974884691486860714, 28717197834071722539, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients {
@@ -294,7 +314,12 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         return_boundary_chunk_bytes: None,
         return_raw_gas_coefficient: None,
         incremental: None,
-        structural: None,
+        structural: Some(LinearRule {
+            selector: Selector::Event,
+            coefficient: 1100000000000000000000,
+            constant: 0,
+            minimum: 0,
+        }),
         feature_error: Some(LinearRule {
             selector: Selector::InterpreterRawGas,
             coefficient: 4387504235895689990587,
@@ -2041,7 +2066,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         coefficients: [
             12974884691486860714,
             65697972320610858603,
-            19114938946958584677,
+            48000000000000000000,
             0,
             0,
             0,

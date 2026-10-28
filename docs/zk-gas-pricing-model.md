@@ -4,14 +4,15 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885`. It is a conservative
-MULMOD successor of parent `93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046`,
-introduced by [alethia-reth PR #253](https://github.com/taikoxyz/alethia-reth/pull/253). If
-`RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
+`80459b4dd85741f04703e2ab6b4760f2a6a5736c6c77fd69a5dd98b61e2d325d`. It refines arithmetic
+and MCOPY costs from immutable parent
+`0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885`, preserving that parent's
+MULMOD floor and block-payload ownership. This remains the current initial Shadow model; it adds
+no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
 
-The parent calls itself `accepted_runtime_export`; the successor calls itself
-`conservative_runtime_successor`. These identify calibration and runtime integration artifacts,
-not a protocol specification, governance approval, admission rule, or consensus rule. The words
+The original calibration calls itself `accepted_runtime_export`; the current artifact and its
+immediate parent call themselves `conservative_runtime_successor`. These identify calibration and
+runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
 
@@ -73,9 +74,11 @@ This document is the human-readable guide. The checked-in sources divide authori
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
 - [`successor.py`](../crates/evm/src/zk_gas/pricing/successor.py) deterministically derives the
-  MULMOD floor from the immutable parent snapshot and versioned local measurement evidence in
-  [`successors/`](../crates/evm/src/zk_gas/pricing/successors/). It preserves all fitted parent
-  coefficients and every other route.
+  five arithmetic event floors and the MCOPY word coefficient from the immutable model0a3 snapshot
+  and sealed local measurement evidence in
+  [`successors/`](../crates/evm/src/zk_gas/pricing/successors/). It preserves arithmetic fitted
+  coefficients, MCOPY dispatch/constant/memory charges and all unrelated routes. The older 93d
+  snapshot and MULMOD evidence remain historical provenance; generation uses one direct parent path.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -107,8 +110,8 @@ public raiko2 release or tag for that guest. It therefore cannot establish from 
 a currently deployed guest still matches. Resolving that provenance is required before promotion
 to admission.
 
-The successor's new MULMOD evidence uses a different frozen local proposal ELF and SDK, as detailed
-below. It does not establish parity with that parent calibration guest or a deployed production SDK.
+The refinement evidence and inherited MULMOD evidence use a different frozen local proposal ELF
+and SDK, as detailed below. This does not establish parity with that parent calibration guest or a deployed production SDK.
 
 The model does not claim to price RISC0 cycles, wall-clock proof latency, or another SP1 guest. A
 different backend, guest, cost-bearing trace schema, or coefficient set requires independent
@@ -135,7 +138,85 @@ instead of copying their current numbers into integrations.
 different JSON artifacts. The address does not cover the surrounding Rust semantics described in
 the source-of-truth section.
 
-### MULMOD operand-cost successor
+### Arithmetic and MCOPY block-cost refinement
+
+The [sealed evidence](../crates/evm/src/zk_gas/pricing/successors/block-cost-evidence-v1.json)
+contains 127 canonical inputs across six routes, deduplicated within each route after validating
+native counts, canonical inputs, public outputs, complete parent quotes and SP1 observations.
+Two duplicate inputs retain the higher observed PGU. Previously reserved holdouts, including the
+ADDMOD interior-160 case, are excluded. Four zero-word MCOPY controls are validation-only and never
+enter a division or fit. This compact record binds six source-file digests per row (construction,
+GuestInput, native report, parent quote, SP1 report and measurement status), the frozen SDK/core
+executor 6.3.0, ELF, estimator and executor options. The generator separately pins its canonical
+digest; changing a source hash or execution count requires review of a new evidence manifest.
+The raw sources and complete witnesses remain external experiment material.
+
+For arithmetic, `C` is the parent's fitted whole-event cost, including dispatch, `Q` is the
+unrounded complete-proposal quote, `A` is actual PGU and `N` is the observed normal-event count.
+The fit uses `max(C, C + (A - Q) / N)` across retained observations, then multiplies by `5/4` and
+rounds upward to a 100-PGU grid using exact fractions. Normally executed DIV, SDIV, MOD, SMOD and
+ADDMOD receive structural floors of **800, 900, 800, 800 and 1,100 PGU per event**, respectively.
+The existing route-wide maximum retains their fitted accepted models; feature-error events retain
+their separate fallback and receive no normal-event floor.
+
+For MCOPY, `C` is the parent's accepted `copy_words` coefficient, and `N` is the total observed
+copied words (`executed_primary_count * ceil(copy_length_bytes / 32)`). The same deficit calculation
+and `5/4` headroom, rounded upward to an 8-PGU grid, produce **48 PGU per copied word**. Only that
+parameter changes. Dispatch, constant and shared-memory expansion remain additive; zero words
+still pay dispatch/constant and any observed memory charge. No alignment, direction, operand or
+other new selector is introduced. All unrelated tariffs, MULMOD 1,600, payload ownership, Unzen,
+default modes, limits and public APIs remain unchanged.
+
+The parent complete quotes underpriced 51 of these observations. Replacing only the relevant
+contribution projects complete-quote coverage for all 127, including zero-word controls. This is
+a conservative empirical fit, not a bound for every operation mix or production guest. Node-known
+subtotals remain incomplete and need not cover full SP1 observations. The local frozen ELF/SDK
+identity does not establish parity with the inherited calibration ELF or production SDK.
+Generation records projected fit coverage only; historical mainnet replay and prospective holdout
+results must be reported separately and do not mutate these retained observation identities.
+
+### Current validation checkpoint (2026-10-28)
+
+After sealing model `80459b4d…`, native re-quoting checked 298 retained inputs, including 297 with
+accepted SP1 observations. All measured cases in the six refined routes received complete quotes
+covering their observations. Overall complete underquotes fell from 56 to three rows representing
+two distinct dense EXP cases (exponent lengths four and five); those unchanged routes remain an
+explicit later refinement task. Canonical inputs, public outputs, gas/Unzen scores and non-price
+selectors were unchanged. These are complete-proposal coverage checks; node-known subtotals keep
+their narrower scope.
+
+Seven fresh prospective arithmetic and overlapping/unaligned MCOPY cases were measured only after
+the fit was sealed. Their parent complete quotes all underpriced actual PGU; the candidate covered
+all seven, with complete quote/actual ratios from 1.045025 to 1.136045. Primary fit counts describe
+controlled user-program events. Repricing also applies to qualifying anchor/common execution,
+which can add conservative cost beyond the primary-only fit projection.
+
+Paired native replay of two disjoint historical mainnet cohorts covered 180 proposals and 34,560
+blocks. Statistical medians below average the two central quote/actual ratios within each cohort;
+weighted ratios divide total complete quote by total observed PGU.
+
+| Mainnet cohort | Proposals / blocks | Median complete quote/actual, parent → current | Weighted complete quote/actual, parent → current | Maximum proposal price uplift | Complete underquotes, parent → current |
+| --- | --- | --- | --- | --- | --- |
+| October 19–22, 2026 | 90 / 17,280 | 2.006040 → 2.031883 | 2.085497 → 2.105347 | 1.450460% | 0 → 0 |
+| October 23–26, 2026 | 90 / 17,280 | 2.102982 → 2.128748 | 2.144603 → 2.164265 | 1.447198% | 0 → 0 |
+
+Both cohorts preserved public outputs, canonical input identities, gas/Unzen scores and non-price
+selectors. Exact operation deltas propagated through block node/prove totals with the existing
+rounding. Median and weighted increases remained below 5%, and every proposal increase remained
+below 20%, preserving the empirical roughly-2x conservative mainnet conclusion in these cohorts.
+Independent adversarial review and behavioral verification passed.
+
+These results use raw native quotes paired with retained external actuals; generation itself does
+not rerun SP1 or embed these replay outcomes. Historical actuals retain their original ELF/backend
+identities. The fresh local observations use frozen ELF `416f5a47…` and SDK/core executor 6.3.0;
+neither native re-quoting nor these local measurements establishes production SDK/ELF parity,
+proof validity, or a universal PGU upper bound. No guest rebuild, activation or deployment occurred.
+
+### Inherited MULMOD operand-cost refinement
+
+The following measurements describe the earlier 93d-to-model0a3 refinement. Its 1,600-PGU floor
+and payload ownership are preserved by the current artifact; the historical quote deltas below
+are not measurements of the new arithmetic/MCOPY refinement.
 
 Ordinary, normally executed `opcode:0x09` events now use the existing route-aggregate maximum
 composition with a structural floor of **1,600 PGU per event**, selected by
@@ -143,8 +224,8 @@ composition with a structural floor of **1,600 PGU per event**, selected by
 `12.974884691486860714 + 32.012267798378978094 * interpreter_raw_gas`, or
 `269.073027078518685466 PGU` for MULMOD's raw gas of eight. The route maximum retains whichever
 candidate is larger. Feature-error events retain their separate original conservative fallback;
-they do not also receive the normal-event floor. All other routes, selectors, discounts, limits,
-runtime collection, selected-but-undispatched spawn handling and public APIs remain unchanged.
+they do not also receive the normal-event floor. That earlier refinement preserved all other
+routes, selectors, discounts, limits, runtime collection and public APIs.
 
 The versioned [evidence manifest](../crates/evm/src/zk_gas/pricing/successors/mulmod-evidence-v1.json)
 contains 30 accepted synthetic local execution records: 16 original arithmetic/proposal cases,
@@ -318,7 +399,7 @@ The JSON's `block_local.operation_routes` array is the exhaustive route and mode
 route accumulator has four candidate fields, but one event does not generally emit all four:
 
 - a normally modeled opcode emits its `accepted_absolute` and any configured `incremental` or
-  `structural` candidate; ordinary MULMOD emits the 1,600 PGU event floor;
+  `structural` candidate; arithmetic opcodes 0x04–0x09 emit their configured normal-event floors;
 - a supported opcode whose typed extraction fails, that halts exceptionally, or whose REVERT has
   nonzero raw gas emits `feature_error` instead of its normal candidates;
 - precompile routes can also emit `structural` floors and do not have `feature_error`; and
@@ -353,8 +434,10 @@ inferring a model from the opcode name.
 
 Important current exceptions are:
 
-- `opcode:0x09` (MULMOD) takes the maximum of its fitted accepted price and the 1,600 PGU
-  normal-event structural floor. Its feature-error path remains separate.
+- `opcode:0x04`–`0x09` take the maximum of their fitted accepted price and the configured
+  normal-event structural floor. Their feature-error paths remain separate.
+- `opcode:0x5e` (MCOPY) adds 48 PGU per copied word to its existing dispatch, constant and shared
+  memory costs, keeping every memory expansion charge additive.
 - `opcode:0x39` (CODECOPY) uses a flat aggressive tariff inside its raw-gas envelope and switches
   to a raw-gas fallback above it. The transition is not monotone.
 - Only LOG1 and LOG2 use the LOG-piecewise family. LOG0 is a raw-gas linear floor; LOG3 and LOG4 use
@@ -374,6 +457,7 @@ Shadow subtotals include:
 
 | Route | Conservative body or floor (PGU per event) |
 | --- | --- |
+| `opcode:0x04`, `0x05`, `0x06`, `0x07`, `0x08` (DIV, SDIV, MOD, SMOD, ADDMOD) | 800, 900, 800, 800, 1,100 structural floors |
 | `opcode:0x09` (normally executed MULMOD) | 1,600 structural floor |
 | `opcode:0x32` (ORIGIN), `opcode:0x38` (CODESIZE), `opcode:0xfd` (normal REVERT), `opcode:0x39` (CODECOPY within its raw-gas envelope) | 5,000,000 |
 | `opcode:0xa3`, `opcode:0xa4` (LOG3/LOG4) | 5,000,000 plus shared memory |
@@ -568,17 +652,20 @@ The immutable parent embeds relative source paths, file hashes, authority hashes
 historical validation. Its original calibration files and exporter are not vendored here; recreating
 those fitted coefficients from raw measurements requires the external parent experiment material.
 
-This repository vendors the parent JSON, the 30-row MULMOD evidence manifest, the successor transform,
+This repository vendors the immutable model0a3 parent JSON, the sealed 127-row block-cost evidence,
+the historical 93d parent and 30-row MULMOD evidence, the single current successor transform,
 the JSON-to-Rust generator and the executable evaluator. The checked-in commands reproduce the
 successor JSON from its compact evidence, verify its address and regenerate the Rust table. The
 evidence manifest authenticates observation identities but does not rerun SP1 or vendor full
 GuestInputs. Repeating those measurements additionally requires the external fixture inputs and
 the recorded program/SDK; raw execution cannot be reconstructed from PGU summaries alone.
 
-`parent_validation` preserves the parent's historical replay counts and underquote results. Its
-historical-block count expands the same recorded proposal replays rather than an independent corpus.
-The successor's `validation` records projected coverage of its 30 local fit observations and which
-results were embedded at generation. Later native replay results are documented above separately.
+`parent_validation` preserves the immediate parent's projected 30-row MULMOD validation. The
+immutable model0a3 snapshot retains that model's inherited historical calibration counts and
+underquote results in its own `parent_validation`; its historical-block count expands the same
+recorded proposal replays rather than an independent corpus. The current artifact's `validation`
+records projected coverage of 127 retained observations (123 fit rows and four zero-word controls)
+and which results were embedded at generation. Later native replay results are reported separately.
 None of these fields is a mathematical statement about future blocks, proof latency or capacity.
 A real SP1 comparison also requires exact/proposal producers and attributable block/proposal output
 beyond this repository's EVM-local log and prover-outcome reports.

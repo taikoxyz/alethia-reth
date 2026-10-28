@@ -51,14 +51,11 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(successor)
-    if claimed == successor.PARENT_SHA256:
-        successor.validate_parent(payload)
-    else:
-        successor.validate_successor(
-            payload,
-            json.loads((BASE / "successors/parent-93d04edd.json").read_text()),
-            json.loads((BASE / "successors/mulmod-evidence-v1.json").read_text()),
-        )
+    successor.validate_successor(
+        payload,
+        json.loads((BASE / successor.PARENT_PATH).read_text()),
+        json.loads((BASE / successor.EVIDENCE_PATH).read_text()),
+    )
     return actual
 
 

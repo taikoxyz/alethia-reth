@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Reproduce the MULMOD floor and block-payload ownership successor of the 93d parent.
+"""Reproduce the block-cost refinement directly from the immutable model0a3 parent.
 
-Measurement records are compact, hash-bound summaries of previously accepted local
-executions, not newly performed executions or historical calibration replays.
+Compact, sealed records bind previously validated native/SP1 executions and complete
+parent quotes. Generation projects their prices; it does not repeat those executions.
 """
 
 from __future__ import annotations
@@ -15,22 +15,35 @@ import json
 from pathlib import Path
 import re
 
-
 BASE = Path(__file__).resolve().parent
-PARENT_SHA256 = "93d04eddda3779393807808859eb36561d35aad0cdd8a8a3960ec3e279a93046"
-LOCAL_ELF_SHA256 = "416f5a475b17aa15914fb9387159d9eae9ecd474e7104da65ac22512ab56da2e"
-SOURCE_ROLES = {"construction_request", "native_report", "quote_report", "sp1_report", "measurement_status"}
-ROUTE = "opcode:0x09"
+PARENT_SHA256 = "0a3a9663ca0b2c399bce514ae06ee009b43781f957898dfec5cf1ea27f80a885"
+PARENT_PATH = "successors/parent-0a3a9663.json"
+EVIDENCE_PATH = "successors/block-cost-evidence-v1.json"
+# Seal all source digests, exact counts, scope and observations, independently of
+# the generated artifact's address. A new evidence set requires explicit review.
+EVIDENCE_SHA256 = "3fd115b9f4c828b48d2eaaf8a812bbb785c33abe3d97f21f3396fa5fd4edbfaf"
+MEASUREMENT_IDENTITY = {
+    "elf_sha256": "416f5a475b17aa15914fb9387159d9eae9ecd474e7104da65ac22512ab56da2e",
+    "sp1_sdk_version": "6.3.0",
+    "sp1_core_executor_version": "6.3.0",
+    "estimator_sha256": "475d00bdc5e88909abc1b6f1f782a62ec12782155c7d22298e844570c28208f7",
+    "executor_opts_sha256": "1fabe34edc34ec2a536390c7afb7cd023c7fb9fd29867dc9b272f5c0539fbb8f",
+}
+SOURCE_ROLES = {"construction_request", "guest_input", "native_report", "quote_report", "sp1_report", "measurement_status"}
+ARITHMETIC_RAW_GAS = {"opcode:0x04": 5, "opcode:0x05": 5, "opcode:0x06": 5,
+                      "opcode:0x07": 5, "opcode:0x08": 8}
+COPY_ROUTE = "opcode:0x5e"
+ROUTES = set(ARITHMETIC_RAW_GAS) | {COPY_ROUTE}
 SCALE = 10**18
 
 
 def canonical_json(payload):
-    """Encode the same sorted compact JSON used by the original runtime exporter."""
+    """Encode sorted compact JSON, independent of file formatting."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 
 def digest(payload):
-    """Hash a canonical JSON value without depending on its file formatting."""
+    """Hash a canonical JSON value."""
     return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
@@ -40,115 +53,150 @@ def content_address(payload):
 
 
 def fields(payload, expected, label):
-    """Reject missing and unknown fields rather than silently changing the evidence scope."""
+    """Reject missing and unknown fields instead of silently widening scope."""
     if not isinstance(payload, dict) or set(payload) != set(expected):
         raise ValueError(f"{label}: expected exactly {sorted(expected)}")
 
 
 def sha256(value):
-    """Validate a lowercase SHA-256 digest copied from retained measurement records."""
+    """Validate a lowercase SHA-256 provenance digest."""
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         raise ValueError("invalid SHA-256 provenance")
 
 
 def integer(value, minimum, maximum, label):
-    """Reject booleans, floats and values outside the declared measurement bounds."""
+    """Reject booleans, floats and values outside the declared bounds."""
     if type(value) is not int or not minimum <= value <= maximum:
         raise ValueError(f"invalid integer {label}")
 
 
 def validate_parent(parent):
-    """Authenticate the full parent, retaining every historical coefficient unchanged."""
+    """Authenticate the full immutable snapshot, including prior MULMOD/payload work."""
     if parent.get("artifact_sha256") != PARENT_SHA256 or content_address(parent) != PARENT_SHA256:
         raise ValueError("wrong immutable parent runtime specification")
 
 
-def mulmod(parent):
-    """Find the unique ordinary MULMOD route in the authenticated parent."""
-    return next(route for route in parent["block_local"]["operation_routes"] if route["route_key"] == ROUTE)
+def parent_components(parent):
+    """Read arithmetic whole-event costs and MCOPY's word-only cost from the parent."""
+    routes = {route["route_key"]: route for route in parent["block_local"]["operation_routes"]}
+    result = {}
+    for key, raw_gas in ARITHMETIC_RAW_GAS.items():
+        model = routes[key]["accepted_absolute_model"]
+        result[key] = model["common_dispatch"] + raw_gas * model["parameters"]["body_per_raw_gas"]
+    result[COPY_ROUTE] = routes[COPY_ROUTE]["accepted_absolute_model"]["parameters"]["copy_words"]
+    return result
 
 
-def validate_evidence(evidence):
-    """Validate the closed local-execution evidence schema and its identity envelope."""
+def validate_evidence(parent, evidence):
+    """Validate exact primary contribution/counts and the closed identity envelope.
+
+Raw source files are retained externally. Their prior validation is authenticated
+by the sealed manifest checked by transform; schema checks alone cannot prove an
+execution count or digest corresponds to a real observation.
+"""
     fields(evidence, {"schema_version", "parent_artifact_sha256", "measurement_identity", "measurements"}, "evidence")
     if type(evidence["schema_version"]) is not int or evidence["schema_version"] != 1:
         raise ValueError("unsupported evidence schema")
     if evidence["parent_artifact_sha256"] != PARENT_SHA256:
         raise ValueError("evidence refers to a different parent")
-    identity = evidence["measurement_identity"]
-    fields(identity, {"elf_sha256", "sp1_sdk_version", "sp1_core_executor_version", "estimator_sha256", "executor_opts_sha256"}, "measurement_identity")
-    for key in ("elf_sha256", "estimator_sha256", "executor_opts_sha256"):
-        sha256(identity[key])
-    if identity["elf_sha256"] != LOCAL_ELF_SHA256 or identity["sp1_sdk_version"] != "6.3.0" or identity["sp1_core_executor_version"] != "6.3.0":
-        raise ValueError("wrong local execution identity; production SDK/ELF parity is not established")
+    if evidence["measurement_identity"] != MEASUREMENT_IDENTITY:
+        raise ValueError("wrong local measurement identity; production SDK/ELF parity is not established")
     rows = evidence["measurements"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 1024:
         raise ValueError("evidence requires 1..1024 accepted measurement rows")
-    ids = set()
+    components = parent_components(parent)
+    ids, canonical_inputs, fit_routes = set(), set(), set()
     for row in rows:
-        fields(row, {"sample_id", "block_count", "executed_mulmod_count", "actual_pgu", "parent_total_scaled", "canonical_input_sha256", "public_values_sha256", "operands", "source_sha256"}, "measurement")
+        fields(row, {"sample_id", "route_key", "block_count", "executed_primary_count", "copy_length_bytes",
+                     "copy_words_per_event", "parent_primary_component_scaled", "actual_pgu", "parent_total_scaled",
+                     "canonical_input_sha256", "public_values_sha256", "source_sha256"}, "measurement")
         name = row["sample_id"]
-        if not isinstance(name, str) or re.fullmatch(r"[a-z0-9][a-z0-9_/-]{0,159}", name) is None or ".." in name or name in ids:
-            raise ValueError("invalid or duplicate sample identity")
+        if not isinstance(name, str) or re.fullmatch(r"[a-z0-9][a-z0-9_/-]{0,199}", name) is None or ".." in name or "holdout" in name or name in ids:
+            raise ValueError("invalid, reserved or duplicate sample identity")
         ids.add(name)
+        key = row["route_key"]
+        if key not in ROUTES:
+            raise ValueError("route outside six-route refinement")
         integer(row["block_count"], 1, 32, "block_count")
-        integer(row["executed_mulmod_count"], 1, row["block_count"] * 1_000_000, "executed_mulmod_count")
+        integer(row["executed_primary_count"], 1, row["block_count"] * 1_000_000, "executed_primary_count")
         integer(row["actual_pgu"], 1, 2**64 - 1, "actual_pgu")
         integer(row["parent_total_scaled"], 1, 2**127 - 1, "parent_total_scaled")
+        integer(row["parent_primary_component_scaled"], 1, 2**127 - 1, "parent_primary_component_scaled")
+        if row["parent_primary_component_scaled"] != components[key]:
+            raise ValueError("primary contribution differs from authenticated parent")
         sha256(row["canonical_input_sha256"])
         sha256(row["public_values_sha256"])
-        fields(row["operands"], {"a", "b", "modulus"}, "operands")
-        for value in row["operands"].values():
-            if not isinstance(value, str) or re.fullmatch(r"0x[0-9a-f]{64}", value) is None:
-                raise ValueError("operands must be explicit 32-byte hexadecimal values")
+        identity = (key, row["canonical_input_sha256"])
+        if identity in canonical_inputs:
+            raise ValueError("duplicate canonical input within route")
+        canonical_inputs.add(identity)
+        if key == COPY_ROUTE:
+            integer(row["copy_length_bytes"], 0, 2**32 - 1, "copy_length_bytes")
+            integer(row["copy_words_per_event"], 0, 2**32 - 1, "copy_words_per_event")
+            if row["copy_words_per_event"] != (row["copy_length_bytes"] + 31) // 32:
+                raise ValueError("copy words do not match copied length")
+        elif row["copy_length_bytes"] is not None or row["copy_words_per_event"] is not None:
+            raise ValueError("arithmetic row carries copy selectors")
+        units = primary_units(row)
+        if row["parent_total_scaled"] < components[key] * units:
+            raise ValueError("complete quote does not cover primary contribution")
+        if units:
+            fit_routes.add(key)
         fields(row["source_sha256"], SOURCE_ROLES, "source_sha256")
         for value in row["source_sha256"].values():
             sha256(value)
+    if fit_routes != ROUTES:
+        raise ValueError("every refined route requires positive-unit fit evidence")
 
 
-def required_floors(parent, evidence):
-    """Return exact per-event floors that cover each complete proposal measurement.
+def primary_units(row):
+    """Count events for arithmetic or copied words for MCOPY (including zero controls)."""
+    return row["executed_primary_count"] * (row["copy_words_per_event"] if row["route_key"] == COPY_ROUTE else 1)
 
-Only the parent's accepted MULMOD contribution is replaced; every other operation,
-block, state and proposal term remains charged. The original scaled complete quote
-is used before its final integer ceiling, avoiding loss of sub-PGU information.
-"""
+
+def derive_prices(parent, evidence):
+    """Fit exact-rational conservative prices; zero-word rows never divide or fit."""
     validate_parent(parent)
-    validate_evidence(evidence)
-    accepted = mulmod(parent)["accepted_absolute_model"]
-    old_per_event = accepted["common_dispatch"] + 8 * accepted["parameters"]["body_per_raw_gas"]
-    return [max(Fraction(old_per_event, SCALE),
-                Fraction(old_per_event, SCALE) +
-                Fraction(row["actual_pgu"] * SCALE - row["parent_total_scaled"], row["executed_mulmod_count"] * SCALE))
-            for row in evidence["measurements"]]
+    validate_evidence(parent, evidence)
+    components = parent_components(parent)
+    required = {key: Fraction(value, SCALE) for key, value in components.items()}
+    for row in evidence["measurements"]:
+        units = primary_units(row)
+        if units:
+            key = row["route_key"]
+            required[key] = max(required[key], Fraction(components[key], SCALE) + Fraction(
+                row["actual_pgu"] * SCALE - row["parent_total_scaled"], units * SCALE))
+    result = {}
+    for key, value in required.items():
+        grid = 8 if key == COPY_ROUTE else 100
+        rounded_units = value * Fraction(5, 4) / grid
+        result[key] = -(-rounded_units.numerator // rounded_units.denominator) * grid
+    return result
 
 
-def derive_floor(parent, evidence):
-    """Derive ceil-to-100(max(required per-event floor) * 5/4) exactly."""
-    units = max(required_floors(parent, evidence)) * Fraction(5, 4) / 100
-    return -(-units.numerator // units.denominator) * 100
+def projected_underquotes(parent, evidence, prices):
+    """Check complete-quote coverage after replacing only the priced contribution."""
+    components = parent_components(parent)
+    return sum((row["parent_total_scaled"] + primary_units(row) *
+                (prices[row["route_key"]] * SCALE - components[row["route_key"]]) + SCALE - 1) // SCALE
+               < row["actual_pgu"] for row in evidence["measurements"])
 
 
 def transform(parent, evidence):
-    """Construct a scoped monotone successor; never modify fitted parent coefficients."""
-    floor = derive_floor(parent, evidence)
+    """Produce the sole current successor; preserve all unrelated parent fields."""
+    validate_parent(parent)
+    if digest(evidence) != EVIDENCE_SHA256:
+        raise ValueError("wrong sealed evidence manifest")
+    prices = derive_prices(parent, evidence)
     result = copy.deepcopy(parent)
-    route = mulmod(result)
-    route["composition"] = "max_incremental_accepted_absolute_and_structural"
-    route["structural_floor"] = {"selector": "constant_one_per_event", "coefficient": floor * SCALE}
-    result["purpose"] = "schema9_mulmod_operand_cost_and_block_payload_successor_v1"
-    result["ownership"]["block_local"].append("block.transaction_payload")
-    result["ownership"]["proposal_once"] = [
-        "proposal.additional_transaction_payload" if item == "proposal.transaction_payload" else item
-        for item in result["ownership"]["proposal_once"]
-    ]
-    result["ownership"]["transaction_payload"] = {
-        "block_local": "committed_canonical_signed_eip2718_bytes_and_nonempty_calldata_count",
-        "proposal_once": "additional_input_payload_not_already_charged_by_committed_blocks_and_true_unattempted_count",
-        "coefficient_owner": "proposal_once.transaction_payload_tariffs",
-        "coefficient_scope": "shared_authoritative_tariffs_for_disjoint_block_and_proposal_payload",
-    }
-    result["status"] = "conservative_runtime_successor"
+    for route in result["block_local"]["operation_routes"]:
+        key = route["route_key"]
+        if key == COPY_ROUTE:
+            route["accepted_absolute_model"]["parameters"]["copy_words"] = prices[key] * SCALE
+        elif key in ARITHMETIC_RAW_GAS:
+            route["composition"] = "max_incremental_accepted_absolute_and_structural"
+            route["structural_floor"] = {"selector": "constant_one_per_event", "coefficient": prices[key] * SCALE}
+    result["purpose"] = "schema9_arithmetic_and_copy_block_cost_refinement_v1"
     result["parent_generator"] = result["generator"]
     result["generator"] = {
         "path": "crates/evm/src/zk_gas/pricing/successor.py",
@@ -161,37 +209,40 @@ def transform(parent, evidence):
         "historical_replay_results_embedded_in_successor": 0,
         "parent_validation_is_inherited_not_reexecuted": True,
         "local_measurement_rows": len(evidence["measurements"]),
-        "projected_local_measurement_underquotes_after_floor": sum(
-            required > floor for required in required_floors(parent, evidence)),
+        "zero_word_validation_rows": sum(primary_units(row) == 0 for row in evidence["measurements"]),
+        "projected_local_measurement_underquotes_after_refinement": projected_underquotes(parent, evidence, prices),
     }
     result["successor"] = {
         "schema_version": 1,
         "parent_artifact_sha256": PARENT_SHA256,
-        "parent_snapshot": "successors/parent-93d04edd.json",
-        "evidence_path": "successors/mulmod-evidence-v1.json",
+        "parent_snapshot": PARENT_PATH,
+        "evidence_path": EVIDENCE_PATH,
         "evidence_sha256": digest(evidence),
-        "route_key": ROUTE,
-        "floor_pgu_per_normal_executed_event": floor,
-        "floor_policy": "ceil_to_100(max(parent_accepted_per_event,required_per_event)*5/4)",
+        "arithmetic_floor_pgu_per_normal_executed_event": {key: prices[key] for key in ARITHMETIC_RAW_GAS},
+        "mcopy_accepted_pgu_per_copy_word": prices[COPY_ROUTE],
+        "arithmetic_floor_policy": "ceil_to_100(max(parent_accepted_per_event,required_per_event)*5/4)",
+        "mcopy_word_policy": "ceil_to_8(max(parent_copy_word,required_per_copy_word)*5/4)",
+        "zero_word_policy": "validation_only_no_division_no_fit",
         "measurement_identity": copy.deepcopy(evidence["measurement_identity"]),
         "production_sdk_elf_parity_established": False,
-        "scope": "normal_executed_mulmod_floor_and_block_payload_ownership;payload_tariffs_feature_error_and_unzen_unchanged",
+        "scope": "five_normal_arithmetic_event_floors_and_mcopy_accepted_copy_words;all_other_coefficients_routes_ownership_and_unzen_unchanged",
+        "historical_parent_source_revision": "db54157ebd4de9fc4c1a2edc499b0db297d1bc15",
     }
     result["artifact_sha256"] = content_address(result)
     return result
 
 
 def validate_successor(payload, parent, evidence):
-    """Reject any scope expansion, weakened floor, or stale provenance by exact replay."""
+    """Reject scope expansion, weakened prices or stale provenance by exact replay."""
     if payload != transform(parent, evidence):
         raise ValueError("successor differs from deterministic parent/evidence replay")
 
 
 def main():
-    """Write or check a runtime successor from explicit portable input paths."""
+    """Write or check the runtime successor from portable input paths."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--parent", type=Path, default=BASE / "successors/parent-93d04edd.json")
-    parser.add_argument("--evidence", type=Path, default=BASE / "successors/mulmod-evidence-v1.json")
+    parser.add_argument("--parent", type=Path, default=BASE / PARENT_PATH)
+    parser.add_argument("--evidence", type=Path, default=BASE / EVIDENCE_PATH)
     parser.add_argument("--output", type=Path, default=BASE / "runtime-spec.json")
     parser.add_argument("--check", action="store_true")
     options = parser.parse_args()
@@ -201,7 +252,7 @@ def main():
             raise ValueError("successor output is stale")
     else:
         options.output.write_bytes(canonical_json(payload) + b"\n")
-    print(f"{'verified' if options.check else 'generated'} {payload['artifact_sha256']}; MULMOD floor {payload['successor']['floor_pgu_per_normal_executed_event']} PGU/event")
+    print(f"{'verified' if options.check else 'generated'} {payload['artifact_sha256']}")
 
 
 if __name__ == "__main__":

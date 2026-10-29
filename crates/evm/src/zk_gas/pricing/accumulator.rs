@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
-    ResourceSelectors, TransactionPayloadSelectors, ZkGasError, ZkGasModel,
+    MemorySelectors, OperationModelInput, OperationPricingInput, OperationRoute,
+    OperationRoutePricingInput, ResourceSelectors, TransactionPayloadSelectors, ZkGasError,
+    ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -473,6 +474,15 @@ impl SelectorPrefix {
     }
 }
 
+/// Selected wrapper facts retained only until frame dispatch authenticates the event.
+#[derive(Debug)]
+struct PendingSpawn {
+    /// CALL/CREATE-family opcode that selected a new frame.
+    opcode: u8,
+    /// Parent reservation delta for CALL-family wrappers; absent for CREATE/CREATE2.
+    memory: Option<MemorySelectors>,
+}
+
 /// Transactional pricing collector with committed and attempted block prefixes.
 ///
 /// In-flight selectors are invisible in snapshots until the scope is either committed or reset.
@@ -497,7 +507,7 @@ pub struct ZkGasAccumulator {
     /// Transaction scope currently being executed.
     in_flight: Option<TransactionSelectors>,
     /// Spawn opcode selected by the interpreter but not yet dispatched.
-    pending_spawn: Option<u8>,
+    pending_spawn: Option<PendingSpawn>,
 }
 
 impl ZkGasAccumulator {
@@ -589,11 +599,15 @@ impl ZkGasAccumulator {
     }
 
     /// Stages a spawn wrapper selected by the interpreter until frame dispatch confirms it.
-    pub(crate) fn select_spawn(&mut self, opcode: u8) -> Result<(), ZkGasAccumulatorError> {
+    pub(crate) fn select_spawn(
+        &mut self,
+        opcode: u8,
+        memory: Option<MemorySelectors>,
+    ) -> Result<(), ZkGasAccumulatorError> {
         let transaction =
             self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
         transaction.has_operation_trace = true;
-        self.pending_spawn = Some(opcode);
+        self.pending_spawn = Some(PendingSpawn { opcode, memory });
         Ok(())
     }
 
@@ -610,12 +624,14 @@ impl ZkGasAccumulator {
 
     /// Converts the last selected spawn wrapper into its authenticated confirmed route.
     pub(crate) fn confirm_spawn(&mut self) -> Result<(), ZkGasAccumulatorError> {
-        let Some(opcode) = self.pending_spawn.take() else { return Ok(()) };
+        let Some(pending) = self.pending_spawn.take() else { return Ok(()) };
         let result = self.observe_operation(OperationPricingInput {
-            route: OperationRoute::ConfirmedSpawn(opcode),
+            route: OperationRoute::ConfirmedSpawn(pending.opcode),
             interpreter_raw_gas: None,
             native_gas: None,
-            model_input: OperationModelInput::None,
+            model_input: pending.memory.map_or(OperationModelInput::None, |memory| {
+                OperationModelInput::SpawnMemory { memory }
+            }),
             feature_error: false,
         });
         self.retain_diagnostic(result.err());

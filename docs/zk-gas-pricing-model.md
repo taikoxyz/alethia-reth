@@ -4,10 +4,11 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9`. It adds a per-event EXP
-floor to immutable parent
-`80459b4dd85741f04703e2ab6b4760f2a6a5736c6c77fd69a5dd98b61e2d325d`, preserving that parent's
-arithmetic floors, MCOPY cost, MULMOD floor and block-payload ownership. This remains the current initial Shadow model; it adds
+`537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b`. It attaches parent-frame
+memory reservation to confirmed CALL/CALLCODE/DELEGATECALL/STATICCALL wrappers using the existing
+shared-memory coefficients from immutable parent
+`67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9`. Fixed wrapper costs,
+composition, prior EXP/arithmetic/MCOPY floors and block-payload ownership are preserved. This remains the current initial Shadow model; it adds
 no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
 
 The original calibration calls itself `accepted_runtime_export`; the current artifact and its
@@ -73,12 +74,12 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
-- [`successor.py`](../crates/evm/src/zk_gas/pricing/successor.py) deterministically derives the
-  five arithmetic event floors and the MCOPY word coefficient from the immutable model0a3 snapshot
-  and sealed local measurement evidence in
-  [`successors/`](../crates/evm/src/zk_gas/pricing/successors/). It preserves arithmetic fitted
-  coefficients, MCOPY dispatch/constant/memory charges and all unrelated routes. The older 93d
-  snapshot and MULMOD evidence remain historical provenance; generation uses one direct parent path.
+- [`call_memory_successor.py`](../crates/evm/src/zk_gas/pricing/call_memory_successor.py)
+  deterministically derives the current ownership repair from immutable model67d and a sealed
+  ownership policy in [`successors/`](../crates/evm/src/zk_gas/pricing/successors/). It reuses the
+  parent's MLOAD shared-memory coefficients without fitting new coefficients or claiming new SP1
+  coverage. Historical EXP derivation remains in `successor.py` with its immutable parent/evidence;
+  it is not the current runtime generator.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -507,8 +508,8 @@ Shadow subtotals include:
 | `opcode:0x32` (ORIGIN), `opcode:0x38` (CODESIZE), `opcode:0xfd` (normal REVERT), `opcode:0x39` (CODECOPY within its raw-gas envelope) | 5,000,000 |
 | `opcode:0xa3`, `opcode:0xa4` (LOG3/LOG4) | 5,000,000 plus shared memory |
 | `opcode:0x3b` (EXTCODESIZE) | 1,000,000 |
-| `opcode:0xf1:confirmed_spawn_wrapper` (CALL) | 1,000,000 |
-| `opcode:0xfa:confirmed_spawn_wrapper` (STATICCALL) | 5,000,000 |
+| `opcode:0xf1:confirmed_spawn_wrapper` (CALL) | 1,000,000 plus shared memory |
+| `opcode:0xfa:confirmed_spawn_wrapper` (STATICCALL) | 5,000,000 plus shared memory |
 | `precompile:0x01`, `0x02`, `0x06`, `0x07`, `0x08` | 20,000,000 constant floor in `max_constant_and_linear` |
 | Every opcode `feature_error_absolute_model` | `max(5,000,000, coefficient * interpreter_raw_gas)` |
 
@@ -535,15 +536,23 @@ and becomes a collector diagnostic.
 
 ### Spawn wrappers
 
-When a CALL/CREATE-family instruction selects a new frame, the collector returns before recording
-the ordinary opcode route, raw gas, or shared memory. If frame dispatch confirms the spawn, only the
-confirmed-wrapper route prices that spawning step. Child operations are priced normally and are not
-multiplied by forwarded gas.
+When a CALL/CREATE-family instruction selects a new frame, the collector defers the wrapper until
+frame dispatch confirms it. The four CALL-family wrappers carry `OperationModelInput::SpawnMemory`:
+parent-frame growth count, EVM memory-expansion gas delta, and the existing extra-4KiB-page event.
+The selectors are measured after the interpreter reserves the combined input/output ranges and
+before child execution. Overlapping ranges are counted once; preexpanded memory and zero-length
+ranges add no growth. The unchanged shared-memory tariff is additive to the existing fixed wrapper
+body. CREATE/CREATE2 retain their existing payload-free pricing.
+
+Confirmed wrappers contain neither interpreter raw gas nor native gas: the CALL interpreter gas
+delta includes forwarded child gas. Child operations and ordinary copy opcodes retain their own
+memory expansions; consumers must not add an aggregate memory pass or the ordinary spawning opcode
+route. This repair adds no independent input-copy or output-copy tariff.
 
 Confirmation occurs before later depth or balance checks in the dispatched frame. A selected spawn
-that is never dispatched is not charged. A call into a precompile charges both the confirmed wrapper
-and the precompile body. Consumers must not add the ordinary CALL/CREATE opcode or assume its buffer
-growth was captured by the shared-memory model.
+that is never dispatched is not charged, and transaction completion/discard clears its pending
+payload. A call into a precompile charges both the confirmed wrapper and the precompile body.
+Child revert or exceptional halt does not undo work already observed in the parent wrapper.
 
 ## Block fixed, resource, and trie terms
 
@@ -697,7 +706,8 @@ The immutable parent embeds relative source paths, file hashes, authority hashes
 historical validation. Its original calibration files and exporter are not vendored here; recreating
 those fitted coefficients from raw measurements requires the external parent experiment material.
 
-This repository vendors the immutable model80459 parent JSON and sealed 29-row EXP evidence,
+This repository vendors the immutable model67d parent JSON and sealed CALL-memory ownership policy,
+the earlier model80459 parent JSON and sealed 29-row EXP evidence,
 the earlier model0a3 parent and 127-row block-cost evidence, the historical 93d parent and 30-row MULMOD evidence, the single current successor transform,
 the JSON-to-Rust generator and the executable evaluator. The checked-in commands reproduce the
 successor JSON from its compact evidence, verify its address and regenerate the Rust table. The
@@ -705,14 +715,12 @@ evidence manifest authenticates observation identities but does not rerun SP1 or
 GuestInputs. Repeating those measurements additionally requires the external fixture inputs and
 the recorded program/SDK; raw execution cannot be reconstructed from PGU summaries alone.
 
-`parent_validation` preserves the immediate parent's projected 127-row block-cost validation. The
-immutable model0a3 snapshot retains that model's inherited historical calibration counts and
-underquote results in its own `parent_validation`; its historical-block count expands the same
-recorded proposal replays rather than an independent corpus. The current artifact's `validation`
-records projected coverage of 29 retained EXP observations (21 deficit fit rows and eight
-already-covered validation rows)
-and which results were embedded at generation. Later native replay results are reported separately.
-None of these fields is a mathematical statement about future blocks, proof latency or capacity.
+`parent_validation` preserves the immediate parent's projected 29-row EXP validation; earlier
+snapshots retain their inherited block-cost and original calibration results. The current artifact
+records no new SP1 measurement rows, coefficient fit, historical replay, or coverage claim. This is
+an ownership repair using an existing tariff. Later native/SP1 replay results must be reported
+separately. None of these fields is a mathematical statement about future blocks, proof latency or
+capacity.
 A real SP1 comparison also requires exact/proposal producers and attributable block/proposal output
 beyond this repository's EVM-local log and prover-outcome reports.
 
@@ -743,7 +751,7 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 python3 -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-python3 crates/evm/src/zk_gas/pricing/successor.py --check
+python3 crates/evm/src/zk_gas/pricing/call_memory_successor.py --check
 python3 crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 

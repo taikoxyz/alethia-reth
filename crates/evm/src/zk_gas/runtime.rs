@@ -201,7 +201,9 @@ impl PendingPricingStep {
         let selected_spawn = is_spawn_opcode(self.opcode) &&
             matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
         if selected_spawn {
-            accumulator.select_spawn(self.opcode)?;
+            let memory = matches!(self.opcode, 0xf1 | 0xf2 | 0xf4 | 0xfa)
+                .then(|| self.memory_selectors(interpreter));
+            accumulator.select_spawn(self.opcode, memory)?;
             return Ok(());
         }
 
@@ -249,17 +251,11 @@ impl PendingPricingStep {
         })
     }
 
-    /// Resolves post-step memory and storage facts into a sealed model input.
-    fn finish_model_input<DB: Database>(
-        self,
-        pending: PendingModelInput,
-        raw_gas: u64,
-        interpreter: &Interpreter<EthInterpreter>,
-        context: &TaikoEvmContext<DB>,
-    ) -> Result<OperationModelInput, ()> {
+    /// Measures only this frame's reservation delta, before any child frame executes.
+    fn memory_selectors(self, interpreter: &Interpreter<EthInterpreter>) -> MemorySelectors {
         let after_words = interpreter.memory.len().div_ceil(32);
         let grew = after_words > self.memory_words;
-        let memory = MemorySelectors {
+        MemorySelectors {
             growth_events: u64::from(grew),
             evm_gas_delta: if grew {
                 interpreter.gas.memory().expansion_cost.saturating_sub(self.memory_expansion_cost)
@@ -269,7 +265,18 @@ impl PendingPricingStep {
             boundary_4k_events: u64::from(
                 extra_4k_pages(after_words) > extra_4k_pages(self.memory_words),
             ),
-        };
+        }
+    }
+
+    /// Resolves post-step memory and storage facts into a sealed model input.
+    fn finish_model_input<DB: Database>(
+        self,
+        pending: PendingModelInput,
+        raw_gas: u64,
+        interpreter: &Interpreter<EthInterpreter>,
+        context: &TaikoEvmContext<DB>,
+    ) -> Result<OperationModelInput, ()> {
+        let memory = self.memory_selectors(interpreter);
         Ok(match pending {
             PendingModelInput::Default => {
                 ZkGasModel.default_opcode_model_input(self.opcode, raw_gas).map_err(|_| ())?

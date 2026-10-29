@@ -50,6 +50,18 @@ class GeneratorTests(unittest.TestCase):
             GENERATOR.generated_matches(GENERATOR.render(payload), generated.read_text())
         )
 
+    def test_confirmed_call_wrappers_consume_parent_memory_without_raw_gas(self) -> None:
+        payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
+        for opcode in ("f1", "f2", "f4", "fa"):
+            route = next(row for row in payload["block_local"]["operation_routes"]
+                         if row["route_key"] == f"opcode:0x{opcode}:confirmed_spawn_wrapper")
+            kind, _, required, exact, maximum, *_ = GENERATOR.accepted_model(route)
+            with self.subTest(opcode=opcode):
+                self.assertEqual(kind, "ModelKind::FixedWithMemory")
+                self.assertEqual(required, "RequiredInput::SpawnMemory")
+                self.assertIsNone(exact)
+                self.assertIsNone(maximum)
+
     def test_exp_floor_is_an_accepted_per_event_coefficient(self) -> None:
         payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
         route = copy.deepcopy(next(row for row in payload["block_local"]["operation_routes"]

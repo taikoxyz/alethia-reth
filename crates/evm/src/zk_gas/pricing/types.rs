@@ -95,6 +95,11 @@ pub enum OperationModelInput {
         /// Memory-expansion selectors for this event.
         memory: MemorySelectors,
     },
+    /// Parent-frame reservation by a confirmed CALL/CALLCODE/DELEGATECALL/STATICCALL wrapper.
+    SpawnMemory {
+        /// Parent memory-expansion selectors, excluding forwarded gas and child work.
+        memory: MemorySelectors,
+    },
     /// MCOPY word count and memory selectors.
     MemoryCopy {
         /// Ceiling of copied bytes divided by 32.

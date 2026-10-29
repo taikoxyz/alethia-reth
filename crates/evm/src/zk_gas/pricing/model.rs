@@ -61,6 +61,8 @@ pub(crate) enum RequiredInput {
     StaticRawGas,
     /// A typed LOG payload is required.
     Log,
+    /// A confirmed CALL-family wrapper's parent-memory payload is required.
+    SpawnMemory,
 }
 
 /// Generated accepted absolute model family.
@@ -183,6 +185,7 @@ impl ZkGasModel {
                 RequiredInput::None => Ok(OperationModelInput::None),
                 RequiredInput::StaticRawGas => Ok(OperationModelInput::StaticRawGas { raw_gas }),
                 RequiredInput::Log => Err(ZkGasError::MissingInput("log")),
+                RequiredInput::SpawnMemory => Err(ZkGasError::MissingInput("spawn_memory")),
             },
             ModelKind::StaticRawGas | ModelKind::RawGasAffine => {
                 Ok(OperationModelInput::StaticRawGas { raw_gas })
@@ -847,6 +850,12 @@ fn validate_required_input(
             bounded("interpreter_raw_gas", raw_gas)?;
             Ok(MemorySelectors::default())
         }
+        (RequiredInput::SpawnMemory, OperationModelInput::SpawnMemory { memory }) => {
+            if !matches!(input.route, OperationRoute::ConfirmedSpawn(0xf1 | 0xf2 | 0xf4 | 0xfa)) {
+                return Err(ZkGasError::InvalidInput("spawn_memory_route"));
+            }
+            Ok(memory)
+        }
         (RequiredInput::Log, OperationModelInput::Log { .. }) => {
             let (_, _, memory) = validate_log(input)?;
             Ok(memory)
@@ -1327,7 +1336,9 @@ mod tests {
 
         let mut collector = ZkGasAccumulator::default();
         collector.begin_transaction(TransactionMetadata::default()).expect("transaction");
-        collector.select_spawn(0xf1).expect("CALL selected but never dispatched");
+        collector
+            .select_spawn(0xf1, Some(MemorySelectors::default()))
+            .expect("CALL selected but never dispatched");
         collector.commit_transaction().expect("commit scope");
         assert!(collector.committed_snapshot().operation_routes.is_empty());
 
@@ -1338,6 +1349,119 @@ mod tests {
         assert_eq!(snapshot.operation_routes.len(), 1);
         assert_eq!(snapshot.operation_routes[0].route, OperationRoute::Opcode(0x09));
         assert_eq!(snapshot.operation_routes[0].structural_scaled, 1_600 * FIXED_POINT_SCALE);
+    }
+
+    #[test]
+    fn confirmed_call_memory_payload_preserves_fixed_costs_and_rejects_wrong_namespaces() {
+        for (opcode, fixed) in [
+            (0xf1, 1_000_000_000_000_000_000_000_000),
+            (0xf2, 1_054_688_518_244_156_247_737_152),
+            (0xf4, 3_841_906_721_059_316_908_619),
+            (0xfa, 5_000_000_000_000_000_000_000_000),
+        ] {
+            let mut input = OperationPricingInput {
+                route: OperationRoute::ConfirmedSpawn(opcode),
+                interpreter_raw_gas: None,
+                native_gas: None,
+                model_input: OperationModelInput::SpawnMemory {
+                    memory: MemorySelectors::default(),
+                },
+                feature_error: false,
+            };
+            let base = ZkGasModel.price_operation(&input).expect("zero reservation");
+            assert_eq!(base.accepted_absolute_scaled, fixed);
+            input.model_input = OperationModelInput::SpawnMemory {
+                memory: MemorySelectors {
+                    growth_events: 1,
+                    evm_gas_delta: 5_120,
+                    boundary_4k_events: 1,
+                },
+            };
+            let grown = ZkGasModel.price_operation(&input).expect("parent reservation");
+            assert_eq!(grown.accepted_absolute_scaled - fixed, 16_009_638_224_414_647_289_136);
+            assert_eq!(grown.incremental_scaled, base.incremental_scaled);
+            assert_eq!(grown.structural_scaled, base.structural_scaled);
+            for (raw, native) in [(Some(1), None), (None, Some(1))] {
+                input.interpreter_raw_gas = raw;
+                input.native_gas = native;
+                assert_eq!(
+                    ZkGasModel.price_operation(&input),
+                    Err(ZkGasError::InvalidInput("operation_namespace"))
+                );
+            }
+            input.interpreter_raw_gas = None;
+            input.native_gas = None;
+            input.model_input = OperationModelInput::None;
+            assert_eq!(
+                ZkGasModel.price_operation(&input),
+                Err(ZkGasError::MissingInput("model_input"))
+            );
+            input.model_input = OperationModelInput::SpawnMemory {
+                memory: MemorySelectors { evm_gas_delta: 1_000_000_001, ..Default::default() },
+            };
+            assert_eq!(
+                ZkGasModel.price_operation(&input),
+                Err(ZkGasError::SelectorOutOfRange {
+                    selector: "memory_evm_gas_delta",
+                    value: 1_000_000_001
+                })
+            );
+        }
+        for opcode in [0xf0, 0xf5] {
+            let mut input = OperationPricingInput {
+                route: OperationRoute::ConfirmedSpawn(opcode),
+                interpreter_raw_gas: None,
+                native_gas: None,
+                model_input: OperationModelInput::None,
+                feature_error: false,
+            };
+            assert!(
+                ZkGasModel.price_operation(&input).is_ok(),
+                "CREATE keeps its existing contract"
+            );
+            input.model_input =
+                OperationModelInput::SpawnMemory { memory: MemorySelectors::default() };
+            assert_eq!(
+                ZkGasModel.price_operation(&input),
+                Err(ZkGasError::InvalidInput("model_input"))
+            );
+        }
+    }
+
+    #[test]
+    fn pending_call_memory_is_charged_once_only_after_dispatch_and_never_leaks_scopes() {
+        use super::super::{TransactionMetadata, ZkGasAccumulator};
+        let memory =
+            Some(MemorySelectors { growth_events: 1, evm_gas_delta: 5_120, boundary_4k_events: 1 });
+        let mut collector = ZkGasAccumulator::default();
+        collector.begin_transaction(TransactionMetadata::default()).expect("transaction");
+        collector.select_spawn(0xf4, memory).expect("selected, not dispatched");
+        collector.commit_transaction().expect("commit selected scope");
+        assert!(collector.committed_snapshot().operation_routes.is_empty());
+        collector.begin_transaction(TransactionMetadata::default()).expect("next transaction");
+        collector.confirm_spawn().expect("commit cleared pending memory");
+        collector.select_spawn(0xf4, memory).expect("selected then discarded");
+        collector.reset_transaction();
+        collector.begin_transaction(TransactionMetadata::default()).expect("after discard");
+        collector.confirm_spawn().expect("discard cleared pending memory");
+        collector.select_spawn(0xf4, memory).expect("selected before ordinary step");
+        collector.observe_step(normal_mulmod()).expect("ordinary step invalidates pending spawn");
+        collector.confirm_spawn().expect("ordinary step cleared pending memory");
+        collector.commit_transaction().expect("ordinary step commits");
+        assert_eq!(collector.committed_snapshot().operation_routes.len(), 1);
+        collector.begin_transaction(TransactionMetadata::default()).expect("confirmed transaction");
+        collector.select_spawn(0xf4, memory).expect("selected for dispatch");
+        collector.confirm_spawn().expect("confirmed parent memory");
+        collector.confirm_spawn().expect("second confirmation is a no-op");
+        collector.commit_transaction().expect("confirmed scope commits");
+        let snapshot = collector.committed_snapshot();
+        assert_eq!(snapshot.operation_routes.len(), 2);
+        let wrapper = snapshot
+            .operation_routes
+            .iter()
+            .find(|row| row.route == OperationRoute::ConfirmedSpawn(0xf4))
+            .expect("one wrapper");
+        assert_eq!(wrapper.accepted_absolute_scaled, 19_851_544_945_473_964_197_755);
     }
 
     #[test]

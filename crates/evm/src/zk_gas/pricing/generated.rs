@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9";
+    "537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -4044,10 +4044,14 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     RouteSpec {
         route: OperationRoute::ConfirmedSpawn(0xf1),
         composition: Composition::Maximum,
-        model_kind: ModelKind::Fixed,
+        model_kind: ModelKind::FixedWithMemory,
         coefficients: [1000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
-        required_input: RequiredInput::None,
+        memory: MemoryCoefficients {
+            growth_event: 161142459292709706509,
+            evm_gas_delta: 2719407004771945406,
+            boundary_4k_event: 1925131900689577103907,
+        },
+        required_input: RequiredInput::SpawnMemory,
         exact_raw_gas: None,
         maximum_raw_gas: None,
         fallback_raw_gas_coefficient: None,
@@ -4093,10 +4097,14 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     RouteSpec {
         route: OperationRoute::ConfirmedSpawn(0xf2),
         composition: Composition::Maximum,
-        model_kind: ModelKind::Fixed,
+        model_kind: ModelKind::FixedWithMemory,
         coefficients: [1054688518244156247737152, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
-        required_input: RequiredInput::None,
+        memory: MemoryCoefficients {
+            growth_event: 161142459292709706509,
+            evm_gas_delta: 2719407004771945406,
+            boundary_4k_event: 1925131900689577103907,
+        },
+        required_input: RequiredInput::SpawnMemory,
         exact_raw_gas: None,
         maximum_raw_gas: None,
         fallback_raw_gas_coefficient: None,
@@ -4186,10 +4194,14 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     RouteSpec {
         route: OperationRoute::ConfirmedSpawn(0xf4),
         composition: Composition::Accepted,
-        model_kind: ModelKind::Fixed,
+        model_kind: ModelKind::FixedWithMemory,
         coefficients: [3841906721059316908619, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
-        required_input: RequiredInput::None,
+        memory: MemoryCoefficients {
+            growth_event: 161142459292709706509,
+            evm_gas_delta: 2719407004771945406,
+            boundary_4k_event: 1925131900689577103907,
+        },
+        required_input: RequiredInput::SpawnMemory,
         exact_raw_gas: None,
         maximum_raw_gas: None,
         fallback_raw_gas_coefficient: None,
@@ -4279,10 +4291,14 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     RouteSpec {
         route: OperationRoute::ConfirmedSpawn(0xfa),
         composition: Composition::Maximum,
-        model_kind: ModelKind::Fixed,
+        model_kind: ModelKind::FixedWithMemory,
         coefficients: [5000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
-        required_input: RequiredInput::None,
+        memory: MemoryCoefficients {
+            growth_event: 161142459292709706509,
+            evm_gas_delta: 2719407004771945406,
+            boundary_4k_event: 1925131900689577103907,
+        },
+        required_input: RequiredInput::SpawnMemory,
         exact_raw_gas: None,
         maximum_raw_gas: None,
         fallback_raw_gas_coefficient: None,

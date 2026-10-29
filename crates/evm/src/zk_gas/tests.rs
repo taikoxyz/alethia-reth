@@ -1584,7 +1584,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9"
+        "537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2971,6 +2971,252 @@ fn spawn_opcode_classifier_matches_independent_protocol_set() {
     }
 }
 
+#[derive(Clone)]
+struct CallMemoryCase {
+    input: (u16, u16),
+    output: (u16, u16),
+    preexpanded_bytes: u16,
+    forwarded_gas: u16,
+    child_code: Bytecode,
+}
+
+impl Default for CallMemoryCase {
+    fn default() -> Self {
+        Self {
+            input: (0, 0),
+            output: (0, 0),
+            preexpanded_bytes: 0,
+            forwarded_gas: u16::MAX,
+            child_code: simple_arithmetic_bytecode(),
+        }
+    }
+}
+
+fn call_memory_range_db(family: SpawnFamily, case: &CallMemoryCase) -> InMemoryDB {
+    let child = Address::with_last_byte(0xD1);
+    let mut code = Vec::new();
+    if case.preexpanded_bytes > 0 {
+        code.extend_from_slice(&[opcode::PUSH0, opcode::PUSH2]);
+        code.extend_from_slice(&(case.preexpanded_bytes - 1).to_be_bytes());
+        code.push(opcode::MSTORE8);
+    }
+    for value in [case.output.1, case.output.0, case.input.1, case.input.0] {
+        code.push(opcode::PUSH2);
+        code.extend_from_slice(&value.to_be_bytes());
+    }
+    if matches!(family, SpawnFamily::Call | SpawnFamily::CallCode) {
+        code.push(opcode::PUSH0); // value
+    }
+    code.push(opcode::PUSH20);
+    code.extend_from_slice(child.as_slice());
+    code.push(opcode::PUSH2);
+    code.extend_from_slice(&case.forwarded_gas.to_be_bytes());
+    code.extend_from_slice(&[family.opcode(), opcode::STOP]);
+    let mut db = db_with_contract(Bytecode::new_raw(Bytes::from(code)));
+    insert_contract(&mut db, child, case.child_code.clone());
+    db
+}
+
+fn call_memory_case_db(family: SpawnFamily, output_size: u16) -> InMemoryDB {
+    call_memory_range_db(family, &CallMemoryCase { output: (0, output_size), ..Default::default() })
+}
+
+fn call_memory_snapshot(
+    family: SpawnFamily,
+    case: &CallMemoryCase,
+) -> super::pricing::ZkGasBlockSnapshot {
+    let mut plain =
+        TaikoEvmFactory.create_evm(call_memory_range_db(family, case), evm_env(TaikoSpecId::UNZEN));
+    plain.set_zk_gas_pricing_enabled(true);
+    assert!(plain.transact(tx_env(500_000)).expect("plain call").result.is_success());
+    plain.commit_transaction_zk_gas_pricing().expect("plain commit");
+    let snapshot = plain.zk_gas_pricing_snapshot().expect("plain snapshot");
+    let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+        call_memory_range_db(family, case),
+        evm_env(TaikoSpecId::UNZEN),
+        StepGasProbeInspector::default(),
+    );
+    inspected.set_zk_gas_pricing_enabled(true);
+    assert!(inspected.transact(tx_env(500_000)).expect("inspected call").result.is_success());
+    inspected.commit_transaction_zk_gas_pricing().expect("inspected commit");
+    assert_eq!(
+        snapshot,
+        inspected.zk_gas_pricing_snapshot().expect("inspected snapshot"),
+        "{} plain/inspected parity",
+        family.name()
+    );
+    snapshot
+}
+
+fn call_memory_wrapper(
+    snapshot: &super::pricing::ZkGasBlockSnapshot,
+    family: SpawnFamily,
+) -> OperationRoutePricingInput {
+    *snapshot
+        .operation_routes
+        .iter()
+        .find(|row| row.route == OperationRoute::ConfirmedSpawn(family.opcode()))
+        .expect("confirmed wrapper")
+}
+
+#[test]
+fn confirmed_call_wrappers_price_parent_memory_in_plain_and_inspected_execution() {
+    for family in [
+        SpawnFamily::Call,
+        SpawnFamily::CallCode,
+        SpawnFamily::DelegateCall,
+        SpawnFamily::StaticCall,
+    ] {
+        let mut wrapper_prices = Vec::new();
+        for size in [0, 32_768] {
+            let mut plain = TaikoEvmFactory
+                .create_evm(call_memory_case_db(family, size), evm_env(TaikoSpecId::UNZEN));
+            plain.set_zk_gas_pricing_enabled(true);
+            assert!(plain.transact(tx_env(500_000)).expect("plain call").result.is_success());
+            plain.commit_transaction_zk_gas_pricing().expect("plain commit");
+            let plain_snapshot = plain.zk_gas_pricing_snapshot().expect("plain snapshot");
+            let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+                call_memory_case_db(family, size),
+                evm_env(TaikoSpecId::UNZEN),
+                StepGasProbeInspector::default(),
+            );
+            inspected.set_zk_gas_pricing_enabled(true);
+            assert!(
+                inspected.transact(tx_env(500_000)).expect("inspected call").result.is_success()
+            );
+            inspected.commit_transaction_zk_gas_pricing().expect("inspected commit");
+            assert_eq!(
+                plain_snapshot,
+                inspected.zk_gas_pricing_snapshot().expect("inspected snapshot")
+            );
+            let row = plain_snapshot
+                .operation_routes
+                .iter()
+                .find(|row| row.route == OperationRoute::ConfirmedSpawn(family.opcode()))
+                .expect("confirmed call wrapper");
+            wrapper_prices.push(row.accepted_absolute_scaled);
+        }
+        assert!(
+            wrapper_prices[1] > wrapper_prices[0],
+            "{} must price parent memory expansion",
+            family.name()
+        );
+    }
+}
+
+#[test]
+fn confirmed_call_memory_reservation_counts_combined_ranges_once() {
+    // 32KiB = 1,024 words; EVM C_mem = 3*1,024 + 1,024^2/512 = 5,120 gas.
+    // Shared tariff: one growth, 5,120 memory gas, one extra-4KiB event.
+    const MEMORY_DELTA: i128 = 16_009_638_224_414_647_289_136;
+    for family in [
+        SpawnFamily::Call,
+        SpawnFamily::CallCode,
+        SpawnFamily::DelegateCall,
+        SpawnFamily::StaticCall,
+    ] {
+        let base =
+            call_memory_wrapper(&call_memory_snapshot(family, &CallMemoryCase::default()), family);
+        for (input, output) in [
+            ((0, 0), (0, 32_768)),
+            ((0, 32_768), (0, 0)),
+            ((0, 32_768), (0, 32_768)),
+            ((0, 16_384), (16_384, 16_384)),
+        ] {
+            let grown = call_memory_wrapper(
+                &call_memory_snapshot(
+                    family,
+                    &CallMemoryCase { input, output, ..Default::default() },
+                ),
+                family,
+            );
+            assert_eq!(
+                grown.accepted_absolute_scaled - base.accepted_absolute_scaled,
+                MEMORY_DELTA,
+                "{} input={input:?} output={output:?}",
+                family.name()
+            );
+            assert_eq!(grown.incremental_scaled, base.incremental_scaled);
+            assert_eq!(grown.structural_scaled, base.structural_scaled);
+            assert_eq!(grown.feature_error_scaled, 0);
+        }
+        for case in [
+            CallMemoryCase { output: (0, 32_768), preexpanded_bytes: 32_768, ..Default::default() },
+            CallMemoryCase { input: (u16::MAX, 0), output: (u16::MAX, 0), ..Default::default() },
+        ] {
+            assert_eq!(
+                call_memory_wrapper(&call_memory_snapshot(family, &case), family),
+                base,
+                "{} no new reservation",
+                family.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn confirmed_call_memory_is_independent_of_forwarded_gas_and_child_failure() {
+    for family in [
+        SpawnFamily::Call,
+        SpawnFamily::CallCode,
+        SpawnFamily::DelegateCall,
+        SpawnFamily::StaticCall,
+    ] {
+        let case = CallMemoryCase { output: (0, 32_768), ..Default::default() };
+        let expected = call_memory_wrapper(&call_memory_snapshot(family, &case), family);
+        for variant in [
+            CallMemoryCase { forwarded_gas: 1, ..case.clone() },
+            CallMemoryCase {
+                child_code: Bytecode::new_raw(Bytes::from(vec![
+                    opcode::PUSH0,
+                    opcode::PUSH0,
+                    opcode::REVERT,
+                ])),
+                ..case.clone()
+            },
+            CallMemoryCase {
+                child_code: Bytecode::new_raw(Bytes::from(vec![opcode::INVALID])),
+                ..case.clone()
+            },
+        ] {
+            assert_eq!(
+                call_memory_wrapper(&call_memory_snapshot(family, &variant), family),
+                expected,
+                "{} parent reservation survives child failure",
+                family.name()
+            );
+        }
+        let base =
+            call_memory_wrapper(&call_memory_snapshot(family, &CallMemoryCase::default()), family);
+        let child_growth = call_memory_snapshot(
+            family,
+            &CallMemoryCase {
+                child_code: Bytecode::new_raw(Bytes::from(vec![
+                    opcode::PUSH0,
+                    opcode::PUSH2,
+                    0x7f,
+                    0xff,
+                    opcode::MSTORE8,
+                    opcode::STOP,
+                ])),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            call_memory_wrapper(&child_growth, family),
+            base,
+            "child growth must not leak into parent"
+        );
+        assert!(
+            child_growth
+                .operation_routes
+                .iter()
+                .any(|row| row.route == OperationRoute::Opcode(opcode::MSTORE8) &&
+                    row.accepted_absolute_scaled > 16_000 * FIXED_POINT_SCALE)
+        );
+    }
+}
+
 #[test]
 fn metered_paths_select_identical_raw_gas_for_all_spawn_and_nonspawn_actions() {
     let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen schedule");
@@ -4021,3 +4267,6 @@ fn completion_revalidates_sealed_payload_selectors_and_price() {
         ));
     }
 }
+
+#[path = "call_memory_verification_tests.rs"]
+mod independent_call_memory;

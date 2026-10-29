@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "successor.py"
+        "zk_gas_pricing_successor", BASE / "call_memory_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -156,6 +156,7 @@ def accepted_model(
         required = {
             "static_raw_gas": "RequiredInput::StaticRawGas",
             "log": "RequiredInput::Log",
+            "spawn_memory": "RequiredInput::SpawnMemory",
         }[model["model_input_kind"]]
         if "out_of_envelope" in model:
             fallback = model["out_of_envelope"]["coefficient"]

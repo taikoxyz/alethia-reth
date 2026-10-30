@@ -331,3 +331,142 @@ fn raw_signed_authorizations_count_invalid_recovery_and_reverted_inclusion() {
         }
     }
 }
+
+fn signed_access_list(
+    nonce: u64,
+    target: Address,
+    items: usize,
+    keys: usize,
+    authorization: bool,
+) -> Recovered<TransactionSigned> {
+    use alloy_consensus::TxEip1559;
+    use alloy_eips::eip2930::{AccessList, AccessListItem};
+    let access_list = AccessList(vec![
+        AccessListItem {
+            address: CALLER,
+            storage_keys: vec![B256::with_last_byte(0x55); keys],
+        };
+        items
+    ]);
+    let signature = Signature::new(U256::from(1), U256::from(2), false);
+    let tx: TransactionSigned = if authorization {
+        Signed::new_unchecked(
+            TxEip7702 {
+                chain_id: 167,
+                nonce,
+                gas_limit: 2_000_000,
+                max_fee_per_gas: 1,
+                to: target,
+                access_list,
+                authorization_list: vec![SignedAuthorization::new_unchecked(
+                    Authorization { chain_id: U256::from(167), address: STOP, nonce: 99 },
+                    0,
+                    U256::ZERO,
+                    U256::ZERO,
+                )],
+                ..Default::default()
+            },
+            signature,
+            B256::ZERO,
+        )
+        .into()
+    } else {
+        Signed::new_unchecked(
+            TxEip1559 {
+                chain_id: 167,
+                nonce,
+                gas_limit: 2_000_000,
+                max_fee_per_gas: 1,
+                to: TxKind::Call(target),
+                access_list,
+                ..Default::default()
+            },
+            signature,
+            B256::ZERO,
+        )
+        .into()
+    };
+    Recovered::new_unchecked(tx, CALLER)
+}
+
+#[test]
+fn signed_type2_type4_access_lists_keep_raw_items_on_revert_and_discarded_scopes() {
+    use alethia_reth_evm::zk_gas::pricing::{FIXED_POINT_SCALE, ZkGasShadowStatus};
+    for inspect in [false, true] {
+        with_executor!(ZkGasMode::Shadow, executor, {
+            executor.evm_mut().set_inspector_enabled(inspect);
+            assert!(
+                executor
+                    .execute_transaction_with_commit_condition(
+                        signed_access_list(0, STOP, 4, 2, false),
+                        |_| CommitChanges::No
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(executor.evm().zk_gas_pricing_snapshot().unwrap().access_list_items, 0);
+            assert_eq!(
+                executor.evm().zk_gas_attempted_pricing_snapshot().unwrap().block.access_list_items,
+                4
+            );
+            executor.execute_transaction(signed_access_list(0, REVERT, 16, 4, true)).unwrap();
+            executor.execute_transaction(signed_access_list(1, STOP, 1, 16, false)).unwrap();
+            let snapshot = executor.evm().zk_gas_pricing_snapshot().unwrap();
+            assert_eq!(snapshot.access_list_items, 17);
+            assert_eq!(snapshot.authorization_validations, 1);
+            assert_eq!(
+                executor.evm().zk_gas_attempted_pricing_snapshot().unwrap().block.access_list_items,
+                21
+            );
+            let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status()
+            else {
+                panic!("valid count")
+            };
+            assert_eq!(known.access_list_scaled(), 17 * 8192 * FIXED_POINT_SCALE);
+            let (_, outcome) = executor.finish().unwrap();
+            assert_eq!(outcome.receipts.len(), 2);
+        });
+    }
+}
+
+#[test]
+fn manual_typed_anchor_scope_counts_raw_access_list_items() {
+    use alloy_consensus::TxEip1559;
+    use alloy_eips::eip2930::{AccessList, AccessListItem};
+    // This exercises the same manual recovered-Anchor harness as the legacy-anchor test.
+    // It adds no Anchor consensus interface or permission to alter production envelopes.
+    with_executor!(ZkGasMode::Shadow, executor, {
+        executor.apply_pre_execution_changes().unwrap();
+        let treasury = alethia_reth_evm::handler::get_treasury_address(167);
+        let tx = TxEip1559 {
+            chain_id: 167,
+            nonce: 7,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            to: TxKind::Call(treasury),
+            input: Bytes::from(vec![0, 1]),
+            access_list: AccessList(vec![
+                AccessListItem {
+                    address: CALLER,
+                    storage_keys: vec![B256::ZERO; 3]
+                };
+                4
+            ]),
+            ..Default::default()
+        };
+        let signed: TransactionSigned = Signed::new_unchecked(
+            tx,
+            Signature::new(U256::from(1), U256::from(2), false),
+            B256::ZERO,
+        )
+        .into();
+        let anchor = Recovered::new_unchecked(
+            signed,
+            Address::from(alethia_reth_evm::alloy::TAIKO_GOLDEN_TOUCH_ADDRESS),
+        );
+        executor.execute_transaction(anchor).unwrap();
+        let snapshot = executor.evm().zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(snapshot.started_non_anchor_transactions, 0);
+        assert_eq!(snapshot.access_list_items, 4);
+    });
+}

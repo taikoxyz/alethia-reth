@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55";
+    "3794f020f947fbaff4b26e8128996fcf9dcffb350b4360cc1d3d4114a809605e";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -26,6 +26,9 @@ pub(crate) const BLOCK_FIXED: [i128; 3] =
 
 /// Normalized fixed-point PGU per raw EIP-7702 authorization validation entry.
 pub(crate) const AUTHORIZATION_VALIDATION_TARIFF: i128 = 200000000000000000000000;
+
+/// Normalized fixed-point PGU per raw non-legacy access-list address item.
+pub(crate) const ACCESS_LIST_ITEM_TARIFF: i128 = 8192000000000000000000;
 
 /// Unique-resource coefficients in the public selector field order.
 pub(crate) const RESOURCE_TARIFFS: [i128; 5] = [

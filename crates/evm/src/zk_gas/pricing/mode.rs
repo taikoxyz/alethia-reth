@@ -19,6 +19,10 @@ pub struct ZkGasKnownBlockBreakdown {
     authorization_validations: u64,
     /// Authorization validation contribution in fixed-point PGU.
     authorization_scaled: i128,
+    /// Raw access-list address items retained with their sealed contribution.
+    access_list_items: u64,
+    /// Raw access-list item contribution in normalized fixed-point PGU.
+    access_list_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
@@ -45,6 +49,8 @@ impl ZkGasKnownBlockBreakdown {
         fixed_scaled: i128,
         authorization_validations: u64,
         authorization_scaled: i128,
+        access_list_items: u64,
+        access_list_scaled: i128,
         operations_scaled: i128,
         feature_error_scaled: i128,
         evm_local_resources: ResourceSelectors,
@@ -58,6 +64,8 @@ impl ZkGasKnownBlockBreakdown {
             fixed_scaled,
             authorization_validations,
             authorization_scaled,
+            access_list_items,
+            access_list_scaled,
             operations_scaled,
             feature_error_scaled,
             evm_local_resources,
@@ -82,6 +90,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Authorization validation contribution in normalized fixed-point PGU.
     pub const fn authorization_scaled(self) -> i128 {
         self.authorization_scaled
+    }
+
+    /// Raw non-legacy access-list address items, including duplicates and Anchor entries.
+    pub const fn access_list_items(self) -> u64 {
+        self.access_list_items
+    }
+
+    /// Raw access-list item contribution in normalized fixed-point PGU.
+    pub const fn access_list_scaled(self) -> i128 {
+        self.access_list_scaled
     }
 
     /// Block operation contribution in fixed-point units.
@@ -147,6 +165,8 @@ impl ZkGasKnownBlockBreakdown {
     ) -> Self {
         Self::new(
             fixed_scaled,
+            0,
+            0,
             0,
             0,
             operations_scaled,
@@ -354,6 +374,7 @@ impl ZkGasBlockSnapshot {
                 started_non_anchor_transactions: self.started_non_anchor_transactions,
                 native_value_transfers: self.native_value_transfers,
                 authorization_validations: self.authorization_validations,
+                access_list_items: self.access_list_items,
                 operation_routes: &self.operation_routes,
                 resources: self.resources,
                 transaction_payload: self.transaction_payload,

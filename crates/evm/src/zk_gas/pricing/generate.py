@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "authorization_successor.py"
+        "zk_gas_pricing_successor", BASE / "access_list_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -302,6 +302,11 @@ def render(specification: Mapping[str, Any]) -> str:
     lines.extend([
         "/// Normalized fixed-point PGU per raw EIP-7702 authorization validation entry.",
         f"pub(crate) const AUTHORIZATION_VALIDATION_TARIFF: i128 = {block['authorization_validation_tariff']};",
+        "",
+    ])
+    lines.extend([
+        "/// Normalized fixed-point PGU per raw non-legacy access-list address item.",
+        f"pub(crate) const ACCESS_LIST_ITEM_TARIFF: i128 = {block['access_list_item_tariff']};",
         "",
     ])
     resources = block["resource_tariffs"]

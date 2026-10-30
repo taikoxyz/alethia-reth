@@ -19,6 +19,8 @@ pub struct TransactionMetadata {
     pub native_value_transfer: bool,
     /// Raw EIP-7702 entries requiring validation, including stale or invalid authorities.
     pub authorization_validations: u64,
+    /// Raw non-legacy access-list address items, including duplicates and Anchor entries.
+    pub access_list_items: u64,
 }
 
 /// One exact execution resource observed by the EVM runtime.
@@ -355,6 +357,8 @@ pub struct ZkGasBlockSnapshot {
     pub native_value_transfers: u64,
     /// Raw authorization validations across this prefix, without deduplication.
     pub authorization_validations: u64,
+    /// Raw non-legacy access-list address items, including duplicates and Anchor entries.
+    pub access_list_items: u64,
     /// Canonical payload of all included signed transactions.
     pub transaction_payload: TransactionPayloadSelectors,
     /// Accumulated operation candidates in canonical route order.
@@ -396,6 +400,8 @@ struct SelectorPrefix {
     native_value_transfers: u64,
     /// Additive authorization validation count, including ignored entries.
     authorization_validations: u64,
+    /// Additive raw access-list address item count, without deduplication.
+    access_list_items: u64,
     /// Additive canonical signed payload across this prefix.
     transaction_payload: TransactionPayloadSelectors,
     /// Operation components aggregated by route.
@@ -432,6 +438,11 @@ impl SelectorPrefix {
                 .checked_add(transaction.metadata.authorization_validations)
                 .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
             ZkGasModel.price_authorization_validations(authorization_validations)?;
+            let access_list_items = self
+                .access_list_items
+                .checked_add(transaction.metadata.access_list_items)
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            ZkGasModel.price_access_list_items(access_list_items)?;
             let transaction_payload = TransactionPayloadSelectors {
                 canonical_transaction_bytes: self
                     .transaction_payload
@@ -454,6 +465,7 @@ impl SelectorPrefix {
                 next_non_anchor,
                 next_native_transfers,
                 authorization_validations,
+                access_list_items,
                 transaction_payload,
                 routes,
                 resources,
@@ -463,6 +475,7 @@ impl SelectorPrefix {
             next_non_anchor,
             next_native_transfers,
             authorization_validations,
+            access_list_items,
             transaction_payload,
             routes,
             resource_totals,
@@ -474,6 +487,7 @@ impl SelectorPrefix {
         self.non_anchor_transactions = next_non_anchor;
         self.native_value_transfers = next_native_transfers;
         self.authorization_validations = authorization_validations;
+        self.access_list_items = access_list_items;
         self.transaction_payload = transaction_payload;
         for (key, row) in routes {
             self.operation_routes.insert(key, row);
@@ -487,6 +501,7 @@ impl SelectorPrefix {
             started_non_anchor_transactions: self.non_anchor_transactions,
             native_value_transfers: self.native_value_transfers,
             authorization_validations: self.authorization_validations,
+            access_list_items: self.access_list_items,
             transaction_payload: self.transaction_payload,
             operation_routes: self.operation_routes.values().copied().collect(),
             resources: self.resources.selectors(),
@@ -545,6 +560,7 @@ impl ZkGasAccumulator {
         } else {
             ZkGasModel
                 .price_authorization_validations(metadata.authorization_validations)
+                .and_then(|_| ZkGasModel.price_access_list_items(metadata.access_list_items))
                 .map(|_| ())
         };
         if let Err(error) = validation {
@@ -821,6 +837,26 @@ fn merge_route(
 #[cfg(test)]
 mod authorization_tests {
     use super::*;
+
+    #[test]
+    fn access_list_count_overflow_keeps_all_prefix_fields_atomic() {
+        let mut prefix = SelectorPrefix { access_list_items: u64::MAX, ..Default::default() };
+        let mut transaction = TransactionSelectors::new(TransactionMetadata {
+            access_list_items: 1,
+            authorization_validations: 1,
+            ..Default::default()
+        });
+        transaction.transaction_payload = Some(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        prefix.merge_transaction(&transaction);
+        assert_eq!(prefix.access_list_items, u64::MAX);
+        assert_eq!(prefix.authorization_validations, 0);
+        assert_eq!(prefix.non_anchor_transactions, 0);
+        assert_eq!(prefix.transaction_payload, TransactionPayloadSelectors::default());
+        assert_eq!(prefix.diagnostic, Some(ZkGasAccumulatorError::ArithmeticOverflow));
+    }
 
     #[test]
     fn authorization_count_overflow_keeps_prefix_unchanged_and_diagnostic() {

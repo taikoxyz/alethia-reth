@@ -4,11 +4,11 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55`. It adds
-**200,000 normalized PGU per raw EIP-7702 authorization entry**
-to immutable parent `537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b`.
-The parent's CALL-family memory ownership repair, existing operation routes and floors, fixed costs,
-payload/resource/MPT tariffs and global discount are preserved. This remains the current initial
+`3794f020f947fbaff4b26e8128996fcf9dcffb350b4360cc1d3d4114a809605e`. It adds
+**8,192 normalized PGU per raw non-legacy access-list address item** to immutable parent
+`4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55`.
+All existing routes and floors, fixed costs, payload/resource/MPT tariffs, the global discount and
+**200,000 PGU per authorization entry** remain unchanged. This remains the current initial
 Shadow model with no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this
 document is stale.
 
@@ -34,7 +34,7 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
@@ -75,11 +75,12 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
-- [`authorization_successor.py`](../crates/evm/src/zk_gas/pricing/authorization_successor.py)
-  deterministically adds the authorization-validation tariff to immutable model537a using the sealed
-  [`authorization policy and measurements`](../crates/evm/src/zk_gas/pricing/successors/authorization-validation-v1.json).
-  Exact replay rejects extra fields, coefficient drift and stale tooling provenance. Historical CALL
-  memory repair remains in `call_memory_successor.py`; EXP derivation remains in `successor.py`.
+- [`access_list_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_successor.py)
+  derives the raw address-item tariff from immutable model4c03 and the sealed
+  [`original 23-case policy and evidence`](../crates/evm/src/zk_gas/pricing/successors/access-list-items-v1.json).
+  Exact replay rejects changed fields, coefficient drift and stale tooling provenance. Historical
+  authorization derivation remains in `authorization_successor.py`, CALL memory repair in
+  `call_memory_successor.py`, and EXP derivation in `successor.py`.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -401,6 +402,65 @@ or deployed admission guarantee. Full retained raw fixtures remain external; the
 binds their audit and compact measurement identities. Existing global discounts and all old terms
 remain numerically identical when the authorization count is zero.
 
+## Raw access-list address items
+
+Non-legacy preexecution traverses every declared address item and every storage key before merging
+warm sets. Repeated address items remain work even when their addresses and keys are identical.
+Existing signed-payload bytes and unique-resource tariffs remain charged; the new term prices only
+raw address-item multiplicity. No raw-key tariff is added.
+
+The common plain/inspected `transact_raw` hook records `TxEnv.access_list.0.len()` when `tx_type != 0`,
+matching REVM's non-legacy warming gate. This includes Anchor items when carried; it does not assume
+Anchor always has an empty list. Legacy TxEnv contributes zero to this term. Metadata, committed and
+attempted snapshots, and direct `BlockPricingInput` use `access_list_items`; sealed known breakdowns
+expose that count and `access_list_scaled()`. Raw keys and uniqueness do not multiply the item count.
+Included user REVERTs retain their entries. Committed reports own included scopes; attempted reports
+also retain begun scopes later discarded. Earlier filtered/unattempted outer-input work remains
+outside these prefixes, as described for authorization validation above.
+
+The effective tariff is **8,192 normalized PGU per address item**, stored as `8192 * scale` with no
+second discount. It is included once in node/mining-known subtotals and complete block totals, and
+revalidated from the count during Shadow completion. Proposal-once pricing adds zero access-list
+contribution. Counts and all prefix additions use checked bounds/arithmetic; a failed merge retains a
+diagnostic without partially changing other selectors. Runtime mode, Unzen metering, gas limits and
+header-difficulty rules are unchanged.
+
+### Original evidence and exact derivation
+
+Only the original 23 canonical access-list observations constrain this fit. The sealed evidence
+binds their input/native/quote/SP1/resource-receipt digests, the original semantic summary and the
+separate final independent raw audit. The same experimental SDK 6.3.0 / ELF
+`b76baf2e0f3fa3fe6f8a20fe53dbf82f58601ed14b370dfc0f8d31db2069e034` was used. Native construction
+and retained actuals were independently checked; source bindings are provenance, not a clean-build or
+bit-rebuild attestation. Prospective holdouts are excluded from the fitting evidence.
+
+Let `A` be actual PGU, `Q` the parent complete scaled price divided by scale, `N` the parent
+node-known scaled price divided by scale, and `I` the raw address-item count. Compute the maximum of:
+
+```text
+0
+(5/4) * max(A - Q, 0) / I                  for each observation with I > 0
+((5/4) * delta(A) - delta(N)) / delta(I)   for selected pairs with delta(I) > 0 and delta(A) > 0
+```
+
+The selected pair collections are shared-baseline increments, same-pattern adjacent increments,
+grouping comparisons and matched three-block references. The zero-item references must already be
+covered. The exact maximum is **19,375,485 / 4,094 PGU per added item**; take the integer ceiling
+**4,733**, then round upward to the next power of two: **8,192**.
+
+The binding grouping case compares 2,048 repeated keys in one item with 2,048 repeated items carrying
+one key each. Actual work increases by 17,391,154 PGU while parent node pricing increases by
+12,051,200 PGU: a 5,339,954-PGU uncovered increment for 2,047 extra raw address items. The fit preserves
+all existing payload and unique-key/address charges.
+
+Pairs with zero raw-item delta remain shape/order diagnostics, without forced slope fitting. In
+particular, reversing the same 4,096-key set produced a **1,502-PGU actual difference at the same
+price**. This tariff does not cover that increment because it gives both lists the same item price.
+The sealed arithmetic projects original full underquotes from **3 to 0**; it is not native repricing
+of the new model. Native consumer validation and independent holdouts remain separate work. These
+finite cases establish neither a universal hash-distribution bound nor EVM-gas-saturated coverage;
+there is no new admission activation or guest rebuild.
+
 ## Scope decomposition and ownership
 
 The complete block-local fixed-point price is:
@@ -411,6 +471,7 @@ block_price =
   + committed_non_anchor_transaction_tariff * committed_non_anchor_transactions
   + native_value_transfer_tariff * native_value_transfers
   + authorization_validation_tariff * raw_authorization_validations
+  + access_list_item_tariff * raw_access_list_address_items
   + operation_price
   + exact_unique_resource_price
   + committed_transaction_payload_price
@@ -795,7 +856,7 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 python3 -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-python3 crates/evm/src/zk_gas/pricing/authorization_successor.py --check
+python3 crates/evm/src/zk_gas/pricing/access_list_successor.py --check
 python3 crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 

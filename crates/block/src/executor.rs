@@ -246,6 +246,8 @@ where
                 fixed_scaled = ?known.fixed_scaled(),
                 authorization_validations = known.authorization_validations(),
                 authorization_scaled = ?known.authorization_scaled(),
+                access_list_items = known.access_list_items(),
+                access_list_scaled = ?known.access_list_scaled(),
                 operations_scaled = ?known.operations_scaled(),
                 evm_local_resources_scaled = ?known.evm_local_resources_scaled(),
                 "zk gas pricing shadow block report"

@@ -507,10 +507,15 @@ where
             } else {
                 Ok(0)
             };
+            // REVM warms all raw address items on every non-legacy transaction. Anchor
+            // entries are included; duplicate items remain work even after set deduplication.
+            let access_list_count =
+                if tx.tx_type != 0 { u64::try_from(tx.access_list.0.len()) } else { Ok(0) };
             let metadata = TransactionMetadata {
                 is_anchor,
                 native_value_transfer: false,
                 authorization_validations: authorization_count.unwrap_or(u64::MAX),
+                access_list_items: access_list_count.unwrap_or(u64::MAX),
             };
             let beneficiary = self.ctx().block.beneficiary;
             let accumulator = self.zk_gas_pricing_mut().expect("collector presence checked above");

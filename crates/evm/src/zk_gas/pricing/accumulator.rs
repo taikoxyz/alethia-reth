@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    MemorySelectors, OperationModelInput, OperationPricingInput, OperationRoute,
-    OperationRoutePricingInput, ResourceSelectors, TransactionPayloadSelectors, ZkGasError,
-    ZkGasModel,
+    CodePreparationSelectors, MemorySelectors, OperationModelInput, OperationPricingInput,
+    OperationRoute, OperationRoutePricingInput, ResourceSelectors, TransactionPayloadSelectors,
+    ZkGasError, ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -293,6 +293,8 @@ struct TransactionSelectors {
     metadata: TransactionMetadata,
     /// Signed envelope metadata, populated by the outer block pipeline.
     transaction_payload: Option<TransactionPayloadSelectors>,
+    /// Accepted nonempty code preparations, retained even if an ancestor reverts.
+    code_preparation: CodePreparationSelectors,
     /// Priced operation components keyed by canonical route.
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Exact resources touched by the transaction.
@@ -309,6 +311,7 @@ impl TransactionSelectors {
         Self {
             metadata,
             transaction_payload: None,
+            code_preparation: CodePreparationSelectors::default(),
             operation_routes: BTreeMap::new(),
             resources: ResourceSet::default(),
             diagnostic: None,
@@ -359,6 +362,8 @@ pub struct ZkGasBlockSnapshot {
     pub authorization_validations: u64,
     /// Raw non-legacy access-list address items, including duplicates and Anchor entries.
     pub access_list_items: u64,
+    /// Actual accepted nonempty code preparations across this prefix.
+    pub code_preparation: CodePreparationSelectors,
     /// Canonical payload of all included signed transactions.
     pub transaction_payload: TransactionPayloadSelectors,
     /// Accumulated operation candidates in canonical route order.
@@ -402,6 +407,8 @@ struct SelectorPrefix {
     authorization_validations: u64,
     /// Additive raw access-list address item count, without deduplication.
     access_list_items: u64,
+    /// Additive accepted code preparations, counted by occurrence rather than hash.
+    code_preparation: CodePreparationSelectors,
     /// Additive canonical signed payload across this prefix.
     transaction_payload: TransactionPayloadSelectors,
     /// Operation components aggregated by route.
@@ -443,6 +450,8 @@ impl SelectorPrefix {
                 .checked_add(transaction.metadata.access_list_items)
                 .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
             ZkGasModel.price_access_list_items(access_list_items)?;
+            let code_preparation =
+                checked_code_preparation_sum(self.code_preparation, transaction.code_preparation)?;
             let transaction_payload = TransactionPayloadSelectors {
                 canonical_transaction_bytes: self
                     .transaction_payload
@@ -466,6 +475,7 @@ impl SelectorPrefix {
                 next_native_transfers,
                 authorization_validations,
                 access_list_items,
+                code_preparation,
                 transaction_payload,
                 routes,
                 resources,
@@ -476,6 +486,7 @@ impl SelectorPrefix {
             next_native_transfers,
             authorization_validations,
             access_list_items,
+            code_preparation,
             transaction_payload,
             routes,
             resource_totals,
@@ -488,6 +499,7 @@ impl SelectorPrefix {
         self.native_value_transfers = next_native_transfers;
         self.authorization_validations = authorization_validations;
         self.access_list_items = access_list_items;
+        self.code_preparation = code_preparation;
         self.transaction_payload = transaction_payload;
         for (key, row) in routes {
             self.operation_routes.insert(key, row);
@@ -502,6 +514,7 @@ impl SelectorPrefix {
             native_value_transfers: self.native_value_transfers,
             authorization_validations: self.authorization_validations,
             access_list_items: self.access_list_items,
+            code_preparation: self.code_preparation,
             transaction_payload: self.transaction_payload,
             operation_routes: self.operation_routes.values().copied().collect(),
             resources: self.resources.selectors(),
@@ -629,6 +642,31 @@ impl ZkGasAccumulator {
             }),
             feature_error: false,
         });
+        self.retain_diagnostic(result.err());
+        result
+    }
+
+    /// Records one actual accepted nonempty create output after code preparation.
+    ///
+    /// Empty output is a no-op. Checked validation precedes both selector updates;
+    /// invalid lengths retain a diagnostic without changing EVM execution.
+    pub fn observe_code_preparation(
+        &mut self,
+        byte_length: u64,
+    ) -> Result<(), ZkGasAccumulatorError> {
+        if byte_length == 0 {
+            return Ok(());
+        }
+        let result = (|| {
+            let transaction =
+                self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
+            let next = checked_code_preparation_sum(
+                transaction.code_preparation,
+                CodePreparationSelectors { nonempty_events: 1, total_bytes: byte_length },
+            )?;
+            transaction.code_preparation = next;
+            Ok(())
+        })();
         self.retain_diagnostic(result.err());
         result
     }
@@ -875,5 +913,77 @@ mod authorization_tests {
         assert_eq!(prefix.non_anchor_transactions, 0);
         assert_eq!(prefix.transaction_payload, TransactionPayloadSelectors::default());
         assert_eq!(prefix.diagnostic, Some(ZkGasAccumulatorError::ArithmeticOverflow));
+    }
+}
+
+/// Atomically validates and adds occurrence selectors for transaction and prefix scopes.
+fn checked_code_preparation_sum(
+    left: CodePreparationSelectors,
+    right: CodePreparationSelectors,
+) -> Result<CodePreparationSelectors, ZkGasAccumulatorError> {
+    ZkGasModel.price_code_preparation(left)?;
+    ZkGasModel.price_code_preparation(right)?;
+    let result = CodePreparationSelectors {
+        nonempty_events: left
+            .nonempty_events
+            .checked_add(right.nonempty_events)
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
+        total_bytes: left
+            .total_bytes
+            .checked_add(right.total_bytes)
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
+    };
+    ZkGasModel.price_code_preparation(result)?;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod code_preparation_atomic_tests {
+    use super::*;
+    #[test]
+    fn code_preparation_prefix_out_of_domain_does_not_mutate_other_totals() {
+        let mut prefix = SelectorPrefix {
+            code_preparation: CodePreparationSelectors {
+                nonempty_events: 1_000_000_000,
+                total_bytes: 1_000_000_000,
+            },
+            ..Default::default()
+        };
+        let mut transaction = TransactionSelectors::new(TransactionMetadata {
+            native_value_transfer: true,
+            ..Default::default()
+        });
+        transaction.transaction_payload = Some(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        transaction.code_preparation =
+            CodePreparationSelectors { nonempty_events: 1, total_bytes: 1 };
+        transaction.resources.observe(StateAccess::Account(Address::with_last_byte(1))).unwrap();
+        prefix.merge_transaction(&transaction);
+        assert_eq!(prefix.code_preparation.nonempty_events, 1_000_000_000);
+        assert_eq!(prefix.code_preparation.total_bytes, 1_000_000_000);
+        assert_eq!(prefix.non_anchor_transactions, 0);
+        assert_eq!(prefix.native_value_transfers, 0);
+        assert_eq!(prefix.transaction_payload, Default::default());
+        assert_eq!(prefix.resources.selectors(), Default::default());
+        assert!(prefix.diagnostic.is_some());
+    }
+    #[test]
+    fn code_preparation_invalid_delta_cannot_be_hidden_by_valid_prefix() {
+        assert!(
+            checked_code_preparation_sum(
+                CodePreparationSelectors { nonempty_events: 1, total_bytes: 1 },
+                CodePreparationSelectors { nonempty_events: 1, total_bytes: 24577 }
+            )
+            .is_err()
+        );
+        assert!(
+            checked_code_preparation_sum(
+                CodePreparationSelectors { nonempty_events: 1, total_bytes: 32 },
+                CodePreparationSelectors { nonempty_events: 0, total_bytes: 1 }
+            )
+            .is_err()
+        );
     }
 }

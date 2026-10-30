@@ -349,6 +349,7 @@ where
             .unwrap_or_default();
         if self.inspect {
             self.base_evm_mut().inner.inspector.install_pricing(accumulator);
+            self.base_evm_mut().use_inspector_zk_gas_pricing();
         } else {
             self.base_evm_mut().install_zk_gas_pricing(accumulator);
         }

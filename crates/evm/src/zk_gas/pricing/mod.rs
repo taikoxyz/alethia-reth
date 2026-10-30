@@ -17,8 +17,8 @@ pub use mode::{
 };
 pub use model::ZkGasModel;
 pub use types::{
-    AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,
-    OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
-    PricingBreakdown, ProposalPricingInput, ResourceSelectors, StorageBranch,
-    TransactionPayloadSelectors, ValueClass, ZkGasError,
+    AccessClass, BlockPricingInput, CalldataAccessClass, CodePreparationSelectors, MemorySelectors,
+    MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,
+    OperationRoutePricingInput, PricingBreakdown, ProposalPricingInput, ResourceSelectors,
+    StorageBranch, TransactionPayloadSelectors, ValueClass, ZkGasError,
 };

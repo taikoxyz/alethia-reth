@@ -255,6 +255,19 @@ pub struct TransactionPayloadSelectors {
     pub nonempty_payload_transactions: u64,
 }
 
+/// Actual accepted nonempty create-frame preparations in one accounting scope.
+///
+/// Counts are per occurrence, including work later reverted by an ancestor; they
+/// are never deduplicated by code hash. The current post-Unzen domain permits
+/// 1..=24576 bytes per nonempty event. Future code-size forks need a new domain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CodePreparationSelectors {
+    /// Number of accepted create frames that prepared nonempty output code.
+    pub nonempty_events: u64,
+    /// Sum of original output byte lengths across those events.
+    pub total_bytes: u64,
+}
+
 /// Complete block-local input; every slice entry must be committed.
 #[derive(Clone, Copy, Debug)]
 pub struct BlockPricingInput<'a> {
@@ -266,6 +279,8 @@ pub struct BlockPricingInput<'a> {
     pub authorization_validations: u64,
     /// Raw included non-legacy access-list address items, including duplicate and Anchor items.
     pub access_list_items: u64,
+    /// Accepted code preparation occurrences and processed bytes, without deduplication.
+    pub code_preparation: CodePreparationSelectors,
     /// Committed per-route candidate aggregates.
     pub operation_routes: &'a [OperationRoutePricingInput],
     /// Unique-resource selectors.
@@ -316,6 +331,8 @@ pub struct PricingBreakdown {
     pub authorization_scaled: i128,
     /// Raw access-list address item contribution in normalized fixed-point PGU.
     pub access_list_scaled: i128,
+    /// Per-occurrence accepted code preparation contribution in normalized fixed-point PGU.
+    pub code_preparation_scaled: i128,
     /// Block operation contribution after per-route composition.
     pub operations_scaled: i128,
     /// Block unique-resource contribution.

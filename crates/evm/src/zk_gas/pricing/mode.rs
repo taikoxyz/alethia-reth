@@ -1,8 +1,9 @@
 //! Runtime mode and typed shadow-report contracts for zk gas pricing.
 
 use super::{
-    RUNTIME_SPEC_SHA256, ResourceSelectors, TransactionPayloadSelectors, ZkGasAccumulatorError,
-    ZkGasBlockSnapshot, ZkGasError, ZkGasModel, model::KnownBlockPricingInput,
+    CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors, TransactionPayloadSelectors,
+    ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError, ZkGasModel,
+    model::KnownBlockPricingInput,
 };
 use core::fmt;
 
@@ -23,6 +24,10 @@ pub struct ZkGasKnownBlockBreakdown {
     access_list_items: u64,
     /// Raw access-list item contribution in normalized fixed-point PGU.
     access_list_scaled: i128,
+    /// Actual accepted code preparations sealed with their contribution.
+    code_preparation: CodePreparationSelectors,
+    /// Normalized per-occurrence code preparation contribution.
+    code_preparation_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
@@ -59,9 +64,13 @@ impl ZkGasKnownBlockBreakdown {
         transaction_payload_scaled: i128,
         evm_local_known_subtotal_scaled: i128,
         evm_local_known_subtotal_pgu: u128,
+        code_preparation: CodePreparationSelectors,
+        code_preparation_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
+            code_preparation,
+            code_preparation_scaled,
             authorization_validations,
             authorization_scaled,
             access_list_items,
@@ -100,6 +109,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Raw access-list item contribution in normalized fixed-point PGU.
     pub const fn access_list_scaled(self) -> i128 {
         self.access_list_scaled
+    }
+
+    /// Actual accepted nonempty code preparations without hash deduplication.
+    pub const fn code_preparation(self) -> CodePreparationSelectors {
+        self.code_preparation
+    }
+
+    /// Accepted code preparation contribution in normalized fixed-point PGU.
+    pub const fn code_preparation_scaled(self) -> i128 {
+        self.code_preparation_scaled
     }
 
     /// Block operation contribution in fixed-point units.
@@ -180,6 +199,8 @@ impl ZkGasKnownBlockBreakdown {
             0,
             known_subtotal_scaled,
             known_subtotal_pgu,
+            CodePreparationSelectors { nonempty_events: 0, total_bytes: 0 },
+            0,
         )
     }
 }
@@ -274,6 +295,10 @@ impl std::error::Error for ZkGasCompletionError {}
 
 /// Status of one block-local shadow evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep sealed block reports Copy without introducing per-block heap allocation or a public API break"
+)]
 pub enum ZkGasShadowStatus {
     /// Execution, signed payload and local resources were priced, but the result is incomplete.
     Incomplete {
@@ -375,6 +400,7 @@ impl ZkGasBlockSnapshot {
                 native_value_transfers: self.native_value_transfers,
                 authorization_validations: self.authorization_validations,
                 access_list_items: self.access_list_items,
+                code_preparation: self.code_preparation,
                 operation_routes: &self.operation_routes,
                 resources: self.resources,
                 transaction_payload: self.transaction_payload,

@@ -5,15 +5,15 @@ use super::{
     ZkGasShadowStatus,
     generated::{
         ACCESS_LIST_ITEM_TARIFF, AUTHORIZATION_VALIDATION_TARIFF, BLOB_SOURCE_TARIFFS, BLOCK_FIXED,
-        FIXED_POINT_SCALE, MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS, OPCODE_ROUTE_INDEX,
-        PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP, RESOURCE_TARIFFS, ROUTES,
-        SPAWN_ROUTE_INDEX, TRANSACTION_PAYLOAD_TARIFFS,
+        CODE_PREPARATION_TARIFFS, FIXED_POINT_SCALE, MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS,
+        OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP,
+        RESOURCE_TARIFFS, ROUTES, SPAWN_ROUTE_INDEX, TRANSACTION_PAYLOAD_TARIFFS,
     },
     types::{
-        AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,
-        OperationModelInput, OperationPricingInput, OperationRoute, OperationRoutePricingInput,
-        PricingBreakdown, ProposalPricingInput, ResourceSelectors, SELECTOR_BOUND, StorageBranch,
-        TransactionPayloadSelectors, ValueClass, ZkGasError,
+        AccessClass, BlockPricingInput, CalldataAccessClass, CodePreparationSelectors,
+        MemorySelectors, MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,
+        OperationRoutePricingInput, PricingBreakdown, ProposalPricingInput, ResourceSelectors,
+        SELECTOR_BOUND, StorageBranch, TransactionPayloadSelectors, ValueClass, ZkGasError,
     },
 };
 
@@ -27,6 +27,8 @@ pub(super) struct KnownBlockPricingInput<'a> {
     pub(super) authorization_validations: u64,
     /// Raw non-legacy access-list address item count.
     pub(super) access_list_items: u64,
+    /// Actual accepted nonempty create-frame code preparation occurrences.
+    pub(super) code_preparation: CodePreparationSelectors,
     /// Committed operation aggregates in canonical route order.
     pub(super) operation_routes: &'a [OperationRoutePricingInput],
     /// Canonical payload already attributed to the committed block scope.
@@ -273,6 +275,7 @@ impl ZkGasModel {
             native_value_transfers: input.native_value_transfers,
             authorization_validations: input.authorization_validations,
             access_list_items: input.access_list_items,
+            code_preparation: input.code_preparation,
             operation_routes: input.operation_routes,
             resources: input.resources,
             transaction_payload: input.transaction_payload,
@@ -284,6 +287,7 @@ impl ZkGasModel {
             fixed_scaled: known.fixed_scaled(),
             authorization_scaled: known.authorization_scaled(),
             access_list_scaled: known.access_list_scaled(),
+            code_preparation_scaled: known.code_preparation_scaled(),
             operations_scaled: known.operations_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: known.evm_local_resources_scaled(),
@@ -324,6 +328,7 @@ impl ZkGasModel {
             known.fixed_scaled(),
             known.authorization_scaled(),
             known.access_list_scaled(),
+            known.code_preparation_scaled(),
             known.operations_scaled(),
             resources,
             mpt,
@@ -334,6 +339,7 @@ impl ZkGasModel {
             fixed_scaled: known.fixed_scaled(),
             authorization_scaled: known.authorization_scaled(),
             access_list_scaled: known.access_list_scaled(),
+            code_preparation_scaled: known.code_preparation_scaled(),
             operations_scaled: known.operations_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: resources,
@@ -359,7 +365,7 @@ impl ZkGasModel {
             .operation_routes
             .len()
             .checked_mul(4)
-            .and_then(|count| count.checked_add(17))
+            .and_then(|count| count.checked_add(19))
             .ok_or(ZkGasError::ArithmeticOverflow)?;
         enforce_term_count(block_term_count)?;
         let fixed = checked_dot(&[
@@ -397,10 +403,18 @@ impl ZkGasModel {
         let authorization =
             self.price_authorization_validations(input.authorization_validations)?;
         let access_list = self.price_access_list_items(input.access_list_items)?;
+        let code_preparation = self.price_code_preparation(input.code_preparation)?;
         let resources = price_resources(input.resources)?;
         let payload = self.price_transaction_payload(input.transaction_payload)?.total_scaled;
-        let known_subtotal =
-            checked_sum(&[fixed, authorization, access_list, operations, resources, payload])?;
+        let known_subtotal = checked_sum(&[
+            fixed,
+            authorization,
+            access_list,
+            code_preparation,
+            operations,
+            resources,
+            payload,
+        ])?;
         ensure_nonnegative(known_subtotal, "known_block_subtotal")?;
         Ok(ZkGasKnownBlockBreakdown::new(
             fixed,
@@ -416,6 +430,8 @@ impl ZkGasModel {
             payload,
             known_subtotal,
             ceil_scaled(known_subtotal)?,
+            input.code_preparation,
+            code_preparation,
         ))
     }
 
@@ -433,6 +449,26 @@ impl ZkGasModel {
     /// Coefficients are already normalized; this term receives no second discount.
     pub fn price_access_list_items(self, count: u64) -> Result<i128, ZkGasError> {
         checked_mul(ACCESS_LIST_ITEM_TARIFF, bounded("access_list_items", count)?)
+    }
+
+    /// Prices accepted nonempty create output once per event and processed byte.
+    ///
+    /// Selectors include reverted ancestor work and never deduplicate by code hash.
+    /// Empty code contributes zero. The current post-Unzen domain caps each accepted
+    /// output at24576 bytes; future code-size forks require a domain update.
+    pub fn price_code_preparation(
+        self,
+        selectors: CodePreparationSelectors,
+    ) -> Result<i128, ZkGasError> {
+        let events = bounded("code_preparation_nonempty_events", selectors.nonempty_events)?;
+        let bytes = bounded("code_preparation_total_bytes", selectors.total_bytes)?;
+        if (events == 0) != (bytes == 0) ||
+            bytes < events ||
+            bytes > events.checked_mul(24_576).ok_or(ZkGasError::ArithmeticOverflow)?
+        {
+            return Err(ZkGasError::InvalidInput("code_preparation"));
+        }
+        checked_dot(&[(CODE_PREPARATION_TARIFFS[0], events), (CODE_PREPARATION_TARIFFS[1], bytes)])
     }
 
     /// Prices canonical signed payload once for either a block or additional proposal input.
@@ -531,6 +567,11 @@ fn validate_shadow_report(
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("access_list_scaled"));
     }
+    if ZkGasModel.price_code_preparation(known.code_preparation())? !=
+        known.code_preparation_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("code_preparation_scaled"));
+    }
     ensure_nonnegative(known.operations_scaled(), "operations")?;
     ensure_nonnegative(known.feature_error_scaled(), "feature_error")?;
     ensure_nonnegative(known.evm_local_resources_scaled(), "evm_local_resources")?;
@@ -549,6 +590,7 @@ fn validate_shadow_report(
         known.fixed_scaled(),
         known.authorization_scaled(),
         known.access_list_scaled(),
+        known.code_preparation_scaled(),
         known.operations_scaled(),
         known.evm_local_resources_scaled(),
         known.transaction_payload_scaled(),
@@ -1161,6 +1203,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn code_preparation_completion_rejects_inconsistent_sealed_contribution() {
+        let known = ZkGasKnownBlockBreakdown::new(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            ResourceSelectors::default(),
+            0,
+            TransactionPayloadSelectors::default(),
+            0,
+            0,
+            0,
+            CodePreparationSelectors { nonempty_events: 1, total_bytes: 32 },
+            0,
+        );
+        let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
+            known,
+            missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+        });
+        assert_eq!(
+            ZkGasModel.complete_block_shadow_report(
+                &report,
+                Default::default(),
+                Default::default()
+            ),
+            Err(ZkGasCompletionError::InconsistentKnownBreakdown("code_preparation_scaled"))
+        );
+    }
+
+    #[test]
     fn access_list_completion_rejects_inconsistent_sealed_contribution() {
         let known = ZkGasKnownBlockBreakdown::new(
             0,
@@ -1175,6 +1250,8 @@ mod tests {
             TransactionPayloadSelectors::default(),
             0,
             0,
+            0,
+            CodePreparationSelectors::default(),
             0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
@@ -1206,6 +1283,8 @@ mod tests {
             TransactionPayloadSelectors::default(),
             0,
             0,
+            0,
+            CodePreparationSelectors::default(),
             0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
@@ -1301,6 +1380,7 @@ mod tests {
                 native_value_transfers: 0,
                 authorization_validations: 0,
                 access_list_items: 0,
+                code_preparation: Default::default(),
                 operation_routes: &[OperationRoutePricingInput {
                     route: OperationRoute::Opcode(0x09),
                     accepted_absolute_scaled: 269_073_027_078_518_685_466 * 2,
@@ -1386,6 +1466,7 @@ mod tests {
                     native_value_transfers: 0,
                     authorization_validations: 0,
                     access_list_items: 0,
+                    code_preparation: Default::default(),
                     operation_routes: &[OperationRoutePricingInput {
                         route: input.route,
                         accepted_absolute_scaled: 2 * normal.accepted_absolute_scaled,

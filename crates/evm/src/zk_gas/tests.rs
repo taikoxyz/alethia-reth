@@ -72,6 +72,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
                 native_value_transfers: 0,
                 authorization_validations: count,
                 access_list_items: 0,
+                code_preparation: Default::default(),
                 operation_routes: &[],
                 transaction_payload: Default::default(),
                 resources: Default::default(),
@@ -328,6 +329,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
                 native_value_transfers: 0,
                 authorization_validations: 0,
                 access_list_items: count,
+                code_preparation: Default::default(),
                 operation_routes: &[],
                 resources: Default::default(),
                 transaction_payload: Default::default(),
@@ -749,6 +751,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
             native_value_transfers: snapshot.native_value_transfers,
             authorization_validations: snapshot.authorization_validations,
             access_list_items: snapshot.access_list_items,
+            code_preparation: snapshot.code_preparation,
             operation_routes: &snapshot.operation_routes,
             resources: snapshot.resources,
             mpt,
@@ -812,6 +815,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
             native_value_transfers: snapshot.native_value_transfers,
             authorization_validations: snapshot.authorization_validations,
             access_list_items: snapshot.access_list_items,
+            code_preparation: snapshot.code_preparation,
             operation_routes: &snapshot.operation_routes,
             resources: authoritative_resources,
             mpt: MptSelectors::default(),
@@ -2130,7 +2134,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "3794f020f947fbaff4b26e8128996fcf9dcffb350b4360cc1d3d4114a809605e"
+        "a2988920125e304121acb629b9b96fd1ad85ee707c89978240408c81e2a42f3e"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2403,6 +2407,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
             native_value_transfers: 0,
             authorization_validations: 0,
             access_list_items: 0,
+            code_preparation: Default::default(),
             operation_routes: &accumulated,
             resources: ResourceSelectors::default(),
             mpt: MptSelectors::default(),
@@ -2436,6 +2441,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
             native_value_transfers: 1,
             authorization_validations: 0,
             access_list_items: 0,
+            code_preparation: Default::default(),
             operation_routes: &[operation_route],
             resources: ResourceSelectors {
                 unique_account_count: 1,
@@ -2458,10 +2464,10 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
 
     assert_eq!(priced.fixed_scaled, 1_630_529_463_688_974_647_719_310);
     assert_eq!(priced.operations_scaled, 42_682_295_930_216_867_992);
-    assert_eq!(priced.resources_scaled, 103_248_000_000_000_000_000_000);
+    assert_eq!(priced.resources_scaled, 103_558_000_000_000_000_000_000);
     assert_eq!(priced.mpt_scaled, 5_266_256_000_000_000_000_000_000);
-    assert_eq!(priced.total_scaled, 7_000_076_145_984_904_864_587_302);
-    assert_eq!(priced.total_pgu, Some(7_000_077));
+    assert_eq!(priced.total_scaled, 7_000_386_145_984_904_864_587_302);
+    assert_eq!(priced.total_pgu, Some(7_000_387));
 }
 
 #[test]
@@ -2473,6 +2479,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
             native_value_transfers: 0,
             authorization_validations: 0,
             access_list_items: 0,
+            code_preparation: Default::default(),
             operation_routes: &[OperationRoutePricingInput {
                 route: OperationRoute::Opcode(0x31),
                 accepted_absolute_scaled: 100,
@@ -2498,6 +2505,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
             native_value_transfers: maximum,
             authorization_validations: 0,
             access_list_items: 0,
+            code_preparation: Default::default(),
             operation_routes: &[],
             resources: ResourceSelectors {
                 unique_account_count: maximum,
@@ -2517,8 +2525,8 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
             },
         })
         .expect("declared selector maximum remains inside i128");
-    assert_eq!(priced.total_scaled, 1_041_285_768_215_445_247_785_283_011_787_524);
-    assert_eq!(priced.total_pgu, Some(1_041_285_768_215_446));
+    assert_eq!(priced.total_scaled, 1_041_347_768_215_445_247_785_283_011_787_524);
+    assert_eq!(priced.total_pgu, Some(1_041_347_768_215_446));
 }
 
 #[test]
@@ -2622,6 +2630,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
             native_value_transfers: 0,
             authorization_validations: 0,
             access_list_items: 0,
+            code_preparation: Default::default(),
             operation_routes: &negative_route,
             resources: ResourceSelectors::default(),
             mpt: MptSelectors::default(),
@@ -4826,3 +4835,416 @@ fn completion_revalidates_sealed_payload_selectors_and_price() {
 
 #[path = "call_memory_verification_tests.rs"]
 mod independent_call_memory;
+
+#[test]
+fn code_preparation_tariff_is_normalized_additive_and_rejects_inconsistent_selectors() {
+    use super::pricing::CodePreparationSelectors;
+    for (events, bytes) in [(0, 0), (1, 1), (1, 24576), (4, 4 * 24576)] {
+        let selectors = CodePreparationSelectors { nonempty_events: events, total_bytes: bytes };
+        let expected = (8192 * i128::from(events) + 32 * i128::from(bytes)) * FIXED_POINT_SCALE;
+        assert_eq!(ZkGasModel.price_code_preparation(selectors).unwrap(), expected);
+        let snapshot = super::pricing::ZkGasBlockSnapshot {
+            code_preparation: selectors,
+            ..Default::default()
+        };
+        let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
+            panic!("valid preparation quote")
+        };
+        assert_eq!(known.code_preparation(), selectors);
+        assert_eq!(known.code_preparation_scaled(), expected);
+        let full = ZkGasModel
+            .complete_block_shadow_report(
+                &snapshot.shadow_report(),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        let zero = ZkGasModel
+            .complete_block_shadow_report(
+                &super::pricing::ZkGasBlockSnapshot::default().shadow_report(),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(full.code_preparation_scaled, expected);
+        assert_eq!(full.total_scaled - zero.total_scaled, expected);
+    }
+    for (events, bytes) in
+        [(0, 1), (1, 0), (2, 1), (1, 24577), (1_000_000_001, 1_000_000_001), (1, 1_000_000_001)]
+    {
+        assert!(
+            ZkGasModel
+                .price_code_preparation(CodePreparationSelectors {
+                    nonempty_events: events,
+                    total_bytes: bytes
+                })
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn code_preparation_collector_counts_occurrences_across_commit_reset_and_bounds() {
+    use super::pricing::{CodePreparationSelectors, TransactionMetadata, ZkGasAccumulator};
+    let mut c = ZkGasAccumulator::default();
+    c.begin_transaction(TransactionMetadata::default()).unwrap();
+    c.observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    })
+    .unwrap();
+    c.observe_code_preparation(0).unwrap();
+    for _ in 0..3 {
+        c.observe_code_preparation(32).unwrap();
+    }
+    c.commit_transaction().unwrap();
+    assert_eq!(
+        c.committed_snapshot().code_preparation,
+        CodePreparationSelectors { nonempty_events: 3, total_bytes: 96 }
+    );
+    assert_eq!(
+        c.attempted_snapshot().block.code_preparation,
+        c.committed_snapshot().code_preparation
+    );
+    c.begin_transaction(TransactionMetadata::default()).unwrap();
+    c.observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    })
+    .unwrap();
+    c.observe_code_preparation(8).unwrap();
+    c.reset_transaction();
+    assert_eq!(c.committed_snapshot().code_preparation.total_bytes, 96);
+    assert_eq!(
+        c.attempted_snapshot().block.code_preparation,
+        CodePreparationSelectors { nonempty_events: 4, total_bytes: 104 }
+    );
+    c.begin_transaction(TransactionMetadata::default()).unwrap();
+    assert!(c.observe_code_preparation(24577).is_err());
+    c.observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100,
+        nonempty_payload_transactions: 0,
+    })
+    .unwrap();
+    c.commit_transaction().unwrap();
+    assert_eq!(
+        c.committed_snapshot().code_preparation.total_bytes,
+        96,
+        "invalid observation must not partially mutate selectors"
+    );
+    assert!(c.committed_snapshot().diagnostic.is_some());
+}
+
+#[test]
+fn code_preparation_real_top_level_create_plain_inspected_and_failures() {
+    use super::pricing::CodePreparationSelectors;
+    for (code, gas, events, bytes) in [
+        (vec![], 100_000, 0, 0),
+        (vec![opcode::STOP], 100_000, 0, 0),
+        (vec![opcode::PUSH1, 1, opcode::PUSH0, opcode::RETURN], 100_000, 1, 1),
+        (vec![opcode::PUSH2, 0x60, 0x00, opcode::PUSH0, opcode::RETURN], 8_000_000, 1, 24_576),
+        (vec![opcode::PUSH1, 32, opcode::PUSH0, opcode::RETURN], 100_000, 1, 32),
+        (vec![opcode::PUSH0, opcode::PUSH0, opcode::RETURN], 100_000, 0, 0),
+        (vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT], 100_000, 0, 0),
+        (vec![opcode::PUSH2, 0x60, 0x01, opcode::PUSH0, opcode::RETURN], 8_000_000, 0, 0),
+        (
+            vec![
+                opcode::PUSH1,
+                0xef,
+                opcode::PUSH0,
+                opcode::MSTORE8,
+                opcode::PUSH1,
+                1,
+                opcode::PUSH0,
+                opcode::RETURN,
+            ],
+            100_000,
+            0,
+            0,
+        ),
+        (vec![opcode::PUSH1, 32, opcode::PUSH0, opcode::RETURN], 53_100, 0, 0),
+    ] {
+        let mut parity = None;
+        for inspected in [false, true] {
+            let db = db_with_contract(Bytecode::default());
+            let mut evm = if inspected {
+                TaikoEvmFactory.create_evm_with_inspector(
+                    db,
+                    evm_env(TaikoSpecId::UNZEN),
+                    NoOpInspector,
+                )
+            } else {
+                TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN))
+            };
+            evm.set_zk_gas_pricing_enabled(true);
+            let mut tx = tx_env(gas);
+            tx.kind = TxKind::Create;
+            tx.data = Bytes::from(code.clone());
+            let result = evm.transact(tx).unwrap();
+            evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 1,
+            });
+            evm.commit_transaction_zk_gas_pricing().unwrap();
+            let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+            assert_eq!(
+                snapshot.code_preparation,
+                CodePreparationSelectors { nonempty_events: events, total_bytes: bytes },
+                "code={code:?} inspect={inspected}"
+            );
+            assert!(snapshot.diagnostic.is_none(), "{:?}", snapshot.diagnostic);
+            let values = (result, snapshot, evm.meter().unwrap().tx_zk_gas_used());
+            if let Some(previous) = &parity {
+                assert_eq!(&values, previous);
+            } else {
+                parity = Some(values);
+            }
+        }
+    }
+}
+
+fn code_preparation_factory(count: u8, create2: bool, revert: bool, value: bool) -> Bytecode {
+    // Four-byte initcode returns32zero runtime bytes. MSTORE places it at offset28.
+    let mut code = vec![
+        opcode::PUSH4,
+        opcode::PUSH1,
+        32,
+        opcode::PUSH0,
+        opcode::RETURN,
+        opcode::PUSH0,
+        opcode::MSTORE,
+    ];
+    for salt in 0..count {
+        if create2 {
+            code.extend_from_slice(&[opcode::PUSH1, salt]);
+        }
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            4,
+            opcode::PUSH1,
+            28,
+            opcode::PUSH1,
+            u8::from(value),
+            if create2 { opcode::CREATE2 } else { opcode::CREATE },
+            opcode::POP,
+        ]);
+    }
+    if revert {
+        code.extend_from_slice(&[opcode::PUSH0, opcode::PUSH0, opcode::REVERT]);
+    } else {
+        code.push(opcode::STOP);
+    }
+    Bytecode::new_raw(Bytes::from(code))
+}
+
+#[test]
+fn code_preparation_internal_create_and_create2_repeated_hash_and_outer_revert_preserve_execution()
+{
+    use super::pricing::CodePreparationSelectors;
+    for create2 in [false, true] {
+        for count in [1, 3] {
+            for revert in [false, true] {
+                for inspected in [false, true] {
+                    let mut baseline = None;
+                    for enabled in [false, true] {
+                        let db = db_with_contract(code_preparation_factory(
+                            count, create2, revert, false,
+                        ));
+                        let mut evm = if inspected {
+                            TaikoEvmFactory.create_evm_with_inspector(
+                                db,
+                                evm_env(TaikoSpecId::UNZEN),
+                                NoOpInspector,
+                            )
+                        } else {
+                            TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN))
+                        };
+                        evm.set_zk_gas_pricing_enabled(enabled);
+                        let result = evm.transact(tx_env(1_000_000)).unwrap();
+                        assert_eq!(result.result.is_success(), !revert);
+                        let legacy = evm.meter().unwrap().tx_zk_gas_used();
+                        if enabled {
+                            evm.record_transaction_payload(
+                                super::pricing::TransactionPayloadSelectors {
+                                    canonical_transaction_bytes: 100,
+                                    nonempty_payload_transactions: 0,
+                                },
+                            );
+                            evm.commit_transaction_zk_gas_pricing().unwrap();
+                            let snap = evm.zk_gas_pricing_snapshot().unwrap();
+                            assert!(snap.diagnostic.is_none(), "{:?}", snap.diagnostic);
+                            assert_eq!(
+                                snap.code_preparation,
+                                CodePreparationSelectors {
+                                    nonempty_events: u64::from(count),
+                                    total_bytes: 32 * u64::from(count)
+                                }
+                            );
+                            assert_eq!(
+                                snap,
+                                evm.zk_gas_attempted_pricing_snapshot().unwrap().block
+                            );
+                        } else {
+                            assert!(evm.zk_gas_pricing_snapshot().is_none());
+                        }
+                        let current = (result, legacy);
+                        if let Some(previous) = &baseline {
+                            assert_eq!(
+                                &current, previous,
+                                "pricing must not change gas or finalized state"
+                            );
+                        } else {
+                            baseline = Some(current);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn code_preparation_collector_moves_once_and_discards_only_from_committed_prefix() {
+    let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+        db_with_contract(code_preparation_factory(1, false, false, false)),
+        evm_env(TaikoSpecId::UNZEN),
+        NoOpInspector,
+    );
+    evm.set_zk_gas_pricing_enabled(true);
+    for (index, inspect) in [true, false, true, false].into_iter().enumerate() {
+        evm.set_inspector_enabled(inspect);
+        evm.set_zk_gas_pricing_enabled(true);
+        evm.transact(tx_env(200_000)).unwrap();
+        evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        if index == 1 {
+            evm.reset_transaction_zk_gas();
+        } else {
+            evm.commit_transaction_zk_gas_pricing().unwrap();
+        }
+        assert_eq!(
+            evm.zk_gas_pricing_snapshot().unwrap().code_preparation.nonempty_events,
+            if index >= 1 { index as u64 } else { 1 }
+        );
+        assert_eq!(
+            evm.zk_gas_attempted_pricing_snapshot().unwrap().block.code_preparation.nonempty_events,
+            index as u64 + 1
+        );
+    }
+    evm.set_zk_gas_pricing_enabled(false);
+    assert!(evm.zk_gas_pricing_snapshot().is_none());
+    evm.set_zk_gas_pricing_enabled(true);
+    assert_eq!(evm.zk_gas_pricing_snapshot().unwrap().code_preparation, Default::default());
+}
+
+#[test]
+fn code_preparation_early_balance_collision_and_nonce_failures_do_not_invent_work() {
+    for inspected in [false, true] {
+        for case in ["balance", "nonce", "collision"] {
+            let mut db =
+                db_with_contract(code_preparation_factory(1, false, false, case == "balance"));
+            if case == "balance" {
+                db.cache.accounts.get_mut(&BENCH_TARGET).unwrap().info.balance = U256::ZERO;
+            }
+            if case == "nonce" {
+                db.cache.accounts.get_mut(&BENCH_TARGET).unwrap().info.nonce = u64::MAX;
+            }
+            if case == "collision" {
+                db.insert_account_info(
+                    BENCH_TARGET.create(1),
+                    AccountInfo { nonce: 1, ..Default::default() },
+                );
+            }
+            let mut evm = if inspected {
+                TaikoEvmFactory.create_evm_with_inspector(
+                    db,
+                    evm_env(TaikoSpecId::UNZEN),
+                    NoOpInspector,
+                )
+            } else {
+                TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN))
+            };
+            evm.set_zk_gas_pricing_enabled(true);
+            evm.transact(tx_env(200_000)).unwrap();
+            evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            });
+            evm.commit_transaction_zk_gas_pricing().unwrap();
+            assert_eq!(
+                evm.zk_gas_pricing_snapshot().unwrap().code_preparation,
+                Default::default(),
+                "{case}, inspect={inspected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn code_preparation_direct_noop_generic_evm_keeps_existing_trait_contract() {
+    use reth_revm::{MainBuilder, MainContext, handler::EvmTr};
+    let inner = reth_revm::Context::mainnet()
+        .with_db(InMemoryDB::default())
+        .build_mainnet_with_inspector(NoOpInspector);
+    let mut direct = crate::evm::TaikoEvm::new(inner);
+    let _ = EvmTr::frame_stack(&mut direct);
+    assert!(direct.zk_gas_pricing().is_none());
+}
+
+#[test]
+fn code_preparation_real_depth_rejection_has_no_preparation_on_either_collector() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+    use reth_revm::{
+        context_interface::CreateScheme,
+        handler::{EvmTr, FrameResult, ItemOrResult},
+        interpreter::{FrameInput, SharedMemory, interpreter_action::FrameInit},
+    };
+    for inspect in [false, true] {
+        let mut raw = TaikoEvmFactory
+            .create_evm(db_with_contract(Bytecode::default()), evm_env(TaikoSpecId::UNZEN))
+            .into_inner();
+        let mut collector = ZkGasAccumulator::default();
+        collector.begin_transaction(TransactionMetadata::default()).unwrap();
+        if inspect {
+            raw.inner.inspector.install_pricing(collector);
+            raw.use_inspector_zk_gas_pricing();
+        } else {
+            raw.install_zk_gas_pricing(collector);
+        }
+        let input = FrameInit {
+            depth: 1025,
+            memory: SharedMemory::new(),
+            frame_input: FrameInput::Create(Box::new(CreateInputs::new(
+                BENCH_CALLER,
+                CreateScheme::Create,
+                U256::ZERO,
+                Bytes::from_static(&[opcode::PUSH1, 32, opcode::PUSH0, opcode::RETURN]),
+                100_000,
+                0,
+            ))),
+        };
+        let ItemOrResult::Result(FrameResult::Create(outcome)) =
+            EvmTr::frame_init(&mut raw, input).unwrap()
+        else {
+            panic!("REVM must reject depth before dispatch")
+        };
+        assert_eq!(outcome.result.result, reth_revm::interpreter::InstructionResult::CallTooDeep);
+        assert!(outcome.address.is_none());
+        let collector = if inspect {
+            raw.inner.inspector.pricing_mut().unwrap()
+        } else {
+            raw.zk_gas_pricing_mut().unwrap()
+        };
+        collector
+            .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        collector.commit_transaction().unwrap();
+        assert_eq!(collector.committed_snapshot().code_preparation, Default::default());
+        assert!(collector.committed_snapshot().diagnostic.is_none());
+    }
+}

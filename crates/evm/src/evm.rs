@@ -39,6 +39,9 @@ pub struct TaikoEvm<CTX, INSP, P> {
     zk_gas_pricing: Option<ZkGasAccumulator>,
     /// Concrete context hooks installed together with the pricing collector.
     zk_gas_pricing_hooks: Option<PricingExecutionHooks<CTX>>,
+    /// Typed accessor for the single inspected collector, configured only for Shadow.
+    /// Keeps direct generic NoOpInspector EVMs free of additional trait bounds.
+    zk_gas_inspector_pricing: Option<fn(&mut INSP) -> Option<&mut ZkGasAccumulator>>,
 }
 
 impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
@@ -58,6 +61,7 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             zk_gas_meter: None,
             zk_gas_pricing: None,
             zk_gas_pricing_hooks: None,
+            zk_gas_inspector_pricing: None,
         }
     }
 
@@ -90,6 +94,7 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
     /// Removes and returns the schema-9 collector without changing its committed prefix.
     pub(crate) fn take_zk_gas_pricing(&mut self) -> Option<ZkGasAccumulator> {
         self.zk_gas_pricing_hooks = None;
+        self.zk_gas_inspector_pricing = None;
         self.zk_gas_pricing.take()
     }
 
@@ -114,6 +119,11 @@ impl<DB, I, P>
 where
     DB: Database,
 {
+    /// Enables access to the single collector owned by the inspected adapter.
+    pub(crate) fn use_inspector_zk_gas_pricing(&mut self) {
+        self.zk_gas_inspector_pricing = Some(crate::zk_gas::adapter::ZkGasInspector::pricing_mut);
+    }
+
     /// Installs an existing schema-9 collector on the plain execution path.
     pub(crate) fn install_zk_gas_pricing(&mut self, accumulator: ZkGasAccumulator) {
         self.zk_gas_pricing = Some(accumulator);
@@ -331,6 +341,32 @@ where
         Option<<Self::Frame as FrameTr>::FrameResult>,
         ContextError<<<Self::Context as ContextTr>::Db as Database>::Error>,
     > {
+        // return_create has already performed size/prefix/deposit checks and actual
+        // code preparation. Completion inspector callbacks precede this common hook:
+        // quantitative pricing requires a semantics-preserving inspector.
+        if (self.zk_gas_pricing.is_some() || self.zk_gas_inspector_pricing.is_some()) &&
+            let FrameResult::Create(outcome) = &frame_result &&
+            outcome.result.result.is_ok() &&
+            outcome.address.is_some() &&
+            !outcome.result.output.is_empty()
+        {
+            let accumulator = match self.zk_gas_pricing.as_mut() {
+                Some(accumulator) => Some(accumulator),
+                None => self
+                    .zk_gas_inspector_pricing
+                    .and_then(|accessor| accessor(&mut self.inner.inspector)),
+            };
+            if let Some(accumulator) = accumulator {
+                match u64::try_from(outcome.result.output.len()) {
+                    Ok(bytes) => {
+                        let _ = accumulator.observe_code_preparation(bytes);
+                    }
+                    Err(_) => {
+                        accumulator.retain_diagnostic(Some(ZkGasAccumulatorError::CountOverflow))
+                    }
+                }
+            }
+        }
         self.inner.frame_return_result(frame_result)
     }
 

@@ -4,13 +4,14 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`3794f020f947fbaff4b26e8128996fcf9dcffb350b4360cc1d3d4114a809605e`. It adds
-**8,192 normalized PGU per raw non-legacy access-list address item** to immutable parent
-`4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55`.
-All existing routes and floors, fixed costs, payload/resource/MPT tariffs, the global discount and
-**200,000 PGU per authorization entry** remain unchanged. This remains the current initial
-Shadow model with no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this
-document is stale.
+`a2988920125e304121acb629b9b96fd1ad85ee707c89978240408c81e2a42f3e`. Relative to immutable parent
+`3794f020f947fbaff4b26e8128996fcf9dcffb350b4360cc1d3d4114a809605e`, it changes normalized
+`unique_code_bytes` pricing from 2 to **64 PGU/byte** and adds **8,192 PGU per accepted nonempty
+create-frame code preparation plus 32 PGU per processed byte**. All other routes, floors, fixed
+costs, payload/account/storage/hash/MPT tariffs, the global discount, 200,000 PGU per authorization
+entry and 8,192 PGU per raw access-list address item remain unchanged. This remains the initial
+Shadow model with no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value,
+this document is stale.
 
 The original calibration calls itself `accepted_runtime_export`; the current artifact and its
 immediate parent call themselves `conservative_runtime_successor`. These identify calibration and
@@ -34,7 +35,7 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list/code-preparation/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
@@ -75,12 +76,13 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
-- [`access_list_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_successor.py)
-  derives the raw address-item tariff from immutable model4c03 and the sealed
-  [`original 23-case policy and evidence`](../crates/evm/src/zk_gas/pricing/successors/access-list-items-v1.json).
-  Exact replay rejects changed fields, coefficient drift and stale tooling provenance. Historical
-  authorization derivation remains in `authorization_successor.py`, CALL memory repair in
-  `call_memory_successor.py`, and EXP derivation in `successor.py`.
+- [`code_preparation_successor.py`](../crates/evm/src/zk_gas/pricing/code_preparation_successor.py)
+  derives the three current preparation units from immutable model3794 and the sealed
+  [92-row development evidence](../crates/evm/src/zk_gas/pricing/successors/code-preparation-v1.json).
+  Exact replay rejects changed coefficients, ownership, evidence or tooling provenance.
+  Historical raw-item derivation remains in `access_list_successor.py`, authorization derivation
+  in `authorization_successor.py`, CALL memory repair in `call_memory_successor.py`, and EXP
+  derivation in `successor.py`.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -461,6 +463,66 @@ of the new model. Native consumer validation and independent holdouts remain sep
 finite cases establish neither a universal hash-distribution bound nor EVM-gas-saturated coverage;
 there is no new admission activation or guest rebuild.
 
+## Code preparation occurrences and byte loading
+
+The current refinement separates two observed dimensions:
+
+- Existing `ResourceSelectors.unique_code_bytes` retains its per-block, hash-deduplicated
+  semantics. Its normalized unit is 64 PGU/byte, including observed executing initcode.
+- `CodePreparationSelectors { nonempty_events, total_bytes }` adds actual accepted create-frame
+  processing work per occurrence. Repeated identical runtime code contributes repeatedly.
+  Its normalized price is `(8192 * nonempty_events + 32 * total_bytes) * scale`.
+
+`TaikoEvm::frame_return_result` observes successful `FrameResult::Create` with an address and
+nonempty original output, before handing the result to the inner EVM. REVM has already passed
+code size, EF-prefix and deposit-gas checks and performed code hashing/analysis/registration.
+Top-level creation and internal CREATE/CREATE2 share this hook. Empty output, unsuccessful
+creation, missing addresses and early balance/depth/nonce/collision failures contribute zero.
+A later ancestor REVERT does not undo work already performed. The selected plain collector or
+inspector collector owns each occurrence once; no second frame-marker stack or state-derived
+counter is used. Disabled remains unchanged and does not install this collector accessor.
+
+Inspector completion callbacks precede the common hook. The quantitative contract therefore
+requires a **semantics-preserving inspector**, including current NoOp/resource/fixture observers.
+It does not promise counts for arbitrary inspectors that rewrite output, status or address.
+
+Snapshots expose `code_preparation` in both committed and attempted prefixes. Direct
+`BlockPricingInput` requires it explicitly; sealed known reports expose `code_preparation()` and
+`code_preparation_scaled()`. Complete `PricingBreakdown` includes the contribution once under
+`code_preparation_scaled`, and proposal-once pricing contributes zero. Completion revalidates
+raw selector consistency, the sealed contribution and subtotal. Transaction/prefix additions are
+checked before either field or other prefix selectors change; errors retain a diagnostic without
+changing EVM execution. Each selector is bounded by 10^9, empty events/bytes must agree, and
+aggregate bytes must lie between event count and 24576 times event count. Collector deltas also
+validate each event. The current domain is post-Unzen's 24K code cap; a future code-size fork
+requires an explicit domain update.
+
+The evidence contains **92 execute-only measurements / 88 canonical inputs**, using the same
+experimental b76baf2e ELF and SP1 SDK6.3: 44 creation probes, 38 followups and 10 initial-code
+loading controls. All three independent raw audits passed; the original **18 underquoted rows /
+17 distinct inputs** remain recorded. Native qualification and integrity audits establish the
+input/result joins; they do not turn finite prices into a universal bound or certify real proving
+throughput.
+
+The exact loading-byte requirement is 242969/4096 PGU/byte. Integer ceiling 60 and upward
+power-of-two rounding select 64. The one-byte versus empty-runtime event pair leaves an exact
+5525.449319692974457273 PGU after a 25% workload-increment margin and the original price;
+ceiling 5526 selects 8192. Within-block N2/N4 repeated identical 24K code uses a difference of
+differences against same-count zero-runtime controls and the N1 difference. This removes shared
+transaction/account work and the one-time unique-byte term. With 8192/event, the largest
+remaining byte requirement is 25.138897231643035 PGU/byte; ceiling 26 selects 32. Multiblock
+carried-but-unused code is deliberately excluded from causal fitting. Equal-selector content
+sensitivity remains visible rather than being assigned an invented selector.
+
+The sealed arithmetic projects full underquotes from 18 to zero. These are **projections**, with
+preparation counts derived from independently verified successful top-level receipt/runtime
+expectations. They are not observations from the new counter or actual successor native replays.
+The 16 prospective validation cases were not used for fitting. Reprice all original inputs and
+historical proposals with the actual successor executable before claiming compatibility. The
+older 50-proposal history uses a separate SDK6.1/416f program identity; the new 92-row evidence
+uses SDK6.3/b76. Their projections and program identities must not be conflated. No guest rebuild,
+admission activation, real proof or hardware-capacity claim follows from this refinement.
+
 ## Scope decomposition and ownership
 
 The complete block-local fixed-point price is:
@@ -472,6 +534,8 @@ block_price =
   + native_value_transfer_tariff * native_value_transfers
   + authorization_validation_tariff * raw_authorization_validations
   + access_list_item_tariff * raw_access_list_address_items
+  + code_preparation_event_tariff * nonempty_code_preparation_events
+  + code_preparation_byte_tariff * prepared_code_bytes
   + operation_price
   + exact_unique_resource_price
   + committed_transaction_payload_price

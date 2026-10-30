@@ -248,6 +248,9 @@ where
                 authorization_scaled = ?known.authorization_scaled(),
                 access_list_items = known.access_list_items(),
                 access_list_scaled = ?known.access_list_scaled(),
+                code_preparation_nonempty_events = known.code_preparation().nonempty_events,
+                code_preparation_total_bytes = known.code_preparation().total_bytes,
+                code_preparation_scaled = ?known.code_preparation_scaled(),
                 operations_scaled = ?known.operations_scaled(),
                 evm_local_resources_scaled = ?known.evm_local_resources_scaled(),
                 "zk gas pricing shadow block report"
@@ -795,6 +798,82 @@ mod test {
         assert_eq!(shadow.gas_used, disabled.gas_used);
         assert_eq!(shadow.blob_gas_used, disabled.blob_gas_used);
         assert_eq!(shadow_difficulty, disabled_difficulty);
+    }
+
+    #[test]
+    fn code_preparation_block_shadow_preserves_receipts_state_and_unzen_meter() {
+        fn run(
+            mode: ZkGasMode,
+        ) -> (
+            BlockExecutionResult<reth_ethereum_primitives::Receipt>,
+            u64,
+            reth_revm::db::states::bundle_state::BundleState,
+        ) {
+            let mut state = State::builder()
+                .with_database(db_with_contracts(&[(BENCH_CALLER, 0)]))
+                .with_bundle_update()
+                .build();
+            let ctx = unzen_execution_ctx();
+            let mut executor = TaikoBlockExecutor::new_with_zk_gas_mode(
+                TaikoEvmFactory.create_evm(&mut state, unzen_evm_env()),
+                ctx.clone(),
+                Arc::new(unzen_chain_spec()),
+                RethReceiptBuilder::default(),
+                mode,
+            );
+            let tx = TxLegacy {
+                chain_id: Some(167),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 100_000,
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: Bytes::from_static(&[opcode::PUSH1, 32, opcode::PUSH0, opcode::RETURN]),
+            };
+            let signed: TransactionSigned = Signed::new_unchecked(
+                tx,
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::ZERO,
+            )
+            .into();
+            let create = signed.with_signer(BENCH_CALLER);
+            executor
+                .execute_transaction_with_commit_condition(create.clone(), |_| CommitChanges::No)
+                .unwrap();
+            executor.execute_transaction(create).unwrap();
+            if mode == ZkGasMode::Shadow {
+                let snap = executor.evm.zk_gas_pricing_snapshot().unwrap();
+                let attempt = executor.evm.zk_gas_attempted_pricing_snapshot().unwrap();
+                assert_eq!(snap.code_preparation.nonempty_events, 1);
+                assert_eq!(snap.code_preparation.total_bytes, 32);
+                assert_eq!(attempt.block.code_preparation.nonempty_events, 2);
+                assert_eq!(attempt.block.code_preparation.total_bytes, 64);
+                let ZkGasShadowStatus::Incomplete { known, .. } = snap.shadow_report().status()
+                else {
+                    panic!("valid code-preparation Shadow report")
+                };
+                assert_eq!(
+                    known.code_preparation_scaled(),
+                    9216 * alethia_reth_evm::zk_gas::pricing::FIXED_POINT_SCALE
+                );
+            } else {
+                assert!(executor.zk_gas_shadow_report().is_none());
+            }
+            let (_, result) = executor.finish().unwrap();
+            state.merge_transitions(reth_revm::db::states::bundle_state::BundleRetention::Reverts);
+            (result, ctx.finalized_block_zk_gas(), state.take_bundle())
+        }
+        let (plain, legacy, plain_state) = run(ZkGasMode::Disabled);
+        let (shadow, priced_legacy, shadow_state) = run(ZkGasMode::Shadow);
+        assert_eq!(plain.receipts, shadow.receipts);
+        assert_eq!(plain.gas_used, shadow.gas_used);
+        assert_eq!(plain.requests, shadow.requests);
+        assert_eq!(plain.blob_gas_used, shadow.blob_gas_used);
+        assert_eq!(legacy, priced_legacy);
+        assert_eq!(
+            plain_state, shadow_state,
+            "identical state-root input, including generated code and account/storage changes"
+        );
     }
 
     #[test]

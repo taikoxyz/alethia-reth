@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "3794f020f947fbaff4b26e8128996fcf9dcffb350b4360cc1d3d4114a809605e";
+    "a2988920125e304121acb629b9b96fd1ad85ee707c89978240408c81e2a42f3e";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -30,13 +30,17 @@ pub(crate) const AUTHORIZATION_VALIDATION_TARIFF: i128 = 20000000000000000000000
 /// Normalized fixed-point PGU per raw non-legacy access-list address item.
 pub(crate) const ACCESS_LIST_ITEM_TARIFF: i128 = 8192000000000000000000;
 
+/// Normalized fixed-point PGU per accepted nonempty creation and per prepared byte.
+pub(crate) const CODE_PREPARATION_TARIFFS: [i128; 2] =
+    [8192000000000000000000, 32000000000000000000];
+
 /// Unique-resource coefficients in the public selector field order.
 pub(crate) const RESOURCE_TARIFFS: [i128; 5] = [
     12162000000000000000000,
     9152000000000000000000,
     20296000000000000000000,
     2971000000000000000000,
-    2000000000000000000,
+    64000000000000000000,
 ];
 
 /// Block-local MPT coefficients in the public selector field order.

@@ -4,9 +4,10 @@ use super::{
     ZkGasCompletionError, ZkGasIncompleteness, ZkGasKnownBlockBreakdown, ZkGasShadowReport,
     ZkGasShadowStatus,
     generated::{
-        BLOB_SOURCE_TARIFFS, BLOCK_FIXED, FIXED_POINT_SCALE, MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS,
-        OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP,
-        RESOURCE_TARIFFS, ROUTES, SPAWN_ROUTE_INDEX, TRANSACTION_PAYLOAD_TARIFFS,
+        AUTHORIZATION_VALIDATION_TARIFF, BLOB_SOURCE_TARIFFS, BLOCK_FIXED, FIXED_POINT_SCALE,
+        MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS, OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS,
+        PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP, RESOURCE_TARIFFS, ROUTES, SPAWN_ROUTE_INDEX,
+        TRANSACTION_PAYLOAD_TARIFFS,
     },
     types::{
         AccessClass, BlockPricingInput, CalldataAccessClass, MemorySelectors, MptSelectors,
@@ -22,6 +23,8 @@ pub(super) struct KnownBlockPricingInput<'a> {
     pub(super) started_non_anchor_transactions: u64,
     /// Included nonzero native-value transfer count.
     pub(super) native_value_transfers: u64,
+    /// Raw included EIP-7702 authorization validation count.
+    pub(super) authorization_validations: u64,
     /// Committed operation aggregates in canonical route order.
     pub(super) operation_routes: &'a [OperationRoutePricingInput],
     /// Canonical payload already attributed to the committed block scope.
@@ -266,6 +269,7 @@ impl ZkGasModel {
         let known = self.price_block_without_mpt(&KnownBlockPricingInput {
             started_non_anchor_transactions: input.started_non_anchor_transactions,
             native_value_transfers: input.native_value_transfers,
+            authorization_validations: input.authorization_validations,
             operation_routes: input.operation_routes,
             resources: input.resources,
             transaction_payload: input.transaction_payload,
@@ -275,6 +279,7 @@ impl ZkGasModel {
         ensure_nonnegative(total, "block")?;
         Ok(PricingBreakdown {
             fixed_scaled: known.fixed_scaled(),
+            authorization_scaled: known.authorization_scaled(),
             operations_scaled: known.operations_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: known.evm_local_resources_scaled(),
@@ -313,6 +318,7 @@ impl ZkGasModel {
         let mpt = price_mpt(exact_mpt, MPT_TARIFFS)?;
         let total = checked_sum(&[
             known.fixed_scaled(),
+            known.authorization_scaled(),
             known.operations_scaled(),
             resources,
             mpt,
@@ -321,6 +327,7 @@ impl ZkGasModel {
         ensure_nonnegative(total, "block")?;
         Ok(PricingBreakdown {
             fixed_scaled: known.fixed_scaled(),
+            authorization_scaled: known.authorization_scaled(),
             operations_scaled: known.operations_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: resources,
@@ -346,7 +353,7 @@ impl ZkGasModel {
             .operation_routes
             .len()
             .checked_mul(4)
-            .and_then(|count| count.checked_add(15))
+            .and_then(|count| count.checked_add(16))
             .ok_or(ZkGasError::ArithmeticOverflow)?;
         enforce_term_count(block_term_count)?;
         let fixed = checked_dot(&[
@@ -381,12 +388,16 @@ impl ZkGasModel {
             feature_errors = checked_add(feature_errors, accumulated.feature_error_scaled)?;
         }
 
+        let authorization =
+            self.price_authorization_validations(input.authorization_validations)?;
         let resources = price_resources(input.resources)?;
         let payload = self.price_transaction_payload(input.transaction_payload)?.total_scaled;
-        let known_subtotal = checked_sum(&[fixed, operations, resources, payload])?;
+        let known_subtotal = checked_sum(&[fixed, authorization, operations, resources, payload])?;
         ensure_nonnegative(known_subtotal, "known_block_subtotal")?;
         Ok(ZkGasKnownBlockBreakdown::new(
             fixed,
+            input.authorization_validations,
+            authorization,
             operations,
             feature_errors,
             input.resources,
@@ -396,6 +407,14 @@ impl ZkGasModel {
             known_subtotal,
             ceil_scaled(known_subtotal)?,
         ))
+    }
+
+    /// Prices each raw EIP-7702 validation entry in normalized fixed-point PGU.
+    ///
+    /// The count includes failed signature recovery and entries later ignored by REVM. It is
+    /// independent of unique authorities, applied delegations, receipt success and payload bytes.
+    pub fn price_authorization_validations(self, count: u64) -> Result<i128, ZkGasError> {
+        checked_mul(AUTHORIZATION_VALIDATION_TARIFF, bounded("authorization_validations", count)?)
     }
 
     /// Prices canonical signed payload once for either a block or additional proposal input.
@@ -485,6 +504,11 @@ fn validate_shadow_report(
         return Err(ZkGasCompletionError::UnexpectedZkGasIncompleteness(missing));
     }
     ensure_nonnegative(known.fixed_scaled(), "fixed")?;
+    if ZkGasModel.price_authorization_validations(known.authorization_validations())? !=
+        known.authorization_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("authorization_scaled"));
+    }
     ensure_nonnegative(known.operations_scaled(), "operations")?;
     ensure_nonnegative(known.feature_error_scaled(), "feature_error")?;
     ensure_nonnegative(known.evm_local_resources_scaled(), "evm_local_resources")?;
@@ -501,6 +525,7 @@ fn validate_shadow_report(
     }
     let recomputed = checked_sum(&[
         known.fixed_scaled(),
+        known.authorization_scaled(),
         known.operations_scaled(),
         known.evm_local_resources_scaled(),
         known.transaction_payload_scaled(),
@@ -1112,6 +1137,35 @@ fn ceil_scaled(value: i128) -> Result<u128, ZkGasError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn authorization_completion_rejects_inconsistent_sealed_contribution() {
+        let known = ZkGasKnownBlockBreakdown::new(
+            0,
+            1,
+            0,
+            0,
+            0,
+            ResourceSelectors::default(),
+            0,
+            TransactionPayloadSelectors::default(),
+            0,
+            0,
+            0,
+        );
+        let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
+            known,
+            missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+        });
+        assert_eq!(
+            ZkGasModel.complete_block_shadow_report(
+                &report,
+                ResourceSelectors::default(),
+                MptSelectors::default()
+            ),
+            Err(ZkGasCompletionError::InconsistentKnownBreakdown("authorization_scaled"))
+        );
+    }
+
     fn exp_input(length: u64) -> OperationPricingInput {
         OperationPricingInput {
             route: OperationRoute::Opcode(0x0a),
@@ -1189,6 +1243,7 @@ mod tests {
                 transaction_payload: TransactionPayloadSelectors::default(),
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
+                authorization_validations: 0,
                 operation_routes: &[OperationRoutePricingInput {
                     route: OperationRoute::Opcode(0x09),
                     accepted_absolute_scaled: 269_073_027_078_518_685_466 * 2,
@@ -1272,6 +1327,7 @@ mod tests {
                     transaction_payload: TransactionPayloadSelectors::default(),
                     started_non_anchor_transactions: 0,
                     native_value_transfers: 0,
+                    authorization_validations: 0,
                     operation_routes: &[OperationRoutePricingInput {
                         route: input.route,
                         accepted_absolute_scaled: 2 * normal.accepted_absolute_scaled,

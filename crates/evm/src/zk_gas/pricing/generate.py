@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "call_memory_successor.py"
+        "zk_gas_pricing_successor", BASE / "authorization_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -299,6 +299,11 @@ def render(specification: Mapping[str, Any]) -> str:
             "",
         ]
     )
+    lines.extend([
+        "/// Normalized fixed-point PGU per raw EIP-7702 authorization validation entry.",
+        f"pub(crate) const AUTHORIZATION_VALIDATION_TARIFF: i128 = {block['authorization_validation_tariff']};",
+        "",
+    ])
     resources = block["resource_tariffs"]
     resource_names = [
         "unique_account_count",

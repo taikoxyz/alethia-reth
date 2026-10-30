@@ -4,12 +4,13 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b`. It attaches parent-frame
-memory reservation to confirmed CALL/CALLCODE/DELEGATECALL/STATICCALL wrappers using the existing
-shared-memory coefficients from immutable parent
-`67d0b01fee7f5ba208dfd2311e5be469ec96421156ecf5f0c14962c27e7b4df9`. Fixed wrapper costs,
-composition, prior EXP/arithmetic/MCOPY floors and block-payload ownership are preserved. This remains the current initial Shadow model; it adds
-no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this document is stale.
+`4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55`. It adds
+**200,000 normalized PGU per raw EIP-7702 authorization entry**
+to immutable parent `537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b`.
+The parent's CALL-family memory ownership repair, existing operation routes and floors, fixed costs,
+payload/resource/MPT tariffs and global discount are preserved. This remains the current initial
+Shadow model with no public model selector. If `RUNTIME_SPEC_SHA256` differs from that value, this
+document is stale.
 
 The original calibration calls itself `accepted_runtime_export`; the current artifact and its
 immediate parent call themselves `conservative_runtime_successor`. These identify calibration and
@@ -33,7 +34,7 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
@@ -74,12 +75,11 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
-- [`call_memory_successor.py`](../crates/evm/src/zk_gas/pricing/call_memory_successor.py)
-  deterministically derives the current ownership repair from immutable model67d and a sealed
-  ownership policy in [`successors/`](../crates/evm/src/zk_gas/pricing/successors/). It reuses the
-  parent's MLOAD shared-memory coefficients without fitting new coefficients or claiming new SP1
-  coverage. Historical EXP derivation remains in `successor.py` with its immutable parent/evidence;
-  it is not the current runtime generator.
+- [`authorization_successor.py`](../crates/evm/src/zk_gas/pricing/authorization_successor.py)
+  deterministically adds the authorization-validation tariff to immutable model537a using the sealed
+  [`authorization policy and measurements`](../crates/evm/src/zk_gas/pricing/successors/authorization-validation-v1.json).
+  Exact replay rejects extra fields, coefficient drift and stale tooling provenance. Historical CALL
+  memory repair remains in `call_memory_successor.py`; EXP derivation remains in `successor.py`.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -358,6 +358,49 @@ proposal_pgu = ceil(proposal_scaled / scale)
 Do not sum `total_pgu` from blocks and `price_proposal_once().total_pgu`; those values were rounded
 independently. No in-repository helper currently performs the proposal composition above.
 
+## EIP-7702 authorization validation
+
+Unzen selects Osaka and permits type-4 transactions. Alloy transaction conversion eagerly recovers
+**every signed authorization** before EVM collection begins. REVM can later ignore an entry for a
+stale nonce, wrong chain, ineligible authority code or invalid recovered authority. Repeated entries
+are not cached or deduplicated by conversion. Opcode/precompile observations, unique-account counts
+and signed-envelope byte pricing therefore do not represent this validation work.
+
+`TransactionMetadata.authorization_validations` records the raw `TxEnv.authorization_list.len()`
+for non-Anchor type-4 transactions before execution on both plain and inspected paths. Other
+transaction types and Anchor contribute zero. Included user reverts retain the count; omitted scopes
+remain attempted only. The collector checks per-transaction and accumulated selector bounds and
+preserves a diagnostic on invalid inputs or overflow without partially merging counts.
+
+Ownership is committed outer transactions for the committed quote and begun EVM scopes for the
+attempted quote. Conversion can also recover authorizations of outer input transactions that are
+filtered or rejected before an EVM scope begins; neither prefix records those entries. Accounting for
+that earlier filtered/unattempted input work remains deferred under the existing honest-input scope.
+This term covers all inner entries of included type-4 transactions, not every recovery across all
+proposal inputs.
+
+The initial tariff is **200,000 PGU per entry after normalization**, stored as `200000 * scale`.
+It is additive to all existing payload, fixed, resource and operation costs; no second discount is
+applied. The contribution appears in `authorization_scaled` and is part of the node/mining-known
+subtotal. Complete block pricing retains it once when replacing local resources and adding MPT;
+proposal-once pricing adds no authorization term. Callers constructing `BlockPricingInput` directly
+must supply the snapshot's `authorization_validations`.
+
+The sealed evidence retains 12 whole-proposal SP1 observations and their input/report digests using
+the same guest ELF `b76baf2e0f3fa3fe6f8a20fe53dbf82f58601ed14b370dfc0f8d31db2069e034`
+and SDK 6.3.0. Nine parent complete quotes underpriced actual PGU. The common single-entry sample
+used 161,121,234 actual PGU against 6,156,879 node-known and 161,113,477 complete PGU. Sequential
+256-entry work used 186,558,632 actual PGU against 12,390,735 node-known and 167,347,333 complete
+PGU; repeated 256-entry work used 184,275,517 actual against 12,358,991 node-known and 167,315,589
+complete PGU. The count-zero reference is EIP-1559, not an empty type-4 transaction.
+
+The operator-selected 200,000 tariff is a conservative initial policy motivated by measured
+per-entry increments up to roughly 127,000 PGU and a 137,041-PGU single-entry/reference difference.
+These are finite observations; they establish no universal PGU upper bound, EVM-gas-saturated maximum
+or deployed admission guarantee. Full retained raw fixtures remain external; the versioned policy
+binds their audit and compact measurement identities. Existing global discounts and all old terms
+remain numerically identical when the authorization count is zero.
+
 ## Scope decomposition and ownership
 
 The complete block-local fixed-point price is:
@@ -367,6 +410,7 @@ block_price =
     block_base
   + committed_non_anchor_transaction_tariff * committed_non_anchor_transactions
   + native_value_transfer_tariff * native_value_transfers
+  + authorization_validation_tariff * raw_authorization_validations
   + operation_price
   + exact_unique_resource_price
   + committed_transaction_payload_price
@@ -751,7 +795,7 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 python3 -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-python3 crates/evm/src/zk_gas/pricing/call_memory_successor.py --check
+python3 crates/evm/src/zk_gas/pricing/authorization_successor.py --check
 python3 crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 

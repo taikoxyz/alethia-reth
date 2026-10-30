@@ -41,6 +41,224 @@ use super::{
 };
 
 #[test]
+fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
+    const SELECTOR_BOUND: u64 = 1_000_000_000;
+    let model = ZkGasModel;
+    for count in [0, 1, 4, 16, SELECTOR_BOUND] {
+        assert_eq!(
+            model.price_authorization_validations(count).unwrap(),
+            i128::from(count) * 200_000 * FIXED_POINT_SCALE
+        );
+        let snapshot = super::pricing::ZkGasBlockSnapshot {
+            authorization_validations: count,
+            ..Default::default()
+        };
+        let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
+            panic!("bounded authorization count must price");
+        };
+        assert_eq!(known.authorization_validations(), count);
+        assert_eq!(known.authorization_scaled(), i128::from(count) * 200_000 * FIXED_POINT_SCALE);
+        let complete = model
+            .complete_block_shadow_report(
+                &snapshot.shadow_report(),
+                ResourceSelectors::default(),
+                MptSelectors::default(),
+            )
+            .unwrap();
+        let direct = model
+            .price_block(&BlockPricingInput {
+                started_non_anchor_transactions: 0,
+                native_value_transfers: 0,
+                authorization_validations: count,
+                operation_routes: &[],
+                transaction_payload: Default::default(),
+                resources: Default::default(),
+                mpt: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(complete, direct, "completion must include authorizations exactly once");
+        let baseline = model
+            .complete_block_shadow_report(
+                &super::pricing::ZkGasBlockSnapshot::default().shadow_report(),
+                ResourceSelectors::default(),
+                MptSelectors::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            direct.total_scaled - baseline.total_scaled,
+            i128::from(count) * 200_000 * FIXED_POINT_SCALE
+        );
+        assert_eq!(
+            direct.total_pgu.unwrap() - baseline.total_pgu.unwrap(),
+            u128::from(count) * 200_000
+        );
+    }
+    for count in [SELECTOR_BOUND + 1, u64::MAX] {
+        assert_eq!(
+            model.price_authorization_validations(count),
+            Err(ZkGasError::SelectorOutOfRange {
+                selector: "authorization_validations",
+                value: count
+            })
+        );
+    }
+}
+
+#[test]
+fn zk_gas_authorization_counts_all_raw_entries_on_plain_and_inspected_paths() {
+    use reth_revm::context_interface::transaction::{
+        Authorization, RecoveredAuthority, RecoveredAuthorization,
+    };
+    for count in [0, 1, 4, 16] {
+        for pattern in ["distinct", "repeated", "stale", "wrong_chain", "invalid"] {
+            for revert in [false, true] {
+                let mut snapshots = Vec::new();
+                for inspect in [false, true] {
+                    let bytecode = if revert {
+                        vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT]
+                    } else {
+                        vec![opcode::STOP]
+                    };
+                    let mut evm = TaikoEvmFactory.create_evm(
+                        db_with_contract(Bytecode::new_raw(Bytes::from(bytecode))),
+                        evm_env(TaikoSpecId::UNZEN),
+                    );
+                    evm.set_inspector_enabled(inspect);
+                    evm.set_zk_gas_pricing_enabled(true);
+                    let mut tx = tx_env(2_000_000);
+                    if count != 0 {
+                        tx.tx_type = 4;
+                        tx.set_recovered_authorization(
+                            (0..count)
+                                .map(|index| {
+                                    let authority = if pattern == "invalid" {
+                                        RecoveredAuthority::Invalid
+                                    } else {
+                                        RecoveredAuthority::Valid(Address::with_last_byte(
+                                            if pattern == "distinct" { 0x70 + index } else { 0x70 },
+                                        ))
+                                    };
+                                    RecoveredAuthorization::new_unchecked(
+                                        Authorization {
+                                            chain_id: U256::from(if pattern == "wrong_chain" {
+                                                168
+                                            } else {
+                                                167
+                                            }),
+                                            address: BENCH_TARGET,
+                                            nonce: if pattern == "stale" { 99 } else { 0 },
+                                        },
+                                        authority,
+                                    )
+                                })
+                                .collect(),
+                        );
+                    }
+                    let result = evm
+                        .transact(tx)
+                        .expect("valid type4 transaction even when individual entries are ignored");
+                    assert_eq!(result.result.is_success(), !revert);
+                    evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                        canonical_transaction_bytes: 100 + u64::from(count) * 100,
+                        nonempty_payload_transactions: 0,
+                    });
+                    evm.commit_transaction_zk_gas_pricing().unwrap();
+                    let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+                    assert_eq!(
+                        snapshot.authorization_validations,
+                        u64::from(count),
+                        "{pattern}, revert={revert}"
+                    );
+                    assert_eq!(evm.zk_gas_attempted_pricing_snapshot().unwrap().block, snapshot);
+                    assert!(snapshot.diagnostic.is_none());
+                    snapshots.push(snapshot);
+                }
+                assert_eq!(snapshots[0], snapshots[1], "{pattern}, count={count}, revert={revert}");
+            }
+        }
+    }
+}
+
+#[test]
+fn zk_gas_authorization_invalid_metadata_and_accumulated_bound_fail_closed() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+    const SELECTOR_BOUND: u64 = 1_000_000_000;
+    let mut collector = ZkGasAccumulator::default();
+    for metadata in [
+        TransactionMetadata { authorization_validations: SELECTOR_BOUND + 1, ..Default::default() },
+        TransactionMetadata { is_anchor: true, authorization_validations: 1, ..Default::default() },
+    ] {
+        assert!(collector.begin_transaction(metadata).is_err());
+        assert!(collector.committed_snapshot().diagnostic.is_some());
+        collector = ZkGasAccumulator::default();
+    }
+    for count in [SELECTOR_BOUND, 1] {
+        collector
+            .begin_transaction(TransactionMetadata {
+                authorization_validations: count,
+                ..Default::default()
+            })
+            .unwrap();
+        collector
+            .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        collector.commit_transaction().unwrap();
+    }
+    let snapshot = collector.committed_snapshot();
+    assert_eq!(snapshot.authorization_validations, SELECTOR_BOUND);
+    assert_eq!(snapshot.started_non_anchor_transactions, 1, "invalid delta changes no counts");
+    assert!(snapshot.diagnostic.is_some());
+    assert!(matches!(snapshot.shadow_report().status(), ZkGasShadowStatus::Diagnostic(_)));
+}
+
+#[test]
+fn zk_gas_authorization_shadow_collection_preserves_execution_and_legacy_meter() {
+    use reth_revm::context_interface::transaction::{
+        Authorization, RecoveredAuthority, RecoveredAuthorization,
+    };
+    for inspect in [false, true] {
+        let mut outcomes = Vec::new();
+        for collect in [false, true] {
+            let mut evm = TaikoEvmFactory.create_evm(
+                db_with_contract(Bytecode::new_raw(Bytes::from(vec![
+                    opcode::PUSH0,
+                    opcode::PUSH0,
+                    opcode::REVERT,
+                ]))),
+                evm_env(TaikoSpecId::UNZEN),
+            );
+            evm.set_inspector_enabled(inspect);
+            evm.set_zk_gas_pricing_enabled(collect);
+            let mut tx = tx_env(2_000_000);
+            tx.tx_type = 4;
+            tx.set_recovered_authorization(vec![
+                RecoveredAuthorization::new_unchecked(
+                    Authorization { chain_id: U256::from(167), address: BENCH_TARGET, nonce: 99 },
+                    RecoveredAuthority::Invalid,
+                );
+                4
+            ]);
+            let result = evm.transact(tx).unwrap();
+            outcomes.push((result, evm.meter().map(ZkGasMeter::tx_zk_gas_used)));
+            if collect {
+                evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                    canonical_transaction_bytes: 400,
+                    nonempty_payload_transactions: 0,
+                });
+                evm.commit_transaction_zk_gas_pricing().unwrap();
+                assert_eq!(evm.zk_gas_pricing_snapshot().unwrap().authorization_validations, 4);
+            } else {
+                assert!(evm.zk_gas_pricing_snapshot().is_none());
+            }
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
+    }
+}
+
+#[test]
 fn zk_gas_mode_defaults_to_disabled_and_has_no_admission_variant() {
     assert_eq!(ZkGasMode::default(), ZkGasMode::Disabled);
     assert_eq!(ZkGasMode::ALL, [ZkGasMode::Disabled, ZkGasMode::Shadow]);
@@ -85,7 +303,11 @@ fn zk_gas_attempted_snapshot_retains_discarded_execution_scope() {
 
     let mut accumulator = ZkGasAccumulator::default();
     accumulator
-        .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: false })
+        .begin_transaction(TransactionMetadata {
+            is_anchor: false,
+            native_value_transfer: false,
+            authorization_validations: 0,
+        })
         .expect("transaction starts");
     accumulator
         .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
@@ -127,7 +349,11 @@ fn zk_gas_successful_commit_counts_once_in_attempted_and_committed_snapshots() {
 
     let mut accumulator = ZkGasAccumulator::default();
     accumulator
-        .begin_transaction(TransactionMetadata { is_anchor: true, native_value_transfer: false })
+        .begin_transaction(TransactionMetadata {
+            is_anchor: true,
+            native_value_transfer: false,
+            authorization_validations: 0,
+        })
         .expect("anchor starts");
     accumulator
         .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
@@ -210,6 +436,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
+            authorization_validations: snapshot.authorization_validations,
             operation_routes: &snapshot.operation_routes,
             resources: snapshot.resources,
             mpt,
@@ -271,6 +498,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
+            authorization_validations: snapshot.authorization_validations,
             operation_routes: &snapshot.operation_routes,
             resources: authoritative_resources,
             mpt: MptSelectors::default(),
@@ -562,7 +790,11 @@ fn zk_gas_pricing_accumulator_commits_only_finished_transactions() {
     let mut accumulator = ZkGasAccumulator::default();
 
     accumulator
-        .begin_transaction(TransactionMetadata { is_anchor: false, native_value_transfer: true })
+        .begin_transaction(TransactionMetadata {
+            is_anchor: false,
+            native_value_transfer: true,
+            authorization_validations: 0,
+        })
         .expect("first transaction starts");
     accumulator
         .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
@@ -1584,7 +1816,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b"
+        "4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -1855,6 +2087,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
+            authorization_validations: 0,
             operation_routes: &accumulated,
             resources: ResourceSelectors::default(),
             mpt: MptSelectors::default(),
@@ -1886,6 +2119,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
+            authorization_validations: 0,
             operation_routes: &[operation_route],
             resources: ResourceSelectors {
                 unique_account_count: 1,
@@ -1921,6 +2155,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
+            authorization_validations: 0,
             operation_routes: &[OperationRoutePricingInput {
                 route: OperationRoute::Opcode(0x31),
                 accepted_absolute_scaled: 100,
@@ -1944,6 +2179,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
+            authorization_validations: 0,
             operation_routes: &[],
             resources: ResourceSelectors {
                 unique_account_count: maximum,
@@ -2066,6 +2302,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
+            authorization_validations: 0,
             operation_routes: &negative_route,
             resources: ResourceSelectors::default(),
             mpt: MptSelectors::default(),

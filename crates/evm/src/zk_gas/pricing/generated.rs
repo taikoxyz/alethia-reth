@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "537a965e51dd0416e3472a31cca8b067a85723fe4bbd08c52027ef3ca73f0e3b";
+    "4c0306015efc1572db444d8b78cafc9431988bf5ca3d678e750d0292e9ca8a55";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -23,6 +23,9 @@ pub(crate) const MAXIMUM_TERMS_PER_SCOPE: usize = 1024;
 /// Block base, started-transaction, and native-transfer coefficients.
 pub(crate) const BLOCK_FIXED: [i128; 3] =
     [1280652929819390011787524, 172429766934792317965893, 5017000000000000000000];
+
+/// Normalized fixed-point PGU per raw EIP-7702 authorization validation entry.
+pub(crate) const AUTHORIZATION_VALIDATION_TARIFF: i128 = 200000000000000000000000;
 
 /// Unique-resource coefficients in the public selector field order.
 pub(crate) const RESOURCE_TARIFFS: [i128; 5] = [

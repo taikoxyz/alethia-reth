@@ -17,6 +17,8 @@ pub struct TransactionMetadata {
     pub is_anchor: bool,
     /// Whether this transaction transfers nonzero native value.
     pub native_value_transfer: bool,
+    /// Raw EIP-7702 entries requiring validation, including stale or invalid authorities.
+    pub authorization_validations: u64,
 }
 
 /// One exact execution resource observed by the EVM runtime.
@@ -351,6 +353,8 @@ pub struct ZkGasBlockSnapshot {
     pub started_non_anchor_transactions: u64,
     /// Native value-transfer count in this prefix.
     pub native_value_transfers: u64,
+    /// Raw authorization validations across this prefix, without deduplication.
+    pub authorization_validations: u64,
     /// Canonical payload of all included signed transactions.
     pub transaction_payload: TransactionPayloadSelectors,
     /// Accumulated operation candidates in canonical route order.
@@ -390,6 +394,8 @@ struct SelectorPrefix {
     non_anchor_transactions: u64,
     /// Nonzero native-value transfer count.
     native_value_transfers: u64,
+    /// Additive authorization validation count, including ignored entries.
+    authorization_validations: u64,
     /// Additive canonical signed payload across this prefix.
     transaction_payload: TransactionPayloadSelectors,
     /// Operation components aggregated by route.
@@ -421,6 +427,11 @@ impl SelectorPrefix {
                 .native_value_transfers
                 .checked_add(native_transfer)
                 .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            let authorization_validations = self
+                .authorization_validations
+                .checked_add(transaction.metadata.authorization_validations)
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            ZkGasModel.price_authorization_validations(authorization_validations)?;
             let transaction_payload = TransactionPayloadSelectors {
                 canonical_transaction_bytes: self
                     .transaction_payload
@@ -439,11 +450,19 @@ impl SelectorPrefix {
                 routes.push((*key, merged_route(self.operation_routes.get(key), *row)?));
             }
             let resources = self.resources.prevalidate_merge(&transaction.resources)?;
-            Ok((next_non_anchor, next_native_transfers, transaction_payload, routes, resources))
+            Ok((
+                next_non_anchor,
+                next_native_transfers,
+                authorization_validations,
+                transaction_payload,
+                routes,
+                resources,
+            ))
         })();
         let Ok((
             next_non_anchor,
             next_native_transfers,
+            authorization_validations,
             transaction_payload,
             routes,
             resource_totals,
@@ -454,6 +473,7 @@ impl SelectorPrefix {
         };
         self.non_anchor_transactions = next_non_anchor;
         self.native_value_transfers = next_native_transfers;
+        self.authorization_validations = authorization_validations;
         self.transaction_payload = transaction_payload;
         for (key, row) in routes {
             self.operation_routes.insert(key, row);
@@ -466,6 +486,7 @@ impl SelectorPrefix {
         ZkGasBlockSnapshot {
             started_non_anchor_transactions: self.non_anchor_transactions,
             native_value_transfers: self.native_value_transfers,
+            authorization_validations: self.authorization_validations,
             transaction_payload: self.transaction_payload,
             operation_routes: self.operation_routes.values().copied().collect(),
             resources: self.resources.selectors(),
@@ -518,6 +539,19 @@ impl ZkGasAccumulator {
     ) -> Result<(), ZkGasAccumulatorError> {
         if self.in_flight.is_some() {
             return Err(ZkGasAccumulatorError::TransactionAlreadyActive);
+        }
+        let validation = if metadata.is_anchor && metadata.authorization_validations != 0 {
+            Err(ZkGasError::InvalidInput("anchor_authorization_validations"))
+        } else {
+            ZkGasModel
+                .price_authorization_validations(metadata.authorization_validations)
+                .map(|_| ())
+        };
+        if let Err(error) = validation {
+            let error = ZkGasAccumulatorError::Pricing(error);
+            self.committed.diagnostic.get_or_insert(error);
+            self.attempted.diagnostic.get_or_insert(error);
+            return Err(error);
         }
         self.pending_spawn = None;
         self.in_flight = Some(TransactionSelectors::new(metadata));
@@ -782,4 +816,28 @@ fn merge_route(
         .checked_add(row.feature_error_scaled)
         .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::*;
+
+    #[test]
+    fn authorization_count_overflow_keeps_prefix_unchanged_and_diagnostic() {
+        let mut prefix =
+            SelectorPrefix { authorization_validations: u64::MAX, ..Default::default() };
+        let mut transaction = TransactionSelectors::new(TransactionMetadata {
+            authorization_validations: 1,
+            ..Default::default()
+        });
+        transaction.transaction_payload = Some(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        prefix.merge_transaction(&transaction);
+        assert_eq!(prefix.authorization_validations, u64::MAX);
+        assert_eq!(prefix.non_anchor_transactions, 0);
+        assert_eq!(prefix.transaction_payload, TransactionPayloadSelectors::default());
+        assert_eq!(prefix.diagnostic, Some(ZkGasAccumulatorError::ArithmeticOverflow));
+    }
 }

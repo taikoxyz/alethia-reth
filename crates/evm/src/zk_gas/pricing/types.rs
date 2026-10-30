@@ -262,6 +262,8 @@ pub struct BlockPricingInput<'a> {
     pub started_non_anchor_transactions: u64,
     /// Native value-transfer count.
     pub native_value_transfers: u64,
+    /// Raw included EIP-7702 authorization entries, including ignored validations.
+    pub authorization_validations: u64,
     /// Committed per-route candidate aggregates.
     pub operation_routes: &'a [OperationRoutePricingInput],
     /// Unique-resource selectors.
@@ -308,6 +310,8 @@ pub struct PricingBreakdown {
     pub feature_error_scaled: i128,
     /// Block fixed-cost contribution.
     pub fixed_scaled: i128,
+    /// EIP-7702 authorization validation contribution, charged once per raw entry.
+    pub authorization_scaled: i128,
     /// Block operation contribution after per-route composition.
     pub operations_scaled: i128,
     /// Block unique-resource contribution.

@@ -500,7 +500,18 @@ where
                     context.anchor_caller_nonce() == tx.nonce &&
                     tx.kind.to() == Some(&treasury)
             });
-            let metadata = TransactionMetadata { is_anchor, native_value_transfer: false };
+            // Count the raw list, never the applied/unique/recovered-valid subset: conversion
+            // eagerly recovers every signed entry before this hook on both execution paths.
+            let authorization_count = if !is_anchor && tx.tx_type == 4 {
+                u64::try_from(tx.authorization_list.len())
+            } else {
+                Ok(0)
+            };
+            let metadata = TransactionMetadata {
+                is_anchor,
+                native_value_transfer: false,
+                authorization_validations: authorization_count.unwrap_or(u64::MAX),
+            };
             let beneficiary = self.ctx().block.beneficiary;
             let accumulator = self.zk_gas_pricing_mut().expect("collector presence checked above");
             if let Err(error) = accumulator.begin_transaction(metadata) {

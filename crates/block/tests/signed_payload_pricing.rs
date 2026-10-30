@@ -6,9 +6,12 @@ use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
 use alethia_reth_evm::{
     alloy::TaikoZkGasEvm, factory::TaikoEvmFactory, spec::TaikoSpecId, zk_gas::pricing::ZkGasMode,
 };
-use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
-use alloy_eips::Encodable2718;
-use alloy_evm::{EvmEnv, EvmFactory};
+use alloy_consensus::{Signed, TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_eips::{
+    Encodable2718,
+    eip7702::{Authorization, SignedAuthorization},
+};
+use alloy_evm::{Evm, EvmEnv, EvmFactory};
 use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use reth_ethereum_primitives::TransactionSigned;
@@ -280,4 +283,51 @@ fn typed_envelope_type_byte_is_included_in_the_committed_payload_size() {
         assert_eq!(payload.canonical_transaction_bytes, bytes);
         assert_eq!(payload.nonempty_payload_transactions, 1);
     });
+}
+
+#[test]
+fn raw_signed_authorizations_count_invalid_recovery_and_reverted_inclusion() {
+    for count in [1, 4, 16] {
+        for target in [STOP, REVERT] {
+            for inspect in [false, true] {
+                with_executor!(ZkGasMode::Shadow, executor, {
+                    executor.evm_mut().set_inspector_enabled(inspect);
+                    let authorization = SignedAuthorization::new_unchecked(
+                        Authorization { chain_id: U256::from(167), address: STOP, nonce: 99 },
+                        0,
+                        U256::ZERO,
+                        U256::ZERO,
+                    );
+                    assert!(authorization.recover_authority().is_err());
+                    let tx = TxEip7702 {
+                        chain_id: 167,
+                        nonce: 0,
+                        gas_limit: 2_000_000,
+                        max_fee_per_gas: 1,
+                        to: target,
+                        authorization_list: vec![authorization; count],
+                        ..Default::default()
+                    };
+                    let signed: TransactionSigned = Signed::new_unchecked(
+                        tx,
+                        Signature::new(U256::from(1), U256::from(2), false),
+                        B256::ZERO,
+                    )
+                    .into();
+                    let length = signed.encode_2718_len() as u64;
+                    executor.execute_transaction(Recovered::new_unchecked(signed, CALLER)).unwrap();
+                    let snapshot = executor.evm().zk_gas_pricing_snapshot().unwrap();
+                    assert_eq!(snapshot.authorization_validations, count as u64);
+                    assert_eq!(snapshot.transaction_payload.canonical_transaction_bytes, length);
+                    assert!(snapshot.diagnostic.is_none());
+                    let (_, outcome) = executor.finish().unwrap();
+                    assert_eq!(
+                        outcome.receipts.len(),
+                        1,
+                        "ignored authorizations and user REVERT are included"
+                    );
+                });
+            }
+        }
+    }
 }

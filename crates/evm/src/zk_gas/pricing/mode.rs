@@ -15,6 +15,10 @@ use core::fmt;
 pub struct ZkGasKnownBlockBreakdown {
     /// Block fixed-cost contribution in fixed-point units.
     fixed_scaled: i128,
+    /// Raw authorization validations, including entries later ignored.
+    authorization_validations: u64,
+    /// Authorization validation contribution in fixed-point PGU.
+    authorization_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
@@ -39,6 +43,8 @@ impl ZkGasKnownBlockBreakdown {
     #[allow(clippy::too_many_arguments)] // Mirrors the independently checked report components.
     pub(super) const fn new(
         fixed_scaled: i128,
+        authorization_validations: u64,
+        authorization_scaled: i128,
         operations_scaled: i128,
         feature_error_scaled: i128,
         evm_local_resources: ResourceSelectors,
@@ -50,6 +56,8 @@ impl ZkGasKnownBlockBreakdown {
     ) -> Self {
         Self {
             fixed_scaled,
+            authorization_validations,
+            authorization_scaled,
             operations_scaled,
             feature_error_scaled,
             evm_local_resources,
@@ -64,6 +72,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Block fixed-cost contribution in fixed-point units.
     pub const fn fixed_scaled(self) -> i128 {
         self.fixed_scaled
+    }
+
+    /// Raw EIP-7702 authorization validations in the sealed block prefix.
+    pub const fn authorization_validations(self) -> u64 {
+        self.authorization_validations
+    }
+
+    /// Authorization validation contribution in normalized fixed-point PGU.
+    pub const fn authorization_scaled(self) -> i128 {
+        self.authorization_scaled
     }
 
     /// Block operation contribution in fixed-point units.
@@ -129,6 +147,8 @@ impl ZkGasKnownBlockBreakdown {
     ) -> Self {
         Self::new(
             fixed_scaled,
+            0,
+            0,
             operations_scaled,
             feature_error_scaled,
             evm_local_resources,
@@ -333,6 +353,7 @@ impl ZkGasBlockSnapshot {
             None => match ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
                 started_non_anchor_transactions: self.started_non_anchor_transactions,
                 native_value_transfers: self.native_value_transfers,
+                authorization_validations: self.authorization_validations,
                 operation_routes: &self.operation_routes,
                 resources: self.resources,
                 transaction_payload: self.transaction_payload,

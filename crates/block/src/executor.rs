@@ -244,6 +244,8 @@ where
                 status = report.status().label(),
                 evm_local_known_subtotal_pgu = ?known.evm_local_known_subtotal_pgu(),
                 fixed_scaled = ?known.fixed_scaled(),
+                authorization_validations = known.authorization_validations(),
+                authorization_scaled = ?known.authorization_scaled(),
                 operations_scaled = ?known.operations_scaled(),
                 evm_local_resources_scaled = ?known.evm_local_resources_scaled(),
                 "zk gas pricing shadow block report"

@@ -18,6 +18,12 @@ MODULE_SPEC.loader.exec_module(GENERATOR)
 class GeneratorTests(unittest.TestCase):
     """Exercise content addressing and stale-output detection independently of Rust."""
 
+    def test_authorization_tariff_is_normalized_and_generated(self) -> None:
+        payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
+        coefficient = payload["block_local"]["authorization_validation_tariff"]
+        self.assertEqual(coefficient, 200_000 * 10**18)
+        self.assertIn(f"AUTHORIZATION_VALIDATION_TARIFF: i128 = {coefficient};", GENERATOR.render(payload))
+
     def test_content_address_excludes_only_the_artifact_field(self) -> None:
         payload = {"z": 1, "artifact_sha256": "ignored", "a": {"b": 2}}
         self.assertEqual(

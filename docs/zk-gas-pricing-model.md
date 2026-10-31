@@ -978,6 +978,48 @@ Before adding admission, a reviewed change must at least provide:
 
 ## BLOCKHASH density correction
 
+### Original calibration semantic erratum
+
+The original BLOCKHASH calibration has a confirmed generator and semantic-validation defect.
+Its 90 normalized measurement records and rational refit still reproduce the inherited
+32.117684584888432025 PGU coefficient. That numerical reproducibility does not establish the
+ancestor-lookup coverage claimed by its `recent_ancestor_hit_1` and `recent_ancestor_hit_256` labels.
+The result artifact is
+`5fbdf5d26918e57214d70997795b2b41fad3219b8821730a08b0430f890c1d0c`, bound to Raiko revision
+`21ac9f900d880bb1167b3ca5d2b95be9afe72cd4` and four recorded source-file hashes.
+
+In that revision, `controlled_blockhash_bytecode` in
+`bin/guest-launcher/src/controlled_workload.rs` emits `NUMBER; PUSH offset; SUB; BLOCKHASH; POP`.
+The pinned REVM41 SUB implementation subtracts the next stack value from the top value, so this
+computes `(offset - NUMBER) mod 2^256`. At the controlled height 1166000, offsets 1 and 256 produce
+huge future heights; reconstructing that source reaches BLOCKHASH's early-zero branch before any
+host/database ancestor lookup. The fixture validator separately calculates the intended
+`NUMBER - offset` and checks the retained header window. It does not check the emitted operand or
+returned value, which is discarded. Opcode counts, gas-ledger agreement and fit/holdout residuals
+can therefore pass while the intended ancestor-hit semantics are absent from the generated program.
+Fit and holdout share this generator.
+
+The four bound source files were independently matched to their Git blobs, and the 90 preserved
+record hashes and numerical derivation were independently checked. Not all original GuestInputs
+or complete old-binary/source bindings have been recovered. This is a source-bound semantic
+reconstruction, not a claim of replaying all 90 historical executions and observing their runtime
+operands. Original data and identities remain unchanged. Reth does not vendor
+that original calibration material and generator; this distribution gap limits a standalone
+audit of the inherited semantic labels from Reth alone.
+
+The current 700-PGU coefficient is selected from the separate twelve development inputs and
+validated with six prospective inputs below. Their producer emits `PUSH offset; NUMBER; SUB`,
+checks the expected zero/nonzero result,
+and has independent operand-level regression checks. Those 18 actual measurements do not rely
+on the defective old generator. The inherited per-route `authority_sha256` value `5fbdf5…` records
+parent provenance; it is not valid ancestor-hit coverage evidence. The active correction authority
+is the sealed evidence identified by `successor.blockhash_evidence_path` and its SHA256, with the
+frozen policy and exact successor replay. The complete model identity authenticates that derivation;
+the generated runtime does not consume the old authority hash as a validity gate. This erratum
+changes no coefficient, exporter, model identity or immutable fixture.
+
+### Current controlled measurements
+
 The sealed development cohort contains twelve whole-proposal SP1 SDK6.3 execute-only observations:
 nearest valid ancestor `B-1`, farthest valid ancestor `B-256`, and expired `B-257`, each with
 0, 64, 4096 or 262144 bulk queries. Every user program has one additional semantic query,

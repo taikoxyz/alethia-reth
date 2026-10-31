@@ -18,6 +18,21 @@ MODULE_SPEC.loader.exec_module(GENERATOR)
 class GeneratorTests(unittest.TestCase):
     """Exercise content addressing and stale-output detection independently of Rust."""
 
+    def test_delegatecall_fixed_coefficient_keeps_authenticated_parent_memory(self) -> None:
+        payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
+        parent = GENERATOR.json.loads(
+            (MODULE_PATH.parent / "successors/parent-a2988920.json").read_text()
+        )
+        key = "opcode:0xf4:confirmed_spawn_wrapper"
+        route = next(row for row in payload["block_local"]["operation_routes"] if row["route_key"] == key)
+        old = next(row for row in parent["block_local"]["operation_routes"] if row["route_key"] == key)
+        kind, coefficients, required, *_ = GENERATOR.accepted_model(route)
+        self.assertEqual(kind, "ModelKind::FixedWithMemory")
+        self.assertEqual(coefficients[0], 6000 * 10**18)
+        self.assertEqual(required, "RequiredInput::SpawnMemory")
+        self.assertEqual(route["accepted_absolute_model"]["shared_memory"], old["accepted_absolute_model"]["shared_memory"])
+        self.assertEqual(route["accepted_absolute_model"]["authority_sha256"], old["accepted_absolute_model"]["authority_sha256"])
+
     def test_access_list_tariff_is_normalized_and_generated(self) -> None:
         payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
         coefficient = payload["block_local"]["access_list_item_tariff"]

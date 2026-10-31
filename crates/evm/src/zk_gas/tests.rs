@@ -2134,7 +2134,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "a2988920125e304121acb629b9b96fd1ad85ee707c89978240408c81e2a42f3e"
+        "2fb4bb71092f11cca2217e69b25e94217342ffb46a540a961e7a77a483cb5601"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);

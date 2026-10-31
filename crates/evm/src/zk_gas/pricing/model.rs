@@ -1203,6 +1203,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn confirmed_delegatecall_refinement_keeps_shared_memory_additive() {
+        let mut input = OperationPricingInput {
+            route: OperationRoute::ConfirmedSpawn(0xf4),
+            interpreter_raw_gas: None,
+            native_gas: None,
+            model_input: OperationModelInput::SpawnMemory { memory: MemorySelectors::default() },
+            feature_error: false,
+        };
+        let fixed = ZkGasModel.price_operation(&input).expect("confirmed fixed wrapper");
+        assert_eq!(fixed.accepted_absolute_scaled, 6_000 * FIXED_POINT_SCALE);
+        assert_eq!(fixed.total_scaled, fixed.accepted_absolute_scaled);
+        input.model_input = OperationModelInput::None;
+        assert_eq!(
+            ZkGasModel.price_operation(&input),
+            Err(ZkGasError::MissingInput("model_input"))
+        );
+        input.model_input = OperationModelInput::SpawnMemory {
+            memory: MemorySelectors {
+                growth_events: 1,
+                evm_gas_delta: 5_120,
+                boundary_4k_events: 1,
+            },
+        };
+        let memory = ZkGasModel.price_operation(&input).expect("unchanged shared memory");
+        assert_eq!(
+            memory.accepted_absolute_scaled - fixed.accepted_absolute_scaled,
+            16_009_638_224_414_647_289_136
+        );
+        assert_eq!(memory.total_scaled, memory.accepted_absolute_scaled);
+    }
+
+    #[test]
     fn code_preparation_completion_rejects_inconsistent_sealed_contribution() {
         let known = ZkGasKnownBlockBreakdown::new(
             0,
@@ -1551,7 +1583,7 @@ mod tests {
         for (opcode, fixed) in [
             (0xf1, 1_000_000_000_000_000_000_000_000),
             (0xf2, 1_054_688_518_244_156_247_737_152),
-            (0xf4, 3_841_906_721_059_316_908_619),
+            (0xf4, 6_000 * FIXED_POINT_SCALE),
             (0xfa, 5_000_000_000_000_000_000_000_000),
         ] {
             let mut input = OperationPricingInput {
@@ -1656,7 +1688,7 @@ mod tests {
             .iter()
             .find(|row| row.route == OperationRoute::ConfirmedSpawn(0xf4))
             .expect("one wrapper");
-        assert_eq!(wrapper.accepted_absolute_scaled, 19_851_544_945_473_964_197_755);
+        assert_eq!(wrapper.accepted_absolute_scaled, 22_009_638_224_414_647_289_136);
     }
 
     #[test]

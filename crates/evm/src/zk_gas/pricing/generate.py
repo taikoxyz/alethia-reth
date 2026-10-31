@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "code_preparation_successor.py"
+        "zk_gas_pricing_successor", BASE / "delegatecall_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)

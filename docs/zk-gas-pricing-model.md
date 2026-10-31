@@ -980,9 +980,9 @@ Before adding admission, a reviewed change must at least provide:
 
 The sealed development cohort contains twelve whole-proposal SP1 SDK6.3 execute-only observations:
 nearest valid ancestor `B-1`, farthest valid ancestor `B-256`, and expired `B-257`, each with
-0, 64, 4096 or 262144 bulk queries. Every program has one additional semantic warmup query,
-so the priced event count is `bulk_queries + 1`, including N0. The fixed 64-site body retains the same
-unused code at N0. Native completion gates establish the exact target, opcode totals, successful
+0, 64, 4096 or 262144 bulk queries. Every user program has one additional semantic query,
+so its event count is `bulk_queries + 1`, including N0; this excludes Anchor execution. The fixed
+64-site body retains the same unused code at N0. Native completion gates establish the exact target, opcode totals, successful
 receipt, contiguous ancestor headers and absence of exceptions. No deployment is involved.
 
 The parent has six complete-quote deficits and fifteen uncovered matched increments. Each same-mode
@@ -995,11 +995,63 @@ ceil_to_100(max(old_BLOCKHASH + (5/4 * actual_delta - old_node_delta) / extra_BL
 
 The exact maximum threshold is approximately 612.549665382938 PGU/event, hence 700 PGU/event.
 All fifteen corrected matched node and complete-quote increments cover 125% of their observed actual
-increments. Exact arithmetic projects zero complete-quote deficits for these twelve observations;
-this is a projection, not a claim that successor native replay has already run. Frozen evidence retains
-the canonical input, native, parent quote and actual report hashes, and the independent raw-audit identity.
+increments. The exporter's closure projection adds the positive per-event price increase for only
+the user program's `bulk_queries + 1` events to the parent complete quote. It leaves Anchor and
+other non-user work at their parent prices, so this is a conservative lower bound on the successor
+complete quote, not its exact native value. Even that lower bound has zero complete-quote deficits
+for these twelve observations. The sealed export records no successor native replay. Frozen evidence
+retains the canonical input, native, parent quote and actual report hashes, and the independent raw-audit identity.
 The policy was fixed before opening the six prospective validation observations; none of those observations
 is used for this coefficient.
+
+The synthetic fixture uses Raiko's checked-in `scripts/regression/shasta/Anchor.json` runtime.
+Its embedded AST shows `anchorV4` calling `_validateBlock`, which calls `_calcAncestorsHash` once.
+At this fixture's block height, the latter executes 255 BLOCKHASH queries for earlier ancestors
+and one for the parent; `anchorV4` then queries the parent again when storing `blockHashes`.
+That contributes 257 Anchor events per block, in addition to the user program's events.
+The fixture's native opcode observation deliberately excludes Anchor, whereas node/prove pricing
+includes it. Anchor has already queried all 256 valid ancestor heights before the user transaction,
+so valid-target user queries are warm even before their semantic check. Expired queries return zero
+before consulting the host or database and do not access or warm this cache. The shared Anchor work cancels
+in the same-mode matched increments and does not change the frozen 700-PGU selection.
+
+Subsequent same-input native repricing covered all twelve development inputs and six prospective
+inputs. For these eighteen synthetic blocks, both node and prove operation-price changes correspond
+exactly to `bulk_queries + 258` events: `bulk_queries + 1` user events plus 257 Anchor events.
+All unrelated pricing terms, inputs, public outputs and Unzen observations remain unchanged;
+the twelve development complete-quote deficits fall from six to zero. Native quotes alone do not
+assign actual SP1 PGU to the six prospective inputs; their separate measurements are reported below.
+The 257-event Anchor count belongs to this artifact and fixture
+context, not every fork, block height or Anchor implementation. These later native results do not
+change the sealed export's user-event-only projection, fit evidence or model identity.
+
+### Subsequent validation under modelbbce
+
+The six prospective inputs query the farthest valid or expired height with 0, 8192 or 196608 bulk
+queries and an executed PUSH0/POP prelude, including N0. All six completed SP1 SDK6.3 / ELFb76
+execute-only measurements under the previously frozen 700-PGU policy. Their complete quotes cover
+all six actual observations and all six same-mode N0/N8192 increments. None was used to select or
+adjust the tariff. The farthest/196608 case measures 266,827,920 actual PGU versus 156,273,289
+node-known and 311,215,120 complete quoted PGU. The expired/196608 case measures 203,146,003
+actual PGU versus 156,273,392 node-known and 311,215,222 complete quoted PGU. Literal actual/node
+ratios retain proposal/prover-only work in the numerator; complete quotes and matched increments
+remain separate metrics. Peak sampled process-tree PSS was 1,985,410,048 bytes, below the 6GiB guard.
+
+Native repricing of the same retained 50 Mainnet proposals / 9600 blocks changes aggregate complete
+quotes from 150,255,527,803 PGU under model2fb to 151,903,327,053 PGU under modelbbce: +1.0966646%
+overall, with a maximum proposal increase of 1.6265893%. Complete-quote deficits remain zero in both
+versions. The original SDK6.1 / ELF416f actual sum remains 69,980,978,094 PGU, so weighted
+complete/actual changes from 2.147091x to 2.170637x. This is a historical sensitivity check against
+retained observations, not fresh SDK6.3 actuals or strict current-program accuracy certification.
+Historical GuestInputs were reverified from the immutable fixture archive before native replay;
+all unrelated quote terms, Unzen observations, input hashes and public outputs remain unchanged.
+
+These reports are later validation of the same sealed model, not a rewrite of its derivation record.
+The export's `new_native_repricing_performed=False` and `historical_repricing_performed=False`
+describe what had run when it was sealed; they are not live validation-status fields.
+`prospective_actuals_used_for_fit=0` remains true after validation. The comparison quote used a
+temporary override to reviewed upstream source; no committed production pin or guest artifact
+changed, and no old SP1 workload run was repeated to obtain new native prices.
 
 These are composite loop-workload increments, not isolated opcode proving costs. Cross-mode differences
 can include semantic checks and target arithmetic. A constant-time source lookup does not establish its

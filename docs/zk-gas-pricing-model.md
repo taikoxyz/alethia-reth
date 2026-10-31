@@ -898,6 +898,37 @@ artifact preserves inherited authority fields as historical metadata and identif
 authority separately through the sealed density evidence and pre-holdout policy. All earlier
 coefficients and their calibration provenance remain inherited.
 
+Subsequent validation used a separately built native quote for this frozen
+artifact; the exporter's fit/projection record above is intentionally unchanged.
+Same-input repricing confirmed that only the fixed F4 contribution changes.
+
+| Validation cohort | Observations | Parent full deficits | Successor full deficits |
+| --- | ---: | ---: | ---: |
+| Density development | 8 | 1 | 0 |
+| Previously measured checked references | 16 | 0 | 0 |
+| Fresh PUSH0 prospective inputs | 6 | 1 | 0 |
+
+The six prospective inputs use STOP/empty RETURN, four PUSH0 arguments and
+0/4096/65536 calls in a fixed 64-call body. None selected the tariff. Actual
+SP1 SDK6.3 / ELFb76 execution and exact native repricing cover every complete
+quote and all six N0/N4096 increments. The largest STOP case uses 7,696,427
+EVM gas and measures 459,270,055 actual PGU versus 415,712,505 node-known and
+570,680,872 complete quoted PGU. The former development failure now quotes
+367,867,019 complete PGU against its unchanged 311,589,746 actual PGU.
+
+Actual native replay of the same retained 50 Mainnet proposals / 9600 blocks
+changes total full quotes from 150,234,443,229 to 150,255,527,803 PGU (+0.01403%;
+largest proposal +0.02056%). Their original SDK6.1 / ELF416f actuals remain
+69,980,978,094 PGU, so weighted full/actual changes from 2.14679x to 2.14709x,
+with zero full deficits in both versions. This is a historical sensitivity
+check, not current b76 accuracy certification or a new SP1 proving run.
+
+Independent source, native, actual-workload and historical-report audits passed.
+The comparison quote used an explicit temporary dependency override to the
+reviewed upstream source, not a committed Raiko pin or guest update. These
+finite observations do not establish a universal node-admission bound, proof
+throughput, production activation or deployment readiness.
+
 The checked-in commands reproduce the current JSON, acceptance record and Rust table without
 rerunning SP1 or vendoring full GuestInputs. Repeating measurements requires the external fixed
 inputs and recorded program/SDK. `parent_validation` records inherited results, not reexecution;

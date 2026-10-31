@@ -929,6 +929,12 @@ reviewed upstream source, not a committed Raiko pin or guest update. These
 finite observations do not establish a universal node-admission bound, proof
 throughput, production activation or deployment readiness.
 
+Fixed inputs, original failures, successor quotes and independently checked
+reports are retained in [Atlas PR20](https://github.com/taikoxyz/raiko2-atlas/pull/20)
+and its [immutable fixture Release](https://github.com/taikoxyz/raiko2-atlas/releases/tag/fixture-unzen-delegatecall-density-v1).
+Reusable producers and measurement tools remain in Raiko. The historical
+comparison retains reports and source identities, not historical GuestInputs.
+
 The checked-in commands reproduce the current JSON, acceptance record and Rust table without
 rerunning SP1 or vendoring full GuestInputs. Repeating measurements requires the external fixed
 inputs and recorded program/SDK. `parent_validation` records inherited results, not reexecution;

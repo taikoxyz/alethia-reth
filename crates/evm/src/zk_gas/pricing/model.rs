@@ -1203,6 +1203,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blockhash_refinement_charges_fixed_seven_hundred_without_changing_domain() {
+        let mut input = OperationPricingInput {
+            route: OperationRoute::Opcode(0x40),
+            interpreter_raw_gas: Some(20),
+            native_gas: None,
+            model_input: OperationModelInput::None,
+            feature_error: false,
+        };
+        let normal = ZkGasModel.price_operation(&input).expect("normal BLOCKHASH");
+        assert_eq!(normal.accepted_absolute_scaled, 700 * FIXED_POINT_SCALE);
+        assert_eq!(normal.total_scaled, normal.accepted_absolute_scaled);
+        input.interpreter_raw_gas = Some(19);
+        assert!(ZkGasModel.price_operation(&input).is_err());
+        input.interpreter_raw_gas = Some(20);
+        input.feature_error = true;
+        let error = ZkGasModel.price_operation(&input).expect("inherited error floor");
+        assert_eq!(error.total_scaled, 5_000_000 * FIXED_POINT_SCALE);
+    }
+
+    #[test]
     fn confirmed_delegatecall_refinement_keeps_shared_memory_additive() {
         let mut input = OperationPricingInput {
             route: OperationRoute::ConfirmedSpawn(0xf4),

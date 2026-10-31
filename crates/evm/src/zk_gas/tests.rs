@@ -2134,7 +2134,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "2fb4bb71092f11cca2217e69b25e94217342ffb46a540a961e7a77a483cb5601"
+        "bbce9be0cd9792bfa9c46369203f6441c3fd288787ea357e311eae8ebd48aac4"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2254,10 +2254,10 @@ fn zk_gas_model_matches_python_operation_golden_vectors() {
         ),
         (
             opcode(0x40, 20, OperationModelInput::None),
-            32_117_684_584_888_432_025,
+            700_000_000_000_000_000_000,
             0,
             0,
-            32_117_684_584_888_432_025,
+            700_000_000_000_000_000_000,
         ),
         (
             opcode(

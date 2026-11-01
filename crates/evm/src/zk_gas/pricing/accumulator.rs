@@ -788,6 +788,7 @@ impl ZkGasAccumulator {
         let priced = ZkGasModel.price_operation(&input)?;
         let row = OperationRoutePricingInput {
             route: input.route,
+            normal_dispatch_count: priced.normal_dispatch_count,
             accepted_absolute_scaled: priced.accepted_absolute_scaled,
             incremental_scaled: priced.incremental_scaled,
             structural_scaled: priced.structural_scaled,
@@ -818,6 +819,10 @@ fn merged_route(
     }
     Ok(OperationRoutePricingInput {
         route: row.route,
+        normal_dispatch_count: existing
+            .normal_dispatch_count
+            .checked_add(row.normal_dispatch_count)
+            .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?,
         accepted_absolute_scaled: existing
             .accepted_absolute_scaled
             .checked_add(row.accepted_absolute_scaled)
@@ -843,32 +848,9 @@ fn merge_route(
     key: RouteKey,
     row: OperationRoutePricingInput,
 ) -> Result<(), ZkGasAccumulatorError> {
-    let accumulated = routes.entry(key).or_insert(OperationRoutePricingInput {
-        route: row.route,
-        accepted_absolute_scaled: 0,
-        incremental_scaled: 0,
-        structural_scaled: 0,
-        feature_error_scaled: 0,
-    });
-    if accumulated.route != row.route {
-        return Err(ZkGasAccumulatorError::Pricing(ZkGasError::InvalidInput("operation_route")));
-    }
-    accumulated.accepted_absolute_scaled = accumulated
-        .accepted_absolute_scaled
-        .checked_add(row.accepted_absolute_scaled)
-        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
-    accumulated.incremental_scaled = accumulated
-        .incremental_scaled
-        .checked_add(row.incremental_scaled)
-        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
-    accumulated.structural_scaled = accumulated
-        .structural_scaled
-        .checked_add(row.structural_scaled)
-        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
-    accumulated.feature_error_scaled = accumulated
-        .feature_error_scaled
-        .checked_add(row.feature_error_scaled)
-        .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+    // Prevalidate every component before publishing the row, including the new raw count.
+    let next = merged_route(routes.get(&key), row)?;
+    routes.insert(key, next);
     Ok(())
 }
 
@@ -984,6 +966,120 @@ mod code_preparation_atomic_tests {
                 CodePreparationSelectors { nonempty_events: 0, total_bytes: 1 }
             )
             .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod normal_dispatch_tests {
+    use super::*;
+
+    fn operation() -> OperationPricingInput {
+        OperationPricingInput {
+            route: OperationRoute::Opcode(1),
+            interpreter_raw_gas: Some(3),
+            native_gas: None,
+            model_input: super::super::OperationModelInput::StaticRawGas { raw_gas: 3 },
+            feature_error: false,
+        }
+    }
+
+    fn payload(accumulator: &mut ZkGasAccumulator) {
+        accumulator
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn normal_dispatch_count_overflow_leaves_operation_and_block_prefix_atomic() {
+        let row = OperationRoutePricingInput {
+            route: operation().route,
+            normal_dispatch_count: u64::MAX,
+            accepted_absolute_scaled: 10,
+            incremental_scaled: 0,
+            structural_scaled: 0,
+            feature_error_scaled: 0,
+        };
+        let mut routes = BTreeMap::new();
+        routes.insert(row.route.into(), row);
+        let before = routes.clone();
+        let next = OperationRoutePricingInput { normal_dispatch_count: 1, ..row };
+        assert_eq!(
+            merge_route(&mut routes, row.route.into(), next),
+            Err(ZkGasAccumulatorError::ArithmeticOverflow)
+        );
+        assert_eq!(routes, before);
+        let mut prefix = SelectorPrefix { operation_routes: routes, ..Default::default() };
+        let mut tx = TransactionSelectors::new(TransactionMetadata::default());
+        tx.transaction_payload = Some(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        tx.operation_routes.insert(next.route.into(), next);
+        prefix.merge_transaction(&tx);
+        assert_eq!(prefix.operation_routes, before);
+        assert_eq!(prefix.non_anchor_transactions, 0);
+        assert_eq!(prefix.transaction_payload, TransactionPayloadSelectors::default());
+        assert_eq!(prefix.diagnostic, Some(ZkGasAccumulatorError::ArithmeticOverflow));
+        let mut accumulator = ZkGasAccumulator::default();
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        accumulator.in_flight.as_mut().unwrap().operation_routes = before.clone();
+        assert_eq!(
+            accumulator.observe_step(operation()),
+            Err(ZkGasAccumulatorError::ArithmeticOverflow)
+        );
+        assert_eq!(accumulator.in_flight.as_ref().unwrap().operation_routes, before);
+    }
+
+    #[test]
+    fn normal_dispatch_discard_reset_and_pending_spawn_do_not_leak_or_double_count() {
+        let mut accumulator = ZkGasAccumulator::default();
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        payload(&mut accumulator);
+        accumulator.observe_step(operation()).unwrap();
+        accumulator.reset_transaction();
+        assert!(accumulator.committed_snapshot().operation_routes.is_empty());
+        assert_eq!(
+            accumulator.attempted_snapshot().block.operation_routes[0].normal_dispatch_count,
+            1
+        );
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        payload(&mut accumulator);
+        accumulator.select_spawn(0xf4, Some(MemorySelectors::default())).unwrap();
+        accumulator.commit_transaction().unwrap();
+        assert!(accumulator.committed_snapshot().operation_routes.is_empty());
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        payload(&mut accumulator);
+        accumulator.select_spawn(0xf4, Some(MemorySelectors::default())).unwrap();
+        accumulator.confirm_spawn().unwrap();
+        accumulator.confirm_spawn().unwrap();
+        accumulator.commit_transaction().unwrap();
+        assert_eq!(accumulator.committed_snapshot().operation_routes[0].normal_dispatch_count, 1);
+        assert_eq!(
+            accumulator
+                .attempted_snapshot()
+                .block
+                .operation_routes
+                .iter()
+                .map(|r| r.normal_dispatch_count)
+                .sum::<u64>(),
+            2
+        );
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        payload(&mut accumulator);
+        accumulator.observe_step(operation()).unwrap();
+        accumulator.commit_transaction().unwrap();
+        assert_eq!(
+            accumulator
+                .committed_snapshot()
+                .operation_routes
+                .iter()
+                .map(|r| r.normal_dispatch_count)
+                .sum::<u64>(),
+            2
         );
     }
 }

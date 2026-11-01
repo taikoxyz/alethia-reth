@@ -2134,7 +2134,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "bbce9be0cd9792bfa9c46369203f6441c3fd288787ea357e311eae8ebd48aac4"
+        "c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2154,7 +2154,10 @@ fn assert_zk_gas_pricing_operation(
     assert_eq!(priced.incremental_scaled, incremental_scaled);
     assert_eq!(priced.structural_scaled, structural_scaled);
     assert_eq!(priced.feature_error_scaled, 0);
-    assert_eq!(priced.total_scaled, total_scaled);
+    let expected_count = u64::from(!matches!(input.route, OperationRoute::Precompile(_)));
+    assert_eq!(priced.normal_dispatch_count, expected_count);
+    assert_eq!(priced.normal_dispatch_scaled, i128::from(expected_count) * 64 * FIXED_POINT_SCALE);
+    assert_eq!(priced.total_scaled, total_scaled + priced.normal_dispatch_scaled);
     assert_eq!(priced.total_pgu, None, "operation scope is not a rounding boundary");
 }
 
@@ -2395,6 +2398,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
 
     let accumulated = [OperationRoutePricingInput {
         route: OperationRoute::Opcode(0x01),
+        normal_dispatch_count: 0,
         accepted_absolute_scaled: priced.accepted_absolute_scaled,
         incremental_scaled: priced.incremental_scaled,
         structural_scaled: priced.structural_scaled,
@@ -2429,6 +2433,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
     let operation = ZkGasModel.price_operation(&operation).expect("operation prices");
     let operation_route = OperationRoutePricingInput {
         route: OperationRoute::Opcode(0x01),
+        normal_dispatch_count: 0,
         accepted_absolute_scaled: operation.accepted_absolute_scaled,
         incremental_scaled: operation.incremental_scaled,
         structural_scaled: operation.structural_scaled,
@@ -2482,6 +2487,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
             code_preparation: Default::default(),
             operation_routes: &[OperationRoutePricingInput {
                 route: OperationRoute::Opcode(0x31),
+                normal_dispatch_count: 0,
                 accepted_absolute_scaled: 100,
                 incremental_scaled: 120,
                 structural_scaled: 110,
@@ -2618,6 +2624,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
 
     let negative_route = [OperationRoutePricingInput {
         route: OperationRoute::Opcode(0x01),
+        normal_dispatch_count: 0,
         accepted_absolute_scaled: -1,
         incremental_scaled: 0,
         structural_scaled: 0,
@@ -5247,4 +5254,28 @@ fn code_preparation_real_depth_rejection_has_no_preparation_on_either_collector(
         assert_eq!(collector.committed_snapshot().code_preparation, Default::default());
         assert!(collector.committed_snapshot().diagnostic.is_none());
     }
+}
+
+#[test]
+fn normal_dispatch_plain_and_inspected_counts_context_and_included_revert_or_halt() {
+    for (code, expected) in [
+        (vec![0x60, 1, 0x60, 2, 0x01, 0x50, 0x30, 0x50, 0x00], 7),
+        (vec![0x60, 0, 0x60, 0, 0xfd], 3),
+        (vec![0xfe], 0),
+    ] {
+        let (plain, inspected) =
+            zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 100_000);
+        assert_eq!(plain, inspected);
+        assert_eq!(
+            plain.operation_routes.iter().map(|row| row.normal_dispatch_count).sum::<u64>(),
+            expected
+        );
+        let ZkGasShadowStatus::Incomplete { known, .. } = plain.shadow_report().status() else {
+            panic!("known normal scope")
+        };
+        assert_eq!(known.normal_dispatch_count(), expected);
+        assert_eq!(known.normal_dispatch_scaled(), i128::from(expected) * 64 * FIXED_POINT_SCALE);
+    }
+    let snapshot = call_memory_snapshot(SpawnFamily::DelegateCall, &CallMemoryCase::default());
+    assert_eq!(call_memory_wrapper(&snapshot, SpawnFamily::DelegateCall).normal_dispatch_count, 1);
 }

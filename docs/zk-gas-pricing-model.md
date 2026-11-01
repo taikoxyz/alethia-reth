@@ -4,14 +4,16 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`bbce9be0cd9792bfa9c46369203f6441c3fd288787ea357e311eae8ebd48aac4`. Relative to immutable parent
-`2fb4bb71092f11cca2217e69b25e94217342ffb46a540a961e7a77a483cb5601`, it changes only the normal
-`BLOCKHASH (0x40)` fixed price from **32.117684584888432025 to 700 PGU/event**.
-All other routes, memory coefficients, floors, fixed costs, payload/resources, MPT tariffs, global
+`c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef`. Relative to immutable parent
+`bbce9be0cd9792bfa9c46369203f6441c3fd288787ea357e311eae8ebd48aac4`, this candidate adds only
+**64 normalized PGU per normally priced Opcode/ConfirmedSpawn event**, after route maxima.
+All parent route coefficients, memory, floors, fixed costs, payload/resources, MPT tariffs, global
 discount, authorization/access-list tariffs and code-preparation units remain unchanged. The inherited
-DELEGATECALL wrapper is 6000 PGU/event; code units are 64 PGU per unique code byte and 8192 per accepted
-nonempty preparation plus 32 per processed byte. This remains the initial Shadow model with no public
-model selector. If `RUNTIME_SPEC_SHA256` differs from this value, this document is stale.
+BLOCKHASH unit is 700 PGU/event and DELEGATECALL wrapper is 6000 PGU/event; each eligible normal event
+now additionally receives the reserve. Code units remain 64 PGU per unique code byte and 8192 per
+accepted nonempty preparation plus 32 per processed byte. This remains the initial Shadow model with
+no public model selector. If `RUNTIME_SPEC_SHA256` differs, this document is stale. Candidate native
+repricing and prospective validation are separate from the sealed 60-row development derivation.
 
 The original calibration calls itself `accepted_runtime_export`; the current artifact and its
 immediate parent call themselves `conservative_runtime_successor`. These identify calibration and
@@ -76,8 +78,13 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`normal_dispatch_successor.py`](../crates/evm/src/zk_gas/pricing/normal_dispatch_successor.py)
+  adds the current reserve to immutable bbce using the sealed
+  [60-row composite evidence](../crates/evm/src/zk_gas/pricing/successors/normal-dispatch-v1.json).
+  Exact rational replay authenticates the parent, raw-derived counts and independent panel/audit
+  identities, and rejects every unrelated numeric or provenance change.
 - [`blockhash_successor.py`](../crates/evm/src/zk_gas/pricing/blockhash_successor.py)
-  derives the current fixed BLOCKHASH unit from immutable model2fb and the sealed
+  derives the inherited fixed BLOCKHASH unit from immutable model2fb and the sealed
   [twelve-row density evidence](../crates/evm/src/zk_gas/pricing/successors/blockhash-density-v1.json).
   Exact replay authenticates the parent, policy, measurement identities and fifteen matched constraints,
   and rejects every unrelated runtime or provenance change.
@@ -638,13 +645,28 @@ Composition::Accepted:
 Composition::Maximum:
     route_normal = max(accepted_absolute, incremental, structural)
 
-route_total = route_normal + feature_error
+route_dispatch = normal_dispatch_count * 64 PGU
+route_total = route_normal + feature_error + route_dispatch
 operation_price = sum(route_total for every committed route)
 ```
 
 The maximum is applied after route-wide accumulation, not per event. `feature_error` remains a
 separate accumulated field, although a single opcode event selects either its normal extraction or
-its feature-error path.
+its feature-error path. The separate mandatory `normal_dispatch_count` is one only for a normally
+priced Opcode/ConfirmedSpawn event, otherwise zero. It includes Anchor and child execution, not just
+user-code observations. Selected-but-undispatched wrappers and collector diagnostics add nothing;
+precompile bodies do not add a second reserve after their caller's wrapper. Ordinary non-spawning
+CALL-family steps that price successfully use their Opcode route and receive one reserve there.
+Exceptional halts and successful steps with failed typed extraction use feature-error pricing and
+receive no reserve; therefore this selector is not a count of every physical interpreter step.
+
+`normal_dispatch_scaled` is an exposed subterm already included in `operations_scaled` and the
+block total. Completion validates its sealed count/contribution; consumers must not add it again.
+The count uses checked transactional accumulation and the existing selector bound of one billion.
+Included REVERT retains its executed prefix; discarded/reset attempts appear only in attempted
+snapshots. Candidate sums remain unchanged. Dispatch is added after their route maximum, so a
+structural floor cannot swallow it. All arithmetic uses fixed-point units; there is no per-event
+ceiling or second global discount.
 
 ### Model families and current exceptions
 
@@ -947,7 +969,7 @@ comparison retains reports and source identities, not historical GuestInputs.
 
 ### Export replay boundaries
 
-The checked-in commands below reproduce the current BLOCKHASH JSON, acceptance record and Rust table without
+The checked-in commands below reproduce the current successor JSON, acceptance record and Rust table without
 rerunning SP1 or vendoring full GuestInputs. Repeating measurements requires the external fixed
 inputs and recorded program/SDK. `parent_validation` records inherited results, not reexecution;
 this refinement does not establish parity with a deployed production guest, wall-clock proof
@@ -1018,7 +1040,7 @@ frozen policy and exact successor replay. The complete model identity authentica
 the generated runtime does not consume the old authority hash as a validity gate. This erratum
 changes no coefficient, exporter, model identity or immutable fixture.
 
-### Current controlled measurements
+### Historical bbce controlled measurements
 
 The sealed development cohort contains twelve whole-proposal SP1 SDK6.3 execute-only observations:
 nearest valid ancestor `B-1`, farthest valid ancestor `B-256`, and expired `B-257`, each with
@@ -1102,20 +1124,50 @@ complete-quote closure and matched increments. This finite correction does not e
 production guest parity, capacity, throughput or a change to Unzen admission. Prior model, evidence and
 validation records remain immutable; inherited historical claims are not reexecuted by this exporter.
 
+## Candidate normal-dispatch reserve (bbce to c8936124)
+
+The finite development panel comprises 24 ADD/MUL composite loops, 12 paired DUP/POP controls,
+and 24 balanced stack loops, including every N0 control: 60 distinct measured proposal inputs and
+60 matched increments. Their independent panel SHA256 is
+`7c6f4ce7cfa98ddbcabbaeabdccb30b7088666ef22c96b80e3b946e68b65a7c3`; the separate exact-rational audit is
+`69d3a6ab96c756035a4f0d369b2993894254122481f994bdda6b4a03b2560e72`.
+The exporter retains their original canonical-input, native, parent-quote and SP1-report identities.
+
+```text
+R = ceil_to_multiple_of_8(max(0, max_pairs(
+    (5/4 * actual_PGU_increment - parent_node_scaled_increment / 1e18)
+    / extra_completed_user_opcodes))) = 64 PGU
+```
+
+The exact largest threshold is `5844273401172960045399 / 100100000000000000000`, approximately
+58.3843496621 PGU/event. The count deltas cover the actual composite opcode streams, including
+DUP/POP and loop scaffolding; they do not identify isolated dispatch, ADD, MUL, DUP or POP cost.
+No claim is made that the original Taiko calibration lacked metering. No prospective actual is used
+to select 64. Existing calibration authorities and validation records are inherited, not reexecuted.
+
+User completed-opcode counts exclude Anchor. Candidate same-input native replay must independently
+confirm that full-block normal-dispatch count differences equal these qualified user deltas before
+interpreting the fitted margin. The exporter does not claim that replay has occurred. Literal
+actual/node-block-plus-sum and actual/complete-proposal values, including startup/control deficits,
+remain separate primary comparisons; matched increments are explanatory diagnostics only.
+This candidate does not allocate proposal-only startup into mining, establish a universal bound,
+change consensus Unzen, or activate admission. New empirical validation must preserve both
+underpricing flags and original deficits instead of replacing them with projected success.
+
 ## Reproduction and change policy
 
 Verify the checked JSON address and generated Rust table with:
 
 ```bash
 ~/.venv/bin/python -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/blockhash_successor.py --check
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/normal_dispatch_successor.py --check
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/blockhash_successor.py
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/normal_dispatch_successor.py
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```

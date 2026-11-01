@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "bbce9be0cd9792bfa9c46369203f6441c3fd288787ea357e311eae8ebd48aac4";
+    "c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -75,6 +75,9 @@ pub(crate) const BLOB_SOURCE_TARIFFS: [i128; 2] =
 
 /// Proposal startup coefficient charged exactly once.
 pub(crate) const PROPOSAL_STARTUP: i128 = 154263870735480402119958866;
+
+/// Normalized reserve per normally priced Opcode/ConfirmedSpawn, additive after route maxima.
+pub(crate) const NORMAL_DISPATCH_TARIFF: i128 = 64000000000000000000;
 
 /// Complete authenticated operation route table.
 pub(crate) static ROUTES: &[RouteSpec] = &[

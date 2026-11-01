@@ -252,6 +252,8 @@ where
                 code_preparation_total_bytes = known.code_preparation().total_bytes,
                 code_preparation_scaled = ?known.code_preparation_scaled(),
                 operations_scaled = ?known.operations_scaled(),
+                normal_dispatch_count = known.normal_dispatch_count(),
+                normal_dispatch_scaled = ?known.normal_dispatch_scaled(),
                 evm_local_resources_scaled = ?known.evm_local_resources_scaled(),
                 "zk gas pricing shadow block report"
             ),

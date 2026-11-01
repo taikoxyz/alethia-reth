@@ -30,6 +30,10 @@ pub struct ZkGasKnownBlockBreakdown {
     code_preparation_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
+    /// Normal dispatched opcode/confirmed-spawn count sealed with its reserve.
+    normal_dispatch_count: u64,
+    /// Additive reserve already included in `operations_scaled`.
+    normal_dispatch_scaled: i128,
     /// Explicit feature-error contribution included in `operations_scaled`.
     feature_error_scaled: i128,
     /// Raw EVM-local resource subset sealed alongside its priced contribution.
@@ -57,6 +61,8 @@ impl ZkGasKnownBlockBreakdown {
         access_list_items: u64,
         access_list_scaled: i128,
         operations_scaled: i128,
+        normal_dispatch_count: u64,
+        normal_dispatch_scaled: i128,
         feature_error_scaled: i128,
         evm_local_resources: ResourceSelectors,
         evm_local_resources_scaled: i128,
@@ -76,6 +82,8 @@ impl ZkGasKnownBlockBreakdown {
             access_list_items,
             access_list_scaled,
             operations_scaled,
+            normal_dispatch_count,
+            normal_dispatch_scaled,
             feature_error_scaled,
             evm_local_resources,
             evm_local_resources_scaled,
@@ -126,6 +134,16 @@ impl ZkGasKnownBlockBreakdown {
         self.operations_scaled
     }
 
+    /// Normally priced Opcode/ConfirmedSpawn events, including Anchor and child execution.
+    pub const fn normal_dispatch_count(self) -> u64 {
+        self.normal_dispatch_count
+    }
+
+    /// Additive dispatch reserve already included in `operations_scaled`; do not add it again.
+    pub const fn normal_dispatch_scaled(self) -> i128 {
+        self.normal_dispatch_scaled
+    }
+
     /// Explicit feature-error attribution included in the operation contribution.
     pub const fn feature_error_scaled(self) -> i128 {
         self.feature_error_scaled
@@ -162,6 +180,13 @@ impl ZkGasKnownBlockBreakdown {
     }
 
     #[cfg(test)]
+    pub(super) const fn with_normal_dispatch_for_test(mut self, count: u64, scaled: i128) -> Self {
+        self.normal_dispatch_count = count;
+        self.normal_dispatch_scaled = scaled;
+        self
+    }
+
+    #[cfg(test)]
     pub(in crate::zk_gas) const fn with_payload_for_test(
         mut self,
         payload: TransactionPayloadSelectors,
@@ -189,6 +214,8 @@ impl ZkGasKnownBlockBreakdown {
             0,
             0,
             operations_scaled,
+            0,
+            0,
             feature_error_scaled,
             evm_local_resources,
             resources_scaled,

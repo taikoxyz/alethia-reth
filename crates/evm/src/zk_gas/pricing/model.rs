@@ -6,8 +6,8 @@ use super::{
     generated::{
         ACCESS_LIST_ITEM_TARIFF, AUTHORIZATION_VALIDATION_TARIFF, BLOB_SOURCE_TARIFFS, BLOCK_FIXED,
         CODE_PREPARATION_TARIFFS, FIXED_POINT_SCALE, MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS,
-        OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP,
-        RESOURCE_TARIFFS, ROUTES, SPAWN_ROUTE_INDEX, TRANSACTION_PAYLOAD_TARIFFS,
+        NORMAL_DISPATCH_TARIFF, OPCODE_ROUTE_INDEX, PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX,
+        PROPOSAL_STARTUP, RESOURCE_TARIFFS, ROUTES, SPAWN_ROUTE_INDEX, TRANSACTION_PAYLOAD_TARIFFS,
     },
     types::{
         AccessClass, BlockPricingInput, CalldataAccessClass, CodePreparationSelectors,
@@ -256,11 +256,16 @@ impl ZkGasModel {
             Composition::Accepted => accepted,
             Composition::Maximum => accepted.max(incremental).max(structural),
         };
+        let normal_dispatch_count =
+            u64::from(!matches!(input.route, OperationRoute::Precompile(_)));
+        let normal_dispatch_scaled = self.price_normal_dispatches(normal_dispatch_count)?;
         Ok(PricingBreakdown {
+            normal_dispatch_count,
+            normal_dispatch_scaled,
             accepted_absolute_scaled: accepted,
             incremental_scaled: incremental,
             structural_scaled: structural,
-            total_scaled: total,
+            total_scaled: checked_add(total, normal_dispatch_scaled)?,
             ..Default::default()
         })
     }
@@ -289,6 +294,8 @@ impl ZkGasModel {
             access_list_scaled: known.access_list_scaled(),
             code_preparation_scaled: known.code_preparation_scaled(),
             operations_scaled: known.operations_scaled(),
+            normal_dispatch_count: known.normal_dispatch_count(),
+            normal_dispatch_scaled: known.normal_dispatch_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: known.evm_local_resources_scaled(),
             transaction_payload_scaled: known.transaction_payload_scaled(),
@@ -341,6 +348,8 @@ impl ZkGasModel {
             access_list_scaled: known.access_list_scaled(),
             code_preparation_scaled: known.code_preparation_scaled(),
             operations_scaled: known.operations_scaled(),
+            normal_dispatch_count: known.normal_dispatch_count(),
+            normal_dispatch_scaled: known.normal_dispatch_scaled(),
             feature_error_scaled: known.feature_error_scaled(),
             resources_scaled: resources,
             transaction_payload_scaled: known.transaction_payload_scaled(),
@@ -364,7 +373,7 @@ impl ZkGasModel {
         let block_term_count = input
             .operation_routes
             .len()
-            .checked_mul(4)
+            .checked_mul(5)
             .and_then(|count| count.checked_add(19))
             .ok_or(ZkGasError::ArithmeticOverflow)?;
         enforce_term_count(block_term_count)?;
@@ -378,12 +387,22 @@ impl ZkGasModel {
         ])?;
 
         let mut operations = 0_i128;
+        let mut normal_dispatch_count = 0_u64;
         let mut feature_errors = 0_i128;
         for (index, accumulated) in input.operation_routes.iter().enumerate() {
             if input.operation_routes[..index].iter().any(|row| row.route == accumulated.route) {
                 return Err(ZkGasError::InvalidInput("duplicate_operation_route"));
             }
             let route = lookup_route(accumulated.route)?;
+            if matches!(accumulated.route, OperationRoute::Precompile(_)) &&
+                accumulated.normal_dispatch_count != 0
+            {
+                return Err(ZkGasError::InvalidInput("precompile_normal_dispatch_count"));
+            }
+            normal_dispatch_count = normal_dispatch_count
+                .checked_add(accumulated.normal_dispatch_count)
+                .ok_or(ZkGasError::ArithmeticOverflow)?;
+            let dispatch = self.price_normal_dispatches(accumulated.normal_dispatch_count)?;
             ensure_nonnegative(accumulated.accepted_absolute_scaled, "accepted_absolute")?;
             ensure_nonnegative(accumulated.incremental_scaled, "incremental")?;
             ensure_nonnegative(accumulated.structural_scaled, "structural")?;
@@ -395,8 +414,10 @@ impl ZkGasModel {
                     .max(accumulated.incremental_scaled)
                     .max(accumulated.structural_scaled),
             };
-            operations =
-                checked_add(operations, checked_add(normal, accumulated.feature_error_scaled)?)?;
+            operations = checked_add(
+                operations,
+                checked_sum(&[normal, accumulated.feature_error_scaled, dispatch])?,
+            )?;
             feature_errors = checked_add(feature_errors, accumulated.feature_error_scaled)?;
         }
 
@@ -423,6 +444,8 @@ impl ZkGasModel {
             input.access_list_items,
             access_list,
             operations,
+            normal_dispatch_count,
+            self.price_normal_dispatches(normal_dispatch_count)?,
             feature_errors,
             input.resources,
             resources,
@@ -433,6 +456,11 @@ impl ZkGasModel {
             input.code_preparation,
             code_preparation,
         ))
+    }
+
+    /// Prices normally dispatched opcodes in normalized fixed-point PGU without event rounding.
+    pub fn price_normal_dispatches(self, count: u64) -> Result<i128, ZkGasError> {
+        checked_mul(NORMAL_DISPATCH_TARIFF, bounded("normal_dispatch_count", count)?)
     }
 
     /// Prices each raw EIP-7702 validation entry in normalized fixed-point PGU.
@@ -572,7 +600,13 @@ fn validate_shadow_report(
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("code_preparation_scaled"));
     }
+    if ZkGasModel.price_normal_dispatches(known.normal_dispatch_count())? !=
+        known.normal_dispatch_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("normal_dispatch_scaled"));
+    }
     ensure_nonnegative(known.operations_scaled(), "operations")?;
+
     ensure_nonnegative(known.feature_error_scaled(), "feature_error")?;
     ensure_nonnegative(known.evm_local_resources_scaled(), "evm_local_resources")?;
     if price_resources(known.evm_local_resources())? != known.evm_local_resources_scaled() {
@@ -585,6 +619,11 @@ fn validate_shadow_report(
     }
     if known.feature_error_scaled() > known.operations_scaled() {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("feature_error_scaled"));
+    }
+    if checked_add(known.normal_dispatch_scaled(), known.feature_error_scaled())? >
+        known.operations_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("normal_dispatch_scaled"));
     }
     let recomputed = checked_sum(&[
         known.fixed_scaled(),
@@ -1203,6 +1242,150 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normal_dispatch_counts_context_spawn_but_not_errors_or_precompile_bodies() {
+        for input in [
+            OperationPricingInput {
+                route: OperationRoute::Opcode(0x30),
+                interpreter_raw_gas: Some(2),
+                native_gas: None,
+                model_input: OperationModelInput::ContextFixed,
+                feature_error: false,
+            },
+            OperationPricingInput {
+                route: OperationRoute::ConfirmedSpawn(0xf4),
+                interpreter_raw_gas: None,
+                native_gas: None,
+                model_input: OperationModelInput::SpawnMemory {
+                    memory: MemorySelectors::default(),
+                },
+                feature_error: false,
+            },
+        ] {
+            let result = ZkGasModel.price_operation(&input).unwrap();
+            assert_eq!(result.normal_dispatch_count, 1);
+            assert_eq!(result.normal_dispatch_scaled, 64 * FIXED_POINT_SCALE);
+            assert_eq!(
+                result.total_scaled,
+                result
+                    .accepted_absolute_scaled
+                    .max(result.incremental_scaled)
+                    .max(result.structural_scaled) +
+                    result.normal_dispatch_scaled
+            );
+        }
+        let mut error = normal_mulmod();
+        error.feature_error = true;
+        error.model_input = OperationModelInput::None;
+        let body = OperationPricingInput {
+            route: OperationRoute::Precompile(4),
+            interpreter_raw_gas: None,
+            native_gas: Some(15),
+            model_input: OperationModelInput::None,
+            feature_error: false,
+        };
+        for input in [error, body] {
+            let result = ZkGasModel.price_operation(&input).unwrap();
+            assert_eq!(result.normal_dispatch_count, 0);
+            assert_eq!(result.normal_dispatch_scaled, 0);
+        }
+    }
+
+    #[test]
+    fn normal_dispatch_is_additive_after_route_max_and_ceil_once_at_block_boundary() {
+        let normal = ZkGasModel.price_operation(&normal_mulmod()).unwrap();
+        let mut row = OperationRoutePricingInput {
+            route: OperationRoute::Opcode(9),
+            normal_dispatch_count: 2,
+            accepted_absolute_scaled: 2 * normal.accepted_absolute_scaled,
+            incremental_scaled: 0,
+            structural_scaled: 2 * normal.structural_scaled,
+            feature_error_scaled: 5_000_000 * FIXED_POINT_SCALE,
+        };
+        let price = |row| {
+            ZkGasModel.price_block(&BlockPricingInput {
+                transaction_payload: Default::default(),
+                started_non_anchor_transactions: 0,
+                native_value_transfers: 0,
+                authorization_validations: 0,
+                access_list_items: 0,
+                code_preparation: Default::default(),
+                operation_routes: &[row],
+                resources: Default::default(),
+                mpt: Default::default(),
+            })
+        };
+        let priced = price(row).unwrap();
+        assert_eq!(priced.normal_dispatch_count, 2);
+        assert_eq!(priced.normal_dispatch_scaled, 128 * FIXED_POINT_SCALE);
+        assert_eq!(priced.operations_scaled, (5_000_000 + 3_200 + 128) * FIXED_POINT_SCALE);
+        assert_eq!(priced.total_pgu, Some(ceil_scaled(priced.total_scaled).unwrap()));
+        row.normal_dispatch_count = 0;
+        let parent = price(row).unwrap();
+        assert_eq!(priced.total_scaled - parent.total_scaled, 128 * FIXED_POINT_SCALE);
+        assert_eq!(priced.total_pgu.unwrap() - parent.total_pgu.unwrap(), 128);
+        row.route = OperationRoute::Precompile(4);
+        row.normal_dispatch_count = 1;
+        assert_eq!(price(row), Err(ZkGasError::InvalidInput("precompile_normal_dispatch_count")));
+        assert!(ZkGasModel.price_normal_dispatches(1_000_000_001).is_err());
+        assert_eq!(
+            ZkGasModel.price_normal_dispatches(1_000_000_000),
+            Ok(64_000_000_000 * FIXED_POINT_SCALE)
+        );
+    }
+
+    #[test]
+    fn normal_dispatch_shadow_completion_rejects_tampered_count_or_contribution() {
+        use super::super::{TransactionMetadata, ZkGasAccumulator};
+        let mut collector = ZkGasAccumulator::default();
+        collector.begin_transaction(TransactionMetadata::default()).unwrap();
+        collector
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        collector.observe_step(normal_mulmod()).unwrap();
+        collector.commit_transaction().unwrap();
+        let report = collector.committed_snapshot().shadow_report();
+        let ZkGasShadowStatus::Incomplete { known, missing } = report.status() else {
+            panic!("normal report")
+        };
+        let complete = ZkGasModel
+            .complete_block_shadow_report(
+                &report,
+                known.evm_local_resources(),
+                MptSelectors::default(),
+            )
+            .unwrap();
+        assert_eq!(complete.normal_dispatch_count, 1);
+        assert_eq!(complete.normal_dispatch_scaled, 64 * FIXED_POINT_SCALE);
+        assert_eq!(complete.operations_scaled, known.operations_scaled());
+        for (count, scaled) in [(0, known.normal_dispatch_scaled()), (1, 0)] {
+            let wrong = ZkGasShadowReport::from_parts_for_test(
+                super::super::RUNTIME_SPEC_SHA256,
+                ZkGasShadowStatus::Incomplete {
+                    known: known.with_normal_dispatch_for_test(count, scaled),
+                    missing,
+                },
+            );
+            assert_eq!(
+                ZkGasModel.complete_block_shadow_report(
+                    &wrong,
+                    known.evm_local_resources(),
+                    MptSelectors::default()
+                ),
+                Err(ZkGasCompletionError::InconsistentKnownBreakdown("normal_dispatch_scaled"))
+            );
+        }
+    }
+    #[test]
+    fn normal_dispatch_reserve_survives_a_dominating_structural_floor() {
+        let priced = ZkGasModel.price_operation(&normal_mulmod()).expect("normal MULMOD");
+        assert_eq!(priced.structural_scaled, 1_600 * FIXED_POINT_SCALE);
+        assert_eq!(priced.total_scaled, (1_600 + 64) * FIXED_POINT_SCALE);
+    }
+
+    #[test]
     fn blockhash_refinement_charges_fixed_seven_hundred_without_changing_domain() {
         let mut input = OperationPricingInput {
             route: OperationRoute::Opcode(0x40),
@@ -1213,7 +1396,7 @@ mod tests {
         };
         let normal = ZkGasModel.price_operation(&input).expect("normal BLOCKHASH");
         assert_eq!(normal.accepted_absolute_scaled, 700 * FIXED_POINT_SCALE);
-        assert_eq!(normal.total_scaled, normal.accepted_absolute_scaled);
+        assert_eq!(normal.total_scaled, normal.accepted_absolute_scaled + 64 * FIXED_POINT_SCALE);
         input.interpreter_raw_gas = Some(19);
         assert!(ZkGasModel.price_operation(&input).is_err());
         input.interpreter_raw_gas = Some(20);
@@ -1233,7 +1416,7 @@ mod tests {
         };
         let fixed = ZkGasModel.price_operation(&input).expect("confirmed fixed wrapper");
         assert_eq!(fixed.accepted_absolute_scaled, 6_000 * FIXED_POINT_SCALE);
-        assert_eq!(fixed.total_scaled, fixed.accepted_absolute_scaled);
+        assert_eq!(fixed.total_scaled, fixed.accepted_absolute_scaled + 64 * FIXED_POINT_SCALE);
         input.model_input = OperationModelInput::None;
         assert_eq!(
             ZkGasModel.price_operation(&input),
@@ -1251,12 +1434,14 @@ mod tests {
             memory.accepted_absolute_scaled - fixed.accepted_absolute_scaled,
             16_009_638_224_414_647_289_136
         );
-        assert_eq!(memory.total_scaled, memory.accepted_absolute_scaled);
+        assert_eq!(memory.total_scaled, memory.accepted_absolute_scaled + 64 * FIXED_POINT_SCALE);
     }
 
     #[test]
     fn code_preparation_completion_rejects_inconsistent_sealed_contribution() {
         let known = ZkGasKnownBlockBreakdown::new(
+            0,
+            0,
             0,
             0,
             0,
@@ -1297,6 +1482,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            0,
             ResourceSelectors::default(),
             0,
             TransactionPayloadSelectors::default(),
@@ -1325,6 +1512,8 @@ mod tests {
         let known = ZkGasKnownBlockBreakdown::new(
             0,
             1,
+            0,
+            0,
             0,
             0,
             0,
@@ -1419,7 +1608,7 @@ mod tests {
         assert_eq!(priced.accepted_absolute_scaled, 269_073_027_078_518_685_466);
         assert_eq!(priced.incremental_scaled, 0);
         assert_eq!(priced.structural_scaled, 1_600 * FIXED_POINT_SCALE);
-        assert_eq!(priced.total_scaled, priced.structural_scaled);
+        assert_eq!(priced.total_scaled, priced.structural_scaled + 64 * FIXED_POINT_SCALE);
         assert_eq!(priced.feature_error_scaled, 0);
     }
 
@@ -1435,6 +1624,7 @@ mod tests {
                 code_preparation: Default::default(),
                 operation_routes: &[OperationRoutePricingInput {
                     route: OperationRoute::Opcode(0x09),
+                    normal_dispatch_count: 0,
                     accepted_absolute_scaled: 269_073_027_078_518_685_466 * 2,
                     incremental_scaled: 0,
                     structural_scaled: 3_200 * FIXED_POINT_SCALE,
@@ -1478,13 +1668,13 @@ mod tests {
         input.route = OperationRoute::Opcode(0x08);
         let addmod = ZkGasModel.price_operation(&input).expect("ADDMOD");
         assert_eq!(addmod.accepted_absolute_scaled, 242_712_467_364_060_641_026);
-        assert_eq!(addmod.total_scaled, 1_100 * FIXED_POINT_SCALE);
-        assert_eq!(addmod.structural_scaled, addmod.total_scaled);
+        assert_eq!(addmod.total_scaled, 1_164 * FIXED_POINT_SCALE);
+        assert_eq!(addmod.structural_scaled + 64 * FIXED_POINT_SCALE, addmod.total_scaled);
         input.route = OperationRoute::Opcode(0x01);
         input.interpreter_raw_gas = Some(3);
         input.model_input = OperationModelInput::StaticRawGas { raw_gas: 3 };
         let add = ZkGasModel.price_operation(&input).expect("ADD unchanged");
-        assert_eq!(add.total_scaled, 42_682_295_930_216_867_992);
+        assert_eq!(add.total_scaled, 42_682_295_930_216_867_992 + 64 * FIXED_POINT_SCALE);
         assert_eq!(add.structural_scaled, 0);
     }
 
@@ -1502,7 +1692,7 @@ mod tests {
             };
             let normal = ZkGasModel.price_operation(&input).expect("normal arithmetic");
             assert_eq!(normal.structural_scaled, floor * FIXED_POINT_SCALE);
-            assert_eq!(normal.total_scaled, normal.structural_scaled);
+            assert_eq!(normal.total_scaled, normal.structural_scaled + 64 * FIXED_POINT_SCALE);
             assert!(normal.accepted_absolute_scaled < normal.total_scaled);
             input.feature_error = true;
             input.model_input = OperationModelInput::None;
@@ -1521,6 +1711,7 @@ mod tests {
                     code_preparation: Default::default(),
                     operation_routes: &[OperationRoutePricingInput {
                         route: input.route,
+                        normal_dispatch_count: 2,
                         accepted_absolute_scaled: 2 * normal.accepted_absolute_scaled,
                         incremental_scaled: 0,
                         structural_scaled: 2 * normal.structural_scaled,
@@ -1529,7 +1720,10 @@ mod tests {
                     resources: ResourceSelectors::default(),
                 })
                 .expect("mixed normal and feature-error route aggregate");
-            assert_eq!(aggregate.operations_scaled(), (2 * floor + 5_000_000) * FIXED_POINT_SCALE);
+            assert_eq!(
+                aggregate.operations_scaled(),
+                (2 * floor + 128 + 5_000_000) * FIXED_POINT_SCALE
+            );
         }
     }
 
@@ -1548,7 +1742,10 @@ mod tests {
                 .expect("MCOPY")
         };
         let zero = price(0, MemorySelectors::default());
-        assert_eq!(zero.total_scaled, route.coefficients[0] + route.coefficients[1]);
+        assert_eq!(
+            zero.total_scaled,
+            route.coefficients[0] + route.coefficients[1] + 64 * FIXED_POINT_SCALE
+        );
         assert!(zero.total_scaled > 0);
         let words = price(129, MemorySelectors::default());
         assert_eq!(words.total_scaled - zero.total_scaled, 129 * 48 * FIXED_POINT_SCALE);

@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "blockhash_successor.py"
+        "zk_gas_pricing_successor", BASE / "normal_dispatch_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -389,6 +389,9 @@ def render(specification: Mapping[str, Any]) -> str:
             "",
             "/// Proposal startup coefficient charged exactly once.",
             f"pub(crate) const PROPOSAL_STARTUP: i128 = {proposal['startup']};",
+            "",
+            "/// Normalized reserve per normally priced Opcode/ConfirmedSpawn, additive after route maxima.",
+            f"pub(crate) const NORMAL_DISPATCH_TARIFF: i128 = {block['normal_dispatch_tariff']};",
             "",
             "/// Complete authenticated operation route table.",
             "pub(crate) static ROUTES: &[RouteSpec] = &[",

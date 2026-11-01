@@ -195,10 +195,23 @@ pub struct OperationPricingInput {
 }
 
 /// Transactionally accumulated candidates for one authenticated route in a block.
+///
+/// Direct callers must provide the observed normal-dispatch count explicitly; candidate prices
+/// do not imply a count. Precompile-body and feature-error events contribute zero to this selector.
+///
+/// ```compile_fail
+/// use alethia_reth_evm::zk_gas::pricing::{OperationRoute, OperationRoutePricingInput};
+/// let _ = OperationRoutePricingInput {
+///     route: OperationRoute::Opcode(1), accepted_absolute_scaled: 0,
+///     incremental_scaled: 0, structural_scaled: 0, feature_error_scaled: 0,
+/// };
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OperationRoutePricingInput {
     /// Authenticated route represented by these accumulated candidates.
     pub route: OperationRoute,
+    /// Number of normally priced Opcode/ConfirmedSpawn events; excludes precompiles and errors.
+    pub normal_dispatch_count: u64,
     /// Sum of accepted absolute event contributions.
     pub accepted_absolute_scaled: i128,
     /// Sum of controlled incremental event contributions.
@@ -317,6 +330,10 @@ pub struct ProposalPricingInput<'a> {
 /// Field-by-field fixed-point pricing result.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PricingBreakdown {
+    /// Normally priced opcode or confirmed-spawn events in this scope.
+    pub normal_dispatch_count: u64,
+    /// Additive dispatch reserve, already included in operation totals.
+    pub normal_dispatch_scaled: i128,
     /// Accepted absolute contribution for one operation.
     pub accepted_absolute_scaled: i128,
     /// Controlled incremental contribution for one operation or block route group.

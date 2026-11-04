@@ -221,3 +221,126 @@ fn transaction_reset_and_committed_value_persistence_do_not_carry_journal_occupa
     assert_eq!(attempted.block.storage_journal.direct_lookup_units, 3);
     assert_eq!(attempted.block.storage_journal.rollback_lookup_units_upper, 6);
 }
+
+fn storage_call(target: Address, opcode: u8) -> Vec<u8> {
+    let mut code = vec![opcode::PUSH0; 4];
+    if matches!(opcode, opcode::CALL | opcode::CALLCODE) {
+        code.push(opcode::PUSH0);
+    }
+    code.push(opcode::PUSH20);
+    code.extend(target.as_slice());
+    code.extend([opcode::PUSH3, 0x03, 0x00, 0x00, opcode, opcode::POP]);
+    code
+}
+
+#[test]
+fn independent_sibling_reverts_retain_occupied_slots_and_rewarm_per_storage_owner() {
+    let child = Address::with_last_byte(0xb2);
+    // Parent: read0, reverted child(read1), reverted child(read1), read2, read0.
+    // Shared owner lengths: 0,1,2,2,3 -> 13; separate owners: 0,0,1,1,2 -> 9.
+    for (opcode, direct, max_occupancy, reserve) in [
+        (opcode::CALL, 9, 2, 10),
+        (opcode::STATICCALL, 9, 2, 10),
+        (opcode::CALLCODE, 13, 3, 16),
+        (opcode::DELEGATECALL, 13, 3, 16),
+    ] {
+        let expected = StorageJournalDiagnostics {
+            potential_sload_count: 5,
+            potential_sstore_count: 0,
+            direct_lookup_units: direct,
+            max_occupancy_before: max_occupancy,
+            high_water_upper: max_occupancy + 1,
+            potential_rollback_entries: 4,
+            rollback_lookup_units_upper: reserve,
+            incomplete: None,
+        };
+        let mut parent = read(0);
+        parent.extend(storage_call(child, opcode));
+        parent.extend(storage_call(child, opcode));
+        parent.extend(read(2));
+        parent.extend(read(0));
+        parent.push(opcode::STOP);
+        let mut child_code = read(1);
+        child_code.extend([opcode::PUSH0, opcode::PUSH0, opcode::REVERT]);
+        let mut snapshots = Vec::new();
+        for inspect in [false, true] {
+            let mut db = db_with_contract(Bytecode::new_raw(parent.clone().into()));
+            insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
+            let mut evm = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
+            evm.set_inspector_enabled(inspect);
+            evm.set_zk_gas_pricing_enabled(true);
+            assert!(evm.transact(tx_env(1_000_000)).unwrap().result.is_success());
+            commit_pricing(&mut evm);
+            let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+            assert_eq!(snapshot.storage_journal, expected, "opcode={opcode:#x} inspect={inspect}");
+            snapshots.push(snapshot);
+        }
+        assert_eq!(snapshots[0], snapshots[1]);
+    }
+}
+
+#[test]
+fn independent_reverted_write_restores_value_but_keeps_physical_growth_and_meter_identity() {
+    let child = Address::with_last_byte(0xb3);
+    for (opcode, direct, max_occupancy, reserve) in
+        [(opcode::CALL, 9, 2, 12), (opcode::DELEGATECALL, 14, 3, 20)]
+    {
+        let expected = StorageJournalDiagnostics {
+            potential_sload_count: 4,
+            potential_sstore_count: 1,
+            direct_lookup_units: direct,
+            max_occupancy_before: max_occupancy,
+            high_water_upper: max_occupancy + 1,
+            potential_rollback_entries: 5,
+            rollback_lookup_units_upper: reserve,
+            incomplete: None,
+        };
+        let mut parent = read(0);
+        parent.extend(storage_call(child, opcode));
+        parent.extend(read(2));
+        parent.extend(read(0));
+        parent.push(opcode::STOP);
+        let mut child_code = read(1);
+        child_code.extend([
+            opcode::PUSH1,
+            9,
+            opcode::PUSH1,
+            2,
+            opcode::SSTORE,
+            opcode::PUSH0,
+            opcode::PUSH0,
+            opcode::REVERT,
+        ]);
+        let mut reference = None;
+        let mut reference_meter = None;
+        for (observe, inspect) in [(false, false), (true, false), (true, true)] {
+            let mut db = db_with_contract(Bytecode::new_raw(parent.clone().into()));
+            insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
+            let mut evm = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
+            evm.set_inspector_enabled(inspect);
+            evm.set_zk_gas_pricing_enabled(observe);
+            let result = evm.transact(tx_env(1_000_000)).unwrap();
+            assert!(result.result.is_success());
+            let owner = if opcode == opcode::CALL { child } else { BENCH_TARGET };
+            if let Some(account) = result.state.get(&owner) {
+                if let Some(slot) = account.storage.get(&U256::from(2)) {
+                    assert_eq!(slot.present_value(), U256::ZERO);
+                }
+            }
+            let meter = evm.meter().map(|meter| meter.tx_zk_gas_used());
+            if let Some(ref previous) = reference {
+                assert_eq!(&result, previous);
+                assert_eq!(meter, reference_meter.unwrap());
+            } else {
+                reference = Some(result);
+                reference_meter = Some(meter);
+            }
+            if observe {
+                commit_pricing(&mut evm);
+                assert_eq!(evm.zk_gas_pricing_snapshot().unwrap().storage_journal, expected);
+            } else {
+                assert!(evm.zk_gas_pricing_snapshot().is_none());
+            }
+        }
+    }
+}

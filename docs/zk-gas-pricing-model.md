@@ -1208,9 +1208,12 @@ failed writes. At transaction finalization, each owner's entry count is multipli
 high-water upper `max(n_before + 1)`, then added across owners and transactions. This allows an early
 entry to unwind after later map growth. It is a potential reserve even when no actual revert occurs.
 Frame and included outer REVERT/HALT retain work. Rejected transactions enter only the attempted
-summary; owner high-water and entry state are discarded at each commit/reset. Ordinary transaction
-finalization clears the physical journal map; persisted database values do not carry its occupancy
-into the next transaction.
+summary; owner high-water and entry state are discarded at each commit/reset. An executed storage
+step that itself crosses the legacy Unzen limit is included in unpriced attempted diagnostics even
+though the existing priced operation route remains excluded. Both actual execution paths observe
+that potential work exactly once before the legacy charge, independently of priced-step finalization.
+Ordinary transaction finalization clears the physical journal map; persisted database values do not
+carry its occupancy into the next transaction.
 
 All count, conversion, sum and product arithmetic is checked. `incomplete` retains the first missing
 metadata or overflow failure alongside partial values; consumers must not use an incomplete summary

@@ -192,14 +192,12 @@ impl PendingPricingStep {
         }
     }
 
-    /// Finalizes the shared snapshot and stages one priced event and its exact resources.
-    pub(crate) fn finish<DB: Database>(
-        self,
-        interpreter: &mut Interpreter<EthInterpreter>,
-        context: &TaikoEvmContext<DB>,
-        accumulator: &mut ZkGasAccumulator,
-    ) -> Result<(), ZkGasAccumulatorError> {
-        // Preserve potential work before feature-error substitution or pricing failures.
+    /// Records unpriced potential storage work for one executed step before legacy metering.
+    ///
+    /// Both runtime paths call this exactly once after execution and before a legacy budget
+    /// rejection can skip priced `finish`. This infallible observation neither charges gas nor
+    /// changes execution or priced selectors; feature errors and rejected candidates retain work.
+    pub(crate) fn observe_storage_journal(self, accumulator: &mut ZkGasAccumulator) {
         match self.model_input {
             Ok(PendingModelInput::StorageLoad(storage)) |
             Ok(PendingModelInput::StorageStore(storage)) => accumulator.observe_storage_journal(
@@ -213,6 +211,15 @@ impl PendingPricingStep {
             }
             _ => {}
         }
+    }
+
+    /// Finalizes the shared snapshot and stages one priced event and its exact resources.
+    pub(crate) fn finish<DB: Database>(
+        self,
+        interpreter: &mut Interpreter<EthInterpreter>,
+        context: &TaikoEvmContext<DB>,
+        accumulator: &mut ZkGasAccumulator,
+    ) -> Result<(), ZkGasAccumulatorError> {
         let raw_gas = self.gas_remaining.saturating_sub(interpreter.gas.remaining());
         let selected_spawn = is_spawn_opcode(self.opcode) &&
             matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
@@ -516,6 +523,10 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
             interpreter.bytecode.action().is_none()
         {
             interpreter.halt(result);
+        }
+
+        if let (Some(step), Some(accumulator)) = (pricing_step, pricing.as_deref_mut()) {
+            step.observe_storage_journal(accumulator);
         }
 
         if let Some(meter) = meter.as_deref_mut() {

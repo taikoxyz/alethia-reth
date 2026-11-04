@@ -222,6 +222,24 @@ fn transaction_reset_and_committed_value_persistence_do_not_carry_journal_occupa
     assert_eq!(attempted.block.storage_journal.rollback_lookup_units_upper, 6);
 }
 
+type StorageEvm = <TaikoEvmFactory as EvmFactory>::Evm<InMemoryDB, NoOpInspector>;
+
+fn storage_evm(db: InMemoryDB, inspect: bool) -> StorageEvm {
+    let evm = if inspect {
+        TaikoEvmFactory.create_evm_with_inspector(db, evm_env(TaikoSpecId::UNZEN), NoOpInspector)
+    } else {
+        TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN))
+    };
+    assert!(evm.meter().is_some(), "both real paths retain their legacy meter");
+    evm
+}
+
+fn assert_storage_routing(evm: StorageEvm, inspect: bool) {
+    let base = evm.into_inner();
+    assert_eq!(base.zk_gas_meter().is_some(), !inspect, "production meter routing");
+    assert_eq!(base.inner.inspector.meter().is_some(), inspect, "inspector meter routing");
+}
+
 fn storage_call(target: Address, opcode: u8) -> Vec<u8> {
     let mut code = vec![opcode::PUSH0; 4];
     if matches!(opcode, opcode::CALL | opcode::CALLCODE) {
@@ -266,14 +284,14 @@ fn independent_sibling_reverts_retain_occupied_slots_and_rewarm_per_storage_owne
         for inspect in [false, true] {
             let mut db = db_with_contract(Bytecode::new_raw(parent.clone().into()));
             insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
-            let mut evm = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
-            evm.set_inspector_enabled(inspect);
+            let mut evm = storage_evm(db, inspect);
             evm.set_zk_gas_pricing_enabled(true);
             assert!(evm.transact(tx_env(1_000_000)).unwrap().result.is_success());
             commit_pricing(&mut evm);
             let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
             assert_eq!(snapshot.storage_journal, expected, "opcode={opcode:#x} inspect={inspect}");
             snapshots.push(snapshot);
+            assert_storage_routing(evm, inspect);
         }
         assert_eq!(snapshots[0], snapshots[1]);
     }
@@ -316,8 +334,7 @@ fn independent_reverted_write_restores_value_but_keeps_physical_growth_and_meter
         for (observe, inspect) in [(false, false), (true, false), (true, true)] {
             let mut db = db_with_contract(Bytecode::new_raw(parent.clone().into()));
             insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
-            let mut evm = TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN));
-            evm.set_inspector_enabled(inspect);
+            let mut evm = storage_evm(db, inspect);
             evm.set_zk_gas_pricing_enabled(observe);
             let result = evm.transact(tx_env(1_000_000)).unwrap();
             assert!(result.result.is_success());
@@ -341,6 +358,132 @@ fn independent_reverted_write_restores_value_but_keeps_physical_growth_and_meter
             } else {
                 assert!(evm.zk_gas_pricing_snapshot().is_none());
             }
+            assert_storage_routing(evm, inspect);
         }
     }
+}
+
+fn storage_limit_crossing(opcode: u8) {
+    let recovery_owner = Address::with_last_byte(0xc4);
+    let store = opcode == opcode::SSTORE;
+    let mut storage_code = if store { vec![opcode::PUSH1, 1] } else { Vec::new() };
+    storage_code.extend([opcode::PUSH0, opcode, opcode::STOP]);
+    // The rejected candidate has four extra raw gas of non-storage work. After reset, a
+    // shorter fresh transaction fits the same reserved budget without changing the schedule.
+    let mut crossing_code = vec![opcode::PUSH0, opcode::POP];
+    crossing_code.extend(storage_code.clone());
+    let schedule = &UNZEN_ZK_GAS_SCHEDULE;
+    let charge = |op: u8, gas| gas * u64::from(schedule.opcode_multipliers[usize::from(op)]);
+    let storage_gas = if store { 22_100 } else { 2_100 };
+    let admitted = charge(opcode::PUSH0, 2) +
+        charge(opcode::POP, 2) +
+        u64::from(store) * charge(opcode::PUSH1, 3) +
+        charge(opcode::PUSH0, 2) +
+        charge(opcode, storage_gas) -
+        1;
+    let expected = StorageJournalDiagnostics {
+        potential_sload_count: u64::from(!store),
+        potential_sstore_count: u64::from(store),
+        direct_lookup_units: 1,
+        max_occupancy_before: 0,
+        high_water_upper: 1,
+        potential_rollback_entries: 1 + u64::from(store),
+        rollback_lookup_units_upper: 1 + u64::from(store),
+        incomplete: None,
+    };
+    let mut reference_error = None;
+    let mut reference_recovery = None;
+    let mut reference_attempt = None;
+    for inspect in [false, true] {
+        for observe in [false, true] {
+            let mut db = db_with_contract(Bytecode::new_raw(crossing_code.clone().into()));
+            insert_contract(
+                &mut db,
+                recovery_owner,
+                Bytecode::new_raw(storage_code.clone().into()),
+            );
+            let mut evm = storage_evm(db, inspect);
+            evm.set_zk_gas_pricing_enabled(observe);
+            evm.reserve_block_zk_gas(schedule.block_limit - admitted).unwrap();
+            let error = evm.transact(tx_env(100_000)).unwrap_err().to_string();
+            assert_eq!(error, ZK_GAS_LIMIT_ERR);
+            assert_eq!(
+                evm.meter().unwrap().tx_zk_gas_used(),
+                admitted - charge(opcode, storage_gas) + 1
+            );
+            if let Some(previous) = &reference_error {
+                assert_eq!(&error, previous, "observation and routing preserve rejection");
+            } else {
+                reference_error = Some(error);
+            }
+            evm.record_transaction_payload(super::super::pricing::TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            });
+            evm.reset_transaction_zk_gas();
+            if observe {
+                let committed = evm.zk_gas_pricing_snapshot().unwrap();
+                assert_eq!(committed, super::super::pricing::ZkGasBlockSnapshot::default());
+                let attempt = evm.zk_gas_attempted_pricing_snapshot().unwrap();
+                assert_eq!(attempt.transaction_count, 1);
+                assert_eq!(attempt.block.storage_journal, expected);
+                assert!(
+                    !attempt
+                        .block
+                        .operation_routes
+                        .iter()
+                        .any(|row| { row.route == OperationRoute::Opcode(opcode) }),
+                    "limit-crossing storage step remains excluded from old priced routes"
+                );
+                if let Some(previous) = &reference_attempt {
+                    assert_eq!(&attempt, previous, "actual path price and diagnostic parity");
+                } else {
+                    reference_attempt = Some(attempt);
+                }
+            }
+            let mut recovery = tx_env(100_000);
+            recovery.kind = TxKind::Call(recovery_owner);
+            let result = evm.transact(recovery).unwrap();
+            assert!(result.result.is_success());
+            let recovery_meter = evm.meter().unwrap().tx_zk_gas_used();
+            assert!(recovery_meter < admitted);
+            if let Some((previous, meter)) = &reference_recovery {
+                assert_eq!(&result, previous, "fresh-scope result, gas and state parity");
+                assert_eq!(&recovery_meter, meter);
+            } else {
+                reference_recovery = Some((result, recovery_meter));
+            }
+            if observe {
+                commit_pricing(&mut evm);
+                assert_eq!(evm.zk_gas_pricing_snapshot().unwrap().storage_journal, expected);
+                let attempted = evm.zk_gas_attempted_pricing_snapshot().unwrap();
+                assert_eq!(attempted.transaction_count, 2);
+                assert_eq!(attempted.block.storage_journal.direct_lookup_units, 2);
+                assert_eq!(
+                    attempted.block.storage_journal.potential_sload_count,
+                    2 * u64::from(!store)
+                );
+                assert_eq!(
+                    attempted.block.storage_journal.potential_sstore_count,
+                    2 * u64::from(store)
+                );
+                assert_eq!(
+                    attempted.block.storage_journal.rollback_lookup_units_upper,
+                    2 * (1 + u64::from(store))
+                );
+                assert_eq!(attempted.block.storage_journal.incomplete, None);
+            }
+            assert_storage_routing(evm, inspect);
+        }
+    }
+}
+
+#[test]
+fn storage_journal_sload_crossing_legacy_limit_retains_attempted_work_and_recovers() {
+    storage_limit_crossing(opcode::SLOAD);
+}
+
+#[test]
+fn storage_journal_sstore_crossing_legacy_limit_retains_attempted_work_and_recovers() {
+    storage_limit_crossing(opcode::SSTORE);
 }

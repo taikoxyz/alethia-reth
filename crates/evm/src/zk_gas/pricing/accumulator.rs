@@ -395,7 +395,8 @@ pub struct ZkGasBlockSnapshot {
 /// scope begins remains attempted, including a transaction rejected by the commit predicate or
 /// truncated by the zk gas limit. For a truncation, completed operation steps and resources from
 /// the finalized journal are retained, but the operation whose meter charge first exceeds the
-/// budget is not itself pricing-observed.
+/// budget is not itself pricing-observed. Its captured unpriced ordinary-storage work is retained
+/// independently before the legacy charge rejects it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ZkGasAttemptedBlockSnapshot {
     /// Number of attempted transactions, including the anchor transaction.

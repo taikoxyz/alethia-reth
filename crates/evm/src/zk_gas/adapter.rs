@@ -173,6 +173,14 @@ where
         step.spawned = is_spawn_opcode(step.opcode) &&
             matches!(interp.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
 
+        // Retain unpriced executed storage work even when the legacy charge rejects this step.
+        // Priced finish stays after the successful charge, preserving its existing exclusion.
+        if let Some(pricing_step) = step.pricing &&
+            let Some(accumulator) = metering.pricing.as_mut()
+        {
+            pricing_step.observe_storage_journal(accumulator);
+        }
+
         // NewFrame has been selected but not dispatched yet, so a failed wrapper charge can still
         // replace the action before any child contract or precompile executes.
         if let Err(ZkGasOutcome::LimitExceeded) = metering.charge_finished_step(step) {

@@ -128,6 +128,8 @@ struct PendingStorageInput {
     original: Option<U256>,
     /// Current transaction value when already cached.
     current: Option<U256>,
+    /// Physical owner storage-map length before this potential lookup, if account is loaded.
+    occupancy_before: Option<usize>,
     /// Requested SSTORE value, absent for SLOAD.
     new: Option<U256>,
 }
@@ -197,6 +199,20 @@ impl PendingPricingStep {
         context: &TaikoEvmContext<DB>,
         accumulator: &mut ZkGasAccumulator,
     ) -> Result<(), ZkGasAccumulatorError> {
+        // Preserve potential work before feature-error substitution or pricing failures.
+        match self.model_input {
+            Ok(PendingModelInput::StorageLoad(storage)) |
+            Ok(PendingModelInput::StorageStore(storage)) => accumulator.observe_storage_journal(
+                storage.target,
+                storage.occupancy_before,
+                storage.access,
+                self.opcode == 0x55,
+            ),
+            Err(()) if matches!(self.opcode, 0x54 | 0x55) => {
+                accumulator.storage_journal_missing_input();
+            }
+            _ => {}
+        }
         let raw_gas = self.gas_remaining.saturating_sub(interpreter.gas.remaining());
         let selected_spawn = is_spawn_opcode(self.opcode) &&
             matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
@@ -342,7 +358,9 @@ fn capture_storage_input<DB: Database>(
     let target = interpreter.input.target_address();
     let journal = &context.journaled_state.inner;
     let access_list_warm = journal.warm_addresses.is_storage_warm(&target, &key);
-    let cached = journal.state.get(&target).and_then(|account| account.storage.get(&key));
+    let account = journal.state.get(&target);
+    let occupancy_before = account.map(|account| account.storage.len());
+    let cached = account.and_then(|account| account.storage.get(&key));
     let (access, original, current) = cached.map_or_else(
         || (if access_list_warm { AccessClass::Warm } else { AccessClass::Cold }, None, None),
         |slot| {
@@ -354,7 +372,7 @@ fn capture_storage_input<DB: Database>(
             )
         },
     );
-    Ok(PendingStorageInput { target, key, access, original, current, new })
+    Ok(PendingStorageInput { target, key, access, original, current, occupancy_before, new })
 }
 
 /// Verifies that a previously uncached SLOAD materialized the expected journal slot.

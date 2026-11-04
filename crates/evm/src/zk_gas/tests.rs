@@ -3504,6 +3504,11 @@ fn zk_gas_pricing_attempted_sstore_resources_match_on_static_and_oog_halts() {
 
         assert_eq!(plain, inspected, "{label} parity");
         assert_eq!(plain.resources.unique_storage_slot_write_count, 1, "{label}");
+        assert_eq!(plain.storage_journal.potential_sstore_count, 1, "{label}");
+        assert_eq!(plain.storage_journal.direct_lookup_units, 1, "{label}");
+        assert_eq!(plain.storage_journal.potential_rollback_entries, 2, "{label}");
+        assert_eq!(plain.storage_journal.rollback_lookup_units_upper, 2, "{label}");
+        assert_eq!(plain.storage_journal.incomplete, None, "{label}");
         assert!(
             plain.operation_routes.iter().any(|row| {
                 row.route == OperationRoute::Opcode(opcode::SSTORE) && row.feature_error_scaled > 0
@@ -5279,3 +5284,6 @@ fn normal_dispatch_plain_and_inspected_counts_context_and_included_revert_or_hal
     let snapshot = call_memory_snapshot(SpawnFamily::DelegateCall, &CallMemoryCase::default());
     assert_eq!(call_memory_wrapper(&snapshot, SpawnFamily::DelegateCall).normal_dispatch_count, 1);
 }
+
+#[path = "storage_journal_tests.rs"]
+mod storage_journal_tests;

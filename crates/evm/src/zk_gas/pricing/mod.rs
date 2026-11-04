@@ -4,6 +4,7 @@ mod accumulator;
 mod generated;
 mod mode;
 mod model;
+mod storage_journal;
 mod types;
 
 pub use accumulator::{
@@ -16,6 +17,7 @@ pub use mode::{
     ZkGasShadowDiagnostic, ZkGasShadowReport, ZkGasShadowStatus,
 };
 pub use model::ZkGasModel;
+pub use storage_journal::{StorageJournalDiagnostics, StorageJournalIncompleteness};
 pub use types::{
     AccessClass, BlockPricingInput, CalldataAccessClass, CodePreparationSelectors, MemorySelectors,
     MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,

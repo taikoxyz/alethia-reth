@@ -4,9 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::{Address, B256, U256};
 
+use super::storage_journal::StorageJournalLedger;
+
 use super::{
-    CodePreparationSelectors, MemorySelectors, OperationModelInput, OperationPricingInput,
-    OperationRoute, OperationRoutePricingInput, ResourceSelectors, TransactionPayloadSelectors,
+    AccessClass, CodePreparationSelectors, MemorySelectors, OperationModelInput,
+    OperationPricingInput, OperationRoute, OperationRoutePricingInput, ResourceSelectors,
+    StorageJournalDiagnostics, StorageJournalIncompleteness, TransactionPayloadSelectors,
     ZkGasError, ZkGasModel,
 };
 
@@ -299,6 +302,8 @@ struct TransactionSelectors {
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Exact resources touched by the transaction.
     resources: ResourceSet,
+    /// Unpriced potential storage-map work for this transaction or prefix.
+    storage_journal: StorageJournalLedger,
     /// First observation failure that makes this quote untrusted.
     diagnostic: Option<ZkGasAccumulatorError>,
     /// Whether execution emitted any opcode, spawn, or precompile operation event.
@@ -314,6 +319,7 @@ impl TransactionSelectors {
             code_preparation: CodePreparationSelectors::default(),
             operation_routes: BTreeMap::new(),
             resources: ResourceSet::default(),
+            storage_journal: StorageJournalLedger::default(),
             diagnostic: None,
             has_operation_trace: false,
         }
@@ -370,6 +376,8 @@ pub struct ZkGasBlockSnapshot {
     pub operation_routes: Vec<OperationRoutePricingInput>,
     /// Unique-resource selectors in this prefix.
     pub resources: ResourceSelectors,
+    /// Unpriced potential ordinary-storage work; incompleteness never changes this quote.
+    pub storage_journal: StorageJournalDiagnostics,
     /// First diagnostic retained in this prefix, if any.
     ///
     /// Selectors remain available for shadow-mode analysis, but a snapshot with a diagnostic is
@@ -415,6 +423,8 @@ struct SelectorPrefix {
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Block-global unique execution resources.
     resources: ResourceSet,
+    /// Finalized unpriced storage diagnostics across the prefix.
+    storage_journal: StorageJournalDiagnostics,
     /// First diagnostic included in this prefix.
     diagnostic: Option<ZkGasAccumulatorError>,
 }
@@ -422,6 +432,7 @@ struct SelectorPrefix {
 impl SelectorPrefix {
     /// Merges one transaction into this prefix after validating the complete delta.
     fn merge_transaction(&mut self, transaction: &TransactionSelectors) {
+        self.storage_journal.merge(transaction.storage_journal.diagnostics);
         if self.diagnostic.is_none() {
             self.diagnostic = transaction.diagnostic;
         }
@@ -518,6 +529,7 @@ impl SelectorPrefix {
             transaction_payload: self.transaction_payload,
             operation_routes: self.operation_routes.values().copied().collect(),
             resources: self.resources.selectors(),
+            storage_journal: self.storage_journal,
             diagnostic: self.diagnostic,
         }
     }
@@ -671,6 +683,33 @@ impl ZkGasAccumulator {
         result
     }
 
+    /// Records potential ordinary storage work separately from priced selectors and errors.
+    ///
+    /// This shared runtime hook is intentionally infallible: missing metadata and overflow only
+    /// mark the unpriced diagnostics incomplete. Outside an active scope there is no work to
+    /// retain.
+    pub(crate) fn observe_storage_journal(
+        &mut self,
+        owner: Address,
+        occupancy: Option<usize>,
+        access: AccessClass,
+        store: bool,
+    ) {
+        if let Some(transaction) = &mut self.in_flight {
+            transaction.storage_journal.observe(owner, occupancy, access, store);
+        }
+    }
+
+    /// Marks an ordinary storage capture incomplete without changing pricing diagnostics.
+    pub(crate) fn storage_journal_missing_input(&mut self) {
+        if let Some(transaction) = &mut self.in_flight {
+            transaction
+                .storage_journal
+                .diagnostics
+                .mark_incomplete(StorageJournalIncompleteness::MissingStorageInput);
+        }
+    }
+
     /// Stages one exact execution-resource observation.
     pub fn observe_state_access(
         &mut self,
@@ -728,12 +767,13 @@ impl ZkGasAccumulator {
 
     /// Atomically merges the in-flight selector scope into the block snapshot.
     pub fn commit_transaction(&mut self) -> Result<(), ZkGasAccumulatorError> {
-        let Some(transaction) = self.in_flight.take() else {
+        let Some(mut transaction) = self.in_flight.take() else {
             self.committed.diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
             self.attempted.diagnostic.get_or_insert(ZkGasAccumulatorError::NoActiveTransaction);
             return Ok(());
         };
         self.pending_spawn = None;
+        transaction.storage_journal.finish();
         self.record_attempt(&transaction);
         self.committed.merge_transaction(&transaction);
         Ok(())
@@ -741,7 +781,8 @@ impl ZkGasAccumulator {
 
     /// Retains an attempted observation and clears its in-flight selector scope.
     pub fn reset_transaction(&mut self) {
-        if let Some(transaction) = self.in_flight.take() {
+        if let Some(mut transaction) = self.in_flight.take() {
+            transaction.storage_journal.finish();
             self.record_attempt(&transaction);
         }
         self.pending_spawn = None;
@@ -1081,5 +1122,141 @@ mod normal_dispatch_tests {
                 .sum::<u64>(),
             2
         );
+    }
+}
+
+#[cfg(test)]
+mod storage_journal_tests {
+    use super::*;
+    use crate::zk_gas::pricing::AccessClass;
+
+    fn begin(accumulator: &mut ZkGasAccumulator) {
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        accumulator
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 1,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn storage_journal_direct_units_and_attempted_scope_reset() {
+        let owner = Address::repeat_byte(7);
+        let mut accumulator = ZkGasAccumulator::default();
+        begin(&mut accumulator);
+        for n in 0..512 {
+            accumulator.observe_storage_journal(owner, Some(n), AccessClass::Cold, false);
+        }
+        accumulator.observe_storage_journal(owner, Some(512), AccessClass::Warm, false);
+        accumulator.commit_transaction().unwrap();
+        let diagnostic = accumulator.committed_snapshot().storage_journal;
+        assert_eq!(diagnostic.potential_sload_count, 513);
+        assert_eq!(diagnostic.direct_lookup_units, 131841);
+        assert_eq!(diagnostic.rollback_lookup_units_upper, 513 * 512);
+        assert_eq!(diagnostic.max_occupancy_before, 512);
+        assert_eq!(diagnostic.high_water_upper, 513);
+        assert_eq!(diagnostic.incomplete, None);
+
+        begin(&mut accumulator);
+        accumulator.observe_storage_journal(owner, Some(0), AccessClass::Cold, false);
+        accumulator.reset_transaction();
+        assert_eq!(accumulator.committed_snapshot().storage_journal, diagnostic);
+        let attempted = accumulator.attempted_snapshot().block.storage_journal;
+        assert_eq!(attempted.direct_lookup_units, 131842);
+        assert_eq!(attempted.rollback_lookup_units_upper, 513 * 512 + 1);
+
+        // The selected owner's additional warm probes change only direct units, not reserve.
+        let mut probe = ZkGasAccumulator::default();
+        begin(&mut probe);
+        for n in 0..512 {
+            probe.observe_storage_journal(owner, Some(n), AccessClass::Cold, false);
+        }
+        for _ in 0..=32768 {
+            probe.observe_storage_journal(owner, Some(512), AccessClass::Warm, false);
+        }
+        probe.commit_transaction().unwrap();
+        let probe = probe.committed_snapshot().storage_journal;
+        assert_eq!(probe.direct_lookup_units - diagnostic.direct_lookup_units, 16809984);
+        assert_eq!(probe.rollback_lookup_units_upper, diagnostic.rollback_lookup_units_upper);
+        assert_eq!(probe.potential_sload_count, 513 + 32768);
+    }
+}
+
+#[cfg(test)]
+mod storage_journal_failure_tests {
+    use super::*;
+
+    #[test]
+    fn storage_diagnostic_never_invalidates_an_otherwise_valid_quote() {
+        let mut accumulator = ZkGasAccumulator::default();
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        accumulator
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        accumulator.observe_storage_journal(Address::ZERO, None, AccessClass::Cold, true);
+        accumulator.commit_transaction().unwrap();
+        let snapshot = accumulator.committed_snapshot();
+        assert_eq!(snapshot.diagnostic, None);
+        assert_eq!(
+            snapshot.storage_journal.incomplete,
+            Some(StorageJournalIncompleteness::MissingFootprint)
+        );
+        let mut baseline = snapshot.clone();
+        baseline.storage_journal = StorageJournalDiagnostics::default();
+        assert_eq!(snapshot.shadow_report().status(), baseline.shadow_report().status());
+        assert_eq!(snapshot.shadow_report().storage_journal(), snapshot.storage_journal);
+        // Scope finalization drops owner state, including a previous incomplete scope.
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        accumulator
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        accumulator.observe_storage_journal(Address::ZERO, Some(0), AccessClass::Cold, false);
+        accumulator.commit_transaction().unwrap();
+        let next = accumulator.committed_snapshot();
+        assert_eq!(next.storage_journal.direct_lookup_units, 1);
+        assert_eq!(next.storage_journal.rollback_lookup_units_upper, 1);
+        assert!(next.storage_journal.incomplete.is_some());
+        assert_eq!(next.diagnostic, None);
+    }
+
+    #[test]
+    fn storage_work_survives_pricing_feature_errors_and_resource_only_observations_do_not_count() {
+        let mut accumulator = ZkGasAccumulator::default();
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        accumulator
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        accumulator
+            .observe_state_access(StateAccess::StorageRead {
+                address: Address::ZERO,
+                slot: U256::ZERO,
+            })
+            .unwrap();
+        accumulator.observe_storage_journal(Address::ZERO, Some(0), AccessClass::Cold, true);
+        accumulator
+            .observe_step(OperationPricingInput {
+                route: OperationRoute::Opcode(0x55),
+                interpreter_raw_gas: Some(0),
+                native_gas: None,
+                model_input: OperationModelInput::None,
+                feature_error: true,
+            })
+            .unwrap();
+        accumulator.commit_transaction().unwrap();
+        let snapshot = accumulator.committed_snapshot();
+        assert_eq!(snapshot.storage_journal.potential_sstore_count, 1);
+        assert_eq!(snapshot.storage_journal.potential_sload_count, 0);
+        assert_eq!(snapshot.storage_journal.direct_lookup_units, 1);
+        assert!(snapshot.operation_routes[0].feature_error_scaled > 0);
     }
 }

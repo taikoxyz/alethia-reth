@@ -1,9 +1,9 @@
 //! Runtime mode and typed shadow-report contracts for zk gas pricing.
 
 use super::{
-    CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors, TransactionPayloadSelectors,
-    ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError, ZkGasModel,
-    model::KnownBlockPricingInput,
+    CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors, StorageJournalDiagnostics,
+    StorageJournalIncompleteness, TransactionPayloadSelectors, ZkGasAccumulatorError,
+    ZkGasBlockSnapshot, ZkGasError, ZkGasModel, model::KnownBlockPricingInput,
 };
 use core::fmt;
 
@@ -379,12 +379,19 @@ pub struct ZkGasShadowReport {
     model_id: &'static str,
     /// Incomplete known-component subtotal or a typed diagnostic.
     status: ZkGasShadowStatus,
+    /// Unpriced potential ordinary-storage work, separate from model completeness.
+    storage_journal: StorageJournalDiagnostics,
 }
 
 impl ZkGasShadowReport {
-    /// Constructs one immutable report inside the sealed evaluator boundary.
+    #[cfg(test)]
+    /// Constructs a synthetic report for independent model-completion failure tests.
     pub(super) const fn from_status(status: ZkGasShadowStatus) -> Self {
-        Self { model_id: RUNTIME_SPEC_SHA256, status }
+        Self {
+            model_id: RUNTIME_SPEC_SHA256,
+            status,
+            storage_journal: StorageJournalDiagnostics::EMPTY,
+        }
     }
 
     /// Returns the content-addressed runtime model identifier.
@@ -397,11 +404,20 @@ impl ZkGasShadowReport {
         self.status
     }
 
+    /// Returns unpriced potential storage-map work; its failure never changes report pricing.
+    pub const fn storage_journal(self) -> StorageJournalDiagnostics {
+        self.storage_journal
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
             model_id: RUNTIME_SPEC_SHA256,
             status: ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::CollectorUnavailable),
+            storage_journal: StorageJournalDiagnostics {
+                incomplete: Some(StorageJournalIncompleteness::CollectorUnavailable),
+                ..StorageJournalDiagnostics::EMPTY
+            },
         }
     }
 
@@ -410,7 +426,7 @@ impl ZkGasShadowReport {
         model_id: &'static str,
         status: ZkGasShadowStatus,
     ) -> Self {
-        Self { model_id, status }
+        Self { model_id, status, storage_journal: StorageJournalDiagnostics::EMPTY }
     }
 }
 
@@ -439,6 +455,10 @@ impl ZkGasBlockSnapshot {
                 Err(error) => ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Pricing(error)),
             },
         };
-        ZkGasShadowReport::from_status(status)
+        ZkGasShadowReport {
+            model_id: RUNTIME_SPEC_SHA256,
+            status,
+            storage_journal: self.storage_journal,
+        }
     }
 }

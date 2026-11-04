@@ -1184,3 +1184,36 @@ deliberate identity/version decision.
 Do not add a compatibility alias that lets reports from two model identities be completed as though
 they were the same model. Documentation-only clarification may retain the identity only when it does
 not change the artifact or executable semantics.
+
+## Unpriced ordinary-storage journal diagnostics
+
+`ZkGasBlockSnapshot::storage_journal` and `ZkGasShadowReport::storage_journal()` expose
+`StorageJournalDiagnostics` without changing the sealed model or its five resource selectors.
+The shared plain/inspected runtime capture reads the length of the already-referenced storage
+owner's transaction-local `JournaledAccount.storage` map. It adds no database or storage-key lookup.
+`target_address` identifies the storage owner, including DELEGATECALL; code ownership is irrelevant.
+Disabled collection adds no owner ledger. Declared access-list keys, finalized resource walks and
+TLOAD/TSTORE do not emit these events.
+
+A potential SLOAD/SSTORE event with valid identity and footprint contributes `n_before + 1` direct
+occupancy units. These are conservative potential events, not actual guest probes, hash comparisons,
+PGU or a proved PGU bound. Static, stipend and OOG failures may be counted before a physical lookup;
+missing stack/account metadata is explicitly incomplete. Zero-valued slots occupy the map too.
+Warmness is independent of occupancy: an access-list-warm uncached slot is vacant, while a slot
+retained after frame rollback can be cold and occupied.
+
+The potential rollback reserve counts one entry per cold potential access and one per potential
+SSTORE change. Every SSTORE is conservatively treated as potentially changed, including noops and
+failed writes. At transaction finalization, each owner's entry count is multiplied by that owner's
+high-water upper `max(n_before + 1)`, then added across owners and transactions. This allows an early
+entry to unwind after later map growth. It is a potential reserve even when no actual revert occurs.
+Frame and included outer REVERT/HALT retain work. Rejected transactions enter only the attempted
+summary; owner high-water and entry state are discarded at each commit/reset. Ordinary transaction
+finalization clears the physical journal map; persisted database values do not carry its occupancy
+into the next transaction.
+
+All count, conversion, sum and product arithmetic is checked. `incomplete` retains the first missing
+metadata or overflow failure alongside partial values; consumers must not use an incomplete summary
+as a complete statistic or bound. This diagnostic is separate from pricing errors and cannot change
+EVM execution, gas, the existing feature-error tariff or admission behavior. It does not close the
+measured pricing gap; selecting any price requires separate adversarial and historical impact evidence.

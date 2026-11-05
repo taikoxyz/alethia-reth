@@ -1220,3 +1220,36 @@ metadata or overflow failure alongside partial values; consumers must not use an
 as a complete statistic or bound. This diagnostic is separate from pricing errors and cannot change
 EVM execution, gas, the existing feature-error tariff or admission behavior. It does not close the
 measured pricing gap; selecting any price requires separate adversarial and historical impact evidence.
+
+The same ledger exposes an unpriced low32 comparison envelope. At the start of each observing
+transaction, physically cached journal slots seed their owner's prefix groups once. A captured
+SLOAD/SSTORE whose existing cached-slot result is absent adds one potential materialization event;
+repeated occupied accesses add only their lookup count. This reuses the pre-step cached-presence
+fact and adds no storage-key lookup or full-U256 dedup set. Failed vacant attempts or clear/refill
+may count the same key more than once; these are deliberately conservative event counts, not exact
+distinct-ever-seen counts. Events are never removed when a frame reverts or an account clears.
+
+For each owner, `N` is its initial-slot-plus-materialization event count, and `M` its largest group
+sharing the raw slot's low 32 bits. `comparison_equivalents_high_water_upper` is the maximum owner
+`C = ceil((N + 7*M)/8)`. The profiled little-endian U256 comparator reads the low 32 bits in its
+first four memory bytes. A candidate with a different four-byte prefix inspects at most four byte
+pairs, while one matching it is conservatively charged all 32: `U = 4*N + 28*M`, and `C = ceil(U/32)`.
+The observer extracts `key.as_limbs()[0] as u32` numerically, without depending on the node's native
+pointer layout. Its comparator interpretation is tied to the profiled guest representation and
+must be rechecked when that representation or comparison implementation changes.
+This envelope does not reconstruct or measure actual hash-bucket collisions. In particular, a
+dispersed table whose raw keys share a low32 prefix is deliberately overestimated too.
+
+At transaction finish the ledger adds `C * (A + N + J)` per owner into
+`comparison_work_units_upper`, where `A` is its potential SLOAD/SSTORE count and `J` the existing
+cold-plus-SSTORE potential rollback-entry reserve. It separately reports additive
+`materialization_count_upper` and the largest `max_low32_group_upper`. The low32 counters use
+ordered integer keys; regular warm repeats do not update those groups. Initial physical seeding is
+Off-gated, reads only existing journal state, and neither performs a DB load nor substitutes the
+declared access list or witness set for actual cached storage.
+
+The bound is only on compared bytes in one hypothetical candidate scan testing each distinct key
+at most once. It does not prove the number of scans, fixed comparator or probe overhead, growth or
+rehash work, or a full PGU coefficient. Short-prefix hash concentration, lifecycle integration and
+normal historical compatibility therefore remain separate calibration requirements. All these
+fields remain diagnostics: no tariff, model identity, existing priced selector or limit changes.

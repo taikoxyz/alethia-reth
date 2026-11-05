@@ -32,6 +32,10 @@ fn cold_insert_and_warm_query_have_literal_units_on_both_paths() {
             high_water_upper: 3,
             potential_rollback_entries: 2,
             rollback_lookup_units_upper: 6,
+            materialization_count_upper: 2,
+            max_low32_group_upper: 1,
+            comparison_equivalents_high_water_upper: 2,
+            comparison_work_units_upper: 14,
             ..Default::default()
         }
     );
@@ -209,6 +213,10 @@ fn transaction_reset_and_committed_value_persistence_do_not_carry_journal_occupa
     assert_eq!(committed.rollback_lookup_units_upper, 4);
     assert_eq!(committed.high_water_upper, 1);
     assert_eq!(first.direct_lookup_units, 1);
+    assert_eq!(first.materialization_count_upper, 1);
+    assert_eq!(first.comparison_work_units_upper, 4);
+    assert_eq!(committed.materialization_count_upper, 2);
+    assert_eq!(committed.comparison_work_units_upper, 8);
 
     // A subsequent candidate rejected by the executor's commit predicate is attempted only.
     let mut candidate = tx_env(100_000);
@@ -270,6 +278,14 @@ fn independent_sibling_reverts_retain_occupied_slots_and_rewarm_per_storage_owne
             high_water_upper: max_occupancy + 1,
             potential_rollback_entries: 4,
             rollback_lookup_units_upper: reserve,
+            materialization_count_upper: 3,
+            max_low32_group_upper: 1,
+            comparison_equivalents_high_water_upper: 2,
+            comparison_work_units_upper: if opcode == opcode::CALL || opcode == opcode::STATICCALL {
+                19
+            } else {
+                24
+            },
             incomplete: None,
         };
         let mut parent = read(0);
@@ -311,6 +327,10 @@ fn independent_reverted_write_restores_value_but_keeps_physical_growth_and_meter
             high_water_upper: max_occupancy + 1,
             potential_rollback_entries: 5,
             rollback_lookup_units_upper: reserve,
+            materialization_count_upper: if opcode == opcode::CALL { 4 } else { 3 },
+            max_low32_group_upper: 1,
+            comparison_equivalents_high_water_upper: 2,
+            comparison_work_units_upper: if opcode == opcode::CALL { 28 } else { 26 },
             incomplete: None,
         };
         let mut parent = read(0);
@@ -389,6 +409,10 @@ fn storage_limit_crossing(opcode: u8) {
         high_water_upper: 1,
         potential_rollback_entries: 1 + u64::from(store),
         rollback_lookup_units_upper: 1 + u64::from(store),
+        materialization_count_upper: 1,
+        max_low32_group_upper: 1,
+        comparison_equivalents_high_water_upper: 1,
+        comparison_work_units_upper: 3 + u64::from(store),
         incomplete: None,
     };
     let mut reference_error = None;
@@ -486,4 +510,67 @@ fn storage_journal_sload_crossing_legacy_limit_retains_attempted_work_and_recove
 #[test]
 fn storage_journal_sstore_crossing_legacy_limit_retains_attempted_work_and_recovers() {
     storage_limit_crossing(opcode::SSTORE);
+}
+
+#[test]
+fn initially_cached_slots_are_seeded_once_on_both_real_execution_paths() {
+    use reth_revm::state::{Account, EvmStorageSlot};
+
+    let mut code = read(0);
+    code.extend(read(0));
+    code.push(opcode::STOP);
+    let mut reference = None;
+    for inspect in [false, true] {
+        let mut db = db_with_contract(Bytecode::new_raw(code.clone().into()));
+        let info = reth_revm::Database::basic(&mut db, BENCH_TARGET).unwrap().unwrap();
+        let mut evm = storage_evm(db, inspect);
+        let transaction_id = evm.ctx().journaled_state.inner.transaction_id;
+        let mut account = Account::from(info);
+        account.transaction_id = transaction_id;
+        account.storage.insert(U256::ZERO, EvmStorageSlot::new(U256::ZERO, transaction_id));
+        evm.ctx_mut().journaled_state.inner.state.insert(BENCH_TARGET, account);
+        evm.set_zk_gas_pricing_enabled(true);
+        assert!(evm.transact(tx_env(100_000)).unwrap().result.is_success());
+        commit_pricing(&mut evm);
+        let report = evm.zk_gas_pricing_snapshot().unwrap().storage_journal;
+        assert_eq!(report.materialization_count_upper, 1, "preloaded key must not count again");
+        assert_eq!(report.max_low32_group_upper, 1);
+        assert_eq!(report.comparison_equivalents_high_water_upper, 1);
+        assert_eq!(report.potential_sload_count, 2);
+        assert_eq!(report.comparison_work_units_upper, 3 + report.potential_rollback_entries);
+        assert!(report.incomplete.is_none());
+        if let Some(previous) = reference {
+            assert_eq!(report, previous);
+        }
+        reference = Some(report);
+        assert_storage_routing(evm, inspect);
+    }
+}
+
+#[test]
+fn low32_materialization_capture_has_literal_units_on_both_paths() {
+    for same_prefix in [false, true] {
+        let mut code = Vec::new();
+        for n in 0..64 {
+            let key: U256 = if same_prefix { U256::from(n) << 224 } else { U256::from(n) };
+            code.push(opcode::PUSH32);
+            code.extend(key.to_be_bytes::<32>());
+            code.extend([opcode::SLOAD, opcode::POP]);
+        }
+        for _ in 0..3 {
+            code.extend(read(0));
+        }
+        code.push(opcode::STOP);
+        let (plain, inspected) =
+            zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 1_000_000);
+        assert_eq!(plain, inspected);
+        let report = plain.storage_journal;
+        let c = if same_prefix { 64 } else { 9 };
+        assert_eq!(report.potential_sload_count, 67);
+        assert_eq!(report.materialization_count_upper, 64);
+        assert_eq!(report.max_low32_group_upper, if same_prefix { 64 } else { 1 });
+        assert_eq!(report.comparison_equivalents_high_water_upper, c);
+        assert_eq!(report.comparison_work_units_upper, c * 195);
+        assert!(report.incomplete.is_none());
+    }
 }

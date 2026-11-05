@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 
 use super::AccessClass;
 
@@ -28,7 +28,8 @@ pub enum StorageJournalIncompleteness {
 /// guest hash probes nor measured PGU. Static/stipend/OOG failures can be counted before any
 /// actual journal lookup; missing stack/account metadata marks this summary incomplete.
 /// Frame and outer reverts do not remove computational work. Access-list declarations,
-/// resource finalization walks, and transient storage are excluded.
+/// resource finalization walks, and transient storage do not emit lookup events. Initial
+/// physically cached slots separately seed the comparison envelope once per transaction.
 ///
 /// All sums and products are checked. On failure, prior partial values remain inspectable and
 /// `incomplete` is retained; callers must not treat those partial values as a complete bound.
@@ -57,6 +58,27 @@ pub struct StorageJournalDiagnostics {
     /// entries made early in a frame that might unwind after the map has grown. It does not
     /// assert that a revert occurred, count actual reverted entries, or bound total guest PGU.
     pub rollback_lookup_units_upper: u64,
+    /// Initial cached slots plus potential uncached materialization attempts, in events.
+    ///
+    /// This is an upper count, not a distinct-key count: repeated failed vacant attempts and
+    /// clear/refill may count a key again. It is additive across transaction/owner scopes.
+    pub materialization_count_upper: u64,
+    /// Largest owner group of materialization events sharing raw-key low 32 bits, in events.
+    ///
+    /// The group matches the first four bytes of the profiled little-endian U256 comparator.
+    /// It is not a count of actual guest hash-bucket or tag collisions.
+    pub max_low32_group_upper: u64,
+    /// Maximum owner comparison envelope `ceil((N + 7*M)/8)`, in 32-byte equivalents.
+    ///
+    /// `N` counts materialization events and `M` is that owner's largest low32 group. This
+    /// bounds compared bytes for one candidate scan, not complete hash-table work or PGU.
+    pub comparison_equivalents_high_water_upper: u64,
+    /// Sum of owner `C * (A + N + J)`, in potential 32-byte-comparison work units.
+    ///
+    /// `A` counts captured SLOAD/SSTORE attempts, `N` materialization events and `J` the
+    /// potential cold-plus-SSTORE rollback entries. This remains unpriced; scan multiplicity,
+    /// fixed comparator/probe overhead, growth and PGU coefficients require separate evidence.
+    pub comparison_work_units_upper: u64,
     /// First reason these partial diagnostics are incomplete, independent of pricing errors.
     pub incomplete: Option<StorageJournalIncompleteness>,
 }
@@ -71,6 +93,10 @@ impl StorageJournalDiagnostics {
         high_water_upper: 0,
         potential_rollback_entries: 0,
         rollback_lookup_units_upper: 0,
+        materialization_count_upper: 0,
+        max_low32_group_upper: 0,
+        comparison_equivalents_high_water_upper: 0,
+        comparison_work_units_upper: 0,
         incomplete: None,
     };
 
@@ -96,6 +122,16 @@ impl StorageJournalDiagnostics {
                 rollback_lookup_units_upper: self
                     .rollback_lookup_units_upper
                     .checked_add(other.rollback_lookup_units_upper)?,
+                materialization_count_upper: self
+                    .materialization_count_upper
+                    .checked_add(other.materialization_count_upper)?,
+                max_low32_group_upper: self.max_low32_group_upper.max(other.max_low32_group_upper),
+                comparison_equivalents_high_water_upper: self
+                    .comparison_equivalents_high_water_upper
+                    .max(other.comparison_equivalents_high_water_upper),
+                comparison_work_units_upper: self
+                    .comparison_work_units_upper
+                    .checked_add(other.comparison_work_units_upper)?,
                 incomplete: self.incomplete,
             })
         })();
@@ -112,12 +148,22 @@ impl StorageJournalDiagnostics {
 }
 
 /// Transaction-local owner state; never shared with global resource-set deduplication.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 struct OwnerWork {
     /// Conservative maximum physical occupancy after a potential lookup, in slots.
     high_water_upper: u64,
     /// Cold accesses plus all SSTORE attempts, in potential rollback entries.
     potential_entries: u64,
+    /// Captured potential SLOAD/SSTORE lookups for this owner, in events.
+    potential_lookups: u64,
+    /// Initial slots and potential vacant materializations, never removed on clear or revert.
+    materializations: u64,
+    /// Ordered raw low32 groups; updated only for materialization events, not warm repeats.
+    low32_groups: BTreeMap<u32, u64>,
+    /// Largest low32 group reached during this owner's transaction scope, in events.
+    max_group: u64,
+    /// Current monotone compared-byte envelope, in 32-byte comparison equivalents.
+    comparison_equivalents: u64,
 }
 
 /// One transaction's compact ledger, allocated only through the observing pricing path.
@@ -125,7 +171,7 @@ struct OwnerWork {
 pub(super) struct StorageJournalLedger {
     /// Additive direct-work diagnostics and finalized rollback reserve.
     pub(super) diagnostics: StorageJournalDiagnostics,
-    /// Only owners reached by captured ordinary storage opcodes, reset at transaction end.
+    /// Owners with initial cached slots or captured storage work, reset at transaction end.
     owners: BTreeMap<Address, OwnerWork>,
 }
 
@@ -146,11 +192,12 @@ impl StorageJournalLedger {
             let occupancy = u64::try_from(occupancy).ok()?;
             let units = occupancy.checked_add(1)?;
             let entries = u64::from(access == AccessClass::Cold).checked_add(u64::from(store))?;
-            let previous = self.owners.get(&owner).copied().unwrap_or_default();
-            let owner = OwnerWork {
-                high_water_upper: previous.high_water_upper.max(units),
-                potential_entries: previous.potential_entries.checked_add(entries)?,
-            };
+            let previous = self.owners.get(&owner);
+            let high_water_upper = previous.map_or(0, |work| work.high_water_upper).max(units);
+            let potential_entries =
+                previous.map_or(0, |work| work.potential_entries).checked_add(entries)?;
+            let potential_lookups =
+                previous.map_or(0, |work| work.potential_lookups).checked_add(1)?;
             let mut diagnostics = self.diagnostics;
             diagnostics.potential_sload_count =
                 diagnostics.potential_sload_count.checked_add(u64::from(!store))?;
@@ -161,11 +208,56 @@ impl StorageJournalLedger {
                 diagnostics.potential_rollback_entries.checked_add(entries)?;
             diagnostics.max_occupancy_before = diagnostics.max_occupancy_before.max(occupancy);
             diagnostics.high_water_upper = diagnostics.high_water_upper.max(units);
-            Some((owner, diagnostics))
+            Some((high_water_upper, potential_entries, potential_lookups, diagnostics))
         })();
         match next {
-            Some((work, diagnostics)) => {
-                self.owners.insert(owner, work);
+            Some((high_water_upper, potential_entries, potential_lookups, diagnostics)) => {
+                let work = self.owners.entry(owner).or_default();
+                work.high_water_upper = high_water_upper;
+                work.potential_entries = potential_entries;
+                work.potential_lookups = potential_lookups;
+                self.diagnostics = diagnostics;
+            }
+            None => {
+                self.diagnostics.mark_incomplete(StorageJournalIncompleteness::ArithmeticOverflow)
+            }
+        }
+    }
+
+    /// Records one already-cached initial slot or potential uncached materialization.
+    ///
+    /// The runtime reuses cached presence already captured for pricing. No full-key set or
+    /// additional storage lookup is performed. Duplicate failed attempts and clear/refill
+    /// deliberately overcount rather than lose earlier comparison work.
+    pub(super) fn observe_materialization(&mut self, owner: Address, key: U256) {
+        let low32 = key.as_limbs()[0] as u32;
+        let next = (|| {
+            let previous = self.owners.get(&owner);
+            let count = previous
+                .and_then(|work| work.low32_groups.get(&low32))
+                .copied()
+                .unwrap_or(0)
+                .checked_add(1)?;
+            let materializations =
+                previous.map_or(0, |work| work.materializations).checked_add(1)?;
+            let max_group = previous.map_or(0, |work| work.max_group).max(count);
+            let numerator = materializations.checked_add(max_group.checked_mul(7)?)?;
+            let comparison_equivalents = numerator / 8 + u64::from(numerator % 8 != 0);
+            let mut diagnostics = self.diagnostics;
+            diagnostics.materialization_count_upper =
+                diagnostics.materialization_count_upper.checked_add(1)?;
+            diagnostics.max_low32_group_upper = diagnostics.max_low32_group_upper.max(max_group);
+            diagnostics.comparison_equivalents_high_water_upper =
+                diagnostics.comparison_equivalents_high_water_upper.max(comparison_equivalents);
+            Some((count, materializations, max_group, comparison_equivalents, diagnostics))
+        })();
+        match next {
+            Some((count, materializations, max_group, comparison_equivalents, diagnostics)) => {
+                let work = self.owners.entry(owner).or_default();
+                work.low32_groups.insert(low32, count);
+                work.materializations = materializations;
+                work.max_group = max_group;
+                work.comparison_equivalents = comparison_equivalents;
                 self.diagnostics = diagnostics;
             }
             None => {
@@ -181,6 +273,19 @@ impl StorageJournalLedger {
         });
         match reserve {
             Some(units) => self.diagnostics.rollback_lookup_units_upper = units,
+            None => {
+                self.diagnostics.mark_incomplete(StorageJournalIncompleteness::ArithmeticOverflow)
+            }
+        }
+        let comparison_work = self.owners.values().try_fold(0_u64, |sum, owner| {
+            let events = owner
+                .potential_lookups
+                .checked_add(owner.materializations)?
+                .checked_add(owner.potential_entries)?;
+            sum.checked_add(owner.comparison_equivalents.checked_mul(events)?)
+        });
+        match comparison_work {
+            Some(units) => self.diagnostics.comparison_work_units_upper = units,
             None => {
                 self.diagnostics.mark_incomplete(StorageJournalIncompleteness::ArithmeticOverflow)
             }
@@ -256,14 +361,20 @@ mod tests {
     fn checked_owner_entry_sum_and_rollback_product_cannot_silently_saturate() {
         let owner = Address::ZERO;
         let mut ledger = StorageJournalLedger::default();
-        ledger.owners.insert(owner, OwnerWork { high_water_upper: 1, potential_entries: u64::MAX });
+        ledger.owners.insert(
+            owner,
+            OwnerWork { high_water_upper: 1, potential_entries: u64::MAX, ..Default::default() },
+        );
         ledger.observe(owner, Some(0), AccessClass::Cold, false);
         assert_eq!(
             ledger.diagnostics.incomplete,
             Some(StorageJournalIncompleteness::ArithmeticOverflow)
         );
         let mut ledger = StorageJournalLedger::default();
-        ledger.owners.insert(owner, OwnerWork { high_water_upper: u64::MAX, potential_entries: 2 });
+        ledger.owners.insert(
+            owner,
+            OwnerWork { high_water_upper: u64::MAX, potential_entries: 2, ..Default::default() },
+        );
         ledger.finish();
         assert_eq!(
             ledger.diagnostics.incomplete,
@@ -283,5 +394,98 @@ mod tests {
         assert_eq!(summary.potential_sload_count, u64::MAX);
         assert_eq!(summary.direct_lookup_units, 0);
         assert_eq!(summary.incomplete, Some(StorageJournalIncompleteness::ArithmeticOverflow));
+    }
+
+    #[test]
+    fn low32_groups_use_raw_numeric_low_bits_and_warm_reads_only_add_accesses() {
+        let owner = Address::ZERO;
+        for same_prefix in [false, true] {
+            let mut ledger = StorageJournalLedger::default();
+            for n in 0..64 {
+                let key = if same_prefix { U256::from(n) << 224 } else { U256::from(n) };
+                ledger.observe(owner, Some(n), AccessClass::Cold, false);
+                ledger.observe_materialization(owner, key);
+            }
+            for _ in 0..3 {
+                ledger.observe(owner, Some(64), AccessClass::Warm, false);
+            }
+            ledger.finish();
+            let c = if same_prefix { 64 } else { 9 };
+            assert_eq!(ledger.diagnostics.materialization_count_upper, 64);
+            assert_eq!(ledger.diagnostics.max_low32_group_upper, if same_prefix { 64 } else { 1 });
+            assert_eq!(ledger.diagnostics.comparison_equivalents_high_water_upper, c);
+            assert_eq!(ledger.diagnostics.comparison_work_units_upper, c * (67 + 64 + 64));
+        }
+    }
+
+    #[test]
+    fn repeated_vacant_attempts_and_clear_refill_are_conservative_without_key_dedup() {
+        let owner = Address::ZERO;
+        let mut ledger = StorageJournalLedger::default();
+        // A failed vacant load or a clear/refill can present the same absent key again.
+        for _ in 0..4 {
+            ledger.observe(owner, Some(0), AccessClass::Cold, false);
+            ledger.observe_materialization(owner, U256::from(7));
+        }
+        ledger.finish();
+        assert_eq!(ledger.diagnostics.materialization_count_upper, 4);
+        assert_eq!(ledger.diagnostics.max_low32_group_upper, 4);
+        assert_eq!(ledger.diagnostics.comparison_equivalents_high_water_upper, 4);
+        assert_eq!(ledger.diagnostics.comparison_work_units_upper, 48);
+    }
+
+    #[test]
+    fn initial_slots_are_seeded_without_operation_or_cold_entry_counts() {
+        let owner = Address::ZERO;
+        let mut ledger = StorageJournalLedger::default();
+        ledger.observe_materialization(owner, U256::from(3));
+        ledger.observe_materialization(owner, U256::from(4));
+        ledger.observe(owner, Some(2), AccessClass::Warm, false);
+        ledger.finish();
+        assert_eq!(ledger.diagnostics.potential_sload_count, 1);
+        assert_eq!(ledger.diagnostics.potential_rollback_entries, 0);
+        assert_eq!(ledger.diagnostics.materialization_count_upper, 2);
+        assert_eq!(ledger.diagnostics.max_low32_group_upper, 1);
+        assert_eq!(ledger.diagnostics.comparison_equivalents_high_water_upper, 2);
+        assert_eq!(ledger.diagnostics.comparison_work_units_upper, 6);
+    }
+
+    #[test]
+    fn comparison_work_is_folded_per_owner_not_by_global_group_maxima() {
+        let mut ledger = StorageJournalLedger::default();
+        for (owner, count) in [(Address::ZERO, 64), (Address::repeat_byte(1), 1)] {
+            for n in 0..count {
+                ledger.observe(owner, Some(n), AccessClass::Cold, false);
+                ledger.observe_materialization(owner, U256::from(n));
+            }
+        }
+        ledger.finish();
+        assert_eq!(ledger.diagnostics.materialization_count_upper, 65);
+        assert_eq!(ledger.diagnostics.comparison_work_units_upper, 9 * 192 + 3);
+    }
+
+    #[test]
+    fn materialization_and_comparison_arithmetic_fail_explicitly_without_saturation() {
+        let owner = Address::ZERO;
+        let mut ledger = StorageJournalLedger::default();
+        ledger.diagnostics.materialization_count_upper = u64::MAX;
+        ledger.observe_materialization(owner, U256::ZERO);
+        assert!(ledger.owners.is_empty(), "failed update must not install a partial prefix");
+        assert_eq!(ledger.diagnostics.materialization_count_upper, u64::MAX);
+        assert_eq!(ledger.diagnostics.max_low32_group_upper, 0);
+        assert_eq!(
+            ledger.diagnostics.incomplete,
+            Some(StorageJournalIncompleteness::ArithmeticOverflow)
+        );
+
+        let mut ledger = StorageJournalLedger::default();
+        ledger.observe_materialization(owner, U256::ZERO);
+        ledger.owners.get_mut(&owner).unwrap().potential_lookups = u64::MAX;
+        ledger.finish();
+        assert_eq!(ledger.diagnostics.comparison_work_units_upper, 0);
+        assert_eq!(
+            ledger.diagnostics.incomplete,
+            Some(StorageJournalIncompleteness::ArithmeticOverflow)
+        );
     }
 }

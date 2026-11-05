@@ -200,12 +200,19 @@ impl PendingPricingStep {
     pub(crate) fn observe_storage_journal(self, accumulator: &mut ZkGasAccumulator) {
         match self.model_input {
             Ok(PendingModelInput::StorageLoad(storage)) |
-            Ok(PendingModelInput::StorageStore(storage)) => accumulator.observe_storage_journal(
-                storage.target,
-                storage.occupancy_before,
-                storage.access,
-                self.opcode == 0x55,
-            ),
+            Ok(PendingModelInput::StorageStore(storage)) => {
+                accumulator.observe_storage_journal(
+                    storage.target,
+                    storage.occupancy_before,
+                    storage.access,
+                    self.opcode == 0x55,
+                );
+                // Reuse the cached-slot lookup already needed for pricing selectors. No new
+                // full-key lookup or dedup set is needed; failed vacant attempts overcount.
+                if storage.current.is_none() {
+                    accumulator.observe_storage_materialization(storage.target, storage.key);
+                }
+            }
             Err(()) if matches!(self.opcode, 0x54 | 0x55) => {
                 accumulator.storage_journal_missing_input();
             }

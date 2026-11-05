@@ -519,9 +519,24 @@ where
                 access_list_items: access_list_count.unwrap_or(u64::MAX),
             };
             let beneficiary = self.ctx().block.beneficiary;
+            // A reused EVM can start with physically cached slots. Seed those exactly once
+            // for this transaction, before a later clear/revert can discard them. This reads
+            // existing journal data only; declared access-list or witness keys are not slots.
+            let initial_storage_slots: Vec<_> = self
+                .ctx()
+                .journaled_state
+                .inner
+                .state
+                .iter()
+                .flat_map(|(owner, account)| account.storage.keys().map(move |key| (*owner, *key)))
+                .collect();
             let accumulator = self.zk_gas_pricing_mut().expect("collector presence checked above");
             if let Err(error) = accumulator.begin_transaction(metadata) {
                 accumulator.retain_diagnostic(Some(error));
+            } else {
+                for (owner, key) in initial_storage_slots {
+                    accumulator.observe_storage_materialization(owner, key);
+                }
             }
             let _ = accumulator.observe_state_access(StateAccess::Account(tx.caller));
             if let Some(target) = tx.kind.to() {

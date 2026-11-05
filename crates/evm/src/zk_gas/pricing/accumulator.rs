@@ -701,6 +701,16 @@ impl ZkGasAccumulator {
         }
     }
 
+    /// Retains an initial physical slot or a potential uncached materialization event.
+    ///
+    /// Existing cached-presence facts select these events; this does not perform a full-key
+    /// lookup. Failed attempts or clear/refill may conservatively count the same key again.
+    pub(crate) fn observe_storage_materialization(&mut self, owner: Address, key: U256) {
+        if let Some(transaction) = &mut self.in_flight {
+            transaction.storage_journal.observe_materialization(owner, key);
+        }
+    }
+
     /// Marks an ordinary storage capture incomplete without changing pricing diagnostics.
     pub(crate) fn storage_journal_missing_input(&mut self) {
         if let Some(transaction) = &mut self.in_flight {

@@ -173,7 +173,7 @@ where
         step.spawned = is_spawn_opcode(step.opcode) &&
             matches!(interp.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
 
-        // Retain unpriced executed storage work even when the legacy charge rejects this step.
+        // Retain independently priced journal work even when the legacy charge rejects this step.
         // Priced finish stays after the successful charge, preserving its existing exclusion.
         if let Some(pricing_step) = step.pricing &&
             let Some(accumulator) = metering.pricing.as_mut()

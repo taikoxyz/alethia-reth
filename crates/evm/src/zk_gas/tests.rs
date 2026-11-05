@@ -68,6 +68,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
             .unwrap();
         let direct = model
             .price_block(&BlockPricingInput {
+                storage_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: count,
@@ -325,6 +326,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
             .unwrap();
         let direct = ZkGasModel
             .price_block(&BlockPricingInput {
+                storage_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: 0,
@@ -746,6 +748,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
         .expect("typed incomplete report plus exact MPT completes");
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
+            storage_journal_work_units: snapshot.storage_journal.comparison_work_units_upper,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -810,6 +813,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
     assert!(completed.resources_scaled > before.evm_local_resources_scaled());
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
+            storage_journal_work_units: snapshot.storage_journal.comparison_work_units_upper,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -2134,7 +2138,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef"
+        "5f93909ea1372eb6e10fa2b599c6087aafd4ec493ba28eb1cea4c4abb3708a11"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2406,6 +2410,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
     }];
     let block = ZkGasModel
         .price_block(&BlockPricingInput {
+            storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2441,6 +2446,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
     };
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
@@ -2479,6 +2485,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
 fn zk_gas_model_composes_route_aggregates_before_block_sum() {
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2506,6 +2513,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
     let maximum = 1_000_000_000;
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
@@ -2632,6 +2640,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
     }];
     assert_eq!(
         model.price_block(&BlockPricingInput {
+            storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,

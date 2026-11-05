@@ -28,6 +28,10 @@ pub struct ZkGasKnownBlockBreakdown {
     code_preparation: CodePreparationSelectors,
     /// Normalized per-occurrence code preparation contribution.
     code_preparation_scaled: i128,
+    /// Conservative journal comparison units sealed with their price.
+    storage_journal_work_units: u64,
+    /// Independent journal contribution in normalized fixed-point PGU.
+    storage_journal_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Normal dispatched opcode/confirmed-spawn count sealed with its reserve.
@@ -72,11 +76,15 @@ impl ZkGasKnownBlockBreakdown {
         evm_local_known_subtotal_pgu: u128,
         code_preparation: CodePreparationSelectors,
         code_preparation_scaled: i128,
+        storage_journal_work_units: u64,
+        storage_journal_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
             code_preparation,
             code_preparation_scaled,
+            storage_journal_work_units,
+            storage_journal_scaled,
             authorization_validations,
             authorization_scaled,
             access_list_items,
@@ -127,6 +135,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Accepted code preparation contribution in normalized fixed-point PGU.
     pub const fn code_preparation_scaled(self) -> i128 {
         self.code_preparation_scaled
+    }
+
+    /// Conservative journal comparison work across the included transaction scopes.
+    pub const fn storage_journal_work_units(self) -> u64 {
+        self.storage_journal_work_units
+    }
+
+    /// Additive journal reserve, included exactly once in the known subtotal.
+    pub const fn storage_journal_scaled(self) -> i128 {
+        self.storage_journal_scaled
     }
 
     /// Block operation contribution in fixed-point units.
@@ -180,6 +198,13 @@ impl ZkGasKnownBlockBreakdown {
     }
 
     #[cfg(test)]
+    pub(super) const fn with_storage_journal_for_test(mut self, units: u64, scaled: i128) -> Self {
+        self.storage_journal_work_units = units;
+        self.storage_journal_scaled = scaled;
+        self
+    }
+
+    #[cfg(test)]
     pub(super) const fn with_normal_dispatch_for_test(mut self, count: u64, scaled: i128) -> Self {
         self.normal_dispatch_count = count;
         self.normal_dispatch_scaled = scaled;
@@ -228,6 +253,8 @@ impl ZkGasKnownBlockBreakdown {
             known_subtotal_pgu,
             CodePreparationSelectors { nonempty_events: 0, total_bytes: 0 },
             0,
+            0,
+            0,
         )
     }
 }
@@ -266,6 +293,8 @@ pub enum ZkGasShadowDiagnostic {
     CollectorUnavailable,
     /// Selector collection retained a non-fatal diagnostic from included execution.
     Collector(ZkGasAccumulatorError),
+    /// Required journal observations were incomplete; partial work cannot produce a valid quote.
+    StorageJournal(StorageJournalIncompleteness),
     /// The pure model rejected the committed execution/resource selectors.
     Pricing(ZkGasError),
 }
@@ -353,6 +382,9 @@ impl ZkGasShadowStatus {
                 ZkGasAccumulatorError::NoActiveTransaction,
             )) => "collector_no_active_transaction",
             Self::Diagnostic(ZkGasShadowDiagnostic::Collector(_)) => "collector_error",
+            Self::Diagnostic(ZkGasShadowDiagnostic::StorageJournal(_)) => {
+                "storage_journal_incomplete"
+            }
             Self::Diagnostic(ZkGasShadowDiagnostic::Pricing(ZkGasError::UnknownRoute(_))) => {
                 "pricing_unknown_route"
             }
@@ -379,7 +411,7 @@ pub struct ZkGasShadowReport {
     model_id: &'static str,
     /// Incomplete known-component subtotal or a typed diagnostic.
     status: ZkGasShadowStatus,
-    /// Unpriced potential ordinary-storage work, separate from model completeness.
+    /// Journal observation whose complete comparison units contribute to the known subtotal.
     storage_journal: StorageJournalDiagnostics,
 }
 
@@ -404,7 +436,7 @@ impl ZkGasShadowReport {
         self.status
     }
 
-    /// Returns unpriced potential storage-map work; its failure never changes report pricing.
+    /// Returns potential storage-map work; incomplete observations prevent a valid known subtotal.
     pub const fn storage_journal(self) -> StorageJournalDiagnostics {
         self.storage_journal
     }
@@ -438,12 +470,16 @@ impl ZkGasBlockSnapshot {
     pub fn shadow_report(&self) -> ZkGasShadowReport {
         let status = match self.diagnostic {
             Some(error) => ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Collector(error)),
+            None if self.storage_journal.incomplete.is_some() => ZkGasShadowStatus::Diagnostic(
+                ZkGasShadowDiagnostic::StorageJournal(self.storage_journal.incomplete.unwrap()),
+            ),
             None => match ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
                 started_non_anchor_transactions: self.started_non_anchor_transactions,
                 native_value_transfers: self.native_value_transfers,
                 authorization_validations: self.authorization_validations,
                 access_list_items: self.access_list_items,
                 code_preparation: self.code_preparation,
+                storage_journal_work_units: self.storage_journal.comparison_work_units_upper,
                 operation_routes: &self.operation_routes,
                 resources: self.resources,
                 transaction_payload: self.transaction_payload,

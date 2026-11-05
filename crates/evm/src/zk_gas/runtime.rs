@@ -192,11 +192,11 @@ impl PendingPricingStep {
         }
     }
 
-    /// Records unpriced potential storage work for one executed step before legacy metering.
+    /// Records potential storage work for one executed step before legacy metering.
     ///
     /// Both runtime paths call this exactly once after execution and before a legacy budget
     /// rejection can skip priced `finish`. This infallible observation neither charges gas nor
-    /// changes execution or priced selectors; feature errors and rejected candidates retain work.
+    /// changes execution; feature errors and rejected candidates retain this independent journal term.
     pub(crate) fn observe_storage_journal(self, accumulator: &mut ZkGasAccumulator) {
         match self.model_input {
             Ok(PendingModelInput::StorageLoad(storage)) |
@@ -213,9 +213,10 @@ impl PendingPricingStep {
                     accumulator.observe_storage_materialization(storage.target, storage.key);
                 }
             }
-            Err(()) if matches!(self.opcode, 0x54 | 0x55) => {
-                accumulator.storage_journal_missing_input();
-            }
+            // Capture fails only on stack.peek(0), or SSTORE peek(1). REVM rejects before
+            // any journal/storage lookup, so this is known zero journal work. finish still
+            // retains feature-error pricing. Missing footprint remains an Ok capture with None.
+            Err(()) if matches!(self.opcode, 0x54 | 0x55) => {}
             _ => {}
         }
     }

@@ -251,6 +251,8 @@ where
                 code_preparation_nonempty_events = known.code_preparation().nonempty_events,
                 code_preparation_total_bytes = known.code_preparation().total_bytes,
                 code_preparation_scaled = ?known.code_preparation_scaled(),
+                storage_journal_work_units = known.storage_journal_work_units(),
+                storage_journal_scaled = ?known.storage_journal_scaled(),
                 operations_scaled = ?known.operations_scaled(),
                 normal_dispatch_count = known.normal_dispatch_count(),
                 normal_dispatch_scaled = ?known.normal_dispatch_scaled(),

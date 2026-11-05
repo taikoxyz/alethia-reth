@@ -4,19 +4,18 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef`. Relative to immutable parent
-`bbce9be0cd9792bfa9c46369203f6441c3fd288787ea357e311eae8ebd48aac4`, this candidate adds only
-**64 normalized PGU per normally priced Opcode/ConfirmedSpawn event**, after route maxima.
-All parent route coefficients, memory, floors, fixed costs, payload/resources, MPT tariffs, global
-discount, authorization/access-list tariffs and code-preparation units remain unchanged. The inherited
-BLOCKHASH unit is 700 PGU/event and DELEGATECALL wrapper is 6000 PGU/event; each eligible normal event
-now additionally receives the reserve. Code units remain 64 PGU per unique code byte and 8192 per
-accepted nonempty preparation plus 32 per processed byte. This remains the initial Shadow model with
-no public model selector. If `RUNTIME_SPEC_SHA256` differs, this document is stale. Candidate native
-repricing and prospective validation are separate from the sealed 60-row development derivation.
+`5f93909ea1372eb6e10fa2b599c6087aafd4ec493ba28eb1cea4c4abb3708a11`. Relative to immutable parent
+`c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef`, this candidate adds only an
+independent **384 normalized PGU per conservative storage-journal comparison work unit** and its
+separate work-unit domain. Every inherited numeric price remains unchanged, including 64 PGU per
+normally priced Opcode/ConfirmedSpawn event, 700 PGU per BLOCKHASH event, and 6000 PGU per
+DELEGATECALL wrapper. This remains the initial Shadow model with no public model selector.
+If `RUNTIME_SPEC_SHA256` differs, this document is stale. Three controlled journal calibration rows
+establish an empirical reserve; production SDK parity, native historical repricing and prospective
+validation are separate from that derivation.
 
-The original calibration calls itself `accepted_runtime_export`; the current artifact and its
-immediate parent call themselves `conservative_runtime_successor`. These identify calibration and
+The original calibration calls itself `accepted_runtime_export`; the journal successor records
+`block_local_storage_journal_comparison_reserve`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -37,7 +36,7 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list/code-preparation/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list/code-preparation/storage-journal/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
@@ -78,8 +77,13 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`storage_journal_successor.py`](../crates/evm/src/zk_gas/pricing/storage_journal_successor.py)
+  derives the current journal reserve from immutable c893 and the sealed
+  [three-row comparison evidence](../crates/evm/src/zk_gas/pricing/successors/storage-journal-comparison-v1.json).
+  It authenticates the negative 256 candidate, exact residual margins, separate work bound and all
+  unchanged inherited numeric prices.
 - [`normal_dispatch_successor.py`](../crates/evm/src/zk_gas/pricing/normal_dispatch_successor.py)
-  adds the current reserve to immutable bbce using the sealed
+  adds the inherited normal-dispatch reserve to immutable bbce using the sealed
   [60-row composite evidence](../crates/evm/src/zk_gas/pricing/successors/normal-dispatch-v1.json).
   Exact rational replay authenticates the parent, raw-derived counts and independent panel/audit
   identities, and rejects every unrelated numeric or provenance change.
@@ -550,6 +554,7 @@ block_price =
   + access_list_item_tariff * raw_access_list_address_items
   + code_preparation_event_tariff * nonempty_code_preparation_events
   + code_preparation_byte_tariff * prepared_code_bytes
+  + storage_journal_work_tariff * storage_journal_work_units
   + operation_price
   + exact_unique_resource_price
   + committed_transaction_payload_price
@@ -603,10 +608,11 @@ execution, such as a commit-predicate rejection or Unzen zk gas truncation, is r
 `zk_gas_attempted_pricing_snapshot` and `attempted_zk_gas_shadow_report`.
 
 Neither prefix covers executor precheck rejections for remaining native block gas or intrinsic zk
-gas, the interpreter opcode step whose meter charge first exceeds the zk gas budget, or transactions
-skipped without execution (zero-signer non-Anchor transactions and transactions after zk gas
-exhaustion). For a truncated attempt, completed steps and resources from the finalized journal are
-retained. Completed precompile bodies remain observed even when their meter charge triggers
+gas, or transactions skipped without execution (zero-signer non-Anchor transactions and transactions
+after zk gas exhaustion). Operation-route pricing omits the interpreter step whose legacy meter
+charge first exceeds the budget; its independently captured ordinary-storage journal work is retained
+before that charge. For a truncated attempt, completed steps and resources from the finalized journal
+are retained. Completed precompile bodies remain observed even when their meter charge triggers
 truncation; resetting the rejected transaction retains that work in the attempted prefix.
 
 `attempted_transaction_count` includes the Anchor and counts only scopes that began; it is zero when
@@ -1160,14 +1166,14 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 ~/.venv/bin/python -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/normal_dispatch_successor.py --check
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/storage_journal_successor.py --check
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/normal_dispatch_successor.py
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/storage_journal_successor.py
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
@@ -1185,10 +1191,11 @@ Do not add a compatibility alias that lets reports from two model identities be 
 they were the same model. Documentation-only clarification may retain the identity only when it does
 not change the artifact or executable semantics.
 
-## Unpriced ordinary-storage journal diagnostics
+## Ordinary-storage journal observation and comparison reserve
 
 `ZkGasBlockSnapshot::storage_journal` and `ZkGasShadowReport::storage_journal()` expose
-`StorageJournalDiagnostics` without changing the sealed model or its five resource selectors.
+`StorageJournalDiagnostics`. Its comparison work has an independent additive block-local tariff;
+its older occupancy counters remain unpriced, and its five resource selectors are unchanged.
 The shared plain/inspected runtime capture reads the length of the already-referenced storage
 owner's transaction-local `JournaledAccount.storage` map. It adds no database or storage-key lookup.
 `target_address` identifies the storage owner, including DELEGATECALL; code ownership is irrelevant.
@@ -1198,7 +1205,9 @@ TLOAD/TSTORE do not emit these events.
 A potential SLOAD/SSTORE event with valid identity and footprint contributes `n_before + 1` direct
 occupancy units. These are conservative potential events, not actual guest probes, hash comparisons,
 PGU or a proved PGU bound. Static, stipend and OOG failures may be counted before a physical lookup;
-missing stack/account metadata is explicitly incomplete. Zero-valued slots occupy the map too.
+missing account/footprint metadata is explicitly incomplete. Stack operand underflow is known
+pre-lookup failure and contributes zero journal work; the feature-error opcode tariff still applies.
+Zero-valued slots occupy the map too.
 Warmness is independent of occupancy: an access-list-warm uncached slot is vacant, while a slot
 retained after frame rollback can be cold and occupied.
 
@@ -1209,7 +1218,7 @@ high-water upper `max(n_before + 1)`, then added across owners and transactions.
 entry to unwind after later map growth. It is a potential reserve even when no actual revert occurs.
 Frame and included outer REVERT/HALT retain work. Rejected transactions enter only the attempted
 summary; owner high-water and entry state are discarded at each commit/reset. An executed storage
-step that itself crosses the legacy Unzen limit is included in unpriced attempted diagnostics even
+step that itself crosses the legacy Unzen limit is included in attempted journal work even
 though the existing priced operation route remains excluded. Both actual execution paths observe
 that potential work exactly once before the legacy charge, independently of priced-step finalization.
 Ordinary transaction finalization clears the physical journal map; persisted database values do not
@@ -1217,11 +1226,11 @@ carry its occupancy into the next transaction.
 
 All count, conversion, sum and product arithmetic is checked. `incomplete` retains the first missing
 metadata or overflow failure alongside partial values; consumers must not use an incomplete summary
-as a complete statistic or bound. This diagnostic is separate from pricing errors and cannot change
-EVM execution, gas, the existing feature-error tariff or admission behavior. It does not close the
-measured pricing gap; selecting any price requires separate adversarial and historical impact evidence.
+as a complete statistic or bound. A true missing footprint or overflow now prevents publication of
+a valid known subtotal with a typed `StorageJournal` diagnostic. These failures do not change EVM
+execution, legacy gas, feature-error tariffs or legacy Unzen rejection timing.
 
-The same ledger exposes an unpriced low32 comparison envelope. At the start of each observing
+The same ledger exposes a conservative low32 comparison envelope. At the start of each observing
 transaction, physically cached journal slots seed their owner's prefix groups once. A captured
 SLOAD/SSTORE whose existing cached-slot result is absent adds one potential materialization event;
 repeated occupied accesses add only their lookup count. This reuses the pre-step cached-presence
@@ -1251,5 +1260,28 @@ declared access list or witness set for actual cached storage.
 The bound is only on compared bytes in one hypothetical candidate scan testing each distinct key
 at most once. It does not prove the number of scans, fixed comparator or probe overhead, growth or
 rehash work, or a full PGU coefficient. Short-prefix hash concentration, lifecycle integration and
-normal historical compatibility therefore remain separate calibration requirements. All these
-fields remain diagnostics: no tariff, model identity, existing priced selector or limit changes.
+normal historical compatibility therefore remain separate verification requirements.
+
+The generated successor `storage_journal_successor.py` authenticates parent `c8936124…`, the saved
+three-row comparison evidence, and every unchanged inherited numeric price. It derives **384 PGU
+per comparison work unit**, stored as `384 * 10^18` without another discount. The coefficient is the
+maximum positive `(whole-input actual PGU - old literal node PGU) / work units` over concentrated
+zero, long-prefix and short-prefix inputs, multiplied by 5/4 and rounded upward to a multiple of 64.
+The abandoned 256 candidate underpriced the short-prefix actual by 101,266,793 PGU; that negative
+observation remains sealed. The 384 candidate predicts 1,016,067,876 PGU for 831,917,069 actual PGU.
+These b76/SDK6.3 controlled whole-input measurements do not certify production SDK parity or a
+universal PGU upper bound. Deliberately dispersed inputs sharing a raw low32 prefix can be heavily
+overquoted; the saved control projects about 33.3x actual under this conservative simple rule.
+
+`storage_journal_work_units` and `storage_journal_scaled` are separate immutable known-breakdown
+fields. The known subtotal adds their price once outside opcode-route maxima; exact resource/MPT
+completion revalidates the raw units and price and retains that same contribution once. Direct
+complete-block pricing follows the same rule. Proposal-once pricing adds no second journal term.
+Committed node snapshots exclude rejected transactions; attempted snapshots retain their executed
+journal work for proving consumers. Partial/incomplete observations are never interpreted as zero.
+
+Only this component receives a dedicated **1,000,000,000,000 work-unit domain bound**. Exceeding it
+returns typed `SelectorOutOfRange` for `storage_journal_work_units`; the existing ordinary selector
+bound remains 1,000,000,000. The declared signed-i128 worst-case fixed-point envelope adds
+`384 * 10^18 * 10^12` to the inherited coefficient/selector/term envelope. All runtime arithmetic
+remains checked; the dedicated bound does not claim every valid future workload fits the domain.

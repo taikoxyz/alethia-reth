@@ -294,6 +294,8 @@ pub struct BlockPricingInput<'a> {
     pub access_list_items: u64,
     /// Accepted code preparation occurrences and processed bytes, without deduplication.
     pub code_preparation: CodePreparationSelectors,
+    /// Checked ordinary-storage journal comparison work, summed over included transactions.
+    pub storage_journal_work_units: u64,
     /// Committed per-route candidate aggregates.
     pub operation_routes: &'a [OperationRoutePricingInput],
     /// Unique-resource selectors.
@@ -350,6 +352,10 @@ pub struct PricingBreakdown {
     pub access_list_scaled: i128,
     /// Per-occurrence accepted code preparation contribution in normalized fixed-point PGU.
     pub code_preparation_scaled: i128,
+    /// Raw block-local journal comparison work retained with its normalized price.
+    pub storage_journal_work_units: u64,
+    /// Additive storage-journal comparison reserve, outside operation-route composition.
+    pub storage_journal_scaled: i128,
     /// Block operation contribution after per-route composition.
     pub operations_scaled: i128,
     /// Block unique-resource contribution.

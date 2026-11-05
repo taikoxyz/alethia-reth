@@ -1,4 +1,4 @@
-//! Unpriced potential ordinary-storage journal work, independent of tariff selectors.
+//! Ordinary-storage journal observations and an independently priced comparison envelope.
 
 use std::collections::BTreeMap;
 
@@ -8,10 +8,10 @@ use super::AccessClass;
 
 /// Why potential storage-work diagnostics cannot be treated as complete.
 ///
-/// These failures never invalidate the price, change execution, or trigger admission policy.
+/// These failures prevent a valid known subtotal, but never change EVM execution or legacy gas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageJournalIncompleteness {
-    /// The pre-step storage identity or stack input could not be captured.
+    /// Required storage identity was unavailable; proven pre-lookup stack underflow is excluded.
     MissingStorageInput,
     /// The already-loaded journal account was unavailable at capture time.
     MissingFootprint,
@@ -21,12 +21,13 @@ pub enum StorageJournalIncompleteness {
     CollectorUnavailable,
 }
 
-/// Seed-independent, unpriced proxy for ordinary SLOAD/SSTORE journal work.
+/// Seed-independent observation and conservative comparison envelope for ordinary storage work.
 ///
 /// Each captured potential lookup contributes `n_before + 1` units, where `n_before` is the
 /// physical transaction-local storage-map length for the storage owner. These are neither
 /// guest hash probes nor measured PGU. Static/stipend/OOG failures can be counted before any
-/// actual journal lookup; missing stack/account metadata marks this summary incomplete.
+/// actual journal lookup; missing account/footprint metadata marks this summary incomplete.
+/// Proven stack operand underflow occurs before a lookup and contributes known zero journal work.
 /// Frame and outer reverts do not remove computational work. Access-list declarations,
 /// resource finalization walks, and transient storage do not emit lookup events. Initial
 /// physically cached slots separately seed the comparison envelope once per transaction.
@@ -76,10 +77,10 @@ pub struct StorageJournalDiagnostics {
     /// Sum of owner `C * (A + N + J)`, in potential 32-byte-comparison work units.
     ///
     /// `A` counts captured SLOAD/SSTORE attempts, `N` materialization events and `J` the
-    /// potential cold-plus-SSTORE rollback entries. This remains unpriced; scan multiplicity,
-    /// fixed comparator/probe overhead, growth and PGU coefficients require separate evidence.
+    /// potential cold-plus-SSTORE rollback entries. The sealed model prices this conservative
+    /// envelope independently; it is not a measured probe count or a universal PGU upper bound.
     pub comparison_work_units_upper: u64,
-    /// First reason these partial diagnostics are incomplete, independent of pricing errors.
+    /// First reason these partial observations cannot support a valid comparison-work quote.
     pub incomplete: Option<StorageJournalIncompleteness>,
 }
 
@@ -100,7 +101,7 @@ impl StorageJournalDiagnostics {
         incomplete: None,
     };
 
-    /// Adds one finalized transaction summary without affecting priced collector state.
+    /// Adds one finalized transaction observation with checked counters and sticky incompleteness.
     pub(super) fn merge(&mut self, other: Self) {
         self.incomplete = self.incomplete.or(other.incomplete);
         let next = (|| {

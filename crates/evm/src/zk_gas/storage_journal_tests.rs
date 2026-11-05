@@ -1,7 +1,7 @@
 //! Deterministic ordinary-storage diagnostics through the actual EVM wrapper and shared hooks.
 
 use super::*;
-use crate::zk_gas::pricing::{StorageJournalDiagnostics, StorageJournalIncompleteness};
+use crate::zk_gas::pricing::StorageJournalDiagnostics;
 
 fn commit_pricing(evm: &mut impl TaikoZkGasEvm) {
     evm.record_transaction_payload(super::super::pricing::TransactionPayloadSelectors {
@@ -113,11 +113,11 @@ fn nested_revert_retains_map_occupancy_and_uses_storage_owner_for_delegatecall()
 }
 
 #[test]
-fn included_outer_revert_and_halt_keep_lookup_work_and_missing_stack_is_explicit() {
-    for (suffix, missing_stack) in [
-        (vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT], false),
-        (vec![opcode::INVALID], false),
-        (vec![opcode::SLOAD], true),
+fn included_outer_revert_halt_and_prelookup_stack_underflow_keep_known_work() {
+    for suffix in [
+        vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT],
+        vec![opcode::INVALID],
+        vec![opcode::SLOAD],
     ] {
         let mut code = read(0);
         code.extend(suffix);
@@ -127,14 +127,8 @@ fn included_outer_revert_and_halt_keep_lookup_work_and_missing_stack_is_explicit
         assert_eq!(plain.storage_journal.potential_sload_count, 1);
         assert_eq!(plain.storage_journal.direct_lookup_units, 1);
         assert_eq!(plain.storage_journal.rollback_lookup_units_upper, 1);
-        if missing_stack {
-            assert_eq!(
-                plain.storage_journal.incomplete,
-                Some(StorageJournalIncompleteness::MissingStorageInput)
-            );
-        } else {
-            assert_eq!(plain.storage_journal.incomplete, None);
-        }
+        assert_eq!(plain.storage_journal.incomplete, None);
+        assert!(matches!(plain.shadow_report().status(), ZkGasShadowStatus::Incomplete { .. }));
     }
 }
 
@@ -572,5 +566,39 @@ fn low32_materialization_capture_has_literal_units_on_both_paths() {
         assert_eq!(report.comparison_equivalents_high_water_upper, c);
         assert_eq!(report.comparison_work_units_upper, c * 195);
         assert!(report.incomplete.is_none());
+    }
+}
+
+#[test]
+fn caught_storage_stack_underflow_has_known_zero_journal_work_not_missing_metadata() {
+    let child = Address::with_last_byte(0xd2);
+    for child_code in
+        [vec![opcode::SLOAD], vec![opcode::SSTORE], vec![opcode::PUSH1, 1, opcode::SSTORE]]
+    {
+        let mut parent = storage_call(child, opcode::CALL);
+        parent.extend(read(0));
+        parent.push(opcode::STOP);
+        for inspect in [false, true] {
+            let mut db = db_with_contract(Bytecode::new_raw(parent.clone().into()));
+            insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
+            let mut evm = storage_evm(db, inspect);
+            evm.set_zk_gas_pricing_enabled(true);
+            assert!(evm.transact(tx_env(1_000_000)).unwrap().result.is_success());
+            commit_pricing(&mut evm);
+            let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+            assert_eq!(snapshot.storage_journal.potential_sload_count, 1);
+            assert_eq!(snapshot.storage_journal.potential_sstore_count, 0);
+            assert_eq!(snapshot.storage_journal.materialization_count_upper, 1);
+            assert_eq!(snapshot.storage_journal.comparison_work_units_upper, 3);
+            assert!(snapshot.storage_journal.incomplete.is_none());
+            let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status()
+            else {
+                panic!("caught pre-lookup stack failure must preserve a priced known subtotal");
+            };
+            assert_eq!(known.storage_journal_work_units(), 3);
+            assert_eq!(known.storage_journal_scaled(), 3 * 384 * FIXED_POINT_SCALE);
+            assert!(known.feature_error_scaled() > 0, "opcode fallback remains charged");
+            assert_storage_routing(evm, inspect);
+        }
     }
 }

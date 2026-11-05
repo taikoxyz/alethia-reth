@@ -9,8 +9,7 @@ use super::storage_journal::StorageJournalLedger;
 use super::{
     AccessClass, CodePreparationSelectors, MemorySelectors, OperationModelInput,
     OperationPricingInput, OperationRoute, OperationRoutePricingInput, ResourceSelectors,
-    StorageJournalDiagnostics, StorageJournalIncompleteness, TransactionPayloadSelectors,
-    ZkGasError, ZkGasModel,
+    StorageJournalDiagnostics, TransactionPayloadSelectors, ZkGasError, ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -302,7 +301,7 @@ struct TransactionSelectors {
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Exact resources touched by the transaction.
     resources: ResourceSet,
-    /// Unpriced potential storage-map work for this transaction or prefix.
+    /// Potential journal observation, including independently priced comparison work for this scope.
     storage_journal: StorageJournalLedger,
     /// First observation failure that makes this quote untrusted.
     diagnostic: Option<ZkGasAccumulatorError>,
@@ -376,7 +375,7 @@ pub struct ZkGasBlockSnapshot {
     pub operation_routes: Vec<OperationRoutePricingInput>,
     /// Unique-resource selectors in this prefix.
     pub resources: ResourceSelectors,
-    /// Unpriced potential ordinary-storage work; incompleteness never changes this quote.
+    /// Potential journal work; incomplete observations prevent publication of a valid subtotal.
     pub storage_journal: StorageJournalDiagnostics,
     /// First diagnostic retained in this prefix, if any.
     ///
@@ -395,7 +394,7 @@ pub struct ZkGasBlockSnapshot {
 /// scope begins remains attempted, including a transaction rejected by the commit predicate or
 /// truncated by the zk gas limit. For a truncation, completed operation steps and resources from
 /// the finalized journal are retained, but the operation whose meter charge first exceeds the
-/// budget is not itself pricing-observed. Its captured unpriced ordinary-storage work is retained
+/// budget is not itself pricing-observed. Its captured ordinary-storage journal work is retained
 /// independently before the legacy charge rejects it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ZkGasAttemptedBlockSnapshot {
@@ -424,7 +423,7 @@ struct SelectorPrefix {
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Block-global unique execution resources.
     resources: ResourceSet,
-    /// Finalized unpriced storage diagnostics across the prefix.
+    /// Finalized storage observation, including priced comparison units across the prefix.
     storage_journal: StorageJournalDiagnostics,
     /// First diagnostic included in this prefix.
     diagnostic: Option<ZkGasAccumulatorError>,
@@ -444,6 +443,8 @@ impl SelectorPrefix {
         let non_anchor = u64::from(!transaction.metadata.is_anchor);
         let native_transfer = u64::from(transaction.metadata.native_value_transfer);
         let prevalidated = (|| {
+            ZkGasModel
+                .price_storage_journal_work(self.storage_journal.comparison_work_units_upper)?;
             let next_non_anchor = self
                 .non_anchor_transactions
                 .checked_add(non_anchor)
@@ -684,11 +685,11 @@ impl ZkGasAccumulator {
         result
     }
 
-    /// Records potential ordinary storage work separately from priced selectors and errors.
+    /// Records potential ordinary-storage journal work independently of operation-route pricing.
     ///
     /// This shared runtime hook is intentionally infallible: missing metadata and overflow only
-    /// mark the unpriced diagnostics incomplete. Outside an active scope there is no work to
-    /// retain.
+    /// mark the journal diagnostics incomplete, preventing a valid subtotal. Outside an active
+    /// scope there is no work to retain.
     pub(crate) fn observe_storage_journal(
         &mut self,
         owner: Address,
@@ -708,16 +709,6 @@ impl ZkGasAccumulator {
     pub(crate) fn observe_storage_materialization(&mut self, owner: Address, key: U256) {
         if let Some(transaction) = &mut self.in_flight {
             transaction.storage_journal.observe_materialization(owner, key);
-        }
-    }
-
-    /// Marks an ordinary storage capture incomplete without changing pricing diagnostics.
-    pub(crate) fn storage_journal_missing_input(&mut self) {
-        if let Some(transaction) = &mut self.in_flight {
-            transaction
-                .storage_journal
-                .diagnostics
-                .mark_incomplete(StorageJournalIncompleteness::MissingStorageInput);
         }
     }
 
@@ -1196,10 +1187,10 @@ mod storage_journal_tests {
 
 #[cfg(test)]
 mod storage_journal_failure_tests {
-    use super::*;
+    use super::{super::StorageJournalIncompleteness, *};
 
     #[test]
-    fn storage_diagnostic_never_invalidates_an_otherwise_valid_quote() {
+    fn incomplete_storage_metadata_prevents_partial_quotes() {
         let mut accumulator = ZkGasAccumulator::default();
         accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
         accumulator
@@ -1218,7 +1209,18 @@ mod storage_journal_failure_tests {
         );
         let mut baseline = snapshot.clone();
         baseline.storage_journal = StorageJournalDiagnostics::default();
-        assert_eq!(snapshot.shadow_report().status(), baseline.shadow_report().status());
+        assert!(matches!(
+            snapshot.shadow_report().status(),
+            super::super::ZkGasShadowStatus::Diagnostic(
+                super::super::ZkGasShadowDiagnostic::StorageJournal(
+                    StorageJournalIncompleteness::MissingFootprint
+                )
+            )
+        ));
+        assert!(matches!(
+            baseline.shadow_report().status(),
+            super::super::ZkGasShadowStatus::Incomplete { .. }
+        ));
         assert_eq!(snapshot.shadow_report().storage_journal(), snapshot.storage_journal);
         // Scope finalization drops owner state, including a previous incomplete scope.
         accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
@@ -1254,6 +1256,7 @@ mod storage_journal_failure_tests {
             })
             .unwrap();
         accumulator.observe_storage_journal(Address::ZERO, Some(0), AccessClass::Cold, true);
+        accumulator.observe_storage_materialization(Address::ZERO, U256::ZERO);
         accumulator
             .observe_step(OperationPricingInput {
                 route: OperationRoute::Opcode(0x55),
@@ -1269,5 +1272,94 @@ mod storage_journal_failure_tests {
         assert_eq!(snapshot.storage_journal.potential_sload_count, 0);
         assert_eq!(snapshot.storage_journal.direct_lookup_units, 1);
         assert!(snapshot.operation_routes[0].feature_error_scaled > 0);
+        let super::super::ZkGasShadowStatus::Incomplete { known, .. } =
+            snapshot.shadow_report().status()
+        else {
+            panic!("priced feature error");
+        };
+        assert_eq!(known.storage_journal_work_units(), 4);
+        assert_eq!(
+            known.storage_journal_scaled(),
+            ZkGasModel.price_storage_journal_work(4).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod priced_journal_scope_tests {
+    use super::{super::StorageJournalIncompleteness, *};
+    use crate::zk_gas::pricing::{ZkGasShadowDiagnostic, ZkGasShadowStatus};
+
+    fn begin_one(accumulator: &mut ZkGasAccumulator) {
+        accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
+        accumulator
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 1,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        accumulator.observe_storage_journal(Address::ZERO, Some(0), AccessClass::Cold, false);
+        accumulator.observe_storage_materialization(Address::ZERO, U256::ZERO);
+    }
+
+    #[test]
+    fn journal_commits_once_and_reset_retains_only_attempted_price() {
+        let mut accumulator = ZkGasAccumulator::default();
+        begin_one(&mut accumulator);
+        accumulator.commit_transaction().unwrap();
+        begin_one(&mut accumulator);
+        accumulator.reset_transaction();
+        for (snapshot, units) in
+            [(accumulator.committed_snapshot(), 3), (accumulator.attempted_snapshot().block, 6)]
+        {
+            assert_eq!(snapshot.storage_journal.comparison_work_units_upper, units);
+            let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status()
+            else {
+                panic!("valid")
+            };
+            assert_eq!(known.storage_journal_work_units(), units);
+            assert_eq!(
+                known.storage_journal_scaled(),
+                ZkGasModel.price_storage_journal_work(units).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn journal_scope_bound_failure_is_typed_without_losing_diagnostics() {
+        let mut transaction = TransactionSelectors::new(TransactionMetadata::default());
+        transaction.transaction_payload = Some(TransactionPayloadSelectors::default());
+        transaction.storage_journal.diagnostics.comparison_work_units_upper = 1_000_000_000_001;
+        let mut prefix = SelectorPrefix::default();
+        prefix.merge_transaction(&transaction);
+        let snapshot = prefix.snapshot();
+        assert_eq!(snapshot.storage_journal.comparison_work_units_upper, 1_000_000_000_001);
+        assert_eq!(
+            snapshot.shadow_report().status(),
+            ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Collector(
+                ZkGasAccumulatorError::Pricing(ZkGasError::SelectorOutOfRange {
+                    selector: "storage_journal_work_units",
+                    value: 1_000_000_000_001,
+                })
+            ))
+        );
+    }
+
+    #[test]
+    fn journal_overflow_cannot_publish_partial_price() {
+        let snapshot = ZkGasBlockSnapshot {
+            storage_journal: StorageJournalDiagnostics {
+                comparison_work_units_upper: 1,
+                incomplete: Some(StorageJournalIncompleteness::ArithmeticOverflow),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot.shadow_report().status(),
+            ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::StorageJournal(
+                StorageJournalIncompleteness::ArithmeticOverflow
+            ))
+        );
     }
 }

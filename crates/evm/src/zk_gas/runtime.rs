@@ -46,6 +46,8 @@ pub(crate) struct PendingPricingStep {
     model_input: Result<PendingModelInput, ()>,
     /// Account addressed directly by account-inspection opcodes.
     resource_account: Option<Address>,
+    /// Valid-operand transient facts captured without persistent resource or MPT observations.
+    transient_storage: Option<PendingTransientStorageInput>,
 }
 
 /// Type-erased hooks let the generic EVM wrapper collect concrete Taiko context facts without
@@ -134,6 +136,21 @@ struct PendingStorageInput {
     new: Option<U256>,
 }
 
+/// Owner-qualified transient facts retained before the opcode mutates the logical map.
+#[derive(Clone, Copy, Debug)]
+struct PendingTransientStorageInput {
+    /// Effective storage owner, including DELEGATECALL/CALLCODE target-address semantics.
+    target: Address,
+    /// Full raw U256 key; only materialization candidates consult the ledger's distinct set.
+    key: U256,
+    /// Known physical inner-map occupancy; absent owner is a valid empty map.
+    occupancy_before: usize,
+    /// Whether this opcode potentially writes, including noops and execution failures.
+    store: bool,
+    /// Potential vacant-to-nonzero insertion; read misses and absent zero writes are excluded.
+    materializes: bool,
+}
+
 impl PendingPricingStep {
     /// Captures every typed feature that would be destroyed by opcode execution.
     pub(crate) fn capture<DB: Database>(
@@ -189,6 +206,12 @@ impl PendingPricingStep {
             memory_expansion_cost: interpreter.gas.memory().expansion_cost,
             model_input,
             resource_account,
+            transient_storage: match opcode {
+                0x5c | 0x5d => {
+                    capture_transient_storage_input(interpreter, context, opcode == 0x5d).ok()
+                }
+                _ => None,
+            },
         }
     }
 
@@ -196,7 +219,8 @@ impl PendingPricingStep {
     ///
     /// Both runtime paths call this exactly once after execution and before a legacy budget
     /// rejection can skip priced `finish`. This infallible observation neither charges gas nor
-    /// changes execution; feature errors and rejected candidates retain this independent journal term.
+    /// changes execution; feature errors and rejected candidates retain this independent journal
+    /// term.
     pub(crate) fn observe_storage_journal(self, accumulator: &mut ZkGasAccumulator) {
         match self.model_input {
             Ok(PendingModelInput::StorageLoad(storage)) |
@@ -218,6 +242,16 @@ impl PendingPricingStep {
             // retains feature-error pricing. Missing footprint remains an Ok capture with None.
             Err(()) if matches!(self.opcode, 0x54 | 0x55) => {}
             _ => {}
+        }
+        if let Some(storage) = self.transient_storage {
+            accumulator.observe_transient_storage_journal(
+                storage.target,
+                Some(storage.occupancy_before),
+                storage.store,
+            );
+            if storage.materializes {
+                accumulator.observe_transient_storage_materialization(storage.target, storage.key);
+            }
         }
     }
 
@@ -388,6 +422,26 @@ fn capture_storage_input<DB: Database>(
         },
     );
     Ok(PendingStorageInput { target, key, access, original, current, occupancy_before, new })
+}
+
+/// Captures an attempted transient lookup using effective ownership and existing journal data.
+///
+/// Stack failure is known pre-lookup zero work. Missing owner is known empty, not missing
+/// metadata. Only a nonzero TSTORE candidate checks inner key presence; repeated TLOAD never
+/// performs an additional inner-key lookup, full-key dedup lookup, database or resource event.
+fn capture_transient_storage_input<DB: Database>(
+    interpreter: &Interpreter<EthInterpreter>,
+    context: &TaikoEvmContext<DB>,
+    store: bool,
+) -> Result<PendingTransientStorageInput, ()> {
+    let key = interpreter.stack.peek(0).map_err(|_| ())?;
+    let new = if store { Some(interpreter.stack.peek(1).map_err(|_| ())?) } else { None };
+    let target = interpreter.input.target_address();
+    let slots = context.journaled_state.inner.transient_storage.get(&target);
+    let occupancy_before = slots.map_or(0, |slots| slots.len());
+    let materializes = new.is_some_and(|value| !value.is_zero()) &&
+        slots.is_none_or(|slots| !slots.contains_key(&key));
+    Ok(PendingTransientStorageInput { target, key, occupancy_before, store, materializes })
 }
 
 /// Verifies that a previously uncached SLOAD materialized the expected journal slot.

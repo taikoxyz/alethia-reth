@@ -530,12 +530,26 @@ where
                 .iter()
                 .flat_map(|(owner, account)| account.storage.keys().map(move |key| (*owner, *key)))
                 .collect();
+            // Normal REVM commit/discard/finalize clears transient storage. The public EVM
+            // context can nevertheless be preseeded; observe its physically present keys once
+            // instead of silently quoting C0. This observing-only path performs no database read.
+            let initial_transient_slots: Vec<_> = self
+                .ctx()
+                .journaled_state
+                .inner
+                .transient_storage
+                .iter()
+                .flat_map(|(owner, slots)| slots.keys().map(move |key| (*owner, *key)))
+                .collect();
             let accumulator = self.zk_gas_pricing_mut().expect("collector presence checked above");
             if let Err(error) = accumulator.begin_transaction(metadata) {
                 accumulator.retain_diagnostic(Some(error));
             } else {
                 for (owner, key) in initial_storage_slots {
                     accumulator.observe_storage_materialization(owner, key);
+                }
+                for (owner, key) in initial_transient_slots {
+                    accumulator.observe_transient_storage_materialization(owner, key);
                 }
             }
             let _ = accumulator.observe_state_access(StateAccess::Account(tx.caller));

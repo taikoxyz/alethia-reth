@@ -748,7 +748,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
         .expect("typed incomplete report plus exact MPT completes");
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
-            storage_journal_work_units: snapshot.storage_journal.comparison_work_units_upper,
+            storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -813,7 +813,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
     assert!(completed.resources_scaled > before.evm_local_resources_scaled());
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
-            storage_journal_work_units: snapshot.storage_journal.comparison_work_units_upper,
+            storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -2138,7 +2138,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "5f93909ea1372eb6e10fa2b599c6087aafd4ec493ba28eb1cea4c4abb3708a11"
+        "923c8f916f6e8603677b61adb60d92d2cd4355e02030c8fafa6ec549d10525f8"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);

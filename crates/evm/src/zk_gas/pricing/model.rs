@@ -492,7 +492,7 @@ impl ZkGasModel {
         checked_mul(ACCESS_LIST_ITEM_TARIFF, bounded("access_list_items", count)?)
     }
 
-    /// Prices conservative ordinary-storage journal comparison work in normalized fixed-point PGU.
+    /// Prices combined ordinary/transient journal comparison work in normalized fixed-point PGU.
     ///
     /// This independent domain can exceed the ordinary selector bound. The generated tariff is
     /// already normalized and receives no further discount or per-event rounding.

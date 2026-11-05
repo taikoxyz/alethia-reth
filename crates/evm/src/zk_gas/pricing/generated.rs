@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "5f93909ea1372eb6e10fa2b599c6087aafd4ec493ba28eb1cea4c4abb3708a11";
+    "923c8f916f6e8603677b61adb60d92d2cd4355e02030c8fafa6ec549d10525f8";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -30,7 +30,7 @@ pub(crate) const AUTHORIZATION_VALIDATION_TARIFF: i128 = 20000000000000000000000
 /// Normalized fixed-point PGU per raw non-legacy access-list address item.
 pub(crate) const ACCESS_LIST_ITEM_TARIFF: i128 = 8192000000000000000000;
 
-/// Normalized fixed-point PGU per conservative storage-journal comparison work unit.
+/// Normalized fixed-point PGU per combined ordinary/transient journal comparison work unit.
 pub(crate) const STORAGE_JOURNAL_WORK_TARIFF: i128 = 384000000000000000000;
 
 /// Independent journal-work domain; the generic selector bound remains unchanged.

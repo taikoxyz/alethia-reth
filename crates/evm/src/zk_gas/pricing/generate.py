@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "storage_journal_successor.py"
+        "zk_gas_pricing_successor", BASE / "transient_journal_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -310,7 +310,7 @@ def render(specification: Mapping[str, Any]) -> str:
         "",
     ])
     lines.extend([
-        "/// Normalized fixed-point PGU per conservative storage-journal comparison work unit.",
+        "/// Normalized fixed-point PGU per combined ordinary/transient journal comparison work unit.",
         f"pub(crate) const STORAGE_JOURNAL_WORK_TARIFF: i128 = {block['storage_journal_work_tariff']};",
         "",
         "/// Independent journal-work domain; the generic selector bound remains unchanged.",

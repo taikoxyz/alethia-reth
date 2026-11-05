@@ -4,12 +4,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::{Address, B256, U256};
 
-use super::storage_journal::StorageJournalLedger;
+use super::{
+    storage_journal::StorageJournalLedger, transient_journal::TransientStorageJournalLedger,
+};
 
 use super::{
     AccessClass, CodePreparationSelectors, MemorySelectors, OperationModelInput,
     OperationPricingInput, OperationRoute, OperationRoutePricingInput, ResourceSelectors,
-    StorageJournalDiagnostics, TransactionPayloadSelectors, ZkGasError, ZkGasModel,
+    StorageJournalDiagnostics, TransactionPayloadSelectors, TransientStorageJournalDiagnostics,
+    ZkGasError, ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -301,8 +304,11 @@ struct TransactionSelectors {
     operation_routes: BTreeMap<RouteKey, OperationRoutePricingInput>,
     /// Exact resources touched by the transaction.
     resources: ResourceSet,
-    /// Potential journal observation, including independently priced comparison work for this scope.
+    /// Potential journal observation, including independently priced comparison work for this
+    /// scope.
     storage_journal: StorageJournalLedger,
+    /// Independent transaction-local transient map work and distinct materialization scope.
+    transient_storage_journal: TransientStorageJournalLedger,
     /// First observation failure that makes this quote untrusted.
     diagnostic: Option<ZkGasAccumulatorError>,
     /// Whether execution emitted any opcode, spawn, or precompile operation event.
@@ -319,6 +325,7 @@ impl TransactionSelectors {
             operation_routes: BTreeMap::new(),
             resources: ResourceSet::default(),
             storage_journal: StorageJournalLedger::default(),
+            transient_storage_journal: TransientStorageJournalLedger::default(),
             diagnostic: None,
             has_operation_trace: false,
         }
@@ -377,11 +384,34 @@ pub struct ZkGasBlockSnapshot {
     pub resources: ResourceSelectors,
     /// Potential journal work; incomplete observations prevent publication of a valid subtotal.
     pub storage_journal: StorageJournalDiagnostics,
+    /// Transient-only map work; its units join the ordinary term without sharing owner/key state.
+    pub transient_storage_journal: TransientStorageJournalDiagnostics,
     /// First diagnostic retained in this prefix, if any.
     ///
     /// Selectors remain available for shadow-mode analysis, but a snapshot with a diagnostic is
     /// not a trustworthy admission quote.
     pub diagnostic: Option<ZkGasAccumulatorError>,
+}
+
+impl ZkGasBlockSnapshot {
+    /// Returns the aggregate ordinary plus transient journal units within the single priced domain.
+    ///
+    /// Both independent diagnostics must be complete. Addition and the existing aggregate
+    /// work-unit bound are checked; partial/incomplete work is never silently replaced by zero.
+    pub fn storage_journal_work_units(&self) -> Result<u64, ZkGasError> {
+        if self.storage_journal.incomplete.is_some() ||
+            self.transient_storage_journal.incomplete.is_some()
+        {
+            return Err(ZkGasError::InvalidInput("incomplete_storage_journal_work"));
+        }
+        let units = self
+            .storage_journal
+            .comparison_work_units_upper
+            .checked_add(self.transient_storage_journal.comparison_work_units_upper)
+            .ok_or(ZkGasError::ArithmeticOverflow)?;
+        ZkGasModel.price_storage_journal_work(units)?;
+        Ok(units)
+    }
 }
 
 /// Owned block-local selector snapshot for every transaction whose EVM pricing scope began.
@@ -394,7 +424,7 @@ pub struct ZkGasBlockSnapshot {
 /// scope begins remains attempted, including a transaction rejected by the commit predicate or
 /// truncated by the zk gas limit. For a truncation, completed operation steps and resources from
 /// the finalized journal are retained, but the operation whose meter charge first exceeds the
-/// budget is not itself pricing-observed. Its captured ordinary-storage journal work is retained
+/// budget is not itself pricing-observed. Its captured ordinary/transient journal work is retained
 /// independently before the legacy charge rejects it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ZkGasAttemptedBlockSnapshot {
@@ -425,6 +455,8 @@ struct SelectorPrefix {
     resources: ResourceSet,
     /// Finalized storage observation, including priced comparison units across the prefix.
     storage_journal: StorageJournalDiagnostics,
+    /// Checked transient observations, additive across finalized transaction scopes.
+    transient_storage_journal: TransientStorageJournalDiagnostics,
     /// First diagnostic included in this prefix.
     diagnostic: Option<ZkGasAccumulatorError>,
 }
@@ -433,6 +465,7 @@ impl SelectorPrefix {
     /// Merges one transaction into this prefix after validating the complete delta.
     fn merge_transaction(&mut self, transaction: &TransactionSelectors) {
         self.storage_journal.merge(transaction.storage_journal.diagnostics);
+        self.transient_storage_journal.merge(transaction.transient_storage_journal.diagnostics());
         if self.diagnostic.is_none() {
             self.diagnostic = transaction.diagnostic;
         }
@@ -443,8 +476,12 @@ impl SelectorPrefix {
         let non_anchor = u64::from(!transaction.metadata.is_anchor);
         let native_transfer = u64::from(transaction.metadata.native_value_transfer);
         let prevalidated = (|| {
-            ZkGasModel
-                .price_storage_journal_work(self.storage_journal.comparison_work_units_upper)?;
+            let journal_units = self
+                .storage_journal
+                .comparison_work_units_upper
+                .checked_add(self.transient_storage_journal.comparison_work_units_upper)
+                .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
+            ZkGasModel.price_storage_journal_work(journal_units)?;
             let next_non_anchor = self
                 .non_anchor_transactions
                 .checked_add(non_anchor)
@@ -532,6 +569,7 @@ impl SelectorPrefix {
             operation_routes: self.operation_routes.values().copied().collect(),
             resources: self.resources.selectors(),
             storage_journal: self.storage_journal,
+            transient_storage_journal: self.transient_storage_journal,
             diagnostic: self.diagnostic,
         }
     }
@@ -712,6 +750,28 @@ impl ZkGasAccumulator {
         }
     }
 
+    /// Retains a potential TLOAD/TSTORE attempt separately from persistent resource selectors.
+    pub(crate) fn observe_transient_storage_journal(
+        &mut self,
+        owner: Address,
+        occupancy: Option<usize>,
+        store: bool,
+    ) {
+        if let Some(transaction) = &mut self.in_flight {
+            transaction.transient_storage_journal.observe(owner, occupancy, store);
+        }
+    }
+
+    /// Seeds a physical initial transient key or first vacant nonzero-store candidate.
+    ///
+    /// The transient ledger deduplicates full `(owner, U256)` keys across clear and rollback.
+    /// Read misses and absent zero stores must not call this hook or consume its seen set.
+    pub(crate) fn observe_transient_storage_materialization(&mut self, owner: Address, key: U256) {
+        if let Some(transaction) = &mut self.in_flight {
+            transaction.transient_storage_journal.observe_materialization(owner, key);
+        }
+    }
+
     /// Stages one exact execution-resource observation.
     pub fn observe_state_access(
         &mut self,
@@ -776,6 +836,7 @@ impl ZkGasAccumulator {
         };
         self.pending_spawn = None;
         transaction.storage_journal.finish();
+        transaction.transient_storage_journal.finish();
         self.record_attempt(&transaction);
         self.committed.merge_transaction(&transaction);
         Ok(())
@@ -785,6 +846,7 @@ impl ZkGasAccumulator {
     pub fn reset_transaction(&mut self) {
         if let Some(mut transaction) = self.in_flight.take() {
             transaction.storage_journal.finish();
+            transaction.transient_storage_journal.finish();
             self.record_attempt(&transaction);
         }
         self.pending_spawn = None;
@@ -1361,5 +1423,35 @@ mod priced_journal_scope_tests {
                 StorageJournalIncompleteness::ArithmeticOverflow
             ))
         );
+    }
+}
+
+#[cfg(test)]
+mod transient_journal_composition_tests {
+    use super::*;
+
+    #[test]
+    fn one_combined_domain_and_incomplete_transient_cannot_publish_a_partial_quote() {
+        let mut snapshot = ZkGasBlockSnapshot::default();
+        snapshot.storage_journal.comparison_work_units_upper = 600_000_000_000;
+        snapshot.transient_storage_journal.comparison_work_units_upper = 600_000_000_000;
+        assert!(matches!(
+            snapshot.storage_journal_work_units(),
+            Err(ZkGasError::SelectorOutOfRange { selector: "storage_journal_work_units", .. })
+        ));
+        snapshot.storage_journal.comparison_work_units_upper = u64::MAX;
+        assert_eq!(snapshot.storage_journal_work_units(), Err(ZkGasError::ArithmeticOverflow));
+        snapshot.storage_journal.comparison_work_units_upper = 1;
+        snapshot.transient_storage_journal.comparison_work_units_upper = 2;
+        assert_eq!(snapshot.storage_journal_work_units(), Ok(3));
+        snapshot.transient_storage_journal.incomplete =
+            Some(super::super::StorageJournalIncompleteness::MissingFootprint);
+        assert!(snapshot.storage_journal_work_units().is_err());
+        assert!(matches!(
+            snapshot.shadow_report().status(),
+            super::super::ZkGasShadowStatus::Diagnostic(
+                super::super::ZkGasShadowDiagnostic::StorageJournal(_)
+            )
+        ));
     }
 }

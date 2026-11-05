@@ -602,3 +602,347 @@ fn caught_storage_stack_underflow_has_known_zero_journal_work_not_missing_metada
         }
     }
 }
+
+fn transient_store(value: u8, key: u8) -> Vec<u8> {
+    vec![opcode::PUSH1, value, opcode::PUSH1, key, opcode::TSTORE]
+}
+
+#[test]
+fn transient_clear_refill_is_linear_and_never_populates_persistent_resource_sets() {
+    for rounds in [1_u64, 64, 512] {
+        let mut code = Vec::new();
+        for _ in 0..rounds {
+            code.extend(transient_store(1, 0));
+            code.extend(transient_store(0, 0));
+        }
+        code.push(opcode::STOP);
+        let (plain, inspected) =
+            zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 300_000);
+        assert_eq!(plain, inspected);
+        let d = plain.transient_storage_journal;
+        assert_eq!(d.potential_tstore_count, 2 * rounds);
+        assert_eq!(d.materialization_count_upper, 1);
+        assert_eq!(d.max_low32_group_upper, 1);
+        assert_eq!(d.comparison_equivalents_high_water_upper, 1);
+        assert_eq!(d.comparison_work_units_upper, 4 * rounds + 1);
+        assert_eq!(plain.storage_journal, StorageJournalDiagnostics::default());
+        assert_eq!(plain.resources.unique_storage_slot_access_count, 0);
+        assert_eq!(plain.resources.unique_storage_slot_write_count, 0);
+        assert_eq!(plain.storage_journal_work_units().unwrap(), 4 * rounds + 1);
+        let ZkGasShadowStatus::Incomplete { known, .. } = plain.shadow_report().status() else {
+            panic!("complete journal work must have a known quote");
+        };
+        assert_eq!(known.storage_journal_work_units(), 4 * rounds + 1);
+        assert_eq!(
+            known.storage_journal_scaled(),
+            i128::from(4 * rounds + 1) * 384 * FIXED_POINT_SCALE
+        );
+    }
+}
+
+#[test]
+fn transient_miss_and_absent_zero_store_do_not_preconsume_nonzero_materialization() {
+    let mut code = vec![opcode::PUSH0, opcode::TLOAD, opcode::POP];
+    code.extend(transient_store(0, 0));
+    code.extend(transient_store(1, 0));
+    code.extend([opcode::PUSH0, opcode::TLOAD, opcode::POP, opcode::STOP]);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 100_000);
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.transient_storage_journal.potential_tload_count, 2);
+    assert_eq!(plain.transient_storage_journal.potential_tstore_count, 2);
+    assert_eq!(plain.transient_storage_journal.materialization_count_upper, 1);
+    assert_eq!(plain.transient_storage_journal.comparison_work_units_upper, 7);
+    assert_eq!(plain.storage_journal, StorageJournalDiagnostics::default());
+}
+
+#[test]
+fn transient_caught_revert_uses_effective_owner_for_call_delegatecall_and_callcode() {
+    let child = Address::repeat_byte(0x4b);
+    let mut child_code = transient_store(2, 0);
+    child_code.extend([opcode::PUSH0, opcode::PUSH0, opcode::REVERT]);
+    for (spawn, units, materialized) in
+        [(opcode::CALL, 9, 2), (opcode::CALLCODE, 8, 1), (opcode::DELEGATECALL, 8, 1)]
+    {
+        let mut code = transient_store(1, 0);
+        code.extend(storage_call(child, spawn));
+        code.extend([opcode::PUSH0, opcode::TLOAD, opcode::PUSH0, opcode::MSTORE]);
+        code.extend(transient_store(1, 0));
+        code.extend([opcode::PUSH1, 32, opcode::PUSH0, opcode::RETURN]);
+        let mut snapshots = Vec::new();
+        for inspected in [false, true] {
+            let mut db = db_with_contract(Bytecode::new_raw(code.clone().into()));
+            insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
+            let mut evm = storage_evm(db, inspected);
+            evm.set_zk_gas_pricing_enabled(true);
+            let result = evm.transact(tx_env(1_000_000)).unwrap();
+            assert!(result.result.is_success());
+            assert_eq!(
+                result.result.output().unwrap().as_ref(),
+                U256::from(1).to_be_bytes::<32>().as_slice()
+            );
+            commit_pricing(&mut evm);
+            let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+            assert_eq!(snapshot.transient_storage_journal.potential_tstore_count, 3);
+            assert_eq!(snapshot.transient_storage_journal.potential_tload_count, 1);
+            assert_eq!(
+                snapshot.transient_storage_journal.materialization_count_upper,
+                materialized
+            );
+            assert_eq!(snapshot.transient_storage_journal.comparison_work_units_upper, units);
+            assert_eq!(snapshot.resources.unique_storage_slot_access_count, 0);
+            snapshots.push(snapshot);
+        }
+        assert_eq!(snapshots[0], snapshots[1]);
+    }
+}
+
+#[test]
+fn transient_operand_failures_and_valid_operand_halts_retain_known_attempt_semantics() {
+    for code in [vec![opcode::TLOAD], vec![opcode::TSTORE], vec![opcode::PUSH0, opcode::TSTORE]] {
+        let (plain, inspected) =
+            zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 100_000);
+        assert_eq!(plain, inspected);
+        assert_eq!(plain.transient_storage_journal, Default::default());
+        assert_eq!(plain.storage_journal_work_units().unwrap(), 0);
+    }
+    for terminal in [vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT], vec![opcode::INVALID]] {
+        let mut code = transient_store(1, 0);
+        code.extend(terminal);
+        let (plain, inspected) =
+            zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 100_000);
+        assert_eq!(plain, inspected);
+        assert_eq!(plain.transient_storage_journal.potential_tstore_count, 1);
+        assert_eq!(plain.transient_storage_journal.comparison_work_units_upper, 3);
+        assert!(plain.transient_storage_journal.incomplete.is_none());
+    }
+    // The first TSTORE has valid operands but cannot pay100 gas after two PUSH1s.
+    let mut code = transient_store(1, 0);
+    code.push(opcode::STOP);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(Bytecode::new_raw(code.into()), 21_105);
+    assert_eq!(plain, inspected);
+    assert_eq!(plain.transient_storage_journal.potential_tstore_count, 1);
+    assert_eq!(plain.transient_storage_journal.materialization_count_upper, 1);
+    assert_eq!(plain.transient_storage_journal.comparison_work_units_upper, 3);
+}
+
+#[test]
+fn transient_transaction_reset_and_candidate_exclusion_preserve_legacy_execution_and_units() {
+    let mut code = transient_store(1, 0);
+    code.push(opcode::STOP);
+    for inspected in [false, true] {
+        let db = db_with_contract(Bytecode::new_raw(code.clone().into()));
+        let mut on = storage_evm(db.clone(), inspected);
+        let mut off = storage_evm(db, inspected);
+        on.set_zk_gas_pricing_enabled(true);
+        let first = on.transact(tx_env(100_000)).unwrap();
+        let baseline = off.transact(tx_env(100_000)).unwrap();
+        assert_eq!(first, baseline);
+        assert_eq!(on.meter().unwrap().tx_zk_gas_used(), off.meter().unwrap().tx_zk_gas_used());
+        assert!(off.zk_gas_pricing_snapshot().is_none());
+        reth_revm::DatabaseCommit::commit(on.db_mut(), first.state);
+        commit_pricing(&mut on);
+        let mut tx = tx_env(100_000);
+        tx.nonce = 1;
+        on.transact(tx.clone()).unwrap();
+        commit_pricing(&mut on);
+        let included = on.zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(included.transient_storage_journal.materialization_count_upper, 2);
+        assert_eq!(included.storage_journal_work_units().unwrap(), 6);
+        on.transact(tx).unwrap();
+        on.reset_transaction_zk_gas();
+        assert_eq!(on.zk_gas_pricing_snapshot().unwrap(), included);
+        let attempted = on.zk_gas_attempted_pricing_snapshot().unwrap();
+        assert_eq!(attempted.transaction_count, 3);
+        assert_eq!(attempted.block.transient_storage_journal.materialization_count_upper, 3);
+        assert_eq!(attempted.block.storage_journal_work_units().unwrap(), 9);
+    }
+}
+
+#[test]
+fn transient_static_store_keeps_attempted_work_without_persistent_storage_or_new_owner_state() {
+    let child = Address::repeat_byte(0x4c);
+    let mut parent = storage_call(child, opcode::STATICCALL);
+    parent.push(opcode::STOP);
+    let mut child_code = transient_store(1, 7);
+    child_code.push(opcode::STOP);
+    let mut snapshots = Vec::new();
+    for inspected in [false, true] {
+        let mut db = db_with_contract(Bytecode::new_raw(parent.clone().into()));
+        insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
+        let mut evm = storage_evm(db, inspected);
+        evm.set_zk_gas_pricing_enabled(true);
+        assert!(evm.transact(tx_env(1_000_000)).unwrap().result.is_success());
+        commit_pricing(&mut evm);
+        let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(snapshot.transient_storage_journal.potential_tstore_count, 1);
+        assert_eq!(snapshot.transient_storage_journal.materialization_count_upper, 1);
+        assert_eq!(snapshot.transient_storage_journal.comparison_work_units_upper, 3);
+        assert_eq!(snapshot.resources.unique_storage_slot_write_count, 0);
+        snapshots.push(snapshot);
+    }
+    assert_eq!(snapshots[0], snapshots[1]);
+}
+
+#[test]
+fn initial_physically_present_transient_key_is_seeded_only_in_observing_mode() {
+    let code = vec![
+        opcode::PUSH1,
+        7,
+        opcode::TLOAD,
+        opcode::PUSH0,
+        opcode::MSTORE,
+        opcode::PUSH1,
+        32,
+        opcode::PUSH0,
+        opcode::RETURN,
+    ];
+    for inspected in [false, true] {
+        let db = db_with_contract(Bytecode::new_raw(code.clone().into()));
+        let mut on = storage_evm(db.clone(), inspected);
+        let mut off = storage_evm(db, inspected);
+        on.set_zk_gas_pricing_enabled(true);
+        on.ctx_mut().journaled_state.inner.transient_storage.insert_value(
+            BENCH_TARGET,
+            U256::from(7),
+            U256::from(9),
+        );
+        off.ctx_mut().journaled_state.inner.transient_storage.insert_value(
+            BENCH_TARGET,
+            U256::from(7),
+            U256::from(9),
+        );
+        let result = on.transact(tx_env(100_000)).unwrap();
+        assert_eq!(result, off.transact(tx_env(100_000)).unwrap());
+        assert_eq!(
+            result.result.output().unwrap().as_ref(),
+            U256::from(9).to_be_bytes::<32>().as_slice()
+        );
+        assert_eq!(on.meter().unwrap().tx_zk_gas_used(), off.meter().unwrap().tx_zk_gas_used());
+        assert!(off.zk_gas_pricing_snapshot().is_none());
+        commit_pricing(&mut on);
+        let snapshot = on.zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(snapshot.transient_storage_journal.materialization_count_upper, 1);
+        assert_eq!(snapshot.transient_storage_journal.potential_tload_count, 1);
+        assert_eq!(snapshot.transient_storage_journal.comparison_work_units_upper, 2);
+        assert_eq!(snapshot.resources.unique_storage_slot_access_count, 0);
+    }
+}
+
+#[test]
+fn transient_legacy_limit_crossing_retains_attempted_step_on_both_paths_and_keeps_off_identical() {
+    for op in [opcode::TLOAD, opcode::TSTORE] {
+        let store = op == opcode::TSTORE;
+        let mut code = vec![opcode::PUSH0, opcode::POP];
+        if store {
+            code.extend([opcode::PUSH1, 1]);
+        }
+        code.extend([opcode::PUSH0, op]);
+        if !store {
+            code.push(opcode::POP);
+        }
+        code.push(opcode::STOP);
+        let schedule = schedule_for(TaikoSpecId::UNZEN).expect("Unzen has a legacy schedule");
+        let charge = |opcode: u8, gas: u64| {
+            gas * u64::from(schedule.opcode_multipliers[usize::from(opcode)])
+        };
+        let admitted = charge(opcode::PUSH0, 2) +
+            charge(opcode::POP, 2) +
+            u64::from(store) * charge(opcode::PUSH1, 3) +
+            charge(opcode::PUSH0, 2) +
+            charge(op, 100) -
+            1;
+        let mut previous_error = None;
+        let mut previous_snapshot = None;
+        for inspected in [false, true] {
+            for observing in [false, true] {
+                let mut evm = storage_evm(
+                    db_with_contract(Bytecode::new_raw(code.clone().into())),
+                    inspected,
+                );
+                evm.set_zk_gas_pricing_enabled(observing);
+                evm.reserve_block_zk_gas(schedule.block_limit - admitted).unwrap();
+                let error = evm.transact(tx_env(100_000)).unwrap_err().to_string();
+                assert_eq!(error, ZK_GAS_LIMIT_ERR);
+                let result = (error, evm.meter().unwrap().tx_zk_gas_used());
+                if let Some(previous) = &previous_error {
+                    assert_eq!(&result, previous);
+                } else {
+                    previous_error = Some(result);
+                }
+                evm.record_transaction_payload(
+                    super::super::pricing::TransactionPayloadSelectors {
+                        canonical_transaction_bytes: 100,
+                        nonempty_payload_transactions: 0,
+                    },
+                );
+                evm.reset_transaction_zk_gas();
+                if observing {
+                    assert_eq!(evm.zk_gas_pricing_snapshot().unwrap(), Default::default());
+                    let attempted = evm.zk_gas_attempted_pricing_snapshot().unwrap();
+                    assert_eq!(
+                        attempted.block.transient_storage_journal.potential_tload_count,
+                        u64::from(!store)
+                    );
+                    assert_eq!(
+                        attempted.block.transient_storage_journal.potential_tstore_count,
+                        u64::from(store)
+                    );
+                    assert_eq!(
+                        attempted.block.transient_storage_journal.materialization_count_upper,
+                        u64::from(store)
+                    );
+                    assert_eq!(
+                        attempted.block.transient_storage_journal.comparison_work_units_upper,
+                        3 * u64::from(store)
+                    );
+                    assert!(attempted.block.storage_journal.incomplete.is_none());
+                    assert!(
+                        !attempted
+                            .block
+                            .operation_routes
+                            .iter()
+                            .any(|route| route.route == OperationRoute::Opcode(op))
+                    );
+                    if let Some(previous) = &previous_snapshot {
+                        assert_eq!(&attempted, previous);
+                    } else {
+                        previous_snapshot = Some(attempted);
+                    }
+                } else {
+                    assert!(evm.zk_gas_pricing_snapshot().is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_caught_reverts_removing_the_same_transient_key_keep_distinct_seen() {
+    let child = Address::repeat_byte(0x4d);
+    let mut child_code = transient_store(1, 7);
+    child_code.extend([opcode::PUSH0, opcode::PUSH0, opcode::REVERT]);
+    for spawn in [opcode::CALL, opcode::CALLCODE, opcode::DELEGATECALL] {
+        let mut code = Vec::new();
+        for _ in 0..8 {
+            code.extend(storage_call(child, spawn));
+        }
+        code.push(opcode::STOP);
+        let mut snapshots = Vec::new();
+        for inspected in [false, true] {
+            let mut db = db_with_contract(Bytecode::new_raw(code.clone().into()));
+            insert_contract(&mut db, child, Bytecode::new_raw(child_code.clone().into()));
+            let mut evm = storage_evm(db, inspected);
+            evm.set_zk_gas_pricing_enabled(true);
+            assert!(evm.transact(tx_env(1_000_000)).unwrap().result.is_success());
+            commit_pricing(&mut evm);
+            let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+            assert_eq!(snapshot.transient_storage_journal.potential_tstore_count, 8);
+            assert_eq!(snapshot.transient_storage_journal.materialization_count_upper, 1);
+            assert_eq!(snapshot.transient_storage_journal.max_low32_group_upper, 1);
+            assert_eq!(snapshot.transient_storage_journal.comparison_work_units_upper, 17);
+            assert_eq!(snapshot.resources.unique_storage_slot_access_count, 0);
+            snapshots.push(snapshot);
+        }
+        assert_eq!(snapshots[0], snapshots[1]);
+    }
+}

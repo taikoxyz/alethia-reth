@@ -2,8 +2,9 @@
 
 use super::{
     CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors, StorageJournalDiagnostics,
-    StorageJournalIncompleteness, TransactionPayloadSelectors, ZkGasAccumulatorError,
-    ZkGasBlockSnapshot, ZkGasError, ZkGasModel, model::KnownBlockPricingInput,
+    StorageJournalIncompleteness, TransactionPayloadSelectors, TransientStorageJournalDiagnostics,
+    ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError, ZkGasModel,
+    model::KnownBlockPricingInput,
 };
 use core::fmt;
 
@@ -413,6 +414,8 @@ pub struct ZkGasShadowReport {
     status: ZkGasShadowStatus,
     /// Journal observation whose complete comparison units contribute to the known subtotal.
     storage_journal: StorageJournalDiagnostics,
+    /// Independent transient diagnostics whose units join the same sealed journal price once.
+    transient_storage_journal: TransientStorageJournalDiagnostics,
 }
 
 impl ZkGasShadowReport {
@@ -423,6 +426,7 @@ impl ZkGasShadowReport {
             model_id: RUNTIME_SPEC_SHA256,
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
+            transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
         }
     }
 
@@ -441,6 +445,11 @@ impl ZkGasShadowReport {
         self.storage_journal
     }
 
+    /// Returns transient-only observations, separate from ordinary SLOAD/SSTORE diagnostics.
+    pub const fn transient_storage_journal(self) -> TransientStorageJournalDiagnostics {
+        self.transient_storage_journal
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
@@ -450,6 +459,10 @@ impl ZkGasShadowReport {
                 incomplete: Some(StorageJournalIncompleteness::CollectorUnavailable),
                 ..StorageJournalDiagnostics::EMPTY
             },
+            transient_storage_journal: TransientStorageJournalDiagnostics {
+                incomplete: Some(StorageJournalIncompleteness::CollectorUnavailable),
+                ..TransientStorageJournalDiagnostics::EMPTY
+            },
         }
     }
 
@@ -458,7 +471,12 @@ impl ZkGasShadowReport {
         model_id: &'static str,
         status: ZkGasShadowStatus,
     ) -> Self {
-        Self { model_id, status, storage_journal: StorageJournalDiagnostics::EMPTY }
+        Self {
+            model_id,
+            status,
+            storage_journal: StorageJournalDiagnostics::EMPTY,
+            transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
+        }
     }
 }
 
@@ -473,16 +491,23 @@ impl ZkGasBlockSnapshot {
             None if self.storage_journal.incomplete.is_some() => ZkGasShadowStatus::Diagnostic(
                 ZkGasShadowDiagnostic::StorageJournal(self.storage_journal.incomplete.unwrap()),
             ),
-            None => match ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
-                started_non_anchor_transactions: self.started_non_anchor_transactions,
-                native_value_transfers: self.native_value_transfers,
-                authorization_validations: self.authorization_validations,
-                access_list_items: self.access_list_items,
-                code_preparation: self.code_preparation,
-                storage_journal_work_units: self.storage_journal.comparison_work_units_upper,
-                operation_routes: &self.operation_routes,
-                resources: self.resources,
-                transaction_payload: self.transaction_payload,
+            None if self.transient_storage_journal.incomplete.is_some() => {
+                ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::StorageJournal(
+                    self.transient_storage_journal.incomplete.unwrap(),
+                ))
+            }
+            None => match self.storage_journal_work_units().and_then(|storage_journal_work_units| {
+                ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
+                    started_non_anchor_transactions: self.started_non_anchor_transactions,
+                    native_value_transfers: self.native_value_transfers,
+                    authorization_validations: self.authorization_validations,
+                    access_list_items: self.access_list_items,
+                    code_preparation: self.code_preparation,
+                    storage_journal_work_units,
+                    operation_routes: &self.operation_routes,
+                    resources: self.resources,
+                    transaction_payload: self.transaction_payload,
+                })
             }) {
                 Ok(known) => ZkGasShadowStatus::Incomplete {
                     known,
@@ -495,6 +520,7 @@ impl ZkGasBlockSnapshot {
             model_id: RUNTIME_SPEC_SHA256,
             status,
             storage_journal: self.storage_journal,
+            transient_storage_journal: self.transient_storage_journal,
         }
     }
 }

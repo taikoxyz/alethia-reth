@@ -5,6 +5,7 @@ mod generated;
 mod mode;
 mod model;
 mod storage_journal;
+mod transient_journal;
 mod types;
 
 pub use accumulator::{
@@ -18,6 +19,7 @@ pub use mode::{
 };
 pub use model::ZkGasModel;
 pub use storage_journal::{StorageJournalDiagnostics, StorageJournalIncompleteness};
+pub use transient_journal::TransientStorageJournalDiagnostics;
 pub use types::{
     AccessClass, BlockPricingInput, CalldataAccessClass, CodePreparationSelectors, MemorySelectors,
     MptSelectors, OperationModelInput, OperationPricingInput, OperationRoute,

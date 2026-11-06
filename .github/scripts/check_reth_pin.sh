@@ -4,7 +4,7 @@
 # reth-optimism-trie resolves its reth dependencies inside the OP monorepo workspace, so the graph
 # only stays coherent while Alethia's reth pin references the exact repository and commit OP pins
 # (see the reth-optimism-trie note in Cargo.toml). OP may pin a fork rather than paradigmxyz/reth,
-# and cargo treats every distinct source string (URL, `.git` suffix, `rev`/`branch` query) as a
+# and cargo treats every distinct source string (URL, `.git` suffix, `rev`/`tag`/`branch` query) as a
 # different source, so any drift splits the workspace into two incompatible reth copies.
 set -euo pipefail
 

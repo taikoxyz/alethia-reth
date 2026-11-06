@@ -268,7 +268,8 @@ where
         + BlockNumReader
         + BlockReader
         + CanonStateSubscriptions
-        + DatabaseProviderFactory,
+        + DatabaseProviderFactory
+        + StageCheckpointReader,
     <Node::Provider as DatabaseProviderFactory>::Provider: BlockHashReader
         + BlockNumReader
         + ChainStateBlockReader

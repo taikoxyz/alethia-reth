@@ -7,7 +7,6 @@
 //! (`get_proof_window`).
 
 use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
-use derive_more::Constructor;
 use reth_evm::{ConfigureEvm, execute::Executor};
 use reth_optimism_trie::{
     BlockStateDiff, OpProofsStorage, OpProofsStorageError, OpProofsStore,
@@ -25,7 +24,7 @@ use std::{sync::Arc, time::Instant};
 use tracing::info;
 
 /// Live trie collector for external proofs storage.
-#[derive(Debug, Constructor)]
+#[derive(Debug)]
 pub struct LiveTrieCollector<'tx, Evm, Provider, PreimageStore>
 where
     Evm: ConfigureEvm,
@@ -37,6 +36,22 @@ where
     provider: Provider,
     /// Proof-history storage the collected trie updates are written to.
     storage: &'tx OpProofsStorage<PreimageStore>,
+}
+
+impl<'tx, Evm, Provider, Store> LiveTrieCollector<'tx, Evm, Provider, Store>
+where
+    Evm: ConfigureEvm,
+    Provider: StateReader + DatabaseProviderFactory + StateProviderFactory,
+{
+    /// Creates a collector that executes blocks with `evm_config` against `provider` and writes
+    /// their trie updates into `storage`.
+    pub const fn new(
+        evm_config: Evm,
+        provider: Provider,
+        storage: &'tx OpProofsStorage<Store>,
+    ) -> Self {
+        Self { evm_config, provider, storage }
+    }
 }
 
 impl<'tx, Evm, Provider, Store> LiveTrieCollector<'tx, Evm, Provider, Store>

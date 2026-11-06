@@ -81,7 +81,8 @@ where
         + BlockNumReader
         + BlockReader
         + CanonStateSubscriptions
-        + DatabaseProviderFactory,
+        + DatabaseProviderFactory
+        + StageCheckpointReader,
     <T::Provider as DatabaseProviderFactory>::Provider: BlockHashReader
         + BlockNumReader
         + ChainStateBlockReader

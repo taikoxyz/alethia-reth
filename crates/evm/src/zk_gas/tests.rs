@@ -69,6 +69,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
         let direct = model
             .price_block(&BlockPricingInput {
                 access_list_construction_pairs: 0,
+                access_list_construction_other_pairs: 0,
                 storage_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
@@ -340,7 +341,7 @@ fn zk_gas_access_list_concentrated_raw_keys_add_pairs_without_storage_execution(
     }
     assert_eq!(executions[0], executions[1]);
     assert_eq!(resources[0], resources[1]);
-    assert_eq!(totals[1] - totals[0], 3 * 384 * FIXED_POINT_SCALE);
+    assert_eq!(totals[1] - totals[0], 3 * (384 - 96) * FIXED_POINT_SCALE);
 }
 
 #[test]
@@ -381,6 +382,65 @@ fn zk_gas_access_list_construction_is_observing_only_on_plain_inspected_and_reve
                     let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
                     assert_eq!(snapshot.access_list_construction.raw_storage_keys, 3);
                     assert_eq!(snapshot.access_list_construction.comparison_pairs, 3);
+                    assert_eq!(snapshot.access_list_construction.incomplete, None);
+                    assert_eq!(
+                        snapshot.shadow_report().access_list_construction(),
+                        snapshot.access_list_construction
+                    );
+                } else {
+                    assert!(evm.zk_gas_pricing_snapshot().is_none());
+                }
+            }
+            assert_eq!(executions[0], executions[1]);
+            assert_eq!(legacy[0], legacy[1]);
+        }
+    }
+}
+
+#[test]
+fn zk_gas_access_list_different_prefix_is_observing_only_on_plain_inspected_and_failed_paths() {
+    use reth_revm::context_interface::transaction::{AccessList, AccessListItem};
+    for inspect in [false, true] {
+        for exit in 0..3 {
+            let mut executions = Vec::new();
+            let mut legacy = Vec::new();
+            for enabled in [false, true] {
+                let code = match exit {
+                    0 => vec![opcode::STOP],
+                    1 => vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT],
+                    _ => vec![opcode::INVALID],
+                };
+                let mut evm = TaikoEvmFactory.create_evm(
+                    db_with_contract(Bytecode::new_raw(Bytes::from(code))),
+                    evm_env(TaikoSpecId::UNZEN),
+                );
+                evm.set_inspector_enabled(inspect);
+                evm.set_zk_gas_pricing_enabled(enabled);
+                let mut tx = tx_env(200_000);
+                tx.tx_type = 2;
+                tx.access_list = AccessList(vec![AccessListItem {
+                    address: BENCH_TARGET,
+                    storage_keys: (1..=3_u64)
+                        .map(|key| {
+                            alloy_primitives::B256::from(U256::from(key).to_be_bytes::<32>())
+                        })
+                        .collect(),
+                }]);
+                let result = evm.transact(tx).unwrap();
+                assert_eq!(result.result.is_success(), exit == 0);
+                executions.push(result);
+                legacy.push(evm.meter().map(ZkGasMeter::tx_zk_gas_used));
+                if enabled {
+                    evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                        canonical_transaction_bytes: 100,
+                        nonempty_payload_transactions: 0,
+                    });
+                    evm.commit_transaction_zk_gas_pricing().unwrap();
+                    let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+                    assert_eq!(snapshot.access_list_construction.raw_storage_keys, 3);
+                    assert_eq!(snapshot.access_list_construction.comparison_pairs, 0);
+                    assert_eq!(snapshot.access_list_construction.other_pairs, 3);
+                    assert_eq!(snapshot.access_list_construction.owner_pairs, 3);
                     assert_eq!(snapshot.access_list_construction.incomplete, None);
                     assert_eq!(
                         snapshot.shadow_report().access_list_construction(),
@@ -456,6 +516,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
         let direct = ZkGasModel
             .price_block(&BlockPricingInput {
                 access_list_construction_pairs: 0,
+                access_list_construction_other_pairs: 0,
                 storage_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
@@ -879,6 +940,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
@@ -945,6 +1007,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
@@ -2270,7 +2333,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493"
+        "c3065ba83157d1f375d3d34d49f1e9ddfcea5b2bdb7377aae7ad62a3fd28b69d"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2543,6 +2606,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
     let block = ZkGasModel
         .price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
@@ -2580,6 +2644,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
@@ -2620,6 +2685,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
@@ -2649,6 +2715,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
@@ -2777,6 +2844,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
     assert_eq!(
         model.price_block(&BlockPricingInput {
             access_list_construction_pairs: 0,
+            access_list_construction_other_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,

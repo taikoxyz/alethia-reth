@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, U256};
 
-use super::generated::ACCESS_LIST_CONSTRUCTION_PAIR_BOUND;
+use super::generated::{
+    ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND, ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
+};
 
 /// A failed observation makes the partial construction receipt unpriceable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,7 +19,9 @@ pub enum AccessListConstructionIncompleteness {
     ItemCountMismatch,
     /// A raw count, prefix-group count or pair sum overflowed its checked domain.
     ArithmeticOverflow,
-    /// The comparison-pair selector exceeded its independent pricing domain.
+    /// Raw owner/bin counts or pair identities were inconsistent.
+    InconsistentPairCounts,
+    /// One of the raw pair selectors exceeded its independent pricing domain.
     PairBoundExceeded,
 }
 
@@ -36,6 +40,10 @@ pub struct AccessListConstructionDiagnostics {
     pub max_low32_group: u64,
     /// Sum of n*(n-1)/2 over raw transaction/owner/low32 groups, in pairs.
     pub comparison_pairs: u64,
+    /// Same-transaction/owner raw occurrence pairs with different numeric low32 bits.
+    pub other_pairs: u64,
+    /// All same-transaction/owner raw occurrence pairs; exactly comparison_pairs+other_pairs.
+    pub owner_pairs: u64,
     /// First observation failure; partial counters cannot publish a valid quote.
     pub incomplete: Option<AccessListConstructionIncompleteness>,
 }
@@ -47,6 +55,8 @@ impl AccessListConstructionDiagnostics {
         raw_storage_keys: 0,
         max_low32_group: 0,
         comparison_pairs: 0,
+        other_pairs: 0,
+        owner_pairs: 0,
         incomplete: None,
     };
 
@@ -58,6 +68,7 @@ impl AccessListConstructionDiagnostics {
     {
         let mut result = Self::EMPTY;
         let mut groups = BTreeMap::<(Address, u32), u64>::new();
+        let mut owners = BTreeMap::<Address, u64>::new();
         for (owner, keys) in items {
             let Some(items) = result.raw_address_items.checked_add(1) else {
                 result.incomplete = Some(AccessListConstructionIncompleteness::ArithmeticOverflow);
@@ -68,7 +79,7 @@ impl AccessListConstructionDiagnostics {
                 // Numeric low32 is independent of host byte order. The signed B256 conversion
                 // happens at the hook; these are the first four bytes compared in LE U256.
                 let count = groups.entry((owner, key.as_limbs()[0] as u32)).or_default();
-                if let Err(error) = result.observe_count(count) {
+                if let Err(error) = result.observe_count(count, owners.entry(owner).or_default()) {
                     result.incomplete = Some(error);
                     return result;
                 }
@@ -80,28 +91,39 @@ impl AccessListConstructionDiagnostics {
         result
     }
 
-    /// Adds one raw key using checked arithmetic before updating either receipt or group.
+    /// Adds one raw occurrence atomically after validating both pair sums, owner and bin counts.
     fn observe_count(
         &mut self,
         count: &mut u64,
+        owner_count: &mut u64,
     ) -> Result<(), AccessListConstructionIncompleteness> {
-        let keys = self
-            .raw_storage_keys
-            .checked_add(1)
-            .ok_or(AccessListConstructionIncompleteness::ArithmeticOverflow)?;
-        let next =
-            count.checked_add(1).ok_or(AccessListConstructionIncompleteness::ArithmeticOverflow)?;
-        let pairs = self
-            .comparison_pairs
-            .checked_add(*count)
-            .ok_or(AccessListConstructionIncompleteness::ArithmeticOverflow)?;
-        if pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND {
+        let inconsistent = AccessListConstructionIncompleteness::InconsistentPairCounts;
+        let overflow = AccessListConstructionIncompleteness::ArithmeticOverflow;
+        if self.comparison_pairs.checked_add(self.other_pairs) != Some(self.owner_pairs) {
+            return Err(inconsistent);
+        }
+        let other_delta = owner_count.checked_sub(*count).ok_or(inconsistent)?;
+        let keys = self.raw_storage_keys.checked_add(1).ok_or(overflow)?;
+        let next_bin = count.checked_add(1).ok_or(overflow)?;
+        let next_owner = owner_count.checked_add(1).ok_or(overflow)?;
+        let low_pairs = self.comparison_pairs.checked_add(*count).ok_or(overflow)?;
+        let other_pairs = self.other_pairs.checked_add(other_delta).ok_or(overflow)?;
+        let owner_pairs = self.owner_pairs.checked_add(*owner_count).ok_or(overflow)?;
+        if low_pairs.checked_add(other_pairs) != Some(owner_pairs) {
+            return Err(inconsistent);
+        }
+        if low_pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND ||
+            other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
+        {
             return Err(AccessListConstructionIncompleteness::PairBoundExceeded);
         }
         self.raw_storage_keys = keys;
-        self.max_low32_group = self.max_low32_group.max(next);
-        self.comparison_pairs = pairs;
-        *count = next;
+        self.max_low32_group = self.max_low32_group.max(next_bin);
+        self.comparison_pairs = low_pairs;
+        self.other_pairs = other_pairs;
+        self.owner_pairs = owner_pairs;
+        *count = next_bin;
+        *owner_count = next_owner;
         Ok(())
     }
 
@@ -125,8 +147,10 @@ impl AccessListConstructionDiagnostics {
             .raw_address_items
             .checked_add(other.raw_address_items)
             .zip(self.raw_storage_keys.checked_add(other.raw_storage_keys))
-            .zip(self.comparison_pairs.checked_add(other.comparison_pairs));
-        let Some(((items, keys), pairs)) = sums else {
+            .zip(self.comparison_pairs.checked_add(other.comparison_pairs))
+            .zip(self.other_pairs.checked_add(other.other_pairs))
+            .zip(self.owner_pairs.checked_add(other.owner_pairs));
+        let Some(((((items, keys), pairs), other_pairs), owner_pairs)) = sums else {
             self.incomplete =
                 incomplete.or(Some(AccessListConstructionIncompleteness::ArithmeticOverflow));
             return;
@@ -135,11 +159,19 @@ impl AccessListConstructionDiagnostics {
         self.raw_storage_keys = keys;
         self.max_low32_group = self.max_low32_group.max(other.max_low32_group);
         self.comparison_pairs = pairs;
-        self.incomplete = incomplete.or(if pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND {
-            Some(AccessListConstructionIncompleteness::PairBoundExceeded)
-        } else {
-            None
-        });
+        self.other_pairs = other_pairs;
+        self.owner_pairs = owner_pairs;
+        self.incomplete = incomplete.or(
+            if pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND ||
+                other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
+            {
+                Some(AccessListConstructionIncompleteness::PairBoundExceeded)
+            } else if pairs.checked_add(other_pairs) != Some(owner_pairs) {
+                Some(AccessListConstructionIncompleteness::InconsistentPairCounts)
+            } else {
+                None
+            },
+        );
     }
 }
 
@@ -167,6 +199,220 @@ mod tests {
                 nonempty_payload_transactions: 0,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn different_low32_raw_pairs_have_their_own_nondiscounted_reserve() {
+        fn price(keys: Vec<U256>) -> i128 {
+            let mut collector = ZkGasAccumulator::default();
+            begin(&mut collector, 1);
+            collector.observe_access_list_construction([(Address::ZERO, keys)]).unwrap();
+            collector.commit_transaction().unwrap();
+            match collector.committed_snapshot().shadow_report().status() {
+                ZkGasShadowStatus::Incomplete { known, .. } => {
+                    known.evm_local_known_subtotal_scaled()
+                }
+                other => panic!("unexpected report: {other:?}"),
+            }
+        }
+        let dense = price(vec![U256::ZERO; 3]);
+        let distinct = price(vec![U256::from(1), U256::from(2), U256::from(3)]);
+        assert_eq!(dense - distinct, 3 * (384 - 96) * FIXED_POINT_SCALE);
+    }
+
+    #[test]
+    fn mixed_raw_pairs_match_a_quadratic_oracle_across_items_owners_and_permutations() {
+        let a = Address::ZERO;
+        let b = Address::with_last_byte(1);
+        let entries = vec![
+            (a, vec![U256::ZERO, U256::from(1), U256::ZERO]),
+            (b, vec![U256::from(1), U256::from(2)]),
+            (a, vec![U256::from(1) << 32, U256::from(2)]),
+        ];
+        let flat = entries
+            .iter()
+            .flat_map(|(owner, keys)| keys.iter().map(|key| (*owner, *key)))
+            .collect::<Vec<_>>();
+        let mut low = 0;
+        let mut other = 0;
+        for (index, (owner, key)) in flat.iter().enumerate() {
+            for (prior_owner, prior_key) in &flat[..index] {
+                if owner == prior_owner {
+                    if key.as_limbs()[0] as u32 == prior_key.as_limbs()[0] as u32 {
+                        low += 1;
+                    } else {
+                        other += 1;
+                    }
+                }
+            }
+        }
+        for reverse in [false, true] {
+            let mut items = entries.clone();
+            if reverse {
+                items.reverse();
+                for (_, keys) in &mut items {
+                    keys.reverse();
+                }
+            }
+            let r = AccessListConstructionDiagnostics::capture(items, 3);
+            assert_eq!(
+                (r.comparison_pairs, r.other_pairs, r.owner_pairs),
+                (low, other, low + other)
+            );
+            assert_eq!(r.incomplete, None);
+        }
+        let split = AccessListConstructionDiagnostics::capture(
+            [(a, vec![U256::from(1)]), (b, vec![U256::from(2)])],
+            2,
+        );
+        assert_eq!(split.owner_pairs, 0);
+        let repeated_owner = AccessListConstructionDiagnostics::capture(
+            [(a, vec![U256::from(1)]), (a, vec![U256::from(2)])],
+            2,
+        );
+        assert_eq!(
+            (
+                repeated_owner.comparison_pairs,
+                repeated_owner.other_pairs,
+                repeated_owner.owner_pairs
+            ),
+            (0, 1, 1)
+        );
+        let identical = AccessListConstructionDiagnostics::capture([(a, vec![U256::ZERO; 4])], 1);
+        assert_eq!(
+            (identical.comparison_pairs, identical.other_pairs, identical.owner_pairs),
+            (6, 0, 6)
+        );
+    }
+
+    #[test]
+    fn distinct_owner_pairs_reset_per_transaction_and_rejected_work_is_attempted_only() {
+        let mut collector = ZkGasAccumulator::default();
+        for commit in [true, false] {
+            begin(&mut collector, 1);
+            collector
+                .observe_access_list_construction([(
+                    Address::ZERO,
+                    vec![U256::from(1), U256::from(2)],
+                )])
+                .unwrap();
+            if commit {
+                collector.commit_transaction().unwrap();
+            } else {
+                collector.reset_transaction();
+            }
+        }
+        let committed = collector.committed_snapshot();
+        let attempted = collector.attempted_snapshot();
+        assert_eq!(
+            (
+                committed.access_list_construction.other_pairs,
+                attempted.block.access_list_construction.other_pairs
+            ),
+            (1, 2)
+        );
+        assert_eq!(
+            (
+                committed.access_list_construction.owner_pairs,
+                attempted.block.access_list_construction.owner_pairs
+            ),
+            (1, 2)
+        );
+        assert_eq!(committed.access_list_construction_pairs().unwrap(), 0);
+        assert_eq!(committed.access_list_construction_other_pairs().unwrap(), 1);
+        assert_eq!(attempted.block.access_list_construction_other_pairs().unwrap(), 2);
+        assert_eq!(attempted.block.resources.unique_storage_slot_access_count, 0);
+    }
+
+    #[test]
+    fn different_pair_bounds_inconsistent_receipts_and_atomic_updates_fail_closed() {
+        let mut r = AccessListConstructionDiagnostics {
+            other_pairs: ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
+            owner_pairs: ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
+            ..AccessListConstructionDiagnostics::EMPTY
+        };
+        let original = r;
+        let mut bin = 0;
+        let mut owner = 1;
+        assert_eq!(
+            r.observe_count(&mut bin, &mut owner),
+            Err(AccessListConstructionIncompleteness::PairBoundExceeded)
+        );
+        assert_eq!(r, original);
+        assert_eq!((bin, owner), (0, 1));
+        let mut empty = AccessListConstructionDiagnostics::EMPTY;
+        bin = 2;
+        owner = 1;
+        assert_eq!(
+            empty.observe_count(&mut bin, &mut owner),
+            Err(AccessListConstructionIncompleteness::InconsistentPairCounts)
+        );
+        assert_eq!(empty, AccessListConstructionDiagnostics::EMPTY);
+        assert_eq!((bin, owner), (2, 1));
+        let mut merged = original;
+        merged.merge(AccessListConstructionDiagnostics {
+            other_pairs: 1,
+            owner_pairs: 1,
+            ..AccessListConstructionDiagnostics::EMPTY
+        });
+        assert_eq!(
+            merged.incomplete,
+            Some(AccessListConstructionIncompleteness::PairBoundExceeded)
+        );
+        let mut sticky = AccessListConstructionDiagnostics {
+            incomplete: Some(AccessListConstructionIncompleteness::MissingCapture),
+            ..original
+        };
+        sticky.merge(AccessListConstructionDiagnostics {
+            other_pairs: 1,
+            owner_pairs: 1,
+            ..AccessListConstructionDiagnostics::EMPTY
+        });
+        assert_eq!(sticky.incomplete, Some(AccessListConstructionIncompleteness::MissingCapture));
+        let invalid = ZkGasBlockSnapshot {
+            access_list_construction: AccessListConstructionDiagnostics {
+                other_pairs: 1,
+                ..AccessListConstructionDiagnostics::EMPTY
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            invalid.access_list_construction_other_pairs(),
+            Err(ZkGasError::InvalidInput("inconsistent_access_list_construction_pairs"))
+        );
+        let model = ZkGasModel;
+        for pairs in [0, 1, ACCESS_LIST_CONSTRUCTION_PAIR_BOUND] {
+            assert_eq!(
+                model.price_access_list_construction_other_pairs(pairs).unwrap(),
+                i128::from(pairs) * 96 * FIXED_POINT_SCALE
+            );
+        }
+        assert!(matches!(
+            model.price_access_list_construction_other_pairs(
+                ACCESS_LIST_CONSTRUCTION_PAIR_BOUND + 1
+            ),
+            Err(ZkGasError::SelectorOutOfRange {
+                selector: "access_list_construction_other_pairs",
+                ..
+            })
+        ));
+        let once = model
+            .price_proposal_once(&ProposalPricingInput {
+                canonical_transaction_bytes: 0,
+                nonempty_payload_transactions: 0,
+                true_unattempted_transactions: 0,
+                source_blob_counts: &[1],
+                proposal_blob_hash_count: 1,
+                provider_blob_count: 1,
+                provider_commitment_count: 1,
+                provider_proof_count: 1,
+                parent_mpt: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(
+            (once.access_list_construction_other_pairs, once.access_list_construction_other_scaled),
+            (0, 0)
+        );
     }
 
     #[test]
@@ -228,15 +474,17 @@ mod tests {
     fn checked_per_group_and_aggregate_failures_never_wrap_or_erase_prior_failure() {
         let mut receipt = AccessListConstructionDiagnostics::EMPTY;
         let mut count = u64::MAX;
+        let mut owner_count = u64::MAX;
         assert_eq!(
-            receipt.observe_count(&mut count),
+            receipt.observe_count(&mut count, &mut owner_count),
             Err(AccessListConstructionIncompleteness::ArithmeticOverflow)
         );
         assert_eq!(receipt.comparison_pairs, 0);
         receipt.comparison_pairs = ACCESS_LIST_CONSTRUCTION_PAIR_BOUND;
+        receipt.owner_pairs = ACCESS_LIST_CONSTRUCTION_PAIR_BOUND;
         count = 1;
         assert_eq!(
-            receipt.observe_count(&mut count),
+            receipt.observe_count(&mut count, &mut 1),
             Err(AccessListConstructionIncompleteness::PairBoundExceeded)
         );
         let mut overflow = AccessListConstructionDiagnostics {
@@ -252,10 +500,12 @@ mod tests {
         assert_eq!(overflow.incomplete, Some(AccessListConstructionIncompleteness::MissingCapture));
         let mut bound = AccessListConstructionDiagnostics {
             comparison_pairs: ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
+            owner_pairs: ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
             ..AccessListConstructionDiagnostics::EMPTY
         };
         bound.merge(AccessListConstructionDiagnostics {
             comparison_pairs: 1,
+            owner_pairs: 1,
             ..AccessListConstructionDiagnostics::EMPTY
         });
         assert_eq!(bound.incomplete, Some(AccessListConstructionIncompleteness::PairBoundExceeded));
@@ -361,6 +611,7 @@ mod tests {
                 authorization_validations: 0,
                 access_list_items: 1,
                 access_list_construction_pairs: 3,
+                access_list_construction_other_pairs: 0,
                 code_preparation: Default::default(),
                 storage_journal_work_units: 0,
                 operation_routes: &[],
@@ -378,6 +629,8 @@ mod tests {
                 raw_storage_keys: 3,
                 max_low32_group: 3,
                 comparison_pairs: 3,
+                other_pairs: 0,
+                owner_pairs: 3,
                 incomplete: None,
             },
             ..Default::default()

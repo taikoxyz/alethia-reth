@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493";
+    "c3065ba83157d1f375d3d34d49f1e9ddfcea5b2bdb7377aae7ad62a3fd28b69d";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -35,6 +35,12 @@ pub(crate) const ACCESS_LIST_CONSTRUCTION_PAIR_TARIFF: i128 = 384000000000000000
 
 /// Independent raw-prefix pair domain; unrelated selector and journal bounds are unchanged.
 pub(crate) const ACCESS_LIST_CONSTRUCTION_PAIR_BOUND: u64 = 1000000000000;
+
+/// Normalized fixed-point PGU per same-owner different-low32 raw occurrence pair.
+pub(crate) const ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_TARIFF: i128 = 96000000000000000000;
+
+/// Independent different-prefix pair domain; no change to generic selector bounds.
+pub(crate) const ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND: u64 = 1000000000000;
 
 /// Normalized fixed-point PGU per combined ordinary/transient journal comparison work unit.
 pub(crate) const STORAGE_JOURNAL_WORK_TARIFF: i128 = 384000000000000000000;

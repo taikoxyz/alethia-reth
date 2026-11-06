@@ -4,20 +4,23 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493`. Relative to immutable parent
-`923c8f916f6e8603677b61adb60d92d2cd4355e02030c8fafa6ec549d10525f8`, this candidate adds an
-independent access-list construction supplement at **384 normalized PGU per raw low32-prefix
-pair**. Raw occurrences share a scope only within one transaction and declared owner. The new
-term is separate from physical journals and logical resource uniqueness. Every inherited numeric
-price, opcode rule, journal domain, global-discount treatment and Unzen behavior remains unchanged.
-This remains the initial Shadow model with no public model selector.
-If `RUNTIME_SPEC_SHA256` differs, this document is stale. Five opened b76/SDK6.3 actuals and three
-explicitly unmeasured controls are retained. The projections close the observed high-priority
-deficit but deliberately retain small node-only deficits and crafted overestimates. Successor
-native replay, normal historical sensitivity and production SDK parity are separate checks.
+`c3065ba83157d1f375d3d34d49f1e9ddfcea5b2bdb7377aae7ad62a3fd28b69d`. Relative to immutable
+parent `389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493`, it adds **96 normalized
+PGU per same-transaction/owner raw occurrence pair with different numeric low32 bits**. The
+existing identical-low32 pair selector remains at384PGU with its original meaning. All other
+prices, opcode/memory/payload rules, journal domains, global discount treatment and consensus
+Unzen behavior are unchanged. This remains the initial Shadow model, without a public selector.
+
+The new policy follows four retained b76/SDK6.3 whole-input actuals. The complete two-user input
+measured2,484,257,836PGU against node207,800,835/full362,742,665 at29,398,167 charged gas;
+the literal node deficit2,276,457,001 crossed the2B priority threshold. The coefficient is an
+empirical conservative reserve, not a universal hash-table bound or isolated comparison fit.
+Its arithmetic projections require fresh quote and historical sensitivity checks; production
+SDK parity and normal transaction admission are not established by the artifact. The first-map
+sampled pressure qualifier does not certify both transaction maps or whole-program comparisons.
 
 The original calibration calls itself `accepted_runtime_export`; the current successor records
-`block_local_access_list_construction_prefix_supplement`. These identify calibration and
+`block_local_access_list_construction_pair_supplements`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -79,6 +82,12 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`access_list_other_pairs_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_other_pairs_successor.py)
+  derives the current different-low32 component from immutable389 and the
+  [four whole-input actuals](../crates/evm/src/zk_gas/pricing/successors/access-list-other-pairs-v1.json).
+  It retains384PGU low32 pricing and all other numeric objects, with a separate96PGU tariff,
+  domain and conservative mixed-i128 arithmetic allowance. Evidence fixture publication status
+  records the historical generation event, not live publication progress.
 - [`access_list_construction_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_construction_successor.py)
   adds the named raw-prefix supplement to immutable 923, authenticating the sealed
   [five-actual/eight-input evidence](../crates/evm/src/zk_gas/pricing/successors/access-list-construction-v1.json).
@@ -565,6 +574,7 @@ block_price =
   + authorization_validation_tariff * raw_authorization_validations
   + access_list_item_tariff * raw_access_list_address_items
   + access_list_construction_pair_tariff * raw_transaction_owner_low32_pairs
+  + access_list_construction_other_pair_tariff * raw_transaction_owner_different_low32_pairs
   + code_preparation_event_tariff * nonempty_code_preparation_events
   + code_preparation_byte_tariff * prepared_code_bytes
   + storage_journal_work_tariff * (ordinary_journal_work_units + transient_journal_work_units)
@@ -1179,14 +1189,14 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 ~/.venv/bin/python -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_construction_successor.py --check
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_other_pairs_successor.py --check
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_construction_successor.py
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_other_pairs_successor.py
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
@@ -1372,7 +1382,7 @@ hash/profile qualification does not prove all dynamic placements/comparisons, a 
 production SDK parity, or a full 30M-gas workload bound. Historical zero-transient replay and broader
 compatibility remain separate checks, not implied by this source change or its model identity.
 
-## Access-list construction prefix supplement
+## Retained model389 access-list prefix supplement
 
 REVM constructs a warm `HashSet<U256>` from each non-legacy transaction's raw access list before
 executing its opcodes. Declared keys need not be read, written or materialized as persistent storage.
@@ -1430,9 +1440,57 @@ full proposal quote is 297,640,444 PGU; the projected successor is 11,620,786,68
 39,746,256 PGU residual deficit, below the 2B priority threshold; its projected full proposal is
 381,623,804 PGU and covers actual. No startup subtraction changes the literal node denominator.
 
-This is an empirical long-prefix supplement. It does not prove a universal hash-table or PGU
-bound: distinct-low32 hash collisions, short comparisons, control probing, resize and allocator
-costs remain separate validation TODOs. The crafted unrealized K7680 overquote is deliberately
+The retained389 evidence above is an empirical long-prefix supplement. The subsequent
+different-low32 observation and policy are recorded below. Neither term proves a universal
+hash-table or PGU bound; control probing, resize and allocator costs remain distinct dimensions. The crafted unrealized K7680 overquote is deliberately
 retained. Normal historical compatibility must be evaluated separately before claiming the prior
 mainnet overestimate distribution is unchanged. The evidence uses the retained b76 ELF and SP1
 SDK6.3 gas estimator; it does not establish production SDK/ELF parity or GPU proving time.
+
+
+## Different-low32 access-list construction pairs
+
+The current capture maintains two small transaction-local scratch count maps: previous raw
+occurrences per declared owner and per(owner,numeric low32). Repeated owner items share that
+scope; repeated identical keys remain occurrences. For each new occurrence, low-pair delta is
+seen_bin and other-pair delta is seen_owner−seen_bin. All arithmetic is checked before updating
+receipt/counters, including seen_bin<=seen_owner. No guest hash seed, key recipe, full-key dedup,
+opcode, physical-storage target or cryptographic operation is introduced.
+
+```text
+P_low   = sum(tx,owner,low32) choose(raw_count,2)
+P_owner = sum(tx,owner) choose(raw_count,2)
+P_other = P_owner − P_low
+construction_scaled = 10^18 * (384*P_low +96*P_other)
+```
+
+These are genuine unordered raw-occurrence pairs, never weighted work units. Diagnostics expose
+comparison_pairs (unchanged low32), other_pairs and owner_pairs, with the checked identity
+owner_pairs=comparison_pairs+other_pairs. Different owners and transactions do not cross-pair.
+Finalized scopes merge additively; they never recompute choose2 from aggregate key counts.
+All existing missing/duplicate capture, item mismatch and sticky failure rules remain. Off mode
+still bypasses capture entirely. Included successful/REVERT/halt transactions contribute to the
+committed node prefix; rejected candidates contribute only to attempted prover pricing.
+
+The independent other-pair domain is10^12; the low32 domain stays10^12 and generic selectors
+stay10^9. Public raw/scaled fields are access_list_construction_other_pairs and
+access_list_construction_other_scaled. Sealed known reports retain both, completion independently
+reprices them, Raiko transports them without zero defaults, and comparison checks the once-only
+node/prove subtotal. The other component is zero at proposal_once and receives no second discount.
+The block term count rises21→22 before route terms. The i128 declaration conservatively adds
+96*10^18*10^12 to the parent's declaration; all inherited arithmetic bounds remain unchanged.
+
+For the final two-user measured input, P_low=0 and P_other=58,974,720 from two independentK7680
+scopes. Added reserve is5,661,573,120PGU; arithmetic-only projected node is5,869,373,955 and full
+proposal6,024,315,785. These are not fresh quote results. The whole canonical actual remains
+2,484,257,836PGU; 400M-prefix diagnostics only qualified the first observed map and do not
+certify the other map or full comparison counts. The valid canonical reference is retained with
+whole-input pressure unknown; its first observed local call was unrealized.
+
+The finite actual ELF isb76/SDK6.3/observerdfa, separately recorded from the inherited calibration's
+ba5ab program identity. No new actual or proving-time claim is made. Large ordinary well-distributed
+lists also pay the conservative different-prefix reserve: K64 adds193,536PGU, K1024 adds50,282,496,
+and K7680 adds2,830,786,560. Thus normal compatibility and historical sensitivity must be measured;
+low32pairs0 never implies other_pairs0. The fixture tag fixture-unzen-access-list-short-pairs-v1
+is planned at model generation, without implying it has already been published. Every raw actual,
+old389 quote and deficit remains immutable while successor quotes are collected separately.

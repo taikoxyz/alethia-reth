@@ -409,6 +409,24 @@ impl ZkGasBlockSnapshot {
         Ok(pairs)
     }
 
+    /// Returns checked different-low32 pairs without treating incomplete captures as zero.
+    pub fn access_list_construction_other_pairs(&self) -> Result<u64, ZkGasError> {
+        if self.access_list_construction.incomplete.is_some() {
+            return Err(ZkGasError::InvalidInput("incomplete_access_list_construction"));
+        }
+        if self
+            .access_list_construction
+            .comparison_pairs
+            .checked_add(self.access_list_construction.other_pairs) !=
+            Some(self.access_list_construction.owner_pairs)
+        {
+            return Err(ZkGasError::InvalidInput("inconsistent_access_list_construction_pairs"));
+        }
+        let pairs = self.access_list_construction.other_pairs;
+        ZkGasModel.price_access_list_construction_other_pairs(pairs)?;
+        Ok(pairs)
+    }
+
     /// Returns the aggregate ordinary plus transient journal units within the single priced domain.
     ///
     /// Both independent diagnostics must be complete. Addition and the existing aggregate
@@ -508,6 +526,9 @@ impl SelectorPrefix {
             ZkGasModel.price_storage_journal_work(journal_units)?;
             ZkGasModel.price_access_list_construction_pairs(
                 self.access_list_construction.comparison_pairs,
+            )?;
+            ZkGasModel.price_access_list_construction_other_pairs(
+                self.access_list_construction.other_pairs,
             )?;
             let next_non_anchor = self
                 .non_anchor_transactions
@@ -878,7 +899,9 @@ impl ZkGasAccumulator {
 
     /// Converts the last selected spawn wrapper into its authenticated confirmed route.
     pub(crate) fn confirm_spawn(&mut self) -> Result<(), ZkGasAccumulatorError> {
-        let Some(pending) = self.pending_spawn.take() else { return Ok(()) };
+        let Some(pending) = self.pending_spawn.take() else {
+            return Ok(());
+        };
         let result = self.observe_operation(OperationPricingInput {
             route: OperationRoute::ConfirmedSpawn(pending.opcode),
             interpreter_raw_gas: None,
@@ -983,7 +1006,9 @@ fn merged_route(
     existing: Option<&OperationRoutePricingInput>,
     row: OperationRoutePricingInput,
 ) -> Result<OperationRoutePricingInput, ZkGasAccumulatorError> {
-    let Some(existing) = existing else { return Ok(row) };
+    let Some(existing) = existing else {
+        return Ok(row);
+    };
     if existing.route != row.route {
         return Err(ZkGasAccumulatorError::Pricing(ZkGasError::InvalidInput("operation_route")));
     }

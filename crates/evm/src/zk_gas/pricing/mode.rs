@@ -30,6 +30,10 @@ pub struct ZkGasKnownBlockBreakdown {
     access_list_construction_pairs: u64,
     /// Independent normalized construction supplement, included once in the known subtotal.
     access_list_construction_scaled: i128,
+    /// Raw same-owner occurrence pairs with different numeric low32 bits.
+    access_list_construction_other_pairs: u64,
+    /// Independent normalized different-prefix pair contribution.
+    access_list_construction_other_scaled: i128,
     /// Actual accepted code preparations sealed with their contribution.
     code_preparation: CodePreparationSelectors,
     /// Normalized per-occurrence code preparation contribution.
@@ -86,6 +90,8 @@ impl ZkGasKnownBlockBreakdown {
         code_preparation_scaled: i128,
         storage_journal_work_units: u64,
         storage_journal_scaled: i128,
+        access_list_construction_other_pairs: u64,
+        access_list_construction_other_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
@@ -99,6 +105,8 @@ impl ZkGasKnownBlockBreakdown {
             access_list_scaled,
             access_list_construction_pairs,
             access_list_construction_scaled,
+            access_list_construction_other_pairs,
+            access_list_construction_other_scaled,
             operations_scaled,
             normal_dispatch_count,
             normal_dispatch_scaled,
@@ -145,6 +153,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Additive construction supplement, independent of journals and operation-route maxima.
     pub const fn access_list_construction_scaled(self) -> i128 {
         self.access_list_construction_scaled
+    }
+
+    /// Raw same-transaction/owner occurrence pairs with different numeric low32 bits.
+    pub const fn access_list_construction_other_pairs(self) -> u64 {
+        self.access_list_construction_other_pairs
+    }
+
+    /// Independent normalized different-prefix construction contribution.
+    pub const fn access_list_construction_other_scaled(self) -> i128 {
+        self.access_list_construction_other_scaled
     }
 
     /// Actual accepted nonempty code preparations without hash deduplication.
@@ -274,6 +292,8 @@ impl ZkGasKnownBlockBreakdown {
             known_subtotal_scaled,
             known_subtotal_pgu,
             CodePreparationSelectors { nonempty_events: 0, total_bytes: 0 },
+            0,
+            0,
             0,
             0,
             0,
@@ -532,12 +552,15 @@ impl ZkGasBlockSnapshot {
             }
             None => match self.storage_journal_work_units().and_then(|storage_journal_work_units| {
                 let access_list_construction_pairs = self.access_list_construction_pairs()?;
+                let access_list_construction_other_pairs =
+                    self.access_list_construction_other_pairs()?;
                 ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
                     started_non_anchor_transactions: self.started_non_anchor_transactions,
                     native_value_transfers: self.native_value_transfers,
                     authorization_validations: self.authorization_validations,
                     access_list_items: self.access_list_items,
                     access_list_construction_pairs,
+                    access_list_construction_other_pairs,
                     code_preparation: self.code_preparation,
                     storage_journal_work_units,
                     operation_routes: &self.operation_routes,

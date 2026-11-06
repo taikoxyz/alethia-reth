@@ -72,6 +72,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
                 access_list_construction_other_pairs: 0,
                 access_list_address_pairs: 0,
                 storage_journal_work_units: 0,
+                account_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: count,
@@ -617,6 +618,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
                 access_list_construction_other_pairs: 0,
                 access_list_address_pairs: 0,
                 storage_journal_work_units: 0,
+                account_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: 0,
@@ -888,6 +890,7 @@ fn zk_gas_shadow_report_marks_exact_resources_and_mpt_as_missing() {
             feature_error: false,
         })
         .expect("operation prices");
+    accumulator.complete_account_journal_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
 
     let report = accumulator.committed_snapshot().shadow_report();
@@ -1021,6 +1024,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
             feature_error: false,
         })
         .expect("operation prices");
+    accumulator.complete_account_journal_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
     let snapshot = accumulator.committed_snapshot();
     let mpt = MptSelectors {
@@ -1042,6 +1046,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
+            account_journal_work_units: 0,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -1083,6 +1088,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
     accumulator
         .observe_state_access(StateAccess::Account(Address::with_last_byte(0xaa)))
         .expect("EVM-local resource is observed");
+    accumulator.complete_account_journal_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
     let snapshot = accumulator.committed_snapshot();
     let original = snapshot.shadow_report();
@@ -1110,6 +1116,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
+            account_journal_work_units: 0,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -1165,6 +1172,7 @@ fn zk_gas_pricing_completion_rejects_exact_resources_below_any_evm_local_dimensi
             byte_length: 32,
         })
         .expect("code resource is observed");
+    accumulator.complete_account_journal_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
     let snapshot = accumulator.committed_snapshot();
     let report = snapshot.shadow_report();
@@ -1488,6 +1496,7 @@ fn zk_gas_pricing_accumulator_preserves_feature_error_attribution() {
             feature_error: true,
         })
         .expect("feature error prices");
+    accumulator.complete_account_journal_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
 
     let snapshot = accumulator.committed_snapshot();
@@ -2434,7 +2443,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "69d2b812552a4c5380da478ebcf35aeaaa851881371de738633584aa0d695b4f"
+        "af30c61656fd456ab290a837b44c181e4ff54e575a949d3579f07df20659a949"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2710,6 +2719,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
+            account_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2749,6 +2759,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
+            account_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
@@ -2791,6 +2802,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
+            account_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2822,6 +2834,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
+            account_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
@@ -2952,6 +2965,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
             access_list_construction_other_pairs: 0,
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
+            account_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -3442,8 +3456,8 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
     let expected = probe.steps.iter().fold(
-        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
-            precompile_gas_used,
+        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04)))
+            * precompile_gas_used,
         |acc, step| {
             let raw_gas = if step.opcode == opcode::STATICCALL {
                 schedule.spawn_estimates.staticcall
@@ -3454,8 +3468,8 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
         },
     );
     let naive_expected = probe.steps.iter().fold(
-        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
-            precompile_gas_used,
+        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04)))
+            * precompile_gas_used,
         |acc, step| {
             acc + (step.raw_gas * u64::from(schedule.opcode_multipliers[step.opcode as usize]))
         },
@@ -3507,8 +3521,8 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
             assert_eq!(production, inspected);
             assert!(
                 production.operation_routes.iter().any(|row| {
-                    row.route == OperationRoute::Precompile(0x04) &&
-                        row.accepted_absolute_scaled > 0
+                    row.route == OperationRoute::Precompile(0x04)
+                        && row.accepted_absolute_scaled > 0
                 }),
                 "identity precompile must be priced separately from STATICCALL"
             );
@@ -4108,8 +4122,8 @@ fn confirmed_call_memory_is_independent_of_forwarded_gas_and_child_failure() {
             child_growth
                 .operation_routes
                 .iter()
-                .any(|row| row.route == OperationRoute::Opcode(opcode::MSTORE8) &&
-                    row.accepted_absolute_scaled > 16_000 * FIXED_POINT_SCALE)
+                .any(|row| row.route == OperationRoute::Opcode(opcode::MSTORE8)
+                    && row.accepted_absolute_scaled > 16_000 * FIXED_POINT_SCALE)
         );
     }
 }
@@ -4316,8 +4330,8 @@ fn metered_paths_match_for_dynamic_opcode_and_custom_inspector_composition() {
 fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
     let schedule = &UNZEN_ZK_GAS_SCHEDULE;
     let child = Address::with_last_byte(0xD2);
-    let spawn_charge = family.spawn_raw_gas(schedule) *
-        u64::from(schedule.opcode_multipliers[usize::from(family.opcode())]);
+    let spawn_charge = family.spawn_raw_gas(schedule)
+        * u64::from(schedule.opcode_multipliers[usize::from(family.opcode())]);
     let admitted = family.prefix_zk_gas(schedule) + spawn_charge - 1;
     let reserved = schedule.block_limit - admitted;
 
@@ -5016,11 +5030,13 @@ fn payload_selectors_commit_and_discard_atomically() {
     collector.begin_transaction(TransactionMetadata::default()).unwrap();
     collector.observe_transaction_payload(payload).unwrap();
     assert_eq!(collector.committed_snapshot().transaction_payload, Default::default());
+    collector.complete_account_journal_population([]).unwrap();
     collector.reset_transaction();
     assert_eq!(collector.committed_snapshot().transaction_payload, Default::default());
     assert_eq!(collector.attempted_snapshot().block.transaction_payload, payload);
     collector.begin_transaction(TransactionMetadata::default()).unwrap();
     collector.observe_transaction_payload(payload).unwrap();
+    collector.complete_account_journal_population([]).unwrap();
     collector.commit_transaction().unwrap();
     assert_eq!(collector.committed_snapshot().transaction_payload, payload);
     assert_eq!(
@@ -5135,6 +5151,7 @@ fn completion_revalidates_sealed_payload_selectors_and_price() {
     let mut collector = ZkGasAccumulator::default();
     collector.begin_transaction(TransactionMetadata::default()).unwrap();
     collector.observe_transaction_payload(payload).unwrap();
+    collector.complete_account_journal_population([]).unwrap();
     collector.commit_transaction().unwrap();
     let report = collector.committed_snapshot().shadow_report();
     let ZkGasShadowStatus::Incomplete { known, missing } = report.status() else {
@@ -5607,3 +5624,169 @@ fn normal_dispatch_plain_and_inspected_counts_context_and_included_revert_or_hal
 
 #[path = "storage_journal_tests.rs"]
 mod storage_journal_tests;
+
+#[test]
+fn account_journal_real_population_excludes_unused_al_and_retains_absent_reverted_accounts() {
+    use reth_revm::context_interface::transaction::{AccessList, AccessListItem};
+    use std::{cell::Cell, rc::Rc};
+    struct AccountStepCounter(Rc<Cell<usize>>);
+    impl<CTX> Inspector<CTX, EthInterpreter> for AccountStepCounter {
+        fn step(&mut self, _interp: &mut Interpreter<EthInterpreter>, _ctx: &mut CTX) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let absent = Address::repeat_byte(0xa5);
+    let unused = Address::repeat_byte(0xb6);
+    for terminal in [opcode::STOP, opcode::REVERT, opcode::INVALID] {
+        for inspected in [false, true] {
+            let mut baseline = None;
+            for enabled in [false, true] {
+                let mut code = vec![0x73];
+                code.extend_from_slice(absent.as_slice());
+                code.extend_from_slice(&[
+                    opcode::BALANCE,
+                    opcode::POP,
+                    opcode::SELFBALANCE,
+                    opcode::POP,
+                ]);
+                if terminal == opcode::REVERT {
+                    code.extend_from_slice(&[opcode::PUSH0, opcode::PUSH0]);
+                }
+                code.push(terminal);
+                let callbacks = Rc::new(Cell::new(0usize));
+                macro_rules! execute {
+                    ($evm:expr) => {{
+                        let mut evm = $evm;
+                        evm.set_zk_gas_pricing_enabled(enabled);
+                        let mut tx = tx_env(200_000);
+                        tx.tx_type = 2;
+                        tx.access_list = AccessList(vec![AccessListItem {
+                            address: unused,
+                            storage_keys: vec![],
+                        }]);
+                        let result = evm.transact(tx).unwrap();
+                        assert!(result.state.contains_key(&absent));
+                        assert!(!result.state.contains_key(&unused));
+                        let legacy = evm.meter().map(ZkGasMeter::tx_zk_gas_used);
+                        if enabled {
+                            evm.record_transaction_payload(
+                                super::pricing::TransactionPayloadSelectors {
+                                    canonical_transaction_bytes: 100,
+                                    nonempty_payload_transactions: 0,
+                                },
+                            );
+                            evm.commit_transaction_zk_gas_pricing().unwrap();
+                            let d = evm.zk_gas_pricing_snapshot().unwrap().account_journal;
+                            assert_eq!(d.potential_query_budget, 4);
+                            assert_eq!(d.physical_account_count, result.state.len() as u64);
+                            assert_eq!(d.completed_transactions, 1);
+                            assert_eq!(d.incomplete, None);
+                            assert!(d.work_units > 0);
+                            assert_eq!(
+                                evm.zk_gas_attempted_pricing_snapshot()
+                                    .unwrap()
+                                    .block
+                                    .account_journal,
+                                d
+                            );
+                        } else {
+                            assert!(evm.zk_gas_pricing_snapshot().is_none());
+                        }
+                        (result, legacy)
+                    }};
+                }
+                let db = db_with_contract(Bytecode::new_raw(Bytes::from(code)));
+                let current = if inspected {
+                    execute!(TaikoEvmFactory.create_evm_with_inspector(
+                        db,
+                        evm_env(TaikoSpecId::UNZEN),
+                        AccountStepCounter(Rc::clone(&callbacks))
+                    ))
+                } else {
+                    execute!(TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN)))
+                };
+                assert_eq!(
+                    callbacks.get() > 0,
+                    inspected,
+                    "callback must prove the selected execution path"
+                );
+                if let Some(previous) = &baseline {
+                    assert_eq!(&current, previous);
+                } else {
+                    baseline = Some(current);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn account_journal_early_underflow_and_call_confirmation_budget_are_not_lost_or_doubled() {
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(
+        Bytecode::new_raw(Bytes::from(vec![opcode::BALANCE])),
+        100_000,
+    );
+    assert_eq!(plain.account_journal.potential_query_budget, 2);
+    assert_eq!(plain.account_journal, inspected.account_journal);
+    let (plain, inspected) = zk_gas_pricing_path_snapshots(staticcall_identity_bytecode(), 200_000);
+    assert_eq!(plain.account_journal.potential_query_budget, 32);
+    assert_eq!(plain.account_journal, inspected.account_journal);
+}
+
+#[test]
+fn account_journal_system_call_preserves_open_scope_and_restores_after_error() {
+    for inspected in [false, true] {
+        let db = db_with_contract(Bytecode::new_raw(Bytes::from(vec![
+            opcode::SELFBALANCE,
+            opcode::POP,
+            opcode::STOP,
+        ])));
+        let mut evm = if inspected {
+            TaikoEvmFactory.create_evm_with_inspector(
+                db,
+                evm_env(TaikoSpecId::UNZEN),
+                NoOpInspector,
+            )
+        } else {
+            TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN))
+        };
+        evm.set_zk_gas_pricing_enabled(true);
+        evm.set_per_transact_zk_gas_reset_enabled(false);
+        evm.transact(tx_env(100_000)).unwrap();
+        evm.transact_system_call(BENCH_CALLER, BENCH_TARGET, Bytes::new()).unwrap();
+        evm.commit_transaction_zk_gas_pricing().unwrap();
+        let before = evm.zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(before.account_journal.incomplete, None);
+        assert_eq!(before.account_journal.potential_query_budget, 2);
+        assert_eq!(before.account_journal.completed_transactions, 1);
+        assert_eq!(
+            before.operation_routes.iter().map(|route| route.normal_dispatch_count).sum::<u64>(),
+            3,
+            "all installed pricing, not only Account work, must be suspended"
+        );
+        // Error before execution must restore the exact collector and its committed prefix.
+        let caller_before =
+            evm.ctx().journaled_state.database.cache.accounts.get(&BENCH_CALLER).cloned().unwrap();
+        let bad_code = Bytecode::new_raw(Bytes::from(vec![opcode::STOP]));
+        let bad_info = &mut evm
+            .ctx_mut()
+            .journaled_state
+            .database
+            .cache
+            .accounts
+            .get_mut(&BENCH_CALLER)
+            .unwrap()
+            .info;
+        bad_info.code_hash = bad_code.hash_slow();
+        bad_info.code = Some(bad_code);
+        assert!(evm.transact_system_call(BENCH_CALLER, BENCH_TARGET, Bytes::new()).is_err());
+        assert_eq!(evm.zk_gas_pricing_snapshot().unwrap(), before);
+        evm.ctx_mut().journaled_state.database.cache.accounts.insert(BENCH_CALLER, caller_before);
+        evm.transact(tx_env(100_000)).unwrap();
+        evm.commit_transaction_zk_gas_pricing().unwrap();
+        let after = evm.zk_gas_pricing_snapshot().unwrap();
+        assert_eq!(after.account_journal.potential_query_budget, 4);
+        assert_eq!(after.account_journal.completed_transactions, 2);
+        assert_eq!(after.account_journal.incomplete, None);
+    }
+}

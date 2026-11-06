@@ -2,7 +2,8 @@
 
 use super::{
     AccessListConstructionDiagnostics, AccessListConstructionIncompleteness,
-    CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors, StorageJournalDiagnostics,
+    AccountJournalDiagnostics, AccountJournalIncompleteness, CodePreparationSelectors,
+    RUNTIME_SPEC_SHA256, ResourceSelectors, StorageJournalDiagnostics,
     StorageJournalIncompleteness, TransactionPayloadSelectors, TransientStorageJournalDiagnostics,
     ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError, ZkGasModel,
     model::KnownBlockPricingInput,
@@ -44,8 +45,12 @@ pub struct ZkGasKnownBlockBreakdown {
     code_preparation_scaled: i128,
     /// Conservative journal comparison units sealed with their price.
     storage_journal_work_units: u64,
+    /// Independently normalized empirical Account-journal density reserve.
+    account_journal_work_units: u64,
     /// Independent journal contribution in normalized fixed-point PGU.
     storage_journal_scaled: i128,
+    /// Independently normalized empirical Account-journal density reserve.
+    account_journal_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Normal dispatched opcode/confirmed-spawn count sealed with its reserve.
@@ -98,13 +103,17 @@ impl ZkGasKnownBlockBreakdown {
         access_list_construction_other_scaled: i128,
         access_list_address_pairs: u64,
         access_list_address_scaled: i128,
+        account_journal_work_units: u64,
+        account_journal_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
             code_preparation,
             code_preparation_scaled,
             storage_journal_work_units,
+            account_journal_work_units,
             storage_journal_scaled,
+            account_journal_scaled,
             authorization_validations,
             authorization_scaled,
             access_list_items,
@@ -193,6 +202,16 @@ impl ZkGasKnownBlockBreakdown {
         self.code_preparation_scaled
     }
 
+    /// Returns independently finalized empirical Account-journal work units.
+    pub const fn account_journal_work_units(self) -> u64 {
+        self.account_journal_work_units
+    }
+
+    /// Returns the normalized Account contribution, included exactly once in the subtotal.
+    pub const fn account_journal_scaled(self) -> i128 {
+        self.account_journal_scaled
+    }
+
     /// Conservative journal comparison work across the included transaction scopes.
     pub const fn storage_journal_work_units(self) -> u64 {
         self.storage_journal_work_units
@@ -251,6 +270,13 @@ impl ZkGasKnownBlockBreakdown {
     /// Ceiling of the known block subtotal, including payload and excluding exact state/MPT.
     pub const fn evm_local_known_subtotal_pgu(self) -> u128 {
         self.evm_local_known_subtotal_pgu
+    }
+
+    #[cfg(test)]
+    pub(super) const fn with_account_journal_for_test(mut self, units: u64, scaled: i128) -> Self {
+        self.account_journal_work_units = units;
+        self.account_journal_scaled = scaled;
+        self
     }
 
     #[cfg(test)]
@@ -317,6 +343,8 @@ impl ZkGasKnownBlockBreakdown {
             0,
             0,
             0,
+            0,
+            0,
         )
     }
 }
@@ -357,6 +385,8 @@ pub enum ZkGasShadowDiagnostic {
     Collector(ZkGasAccumulatorError),
     /// Required journal observations were incomplete; partial work cannot produce a valid quote.
     StorageJournal(StorageJournalIncompleteness),
+    /// Account work has incomplete or inconsistent physical-population capture.
+    AccountJournal(AccountJournalIncompleteness),
     /// The pure model rejected the committed execution/resource selectors.
     Pricing(ZkGasError),
 }
@@ -444,6 +474,9 @@ impl ZkGasShadowStatus {
                 ZkGasAccumulatorError::NoActiveTransaction,
             )) => "collector_no_active_transaction",
             Self::Diagnostic(ZkGasShadowDiagnostic::Collector(_)) => "collector_error",
+            Self::Diagnostic(ZkGasShadowDiagnostic::AccountJournal(_)) => {
+                "account_journal_incomplete"
+            }
             Self::Diagnostic(ZkGasShadowDiagnostic::StorageJournal(_)) => {
                 "storage_journal_incomplete"
             }
@@ -475,6 +508,8 @@ pub struct ZkGasShadowReport {
     status: ZkGasShadowStatus,
     /// Journal observation whose complete comparison units contribute to the known subtotal.
     storage_journal: StorageJournalDiagnostics,
+    /// Finalized Account density and empirical potential-query diagnostics.
+    account_journal: AccountJournalDiagnostics,
     /// Independent transient diagnostics whose units join the same sealed journal price once.
     transient_storage_journal: TransientStorageJournalDiagnostics,
     /// Raw access-list construction receipt diagnostics, separate from physical journal work.
@@ -489,6 +524,7 @@ impl ZkGasShadowReport {
             model_id: RUNTIME_SPEC_SHA256,
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
+            account_journal: AccountJournalDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
             access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
@@ -519,11 +555,20 @@ impl ZkGasShadowReport {
         self.access_list_construction
     }
 
+    /// Returns independent Account density and potential-work diagnostics.
+    pub const fn account_journal(self) -> AccountJournalDiagnostics {
+        self.account_journal
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
             model_id: RUNTIME_SPEC_SHA256,
             status: ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::CollectorUnavailable),
+            account_journal: AccountJournalDiagnostics {
+                incomplete: Some(AccountJournalIncompleteness::CollectorUnavailable),
+                ..AccountJournalDiagnostics::EMPTY
+            },
             storage_journal: StorageJournalDiagnostics {
                 incomplete: Some(StorageJournalIncompleteness::CollectorUnavailable),
                 ..StorageJournalDiagnostics::EMPTY
@@ -548,6 +593,7 @@ impl ZkGasShadowReport {
             model_id,
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
+            account_journal: AccountJournalDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
             access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
@@ -562,6 +608,9 @@ impl ZkGasBlockSnapshot {
     pub fn shadow_report(&self) -> ZkGasShadowReport {
         let status = match self.diagnostic {
             Some(error) => ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::Collector(error)),
+            None if self.account_journal.incomplete.is_some() => ZkGasShadowStatus::Diagnostic(
+                ZkGasShadowDiagnostic::AccountJournal(self.account_journal.incomplete.unwrap()),
+            ),
             None if self.storage_journal.incomplete.is_some() => ZkGasShadowStatus::Diagnostic(
                 ZkGasShadowDiagnostic::StorageJournal(self.storage_journal.incomplete.unwrap()),
             ),
@@ -584,6 +633,7 @@ impl ZkGasBlockSnapshot {
                     access_list_address_pairs: self.access_list_address_pairs()?,
                     code_preparation: self.code_preparation,
                     storage_journal_work_units,
+                    account_journal_work_units: self.account_journal_work_units()?,
                     operation_routes: &self.operation_routes,
                     resources: self.resources,
                     transaction_payload: self.transaction_payload,
@@ -600,6 +650,7 @@ impl ZkGasBlockSnapshot {
             model_id: RUNTIME_SPEC_SHA256,
             status,
             storage_journal: self.storage_journal,
+            account_journal: self.account_journal,
             transient_storage_journal: self.transient_storage_journal,
             access_list_construction: self.access_list_construction,
         }

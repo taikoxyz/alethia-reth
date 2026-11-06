@@ -1564,3 +1564,93 @@ without asserting a release already exists. Raw observations and parent quotes r
 Historical sensitivity, fresh quotes, production SDK/ELF parity and normal-transaction admission
 claims require separate evidence. The128PGU tariff is not a universal bound or an isolated fitted
 per-comparison cost; the original384/96 coefficient domains and semantics are preserved.
+
+
+### Empirical Account-journal density reserve
+
+Model69's larger Account-query successor measured 5,073,040,910 PGU at 10,055,942 charged block
+gas against literal node 2,380,285,007 / full proposal 2,535,524,054. Its reference actual
+271,360,001 is retained, including deliberate overquotation. Fresh retained-input quotes now cover
+both this successor and the older K512/R1400 approximately1.69x sample, closing that specific
+sample's pricing TODO without closing every Account path. Whole-input pressure,
+transaction identity and complete placements are not established by 63 closed local calls /46
+candidate calls. No third input, new SP1 actual, guest, ELF, observer or SDK build is required.
+
+The independent Account component uses the real finalized journal map, including physically cached
+absent, untouched and frame-reverted Account entries; declared-but-unread AL owners are not that
+population. Once per observing transaction, N is its physical entry count and M its largest group
+sharing the first four **network-order Address20 bytes**. C=ceil((N+4M)/5) is a twenty-byte candidate
+comparison proxy. It is not a guest hash/probe count or a whole-program computational upper bound.
+A final high-water population intentionally overweights earlier smaller-table work; custom
+inspectors that remove physical keys are outside the standard journal's append-only argument.
+
+The sealed `account_journal_policy` assigns potential forward/unwind budget Q per executed opcode
+attempt:2 for BALANCE/EXTCODESIZE/EXTCODECOPY/EXTCODEHASH/SELFBALANCE;4 for SLOAD/SSTORE;32 for
+CREATE/CALL/CALLCODE/DELEGATECALL/CREATE2/STATICCALL/SELFDESTRUCT. All other opcodes, including
+TLOAD/TSTORE, add0. The generated 256-entry table is the runtime source of truth. Early failures
+and a legacy-rejected step retain their potential budget; ConfirmedSpawn does not count it again.
+These are empirical allowances, not exact physical-query counts. There is no small-table threshold
+and no surcharge on unrelated arithmetic. Frame rollback never subtracts already performed work.
+
+`AccountJournalLedger` and `AccountJournalDiagnostics` retain Q, physical N/M, C, finalized work
+U=C*(Q+N), completed receipt count and first sticky incompleteness. `PendingPricingStep` observes
+Q in both execution paths before legacy rejection; `TaikoZkGasEvm::transact_raw` supplies exactly
+one physical population after journal finalization and before propagating handler errors.
+`ZkGasAccumulator` folds finalized per-TX units into committed/attempted prefixes, never a product
+of block-wide sums. Missing, duplicate, late or overflowing captures fail closed. Known empty
+population is explicit; no-transaction prefixes are complete zero. Off/suspended modes perform
+neither new opcode capture nor prefix allocation/traversal.
+
+The tariff is128 PGU per finalized work unit, independently bounded at10^12 and normalized once,
+without a second discount. The sealed empirical derivation is four times the positive node deficit
+divided by user-only lower basis137,365,504, rounded upward to a64-PGU multiple. This does not
+calibrate an isolated comparison or prove universal/production accuracy. Raw
+`account_journal_work_units` / normalized `account_journal_scaled` are separate from ordinary and
+transient storage, all AL terms and their unchanged384/96/128 coefficients. Node uses committed
+scopes, prove retains attempted scopes, and proposal-once units/price are zero. All immutable known,
+exact and consumer subtotal checks include the new term exactly once.
+
+The74 fresh quotes retain24 controlled inputs (21 original actuals and3 explicit nulls), plus50
+historical proposals/9600blocks. Repricing performed0 native constructions,0 new SP1 actuals and0
+same-input retries. All21 measured full-proposal quotes cover their original actuals. Four positive
+literal-node gaps remain, maximum153,358,679 PGU; none exceeds2B. This is finite regression evidence,
+not complete node coverage, normal-transaction admission or a universal bound.
+
+| Retained case | Original actual PGU | af30 literal node PGU | af30 full proposal PGU |
+| --- | ---: | ---: | ---: |
+| N1024/R1024 reference |271,360,001|19,980,657,871|20,135,904,598|
+| Sole N1024/R1024 successor |5,073,040,910|19,980,657,871|20,135,896,918|
+| Original K512/long R1400 |5,952,586,609|15,387,637,502|15,542,727,812|
+
+The two new inputs each capture137,502,913 Account units, adding17,600,372,864PGU at128/unit;
+these are real captured selectors and fresh quotes, superseding the lower-basis projection.
+Their large crafted overquotes, including the cheap unrealized reference, remain explicit.
+For67 rows compared with parent69, every non-Account numeric component and public output is
+unchanged. The other7 original Account baselines are5f, not69: their full5f→af30 change must not
+be labelled an Account-only parent69 delta.
+
+All50 historical proposals and9600blocks change. Literal node total92,561,066,464→92,823,492,832
+(+0.2835%); full159,704,576,845→159,967,003,341(+0.1643%). Maximum proposal-node uplift is0.5106%,
+maximum block-relative uplift0.8290%, and maximum absolute block uplift1,543,168PGU (these last
+two maxima occur on different blocks). Historical416f/SDK6.1 observations establish model
+sensitivity only, not currentb76 accuracy or production SDK certification. The full-versus-node increase differs
+by128PGU because one retained discarded attempt adds one Account unit: block13,218,481/index76
+has184 committed-node versus185 attempted-prove units. This is scope accounting, not rounding.
+
+Validation includes independent269 actual-source behavior tests,33 fresh-ABI trace tests and125
+default CLI integration tests. Review found and corrected installed-collector pollution during a
+systemcall between finalized execution and commit: the complete plain/inspected collector is now
+suspended and restored on Ok/Err without changing legacy metering. The population test now uses
+a real inspector factory and counted callback; the earlier ignored toggle is not inspector
+coverage. The E3 production build retains its own source identity; E4 only supplies a separate
+test-source binding for required JSON fields, without relabelling E3 production artifacts.
+Installed clippy-driver1.95 also passes the10-node host metadata closure with -Dwarnings; its3
+Reth nodes additionally check missing_docs and missing_docs_in_private_items. Frozen host
+features/env/dependencies apply; this is not full-workspace/all-features Cargo clippy.
+
+External caller validation, authority processing, top-level frame and fee paths still have
+unmeasured residual work; Q+N does not claim to count every such access. Native-gas frequency limits
+do **not** prove these residuals below2B PGU. Source evidence and the immutable69 parent are sealed
+by `account_journal_successor.py`; its planned fixture publication is a generation-time status.
+The new data-only Account-journal fixture is not yet published. No guest, ELF, SDK or observer was
+rebuilt, and full workspace Cargo/clippy or guest CI success is not claimed by these host checks.

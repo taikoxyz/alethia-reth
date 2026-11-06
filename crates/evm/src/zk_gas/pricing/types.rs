@@ -302,6 +302,8 @@ pub struct BlockPricingInput<'a> {
     pub code_preparation: CodePreparationSelectors,
     /// Checked ordinary plus transient journal comparison work, summed over included transactions.
     pub storage_journal_work_units: u64,
+    /// Independently normalized empirical Account-journal density reserve.
+    pub account_journal_work_units: u64,
     /// Committed per-route candidate aggregates.
     pub operation_routes: &'a [OperationRoutePricingInput],
     /// Unique-resource selectors.
@@ -372,8 +374,12 @@ pub struct PricingBreakdown {
     pub code_preparation_scaled: i128,
     /// Raw block-local journal comparison work retained with its normalized price.
     pub storage_journal_work_units: u64,
+    /// Independently normalized empirical Account-journal density reserve.
+    pub account_journal_work_units: u64,
     /// Additive ordinary/transient journal reserve, outside operation-route composition.
     pub storage_journal_scaled: i128,
+    /// Independently normalized empirical Account-journal density reserve.
+    pub account_journal_scaled: i128,
     /// Block operation contribution after per-route composition.
     pub operations_scaled: i128,
     /// Block unique-resource contribution.

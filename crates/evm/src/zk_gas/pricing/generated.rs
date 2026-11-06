@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "69d2b812552a4c5380da478ebcf35aeaaa851881371de738633584aa0d695b4f";
+    "af30c61656fd456ab290a837b44c181e4ff54e575a949d3579f07df20659a949";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -47,6 +47,23 @@ pub(crate) const ACCESS_LIST_ADDRESS_PAIR_TARIFF: i128 = 128000000000000000000;
 
 /// Independent raw address-pair domain; no change to storage-key or generic bounds.
 pub(crate) const ACCESS_LIST_ADDRESS_PAIR_BOUND: u64 = 1000000000000;
+
+/// Independent normalized empirical Account-journal work-unit price.
+pub(crate) const ACCOUNT_JOURNAL_WORK_TARIFF: i128 = 128000000000000000000;
+/// Independent Account work-unit domain; inherited bounds remain unchanged.
+pub(crate) const ACCOUNT_JOURNAL_WORK_BOUND: u64 = 1000000000000;
+/// Policy-sealed potential forward/unwind budget per attempted opcode; not exact queries.
+pub(crate) const ACCOUNT_JOURNAL_OPCODE_BUDGETS: [u64; 256] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 2,
+    0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 32, 32, 0, 32, 32, 0, 0, 0, 0, 32, 0, 0, 0,
+    0, 32,
+];
 
 /// Normalized fixed-point PGU per combined ordinary/transient journal comparison work unit.
 pub(crate) const STORAGE_JOURNAL_WORK_TARIFF: i128 = 384000000000000000000;

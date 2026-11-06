@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "access_list_address_pairs_successor.py"
+        "zk_gas_pricing_successor", BASE / "account_journal_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -327,6 +327,15 @@ def render(specification: Mapping[str, Any]) -> str:
         "",
         "/// Independent raw address-pair domain; no change to storage-key or generic bounds.",
         f"pub(crate) const ACCESS_LIST_ADDRESS_PAIR_BOUND: u64 = {specification['arithmetic']['access_list_address_pair_bound']};",
+        "",
+    ])
+    lines.extend([
+        "/// Independent normalized empirical Account-journal work-unit price.",
+        f"pub(crate) const ACCOUNT_JOURNAL_WORK_TARIFF: i128 = {block['account_journal_work_tariff']};",
+        "/// Independent Account work-unit domain; inherited bounds remain unchanged.",
+        f"pub(crate) const ACCOUNT_JOURNAL_WORK_BOUND: u64 = {specification['arithmetic']['account_journal_work_unit_bound']};",
+        "/// Policy-sealed potential forward/unwind budget per attempted opcode; not exact queries.",
+        "pub(crate) const ACCOUNT_JOURNAL_OPCODE_BUDGETS: [u64; 256] = [" + ",".join(str(specification['account_journal_policy']['opcode_budgets'].get(f'opcode:0x{i:02x}', 0)) for i in range(256)) + "];",
         "",
     ])
     lines.extend([

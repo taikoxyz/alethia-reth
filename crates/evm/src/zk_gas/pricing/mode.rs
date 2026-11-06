@@ -34,6 +34,10 @@ pub struct ZkGasKnownBlockBreakdown {
     access_list_construction_other_pairs: u64,
     /// Independent normalized different-prefix pair contribution.
     access_list_construction_other_scaled: i128,
+    /// Raw address pairs summed over finalized transaction scopes.
+    access_list_address_pairs: u64,
+    /// Independent normalized raw address-pair contribution.
+    access_list_address_scaled: i128,
     /// Actual accepted code preparations sealed with their contribution.
     code_preparation: CodePreparationSelectors,
     /// Normalized per-occurrence code preparation contribution.
@@ -92,6 +96,8 @@ impl ZkGasKnownBlockBreakdown {
         storage_journal_scaled: i128,
         access_list_construction_other_pairs: u64,
         access_list_construction_other_scaled: i128,
+        access_list_address_pairs: u64,
+        access_list_address_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
@@ -107,6 +113,8 @@ impl ZkGasKnownBlockBreakdown {
             access_list_construction_scaled,
             access_list_construction_other_pairs,
             access_list_construction_other_scaled,
+            access_list_address_pairs,
+            access_list_address_scaled,
             operations_scaled,
             normal_dispatch_count,
             normal_dispatch_scaled,
@@ -163,6 +171,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Independent normalized different-prefix construction contribution.
     pub const fn access_list_construction_other_scaled(self) -> i128 {
         self.access_list_construction_other_scaled
+    }
+
+    /// Raw address-item pairs finalized per transaction, including duplicates and empty keys.
+    pub const fn access_list_address_pairs(self) -> u64 {
+        self.access_list_address_pairs
+    }
+
+    /// Normalized address-pair reserve, charged once without another discount.
+    pub const fn access_list_address_scaled(self) -> i128 {
+        self.access_list_address_scaled
     }
 
     /// Actual accepted nonempty code preparations without hash deduplication.
@@ -292,6 +310,8 @@ impl ZkGasKnownBlockBreakdown {
             known_subtotal_scaled,
             known_subtotal_pgu,
             CodePreparationSelectors { nonempty_events: 0, total_bytes: 0 },
+            0,
+            0,
             0,
             0,
             0,
@@ -561,6 +581,7 @@ impl ZkGasBlockSnapshot {
                     access_list_items: self.access_list_items,
                     access_list_construction_pairs,
                     access_list_construction_other_pairs,
+                    access_list_address_pairs: self.access_list_address_pairs()?,
                     code_preparation: self.code_preparation,
                     storage_journal_work_units,
                     operation_routes: &self.operation_routes,

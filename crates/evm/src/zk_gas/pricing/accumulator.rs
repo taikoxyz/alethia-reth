@@ -427,6 +427,19 @@ impl ZkGasBlockSnapshot {
         Ok(pairs)
     }
 
+    /// Returns finalized transaction-local raw address pairs, never cross-transaction pairs.
+    pub fn access_list_address_pairs(&self) -> Result<u64, ZkGasError> {
+        if self.access_list_construction.incomplete.is_some() {
+            return Err(ZkGasError::InvalidInput("incomplete_access_list_construction"));
+        }
+        if self.access_list_construction.raw_address_items != self.access_list_items {
+            return Err(ZkGasError::InvalidInput("access_list_address_item_count"));
+        }
+        let pairs = self.access_list_construction.raw_address_pairs;
+        ZkGasModel.price_access_list_address_pairs(pairs)?;
+        Ok(pairs)
+    }
+
     /// Returns the aggregate ordinary plus transient journal units within the single priced domain.
     ///
     /// Both independent diagnostics must be complete. Addition and the existing aggregate
@@ -530,6 +543,8 @@ impl SelectorPrefix {
             ZkGasModel.price_access_list_construction_other_pairs(
                 self.access_list_construction.other_pairs,
             )?;
+            ZkGasModel
+                .price_access_list_address_pairs(self.access_list_construction.raw_address_pairs)?;
             let next_non_anchor = self
                 .non_anchor_transactions
                 .checked_add(non_anchor)

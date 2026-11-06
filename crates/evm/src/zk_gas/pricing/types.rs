@@ -296,6 +296,8 @@ pub struct BlockPricingInput<'a> {
     pub access_list_construction_pairs: u64,
     /// Same-owner raw occurrence pairs with different low32 bits.
     pub access_list_construction_other_pairs: u64,
+    /// Sum of raw address-item pairs finalized separately for each transaction.
+    pub access_list_address_pairs: u64,
     /// Accepted code preparation occurrences and processed bytes, without deduplication.
     pub code_preparation: CodePreparationSelectors,
     /// Checked ordinary plus transient journal comparison work, summed over included transactions.
@@ -358,10 +360,14 @@ pub struct PricingBreakdown {
     pub access_list_construction_pairs: u64,
     /// Same-owner raw occurrence pairs with different low32 bits.
     pub access_list_construction_other_pairs: u64,
+    /// Sum of raw address-item pairs finalized separately for each transaction.
+    pub access_list_address_pairs: u64,
     /// Additive normalized construction reserve, without a second discount.
     pub access_list_construction_scaled: i128,
     /// Additive normalized different-low32 construction contribution, without second discount.
     pub access_list_construction_other_scaled: i128,
+    /// Normalized raw address-item pair reserve, outside route maxima and global discount.
+    pub access_list_address_scaled: i128,
     /// Per-occurrence accepted code preparation contribution in normalized fixed-point PGU.
     pub code_preparation_scaled: i128,
     /// Raw block-local journal comparison work retained with its normalized price.

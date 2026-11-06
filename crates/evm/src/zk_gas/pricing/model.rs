@@ -4,6 +4,7 @@ use super::{
     ZkGasCompletionError, ZkGasIncompleteness, ZkGasKnownBlockBreakdown, ZkGasShadowReport,
     ZkGasShadowStatus,
     generated::{
+        ACCESS_LIST_ADDRESS_PAIR_BOUND, ACCESS_LIST_ADDRESS_PAIR_TARIFF,
         ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND, ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_TARIFF,
         ACCESS_LIST_CONSTRUCTION_PAIR_BOUND, ACCESS_LIST_CONSTRUCTION_PAIR_TARIFF,
         ACCESS_LIST_ITEM_TARIFF, AUTHORIZATION_VALIDATION_TARIFF, BLOB_SOURCE_TARIFFS, BLOCK_FIXED,
@@ -34,6 +35,8 @@ pub(super) struct KnownBlockPricingInput<'a> {
     pub(super) access_list_construction_pairs: u64,
     /// Same-owner raw occurrence pairs with different low32 bits.
     pub(super) access_list_construction_other_pairs: u64,
+    /// Sum of raw address-item pairs finalized independently for each transaction.
+    pub(super) access_list_address_pairs: u64,
     /// Actual accepted nonempty create-frame code preparation occurrences.
     pub(super) code_preparation: CodePreparationSelectors,
     /// Checked journal comparison work across this committed block scope.
@@ -291,6 +294,7 @@ impl ZkGasModel {
             access_list_items: input.access_list_items,
             access_list_construction_pairs: input.access_list_construction_pairs,
             access_list_construction_other_pairs: input.access_list_construction_other_pairs,
+            access_list_address_pairs: input.access_list_address_pairs,
             code_preparation: input.code_preparation,
             storage_journal_work_units: input.storage_journal_work_units,
             operation_routes: input.operation_routes,
@@ -306,8 +310,10 @@ impl ZkGasModel {
             access_list_scaled: known.access_list_scaled(),
             access_list_construction_pairs: known.access_list_construction_pairs(),
             access_list_construction_other_pairs: known.access_list_construction_other_pairs(),
+            access_list_address_pairs: known.access_list_address_pairs(),
             access_list_construction_scaled: known.access_list_construction_scaled(),
             access_list_construction_other_scaled: known.access_list_construction_other_scaled(),
+            access_list_address_scaled: known.access_list_address_scaled(),
             code_preparation_scaled: known.code_preparation_scaled(),
             storage_journal_work_units: known.storage_journal_work_units(),
             storage_journal_scaled: known.storage_journal_scaled(),
@@ -355,6 +361,7 @@ impl ZkGasModel {
             known.access_list_scaled(),
             known.access_list_construction_scaled(),
             known.access_list_construction_other_scaled(),
+            known.access_list_address_scaled(),
             known.code_preparation_scaled(),
             known.storage_journal_scaled(),
             known.operations_scaled(),
@@ -369,8 +376,10 @@ impl ZkGasModel {
             access_list_scaled: known.access_list_scaled(),
             access_list_construction_pairs: known.access_list_construction_pairs(),
             access_list_construction_other_pairs: known.access_list_construction_other_pairs(),
+            access_list_address_pairs: known.access_list_address_pairs(),
             access_list_construction_scaled: known.access_list_construction_scaled(),
             access_list_construction_other_scaled: known.access_list_construction_other_scaled(),
+            access_list_address_scaled: known.access_list_address_scaled(),
             code_preparation_scaled: known.code_preparation_scaled(),
             storage_journal_work_units: known.storage_journal_work_units(),
             storage_journal_scaled: known.storage_journal_scaled(),
@@ -401,7 +410,7 @@ impl ZkGasModel {
             .operation_routes
             .len()
             .checked_mul(5)
-            .and_then(|count| count.checked_add(22))
+            .and_then(|count| count.checked_add(23))
             .ok_or(ZkGasError::ArithmeticOverflow)?;
         enforce_term_count(block_term_count)?;
         let fixed = checked_dot(&[
@@ -456,6 +465,8 @@ impl ZkGasModel {
         let access_list_construction_other = self.price_access_list_construction_other_pairs(
             input.access_list_construction_other_pairs,
         )?;
+        let access_list_address =
+            self.price_access_list_address_pairs(input.access_list_address_pairs)?;
         let code_preparation = self.price_code_preparation(input.code_preparation)?;
         let storage_journal = self.price_storage_journal_work(input.storage_journal_work_units)?;
         let resources = price_resources(input.resources)?;
@@ -466,6 +477,7 @@ impl ZkGasModel {
             access_list,
             access_list_construction,
             access_list_construction_other,
+            access_list_address,
             code_preparation,
             storage_journal,
             operations,
@@ -497,6 +509,8 @@ impl ZkGasModel {
             storage_journal,
             input.access_list_construction_other_pairs,
             access_list_construction_other,
+            input.access_list_address_pairs,
+            access_list_address,
         ))
     }
 
@@ -550,6 +564,20 @@ impl ZkGasModel {
             });
         }
         checked_mul(ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_TARIFF, pairs)
+    }
+
+    /// Prices raw address-item pairs in each independent transaction, including empty keys.
+    ///
+    /// This empirical conservative reserve has its own domain and no second discount; it
+    /// neither reuses inner key pairs nor predicts a particular runtime hash allocation.
+    pub fn price_access_list_address_pairs(self, pairs: u64) -> Result<i128, ZkGasError> {
+        if pairs > ACCESS_LIST_ADDRESS_PAIR_BOUND {
+            return Err(ZkGasError::SelectorOutOfRange {
+                selector: "access_list_address_pairs",
+                value: pairs,
+            });
+        }
+        checked_mul(ACCESS_LIST_ADDRESS_PAIR_TARIFF, pairs)
     }
 
     /// Prices combined ordinary/transient journal comparison work in normalized fixed-point PGU.
@@ -697,6 +725,11 @@ fn validate_shadow_report(
             "access_list_construction_other_scaled",
         ));
     }
+    if ZkGasModel.price_access_list_address_pairs(known.access_list_address_pairs())? !=
+        known.access_list_address_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("access_list_address_scaled"));
+    }
     if ZkGasModel.price_code_preparation(known.code_preparation())? !=
         known.code_preparation_scaled()
     {
@@ -738,6 +771,7 @@ fn validate_shadow_report(
         known.access_list_scaled(),
         known.access_list_construction_scaled(),
         known.access_list_construction_other_scaled(),
+        known.access_list_address_scaled(),
         known.code_preparation_scaled(),
         known.storage_journal_scaled(),
         known.operations_scaled(),
@@ -1415,6 +1449,7 @@ mod tests {
             ZkGasModel.price_block(&BlockPricingInput {
                 access_list_construction_pairs: 0,
                 access_list_construction_other_pairs: 0,
+                access_list_address_pairs: 0,
                 storage_journal_work_units: 0,
                 transaction_payload: Default::default(),
                 started_non_anchor_transactions: 0,
@@ -1576,6 +1611,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
             known,
@@ -1612,6 +1649,8 @@ mod tests {
             0,
             0,
             CodePreparationSelectors::default(),
+            0,
+            0,
             0,
             0,
             0,
@@ -1660,6 +1699,8 @@ mod tests {
             0,
             1,
             0,
+            0,
+            0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
             known,
@@ -1674,6 +1715,49 @@ mod tests {
             Err(ZkGasCompletionError::InconsistentKnownBreakdown(
                 "access_list_construction_other_scaled"
             ))
+        );
+    }
+
+    #[test]
+    fn address_pair_completion_rejects_inconsistent_sealed_contribution() {
+        let known = ZkGasKnownBlockBreakdown::new(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            ResourceSelectors::default(),
+            0,
+            TransactionPayloadSelectors::default(),
+            0,
+            0,
+            0,
+            CodePreparationSelectors::default(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+        );
+        let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
+            known,
+            missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable,
+        });
+        assert_eq!(
+            ZkGasModel.complete_block_shadow_report(
+                &report,
+                Default::default(),
+                Default::default()
+            ),
+            Err(ZkGasCompletionError::InconsistentKnownBreakdown("access_list_address_scaled"))
         );
     }
 
@@ -1698,6 +1782,8 @@ mod tests {
             0,
             0,
             CodePreparationSelectors::default(),
+            0,
+            0,
             0,
             0,
             0,
@@ -1739,6 +1825,8 @@ mod tests {
             0,
             0,
             CodePreparationSelectors::default(),
+            0,
+            0,
             0,
             0,
             0,
@@ -1835,6 +1923,7 @@ mod tests {
             .price_block_without_mpt(&KnownBlockPricingInput {
                 access_list_construction_pairs: 0,
                 access_list_construction_other_pairs: 0,
+                access_list_address_pairs: 0,
                 storage_journal_work_units: 0,
                 transaction_payload: TransactionPayloadSelectors::default(),
                 started_non_anchor_transactions: 0,
@@ -1925,6 +2014,7 @@ mod tests {
                 .price_block_without_mpt(&KnownBlockPricingInput {
                     access_list_construction_pairs: 0,
                     access_list_construction_other_pairs: 0,
+                    access_list_address_pairs: 0,
                     storage_journal_work_units: 0,
                     transaction_payload: TransactionPayloadSelectors::default(),
                     started_non_anchor_transactions: 0,
@@ -2175,6 +2265,7 @@ mod storage_journal_tariff_tests {
         BlockPricingInput {
             access_list_construction_pairs: 0,
             access_list_construction_other_pairs: 0,
+            access_list_address_pairs: 0,
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
             authorization_validations: 0,

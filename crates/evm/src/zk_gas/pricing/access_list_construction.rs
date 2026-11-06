@@ -1,11 +1,12 @@
-//! Transaction-local raw-prefix reserve for access-list warm-set construction.
+//! Transaction-local raw address and storage-key pair reserves for access-list construction.
 
 use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, U256};
 
 use super::generated::{
-    ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND, ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
+    ACCESS_LIST_ADDRESS_PAIR_BOUND, ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND,
+    ACCESS_LIST_CONSTRUCTION_PAIR_BOUND,
 };
 
 /// A failed observation makes the partial construction receipt unpriceable.
@@ -27,13 +28,16 @@ pub enum AccessListConstructionIncompleteness {
 
 /// Raw-list concentration diagnostics, separate from journals and physical storage resources.
 ///
-/// A pair is two raw key occurrences in one transaction/owner scope with identical numeric
-/// low32 bits. These are a conservative empirical reserve, not observed hash collisions or a
-/// universal hash-table-work bound. Repeated identical raw keys intentionally count as pairs.
+/// Address pairs count raw items within each transaction, including duplicates and empty keys.
+/// Key pairs count raw key occurrences within each transaction/owner, split by numeric low32.
+/// These conservative empirical reserves are not observed hash collisions or universal
+/// hash-table-work bounds. Repeated identical items and keys intentionally remain chargeable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessListConstructionDiagnostics {
     /// Raw address items represented by the capture, including duplicate owners.
     pub raw_address_items: u64,
+    /// Sum of choose2(raw address items) per transaction, including repeated and empty owners.
+    pub raw_address_pairs: u64,
     /// Raw key occurrences before any full-key or resource deduplication.
     pub raw_storage_keys: u64,
     /// Largest raw low32 group in any one transaction/owner scope.
@@ -52,6 +56,7 @@ impl AccessListConstructionDiagnostics {
     /// A complete zero-work receipt, requiring no scratch allocation.
     pub(super) const EMPTY: Self = Self {
         raw_address_items: 0,
+        raw_address_pairs: 0,
         raw_storage_keys: 0,
         max_low32_group: 0,
         comparison_pairs: 0,
@@ -70,11 +75,10 @@ impl AccessListConstructionDiagnostics {
         let mut groups = BTreeMap::<(Address, u32), u64>::new();
         let mut owners = BTreeMap::<Address, u64>::new();
         for (owner, keys) in items {
-            let Some(items) = result.raw_address_items.checked_add(1) else {
-                result.incomplete = Some(AccessListConstructionIncompleteness::ArithmeticOverflow);
+            if let Err(error) = result.observe_address_item() {
+                result.incomplete = Some(error);
                 return result;
-            };
-            result.raw_address_items = items;
+            }
             for key in keys {
                 // Numeric low32 is independent of host byte order. The signed B256 conversion
                 // happens at the hook; these are the first four bytes compared in LE U256.
@@ -89,6 +93,19 @@ impl AccessListConstructionDiagnostics {
             result.incomplete = Some(AccessListConstructionIncompleteness::ItemCountMismatch);
         }
         result
+    }
+
+    /// Adds one raw address occurrence without allocating another map or deduplicating owners.
+    fn observe_address_item(&mut self) -> Result<(), AccessListConstructionIncompleteness> {
+        let overflow = AccessListConstructionIncompleteness::ArithmeticOverflow;
+        let pairs = self.raw_address_pairs.checked_add(self.raw_address_items).ok_or(overflow)?;
+        let items = self.raw_address_items.checked_add(1).ok_or(overflow)?;
+        if pairs > ACCESS_LIST_ADDRESS_PAIR_BOUND {
+            return Err(AccessListConstructionIncompleteness::PairBoundExceeded);
+        }
+        self.raw_address_pairs = pairs;
+        self.raw_address_items = items;
+        Ok(())
     }
 
     /// Adds one raw occurrence atomically after validating both pair sums, owner and bin counts.
@@ -149,20 +166,24 @@ impl AccessListConstructionDiagnostics {
             .zip(self.raw_storage_keys.checked_add(other.raw_storage_keys))
             .zip(self.comparison_pairs.checked_add(other.comparison_pairs))
             .zip(self.other_pairs.checked_add(other.other_pairs))
-            .zip(self.owner_pairs.checked_add(other.owner_pairs));
-        let Some(((((items, keys), pairs), other_pairs), owner_pairs)) = sums else {
+            .zip(self.owner_pairs.checked_add(other.owner_pairs))
+            .zip(self.raw_address_pairs.checked_add(other.raw_address_pairs));
+        let Some((((((items, keys), pairs), other_pairs), owner_pairs), address_pairs)) = sums
+        else {
             self.incomplete =
                 incomplete.or(Some(AccessListConstructionIncompleteness::ArithmeticOverflow));
             return;
         };
         self.raw_address_items = items;
+        self.raw_address_pairs = address_pairs;
         self.raw_storage_keys = keys;
         self.max_low32_group = self.max_low32_group.max(other.max_low32_group);
         self.comparison_pairs = pairs;
         self.other_pairs = other_pairs;
         self.owner_pairs = owner_pairs;
         self.incomplete = incomplete.or(
-            if pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND ||
+            if address_pairs > ACCESS_LIST_ADDRESS_PAIR_BOUND ||
+                pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND ||
                 other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
             {
                 Some(AccessListConstructionIncompleteness::PairBoundExceeded)
@@ -199,6 +220,190 @@ mod tests {
                 nonempty_payload_transactions: 0,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn raw_address_items_have_independent_transaction_pair_reserve() {
+        fn price(count: usize) -> i128 {
+            let mut collector = ZkGasAccumulator::default();
+            begin(&mut collector, count as u64);
+            collector
+                .observe_access_list_construction(
+                    (0..count).map(|_| (Address::ZERO, Vec::<U256>::new())),
+                )
+                .unwrap();
+            collector.commit_transaction().unwrap();
+            match collector.committed_snapshot().shadow_report().status() {
+                ZkGasShadowStatus::Incomplete { known, .. } => {
+                    known.evm_local_known_subtotal_scaled()
+                }
+                other => panic!("unexpected report: {other:?}"),
+            }
+        }
+        // All four raw empty-key occurrences count, including identical owners.
+        assert_eq!(price(4) - price(1), (3 * 8192 + 6 * 128) * FIXED_POINT_SCALE);
+    }
+
+    #[test]
+    fn raw_address_pairs_include_empty_duplicates_and_reset_at_transaction_boundaries() {
+        for n in [0_u64, 1, 4, 6144] {
+            let receipt = AccessListConstructionDiagnostics::capture(
+                (0..n).map(|_| (Address::ZERO, Vec::<U256>::new())),
+                n,
+            );
+            assert_eq!(receipt.raw_address_items, n);
+            assert_eq!(receipt.raw_address_pairs, n * n.saturating_sub(1) / 2);
+            assert_eq!((receipt.raw_storage_keys, receipt.owner_pairs), (0, 0));
+            assert_eq!(receipt.incomplete, None);
+        }
+        let mut collector = ZkGasAccumulator::default();
+        for commit in [true, false] {
+            begin(&mut collector, 6144);
+            collector
+                .observe_access_list_construction(
+                    (0..6144).map(|_| (Address::ZERO, Vec::<U256>::new())),
+                )
+                .unwrap();
+            if commit {
+                collector.commit_transaction().unwrap();
+            } else {
+                collector.reset_transaction();
+            }
+        }
+        collector.reset_transaction(); // No duplicate finalization.
+        let committed = collector.committed_snapshot();
+        let attempted = collector.attempted_snapshot();
+        assert_eq!(committed.access_list_address_pairs().unwrap(), 18_871_296);
+        assert_eq!(attempted.block.access_list_address_pairs().unwrap(), 37_742_592);
+        assert_eq!(attempted.block.access_list_items, 12_288);
+        assert_ne!(37_742_592, 12_288 * 12_287 / 2);
+        assert_eq!(attempted.transaction_count, 2);
+        match attempted.block.shadow_report().status() {
+            ZkGasShadowStatus::Incomplete { known, .. } => {
+                assert_eq!(known.access_list_address_pairs(), 37_742_592);
+                assert_eq!(known.access_list_address_scaled(), 4_831_051_776 * FIXED_POINT_SCALE);
+            }
+            other => panic!("unexpected report: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_address_pair_domains_atomic_overflow_and_sticky_failures() {
+        use AccessListConstructionIncompleteness::{
+            ArithmeticOverflow, MissingCapture, PairBoundExceeded,
+        };
+        for (items, pairs, error) in [
+            (1, ACCESS_LIST_ADDRESS_PAIR_BOUND, PairBoundExceeded),
+            (u64::MAX, 0, ArithmeticOverflow),
+            (1, u64::MAX, ArithmeticOverflow),
+        ] {
+            let mut receipt = AccessListConstructionDiagnostics {
+                raw_address_items: items,
+                raw_address_pairs: pairs,
+                ..AccessListConstructionDiagnostics::EMPTY
+            };
+            let before = receipt;
+            assert_eq!(receipt.observe_address_item(), Err(error));
+            assert_eq!(receipt, before);
+        }
+        let mut overflow = AccessListConstructionDiagnostics {
+            raw_address_pairs: u64::MAX,
+            incomplete: Some(MissingCapture),
+            ..AccessListConstructionDiagnostics::EMPTY
+        };
+        overflow.merge(AccessListConstructionDiagnostics {
+            raw_address_pairs: 1,
+            ..AccessListConstructionDiagnostics::EMPTY
+        });
+        assert_eq!(overflow.raw_address_pairs, u64::MAX);
+        assert_eq!(overflow.incomplete, Some(MissingCapture));
+        let mut domain = AccessListConstructionDiagnostics {
+            raw_address_pairs: ACCESS_LIST_ADDRESS_PAIR_BOUND,
+            ..AccessListConstructionDiagnostics::EMPTY
+        };
+        domain.merge(AccessListConstructionDiagnostics {
+            raw_address_pairs: 1,
+            ..AccessListConstructionDiagnostics::EMPTY
+        });
+        assert_eq!(domain.incomplete, Some(PairBoundExceeded));
+        let model = ZkGasModel;
+        for pairs in [0, 1, 37_742_592, ACCESS_LIST_ADDRESS_PAIR_BOUND] {
+            assert_eq!(
+                model.price_access_list_address_pairs(pairs).unwrap(),
+                i128::from(pairs) * 128 * FIXED_POINT_SCALE
+            );
+        }
+        for pairs in [ACCESS_LIST_ADDRESS_PAIR_BOUND + 1, u64::MAX] {
+            assert_eq!(
+                model.price_access_list_address_pairs(pairs),
+                Err(ZkGasError::SelectorOutOfRange {
+                    selector: "access_list_address_pairs",
+                    value: pairs
+                })
+            );
+        }
+        let mismatched = ZkGasBlockSnapshot { access_list_items: 1, ..Default::default() };
+        assert_eq!(
+            mismatched.access_list_address_pairs(),
+            Err(ZkGasError::InvalidInput("access_list_address_item_count"))
+        );
+        assert!(matches!(mismatched.shadow_report().status(), ZkGasShadowStatus::Diagnostic(_)));
+    }
+
+    #[test]
+    fn raw_address_pair_full_completion_and_once_are_consistent() {
+        let mut collector = ZkGasAccumulator::default();
+        begin(&mut collector, 4);
+        collector
+            .observe_access_list_construction((0..4).map(|_| (Address::ZERO, Vec::<U256>::new())))
+            .unwrap();
+        collector.commit_transaction().unwrap();
+        let full = ZkGasModel
+            .complete_block_shadow_report(
+                &collector.committed_snapshot().shadow_report(),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            (full.access_list_address_pairs, full.access_list_address_scaled),
+            (6, 768 * FIXED_POINT_SCALE)
+        );
+        let once = ZkGasModel
+            .price_proposal_once(&ProposalPricingInput {
+                canonical_transaction_bytes: 0,
+                nonempty_payload_transactions: 0,
+                true_unattempted_transactions: 0,
+                source_blob_counts: &[1],
+                proposal_blob_hash_count: 1,
+                provider_blob_count: 1,
+                provider_commitment_count: 1,
+                provider_proof_count: 1,
+                parent_mpt: Default::default(),
+            })
+            .unwrap();
+        assert_eq!((once.access_list_address_pairs, once.access_list_address_scaled), (0, 0));
+        for incomplete in [
+            AccessListConstructionIncompleteness::MissingCapture,
+            AccessListConstructionIncompleteness::DuplicateCapture,
+            AccessListConstructionIncompleteness::ItemCountMismatch,
+        ] {
+            let snapshot = ZkGasBlockSnapshot {
+                access_list_items: 4,
+                access_list_construction: AccessListConstructionDiagnostics {
+                    raw_address_items: 4,
+                    raw_address_pairs: 6,
+                    incomplete: Some(incomplete),
+                    ..AccessListConstructionDiagnostics::EMPTY
+                },
+                ..Default::default()
+            };
+            assert_eq!(
+                snapshot.access_list_address_pairs(),
+                Err(ZkGasError::InvalidInput("incomplete_access_list_construction"))
+            );
+            assert!(matches!(snapshot.shadow_report().status(), ZkGasShadowStatus::Diagnostic(_)));
+        }
     }
 
     #[test]
@@ -612,6 +817,7 @@ mod tests {
                 access_list_items: 1,
                 access_list_construction_pairs: 3,
                 access_list_construction_other_pairs: 0,
+                access_list_address_pairs: 0,
                 code_preparation: Default::default(),
                 storage_journal_work_units: 0,
                 operation_routes: &[],
@@ -626,6 +832,7 @@ mod tests {
             access_list_items: 1,
             access_list_construction: AccessListConstructionDiagnostics {
                 raw_address_items: 1,
+                raw_address_pairs: 0,
                 raw_storage_keys: 3,
                 max_low32_group: 3,
                 comparison_pairs: 3,

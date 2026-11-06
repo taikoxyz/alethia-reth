@@ -1494,3 +1494,73 @@ and K7680 adds2,830,786,560. Thus normal compatibility and historical sensitivit
 low32pairs0 never implies other_pairs0. The fixture tag fixture-unzen-access-list-short-pairs-v1
 is planned at model generation, without implying it has already been published. Every raw actual,
 old389 quote and deficit remains immutable while successor quotes are collected separately.
+
+
+## Raw access-list address-item pairs
+
+Outer warm-owner table construction also traverses address items whose storage-key list is empty.
+The inherited inner-key receipts cannot represent this work: `owner_pairs` counts pairs of storage
+keys within one declared owner, not pairs of address items. The independent receipt now retains
+`raw_address_pairs`; it adds the previous raw item count for each incoming item, without another
+map, hash predictor or deduplication. Duplicate addresses and empty-key items count equally.
+
+```text
+P_address = sum(tx) choose(raw_address_items_in_tx, 2)
+address_scaled = 128 * 10^18 * P_address
+```
+
+Only already-finalized transaction pair counts are summed across a block. In particular, two lists
+of6144 items produce37,742,592 pairs, rather than choose2(12,288). Included success, REVERT and halt
+receipts retain this preexecution work in committed node pricing; rejected/discarded scopes remain
+in attempted prover pricing. The existing Off gate bypasses the capture traversal and scratch
+allocation. Missing/duplicate/count-mismatched captures, arithmetic overflow and domain failures
+remain sticky diagnostics, never valid zero prices.
+
+`access_list_address_pairs()` validates capture completeness, agreement with the captured raw item
+metadata and the independent pair domain10^12. Known reports expose the raw selector and
+`access_list_address_scaled()`; complete `PricingBreakdown` values and block logging retain both.
+Completion independently reprices the raw selector and rechecks the sealed subtotal. The term is
+added exactly once outside route maxima, physical resources, journals and the global discount;
+proposal-once raw/scaled fields are zero. The fixed block term allowance increases22→23 and the
+mixed-domain i128 declaration adds128*10^18*10^12. Every inherited price, including384 per same-low32
+key pair,96 per different-low32 key pair and8192 per raw address item, remains unchanged.
+
+Three frozen b76/SDK6.3 whole-input measurements motivate this empirical conservative reserve.
+They share the inherited c306 model; no new actual measurements were requested to generate it.
+
+| Sample | Charged block gas | Actual PGU | Parent node PGU | Parent full PGU | Address pairs | Added PGU |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Normal two-user raw list |228,567|161,241,694|7,855,879|162,797,709|12|1,536|
+| First large reference |29,700,567|239,384,690|255,459,331|410,401,161|37,742,592|4,831,051,776|
+| Sole same-shape successor |29,700,567|3,009,978,952|255,459,331|410,401,161|37,742,592|4,831,051,776|
+
+The successor's parent-model literal node/full deficits are2,754,519,621/2,599,577,791PGU.
+Subsequent fresh quotes from model69d2 produce node/full5,086,511,107/5,241,452,937PGU,
+about1.69x/1.74x actual. These are retained quote outputs, separately validated after model generation.
+The intentionally constructed reference receives the same quote, becoming a substantial overquote
+that remains visible in the fixture. The normal fresh node/full quote is7,857,415/162,799,245PGU;
+its remaining node deficit is153,384,279PGU. No startup subtraction modifies a denominator or actual.
+
+Retained-input regression used65 fresh quotes:15 controlled inputs (12 b76/SDK6.3 actuals and3
+explicitly unmeasured), plus50 historical proposals/9,600blocks. Every historical block/proposal
+numeric component and public output is unchanged. All12 measured full quotes cover actual;
+no measured <=30M-gas input retains a positive >2B-PGU node gap. Historical ELF416f/SDK6.1 results
+are sensitivity checks, not current b76 accuracy certification. No canonical inputs were rebuilt
+and no new SP1 actuals were run.
+The128 tariff remains an empirical margin and does not establish a bound for untested compositions.
+
+Address20 hashing uses its actual network-order bytes and the Fb20 path, distinct from generic
+U256 hashing and fixed32 storage-journal hashing. Local own seed/shared-state, allocation shape
+and comparator layout affect measured work. The reserve does not assume that low32 alone explains
+outer owner cost or that old input hash parameters transfer to a new input. The successor's15
+closed local calls confirm ownG and equal H within a400M diagnostic prefix. Whole-input pressure,
+transaction identities and full comparison counts remain UNKNOWN; complete canonical PGU is
+independently valid and cannot be attributed entirely to one observed map.
+
+The deterministic successor archives immutable parentc306 and sealed three-row evidence in
+`successors/access-list-address-pairs-v1.json`. Its fixture tag
+`fixture-unzen-access-list-address-pairs-v1` has publication status at model generation `planned`,
+without asserting a release already exists. Raw observations and parent quotes remain unchanged.
+Historical sensitivity, fresh quotes, production SDK/ELF parity and normal-transaction admission
+claims require separate evidence. The128PGU tariff is not a universal bound or an isolated fitted
+per-comparison cost; the original384/96 coefficient domains and semantics are preserved.

@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "access_list_other_pairs_successor.py"
+        "zk_gas_pricing_successor", BASE / "access_list_address_pairs_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -319,6 +319,14 @@ def render(specification: Mapping[str, Any]) -> str:
         "",
         "/// Independent different-prefix pair domain; no change to generic selector bounds.",
         f"pub(crate) const ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND: u64 = {specification['arithmetic']['access_list_construction_other_pair_bound']};",
+        "",
+    ])
+    lines.extend([
+        "/// Normalized fixed-point PGU per raw address-item pair within one transaction.",
+        f"pub(crate) const ACCESS_LIST_ADDRESS_PAIR_TARIFF: i128 = {block['access_list_address_pair_tariff']};",
+        "",
+        "/// Independent raw address-pair domain; no change to storage-key or generic bounds.",
+        f"pub(crate) const ACCESS_LIST_ADDRESS_PAIR_BOUND: u64 = {specification['arithmetic']['access_list_address_pair_bound']};",
         "",
     ])
     lines.extend([

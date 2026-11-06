@@ -4,23 +4,26 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`c3065ba83157d1f375d3d34d49f1e9ddfcea5b2bdb7377aae7ad62a3fd28b69d`. Relative to immutable
-parent `389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493`, it adds **96 normalized
-PGU per same-transaction/owner raw occurrence pair with different numeric low32 bits**. The
-existing identical-low32 pair selector remains at384PGU with its original meaning. All other
-prices, opcode/memory/payload rules, journal domains, global discount treatment and consensus
-Unzen behavior are unchanged. This remains the initial Shadow model, without a public selector.
+`af30c61656fd456ab290a837b44c181e4ff54e575a949d3579f07df20659a949`. Relative to immutable
+parent `69d2b812552a4c5380da478ebcf35aeaaa851881371de738633584aa0d695b4f`, it adds **128 normalized
+PGU per Account-journal work unit**, using actual per-transaction physical Account population,
+address-prefix concentration and potential opcode-query budgets. The existing ordinary/transient
+journal and raw access-list supplements retain their prices and meanings. All inherited prices,
+global discount treatment and consensus Unzen behavior are unchanged. This remains the initial
+Shadow model, without a public version selector.
 
-The new policy follows four retained b76/SDK6.3 whole-input actuals. The complete two-user input
-measured2,484,257,836PGU against node207,800,835/full362,742,665 at29,398,167 charged gas;
-the literal node deficit2,276,457,001 crossed the2B priority threshold. The coefficient is an
-empirical conservative reserve, not a universal hash-table bound or isolated comparison fit.
-Its arithmetic projections require fresh quote and historical sensitivity checks; production
-SDK parity and normal transaction admission are not established by the artifact. The first-map
-sampled pressure qualifier does not certify both transaction maps or whole-program comparisons.
+The motivating retained b76/SDK6.3 input measured 5,073,040,910 PGU against parent node
+2,380,285,007 / full 2,535,524,054 at 10,055,942 charged block gas. Its 2,692,755,903-PGU node
+deficit exceeds the 2B priority threshold. Genuine successor repricing covers this case and the
+older retained K512/R1400 sample; all 21 measured full quotes cover their original actuals, while
+four small literal-node deficits remain. The 50-proposal historical sensitivity panel changes
+by +0.2835% node / +0.1643% full. See the [Account-journal section](#empirical-account-journal-density-reserve)
+for formulas, conservative controls, exact results and residual TODOs. These are empirical
+reserves and finite evidence, not universal bounds, production SDK parity or normal-admission
+certification. Earlier model-specific sections retain their original checkpoint identities.
 
-The original calibration calls itself `accepted_runtime_export`; the current successor records
-`block_local_access_list_construction_pair_supplements`. These identify calibration and
+The original calibration calls itself `accepted_runtime_export`; the current successor purpose is
+`block_local_empirical_account_journal_density_reserve`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -41,7 +44,7 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list-item/access-list-construction/code-preparation/storage-journal/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list-item/access-list-construction/access-list-address-pair/code-preparation/storage-journal/Account-journal/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
@@ -82,8 +85,17 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`account_journal_successor.py`](../crates/evm/src/zk_gas/pricing/account_journal_successor.py)
+  derives the current Account-journal component from immutable69 and the
+  [sealed reference/successor evidence](../crates/evm/src/zk_gas/pricing/successors/account-journal-v1.json).
+  It seals the Account policy, empirical residual margin and independent work domain while
+  preserving every inherited numeric object.
+  [`account_journal.rs`](../crates/evm/src/zk_gas/pricing/account_journal.rs) owns the observation ledger.
+- [`access_list_address_pairs_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_address_pairs_successor.py)
+  derives the inherited raw address-item pair reserve from immutablec306 and its
+  [three-row evidence](../crates/evm/src/zk_gas/pricing/successors/access-list-address-pairs-v1.json).
 - [`access_list_other_pairs_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_other_pairs_successor.py)
-  derives the current different-low32 component from immutable389 and the
+  derives the inherited different-low32 component from immutable389 and the
   [four whole-input actuals](../crates/evm/src/zk_gas/pricing/successors/access-list-other-pairs-v1.json).
   It retains384PGU low32 pricing and all other numeric objects, with a separate96PGU tariff,
   domain and conservative mixed-i128 arithmetic allowance. Evidence fixture publication status
@@ -121,7 +133,7 @@ This document is the human-readable guide. The checked-in sources divide authori
   92-row evidence, raw-item derivation in `access_list_successor.py`, authorization derivation in
   `authorization_successor.py`, CALL memory repair in `call_memory_successor.py`, and EXP derivation
   in `successor.py`. Those historical generator identities remain recorded in immutable snapshots;
-  only the current access-list construction successor is regenerated by the commands below.
+  only the current Account-journal successor is regenerated by the commands below.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -131,6 +143,8 @@ constants, extraction rules, or ownership code. In particular, the blob/source d
 bound are currently duplicated in Rust rather than generated from the JSON. Their agreement relies
 on review: current tests do not compare those Rust definitions with the JSON fields. The artifact
 hash alone does not enforce that agreement.
+The Account-journal opcode-budget table is generated from the sealed `account_journal_policy`;
+its extraction timing, physical-population source and scope ownership still require source review.
 
 ## Objective and non-goals
 
@@ -575,9 +589,11 @@ block_price =
   + access_list_item_tariff * raw_access_list_address_items
   + access_list_construction_pair_tariff * raw_transaction_owner_low32_pairs
   + access_list_construction_other_pair_tariff * raw_transaction_owner_different_low32_pairs
+  + access_list_address_pair_tariff * raw_transaction_address_item_pairs
   + code_preparation_event_tariff * nonempty_code_preparation_events
   + code_preparation_byte_tariff * prepared_code_bytes
   + storage_journal_work_tariff * (ordinary_journal_work_units + transient_journal_work_units)
+  + account_journal_work_tariff * account_journal_work_units
   + operation_price
   + exact_unique_resource_price
   + committed_transaction_payload_price
@@ -633,8 +649,9 @@ execution, such as a commit-predicate rejection or Unzen zk gas truncation, is r
 Neither prefix covers executor precheck rejections for remaining native block gas or intrinsic zk
 gas, or transactions skipped without execution (zero-signer non-Anchor transactions and transactions
 after zk gas exhaustion). Operation-route pricing omits the interpreter step whose legacy meter
-charge first exceeds the budget; its independently captured ordinary/transient journal work is retained
-before that charge. For a truncated attempt, completed steps and resources from the finalized journal
+charge first exceeds the budget; its independently captured ordinary/transient journal work and
+potential Account-query budget are retained before that charge. For a truncated attempt, completed
+steps and resources from the finalized journal
 are retained. Completed precompile bodies remain observed even when their meter charge triggers
 truncation; resetting the rejected transaction retains that work in the attempted prefix.
 
@@ -1188,16 +1205,16 @@ underpricing flags and original deficits instead of replacing them with projecte
 Verify the checked JSON address and generated Rust table with:
 
 ```bash
-~/.venv/bin/python -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_other_pairs_successor.py --check
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py --check
+~/.venv/bin/python -S -B -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
+~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/account_journal_successor.py --check
+~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_other_pairs_successor.py
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py
+~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/account_journal_successor.py
+~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
 
@@ -1652,5 +1669,10 @@ External caller validation, authority processing, top-level frame and fee paths 
 unmeasured residual work; Q+N does not claim to count every such access. Native-gas frequency limits
 do **not** prove these residuals below2B PGU. Source evidence and the immutable69 parent are sealed
 by `account_journal_successor.py`; its planned fixture publication is a generation-time status.
-The new data-only Account-journal fixture is not yet published. No guest, ELF, SDK or observer was
+The new data-only fixture uses `unzen-account-journal-density-v1`. The sealed generation-time
+plan names `fixture-unzen-account-journal-v1`, which was already occupied by the older seven-input
+5f fixture; that immutable release is not replaced or used as the new evidence download. The new
+fixture's asset metadata and checksums identify its separate density release. Its publication is
+still pending here; the sealed model/evidence and original quotes are not rewritten for a plan-name
+correction. No guest, ELF, SDK or observer was
 rebuilt, and full workspace Cargo/clippy or guest CI success is not claimed by these host checks.

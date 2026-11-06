@@ -68,6 +68,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
             .unwrap();
         let direct = model
             .price_block(&BlockPricingInput {
+                access_list_construction_pairs: 0,
                 storage_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
@@ -302,6 +303,134 @@ fn zk_gas_raw_access_list_duplicates_add_normalized_price_without_new_resources(
 }
 
 #[test]
+fn zk_gas_access_list_concentrated_raw_keys_add_pairs_without_storage_execution() {
+    use reth_revm::context_interface::transaction::{AccessList, AccessListItem};
+    let mut totals = Vec::new();
+    let mut resources = Vec::new();
+    let mut executions = Vec::new();
+    for concentrated in [false, true] {
+        let mut evm = TaikoEvmFactory.create_evm(
+            db_with_contract(Bytecode::new_raw(Bytes::from(vec![opcode::STOP]))),
+            evm_env(TaikoSpecId::UNZEN),
+        );
+        evm.set_zk_gas_pricing_enabled(true);
+        let mut tx = tx_env(200_000);
+        tx.tx_type = 2;
+        tx.access_list = AccessList(vec![AccessListItem {
+            address: BENCH_TARGET,
+            storage_keys: (1..=3_u64)
+                .map(|key| {
+                    let value = if concentrated { U256::from(key) << 32 } else { U256::from(key) };
+                    alloy_primitives::B256::from(value.to_be_bytes::<32>())
+                })
+                .collect(),
+        }]);
+        executions.push(evm.transact(tx).unwrap());
+        evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        evm.commit_transaction_zk_gas_pricing().unwrap();
+        let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+        resources.push(snapshot.resources);
+        let ZkGasShadowStatus::Incomplete { known, .. } = snapshot.shadow_report().status() else {
+            panic!("complete construction observation must price")
+        };
+        totals.push(known.evm_local_known_subtotal_scaled());
+    }
+    assert_eq!(executions[0], executions[1]);
+    assert_eq!(resources[0], resources[1]);
+    assert_eq!(totals[1] - totals[0], 3 * 384 * FIXED_POINT_SCALE);
+}
+
+#[test]
+fn zk_gas_access_list_construction_is_observing_only_on_plain_inspected_and_revert_paths() {
+    use reth_revm::context_interface::transaction::{AccessList, AccessListItem};
+    for inspect in [false, true] {
+        for revert in [false, true] {
+            let mut executions = Vec::new();
+            let mut legacy = Vec::new();
+            for enabled in [false, true] {
+                let code = if revert {
+                    vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT]
+                } else {
+                    vec![opcode::STOP]
+                };
+                let mut evm = TaikoEvmFactory.create_evm(
+                    db_with_contract(Bytecode::new_raw(Bytes::from(code))),
+                    evm_env(TaikoSpecId::UNZEN),
+                );
+                evm.set_inspector_enabled(inspect);
+                evm.set_zk_gas_pricing_enabled(enabled);
+                let mut tx = tx_env(200_000);
+                tx.tx_type = 2;
+                tx.access_list = AccessList(vec![AccessListItem {
+                    address: BENCH_TARGET,
+                    storage_keys: vec![alloy_primitives::B256::ZERO; 3],
+                }]);
+                let result = evm.transact(tx).unwrap();
+                assert_eq!(result.result.is_success(), !revert);
+                executions.push(result);
+                legacy.push(evm.meter().map(ZkGasMeter::tx_zk_gas_used));
+                if enabled {
+                    evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                        canonical_transaction_bytes: 100,
+                        nonempty_payload_transactions: 0,
+                    });
+                    evm.commit_transaction_zk_gas_pricing().unwrap();
+                    let snapshot = evm.zk_gas_pricing_snapshot().unwrap();
+                    assert_eq!(snapshot.access_list_construction.raw_storage_keys, 3);
+                    assert_eq!(snapshot.access_list_construction.comparison_pairs, 3);
+                    assert_eq!(snapshot.access_list_construction.incomplete, None);
+                    assert_eq!(
+                        snapshot.shadow_report().access_list_construction(),
+                        snapshot.access_list_construction
+                    );
+                } else {
+                    assert!(evm.zk_gas_pricing_snapshot().is_none());
+                }
+            }
+            assert_eq!(executions[0], executions[1]);
+            assert_eq!(legacy[0], legacy[1]);
+        }
+    }
+}
+
+#[test]
+fn zk_gas_access_list_construction_of_invalid_nonce_is_retained_only_as_attempted() {
+    use reth_revm::context_interface::transaction::{AccessList, AccessListItem};
+    for inspect in [false, true] {
+        let mut evm = TaikoEvmFactory.create_evm(
+            db_with_contract(Bytecode::new_raw(Bytes::from(vec![opcode::STOP]))),
+            evm_env(TaikoSpecId::UNZEN),
+        );
+        evm.set_inspector_enabled(inspect);
+        evm.set_zk_gas_pricing_enabled(true);
+        let mut tx = tx_env(200_000);
+        tx.tx_type = 2;
+        tx.nonce = 1;
+        tx.access_list = AccessList(vec![AccessListItem {
+            address: BENCH_TARGET,
+            storage_keys: vec![alloy_primitives::B256::ZERO; 3],
+        }]);
+        assert!(evm.transact(tx).is_err());
+        evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        evm.reset_transaction_zk_gas();
+        assert_eq!(
+            evm.zk_gas_pricing_snapshot().unwrap().access_list_construction.comparison_pairs,
+            0
+        );
+        let attempted = evm.zk_gas_attempted_pricing_snapshot().unwrap();
+        assert_eq!(attempted.transaction_count, 1);
+        assert_eq!(attempted.block.access_list_construction.comparison_pairs, 3);
+        assert_eq!(attempted.block.access_list_construction.incomplete, None);
+    }
+}
+
+#[test]
 fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
     const LIMIT: u64 = 1_000_000_000;
     for count in [0, 1, 4, 16, LIMIT] {
@@ -326,6 +455,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
             .unwrap();
         let direct = ZkGasModel
             .price_block(&BlockPricingInput {
+                access_list_construction_pairs: 0,
                 storage_journal_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
@@ -748,6 +878,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
         .expect("typed incomplete report plus exact MPT completes");
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
@@ -813,6 +944,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
     assert!(completed.resources_scaled > before.evm_local_resources_scaled());
     let direct = ZkGasModel
         .price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
@@ -2138,7 +2270,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "923c8f916f6e8603677b61adb60d92d2cd4355e02030c8fafa6ec549d10525f8"
+        "389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2410,6 +2542,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
     }];
     let block = ZkGasModel
         .price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
@@ -2446,6 +2579,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
     };
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
@@ -2485,6 +2619,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
 fn zk_gas_model_composes_route_aggregates_before_block_sum() {
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
@@ -2513,6 +2648,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
     let maximum = 1_000_000_000;
     let priced = ZkGasModel
         .price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
@@ -2640,6 +2776,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
     }];
     assert_eq!(
         model.price_block(&BlockPricingInput {
+            access_list_construction_pairs: 0,
             storage_journal_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,

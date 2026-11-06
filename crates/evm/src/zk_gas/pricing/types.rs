@@ -292,6 +292,8 @@ pub struct BlockPricingInput<'a> {
     pub authorization_validations: u64,
     /// Raw included non-legacy access-list address items, including duplicate and Anchor items.
     pub access_list_items: u64,
+    /// Raw transaction/owner/low32 occurrence pairs from complete construction captures.
+    pub access_list_construction_pairs: u64,
     /// Accepted code preparation occurrences and processed bytes, without deduplication.
     pub code_preparation: CodePreparationSelectors,
     /// Checked ordinary plus transient journal comparison work, summed over included transactions.
@@ -350,6 +352,10 @@ pub struct PricingBreakdown {
     pub authorization_scaled: i128,
     /// Raw access-list address item contribution in normalized fixed-point PGU.
     pub access_list_scaled: i128,
+    /// Raw-prefix construction pairs charged outside operations and physical journals.
+    pub access_list_construction_pairs: u64,
+    /// Additive normalized construction reserve, without a second discount.
+    pub access_list_construction_scaled: i128,
     /// Per-occurrence accepted code preparation contribution in normalized fixed-point PGU.
     pub code_preparation_scaled: i128,
     /// Raw block-local journal comparison work retained with its normalized price.

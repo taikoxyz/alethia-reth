@@ -545,6 +545,19 @@ where
             if let Err(error) = accumulator.begin_transaction(metadata) {
                 accumulator.retain_diagnostic(Some(error));
             } else {
+                // The warm set is reconstructed for every non-legacy transaction. Capture the
+                // complete raw list once, independently of physical storage or resource dedup.
+                let item_count = if tx.tx_type == 0 { 0 } else { tx.access_list.0.len() };
+                let _ = accumulator.observe_access_list_construction(
+                    tx.access_list.0.iter().take(item_count).map(|item| {
+                        (
+                            item.address,
+                            item.storage_keys
+                                .iter()
+                                .map(|slot| U256::from_be_slice(slot.as_slice())),
+                        )
+                    }),
+                );
                 for (owner, key) in initial_storage_slots {
                     accumulator.observe_storage_materialization(owner, key);
                 }

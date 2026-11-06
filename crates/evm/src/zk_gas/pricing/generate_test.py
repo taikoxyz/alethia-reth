@@ -18,6 +18,18 @@ MODULE_SPEC.loader.exec_module(GENERATOR)
 class GeneratorTests(unittest.TestCase):
     """Exercise content addressing and stale-output detection independently of Rust."""
 
+    def test_access_list_construction_has_independent_normalized_tariff_and_domain(self) -> None:
+        payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
+        rendered = GENERATOR.render(payload)
+        self.assertTrue(
+            f"ACCESS_LIST_CONSTRUCTION_PAIR_TARIFF: i128 = {384 * 10**18};" in rendered,
+            "missing independent access-list construction tariff",
+        )
+        self.assertTrue(
+            "ACCESS_LIST_CONSTRUCTION_PAIR_BOUND: u64 = 1000000000000;" in rendered,
+            "missing independent access-list construction domain",
+        )
+
     def test_delegatecall_fixed_coefficient_keeps_authenticated_parent_memory(self) -> None:
         payload = GENERATOR.json.loads(MODULE_PATH.with_name("runtime-spec.json").read_text())
         parent = GENERATOR.json.loads(

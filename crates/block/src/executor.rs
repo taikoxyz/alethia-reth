@@ -248,6 +248,8 @@ where
                 authorization_scaled = ?known.authorization_scaled(),
                 access_list_items = known.access_list_items(),
                 access_list_scaled = ?known.access_list_scaled(),
+                access_list_construction_pairs = known.access_list_construction_pairs(),
+                access_list_construction_scaled = ?known.access_list_construction_scaled(),
                 code_preparation_nonempty_events = known.code_preparation().nonempty_events,
                 code_preparation_total_bytes = known.code_preparation().total_bytes,
                 code_preparation_scaled = ?known.code_preparation_scaled(),

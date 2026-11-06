@@ -4,19 +4,20 @@
 
 This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
 alethia-reth. The runtime artifact has model identity
-`923c8f916f6e8603677b61adb60d92d2cd4355e02030c8fafa6ec549d10525f8`. Relative to immutable parent
-`5f93909ea1372eb6e10fa2b599c6087aafd4ec493ba28eb1cea4c4abb3708a11`, this candidate extends the
-existing **384 normalized PGU per journal comparison work unit** to an independent transient-map
-ledger. Ordinary-storage event accounting, every inherited numeric price, the aggregate journal
-work domain and signed-i128 envelope remain unchanged. The selector semantics change requires a new
-sealed model identity. This remains the initial Shadow model with no public model selector.
-If `RUNTIME_SPEC_SHA256` differs, this document is stale. Eight opened b76/SDK6.3 controlled actuals
-motivated the extension; 384 is reused without refitting. The finite projections retain both
-constructed overestimates and a small residual node-only deficit. Fresh replay, historical
-zero-transient compatibility and production SDK parity are separate validation steps.
+`389ca65f21fb17b04121e1b0915662f85e4b617b4c12b3b2c949faf591eb5493`. Relative to immutable parent
+`923c8f916f6e8603677b61adb60d92d2cd4355e02030c8fafa6ec549d10525f8`, this candidate adds an
+independent access-list construction supplement at **384 normalized PGU per raw low32-prefix
+pair**. Raw occurrences share a scope only within one transaction and declared owner. The new
+term is separate from physical journals and logical resource uniqueness. Every inherited numeric
+price, opcode rule, journal domain, global-discount treatment and Unzen behavior remains unchanged.
+This remains the initial Shadow model with no public model selector.
+If `RUNTIME_SPEC_SHA256` differs, this document is stale. Five opened b76/SDK6.3 actuals and three
+explicitly unmeasured controls are retained. The projections close the observed high-priority
+deficit but deliberately retain small node-only deficits and crafted overestimates. Successor
+native replay, normal historical sensitivity and production SDK parity are separate checks.
 
 The original calibration calls itself `accepted_runtime_export`; the current successor records
-`block_local_ordinary_and_transient_journal_comparison_reserve`. These identify calibration and
+`block_local_access_list_construction_prefix_supplement`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -37,7 +38,7 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list/code-preparation/storage-journal/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list-item/access-list-construction/code-preparation/storage-journal/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
@@ -78,6 +79,11 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`access_list_construction_successor.py`](../crates/evm/src/zk_gas/pricing/access_list_construction_successor.py)
+  adds the named raw-prefix supplement to immutable 923, authenticating the sealed
+  [five-actual/eight-input evidence](../crates/evm/src/zk_gas/pricing/successors/access-list-construction-v1.json).
+  It preserves every old numeric price and keeps unrealized/unmeasured inputs distinct from
+  qualified concentrated inputs. Its finite projections are not successor-native measurements.
 - [`transient_journal_successor.py`](../crates/evm/src/zk_gas/pricing/transient_journal_successor.py)
   extends the journal selector from immutable 5f to independent transient work, using the sealed
   [eight-actual evidence](../crates/evm/src/zk_gas/pricing/successors/transient-journal-v1.json).
@@ -106,7 +112,7 @@ This document is the human-readable guide. The checked-in sources divide authori
   92-row evidence, raw-item derivation in `access_list_successor.py`, authorization derivation in
   `authorization_successor.py`, CALL memory repair in `call_memory_successor.py`, and EXP derivation
   in `successor.py`. Those historical generator identities remain recorded in immutable snapshots;
-  only the current transient-journal successor is regenerated by the commands below.
+  only the current access-list construction successor is regenerated by the commands below.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -558,6 +564,7 @@ block_price =
   + native_value_transfer_tariff * native_value_transfers
   + authorization_validation_tariff * raw_authorization_validations
   + access_list_item_tariff * raw_access_list_address_items
+  + access_list_construction_pair_tariff * raw_transaction_owner_low32_pairs
   + code_preparation_event_tariff * nonempty_code_preparation_events
   + code_preparation_byte_tariff * prepared_code_bytes
   + storage_journal_work_tariff * (ordinary_journal_work_units + transient_journal_work_units)
@@ -1172,14 +1179,14 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 ~/.venv/bin/python -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/transient_journal_successor.py --check
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_construction_successor.py --check
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-~/.venv/bin/python crates/evm/src/zk_gas/pricing/transient_journal_successor.py
+~/.venv/bin/python crates/evm/src/zk_gas/pricing/access_list_construction_successor.py
 ~/.venv/bin/python crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
@@ -1364,3 +1371,68 @@ about 36.9x actual; no normal-mainnet 2x claim follows from this panel. Low32/ze
 hash/profile qualification does not prove all dynamic placements/comparisons, a universal PGU bound,
 production SDK parity, or a full 30M-gas workload bound. Historical zero-transient replay and broader
 compatibility remain separate checks, not implied by this source change or its model identity.
+
+## Access-list construction prefix supplement
+
+REVM constructs a warm `HashSet<U256>` from each non-legacy transaction's raw access list before
+executing its opcodes. Declared keys need not be read, written or materialized as persistent storage.
+The physical journal ledgers therefore do not cover this construction, while the existing raw
+address-item, signed-payload and unique-resource terms grow linearly. A concentrated generic-hash
+family exposed a separate high-priority deficit even with an otherwise empty RETURN transaction.
+
+The new observing path captures the full list once in the common plain/inspected transaction
+bracket. A scratch `BTreeMap<(owner, low32), raw_count>` adds each previous group count when a key
+is seen, then is dropped before EVM execution. The selector is:
+
+```text
+construction_pairs = sum(transaction, owner, numeric_low32) n * (n - 1) / 2
+construction_scaled = 384 * 10^18 * construction_pairs
+```
+
+`low32` means the final four big-endian bytes of the signed B256 key, converted to numeric U256;
+these are the first four comparison bytes in the measured little-endian U256 representation.
+Repeated address items for one owner share a group within a transaction. Different owners and
+transactions have independent groups, regardless of block-level resource deduplication. Raw
+duplicate keys intentionally remain occurrences: a deliberately duplicated list may overquote
+quadratically. There is no second full-U256 set and no rolling journal or checkpoint hook.
+
+`AccessListConstructionDiagnostics` reports raw address items, raw storage keys, largest raw
+low32 group, comparison pairs and any incompleteness. The transaction capture receipt is merged
+into both prefixes when included, or attempted only when reset/rejected. An included REVERT keeps
+the construction work. Missing nonempty capture, duplicate capture, item-count mismatch and
+checked arithmetic/domain failures prevent a valid quote; partial diagnostics remain inspectable.
+Zero-item scopes are known empty. Disabled collection does not allocate or traverse the new map.
+
+The independent `access_list_construction_pairs` domain is capped at `10^12`; the ordinary
+`10^9` selector domain and journal domain are unchanged. Known reports expose
+`access_list_construction_pairs()` and `access_list_construction_scaled()`. Complete block reports
+retain both fields, the runtime block log emits them, and completion rechecks their contribution.
+This supplement is added exactly once outside opcode route maxima, resources and journal pricing.
+Proposal-once contributes zero; the normalized coefficient receives no further discount.
+
+The [sealed finite evidence](../crates/evm/src/zk_gas/pricing/successors/access-list-construction-v1.json)
+retains eight native/parent-quote-qualified inputs, five actuals and three unmeasured controls.
+G0 and family qualification belong to each input: the unrealized K7680 control cannot certify a
+concentrated K7680 workload. All values below are whole-input measurements and formula projections,
+not isolated comparison coefficients or fresh quotes from the changed runtime.
+
+| Sample | Block gas | Actual PGU | Parent node PGU | Added PGU | Projected node PGU |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| reference64, unrealized | 312,361 | 161,458,895 | 8,655,989 | 774,144 | 9,430,133 |
+| own K1024, unrealized | 2,136,361 | 167,736,345 | 25,551,989 | 201,129,984 | 226,681,973 |
+| aligned K1024, realized | 2,136,361 | 266,428,229 | 25,551,989 | 201,129,984 | 226,681,973 |
+| large K7680, unrealized | 14,782,761 | 210,667,979 | 142,698,613 | 11,323,146,240 | 11,465,844,853 |
+| aligned K7680, realized | 14,782,761 | 5,773,513,175 | 142,698,613 | 11,323,146,240 | 11,465,844,853 |
+
+The realized K7680 node deficit is 5,630,814,562 PGU within the 30M-gas priority budget. Its parent
+full proposal quote is 297,640,444 PGU; the projected successor is 11,620,786,684 PGU, approximately
+2.013x actual, while the projected node is approximately 1.986x. The realized K1024 node retains a
+39,746,256 PGU residual deficit, below the 2B priority threshold; its projected full proposal is
+381,623,804 PGU and covers actual. No startup subtraction changes the literal node denominator.
+
+This is an empirical long-prefix supplement. It does not prove a universal hash-table or PGU
+bound: distinct-low32 hash collisions, short comparisons, control probing, resize and allocator
+costs remain separate validation TODOs. The crafted unrealized K7680 overquote is deliberately
+retained. Normal historical compatibility must be evaluated separately before claiming the prior
+mainnet overestimate distribution is unchanged. The evidence uses the retained b76 ELF and SP1
+SDK6.3 gas estimator; it does not establish production SDK/ELF parity or GPU proving time.

@@ -1,6 +1,7 @@
 //! Runtime mode and typed shadow-report contracts for zk gas pricing.
 
 use super::{
+    AccessListConstructionDiagnostics, AccessListConstructionIncompleteness,
     CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors, StorageJournalDiagnostics,
     StorageJournalIncompleteness, TransactionPayloadSelectors, TransientStorageJournalDiagnostics,
     ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError, ZkGasModel,
@@ -25,6 +26,10 @@ pub struct ZkGasKnownBlockBreakdown {
     access_list_items: u64,
     /// Raw access-list item contribution in normalized fixed-point PGU.
     access_list_scaled: i128,
+    /// Raw-prefix pairs from complete transaction-local construction receipts.
+    access_list_construction_pairs: u64,
+    /// Independent normalized construction supplement, included once in the known subtotal.
+    access_list_construction_scaled: i128,
     /// Actual accepted code preparations sealed with their contribution.
     code_preparation: CodePreparationSelectors,
     /// Normalized per-occurrence code preparation contribution.
@@ -65,6 +70,8 @@ impl ZkGasKnownBlockBreakdown {
         authorization_scaled: i128,
         access_list_items: u64,
         access_list_scaled: i128,
+        access_list_construction_pairs: u64,
+        access_list_construction_scaled: i128,
         operations_scaled: i128,
         normal_dispatch_count: u64,
         normal_dispatch_scaled: i128,
@@ -90,6 +97,8 @@ impl ZkGasKnownBlockBreakdown {
             authorization_scaled,
             access_list_items,
             access_list_scaled,
+            access_list_construction_pairs,
+            access_list_construction_scaled,
             operations_scaled,
             normal_dispatch_count,
             normal_dispatch_scaled,
@@ -126,6 +135,16 @@ impl ZkGasKnownBlockBreakdown {
     /// Raw access-list item contribution in normalized fixed-point PGU.
     pub const fn access_list_scaled(self) -> i128 {
         self.access_list_scaled
+    }
+
+    /// Raw transaction/owner/low32 occurrence pairs priced by this immutable report.
+    pub const fn access_list_construction_pairs(self) -> u64 {
+        self.access_list_construction_pairs
+    }
+
+    /// Additive construction supplement, independent of journals and operation-route maxima.
+    pub const fn access_list_construction_scaled(self) -> i128 {
+        self.access_list_construction_scaled
     }
 
     /// Actual accepted nonempty code preparations without hash deduplication.
@@ -235,6 +254,8 @@ impl ZkGasKnownBlockBreakdown {
     ) -> Self {
         Self::new(
             fixed_scaled,
+            0,
+            0,
             0,
             0,
             0,
@@ -416,6 +437,8 @@ pub struct ZkGasShadowReport {
     storage_journal: StorageJournalDiagnostics,
     /// Independent transient diagnostics whose units join the same sealed journal price once.
     transient_storage_journal: TransientStorageJournalDiagnostics,
+    /// Raw access-list construction receipt diagnostics, separate from physical journal work.
+    access_list_construction: AccessListConstructionDiagnostics,
 }
 
 impl ZkGasShadowReport {
@@ -427,6 +450,7 @@ impl ZkGasShadowReport {
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
+            access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
     }
 
@@ -450,6 +474,11 @@ impl ZkGasShadowReport {
         self.transient_storage_journal
     }
 
+    /// Raw-prefix construction diagnostics, including a retained failure if capture was incomplete.
+    pub const fn access_list_construction(self) -> AccessListConstructionDiagnostics {
+        self.access_list_construction
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
@@ -462,6 +491,10 @@ impl ZkGasShadowReport {
             transient_storage_journal: TransientStorageJournalDiagnostics {
                 incomplete: Some(StorageJournalIncompleteness::CollectorUnavailable),
                 ..TransientStorageJournalDiagnostics::EMPTY
+            },
+            access_list_construction: AccessListConstructionDiagnostics {
+                incomplete: Some(AccessListConstructionIncompleteness::MissingCapture),
+                ..AccessListConstructionDiagnostics::EMPTY
             },
         }
     }
@@ -476,6 +509,7 @@ impl ZkGasShadowReport {
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
+            access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
     }
 }
@@ -497,11 +531,13 @@ impl ZkGasBlockSnapshot {
                 ))
             }
             None => match self.storage_journal_work_units().and_then(|storage_journal_work_units| {
+                let access_list_construction_pairs = self.access_list_construction_pairs()?;
                 ZkGasModel.price_block_without_mpt(&KnownBlockPricingInput {
                     started_non_anchor_transactions: self.started_non_anchor_transactions,
                     native_value_transfers: self.native_value_transfers,
                     authorization_validations: self.authorization_validations,
                     access_list_items: self.access_list_items,
+                    access_list_construction_pairs,
                     code_preparation: self.code_preparation,
                     storage_journal_work_units,
                     operation_routes: &self.operation_routes,
@@ -521,6 +557,7 @@ impl ZkGasBlockSnapshot {
             status,
             storage_journal: self.storage_journal,
             transient_storage_journal: self.transient_storage_journal,
+            access_list_construction: self.access_list_construction,
         }
     }
 }

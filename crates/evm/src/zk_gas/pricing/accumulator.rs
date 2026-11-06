@@ -9,10 +9,10 @@ use super::{
 };
 
 use super::{
-    AccessClass, CodePreparationSelectors, MemorySelectors, OperationModelInput,
-    OperationPricingInput, OperationRoute, OperationRoutePricingInput, ResourceSelectors,
-    StorageJournalDiagnostics, TransactionPayloadSelectors, TransientStorageJournalDiagnostics,
-    ZkGasError, ZkGasModel,
+    AccessClass, AccessListConstructionDiagnostics, AccessListConstructionIncompleteness,
+    CodePreparationSelectors, MemorySelectors, OperationModelInput, OperationPricingInput,
+    OperationRoute, OperationRoutePricingInput, ResourceSelectors, StorageJournalDiagnostics,
+    TransactionPayloadSelectors, TransientStorageJournalDiagnostics, ZkGasError, ZkGasModel,
 };
 
 /// Per-transaction selectors known before execution begins.
@@ -298,6 +298,8 @@ struct TransactionSelectors {
     metadata: TransactionMetadata,
     /// Signed envelope metadata, populated by the outer block pipeline.
     transaction_payload: Option<TransactionPayloadSelectors>,
+    /// One whole raw-list construction receipt; scratch groups are not retained during execution.
+    access_list_construction: Option<AccessListConstructionDiagnostics>,
     /// Accepted nonempty code preparations, retained even if an ancestor reverts.
     code_preparation: CodePreparationSelectors,
     /// Priced operation components keyed by canonical route.
@@ -321,6 +323,7 @@ impl TransactionSelectors {
         Self {
             metadata,
             transaction_payload: None,
+            access_list_construction: None,
             code_preparation: CodePreparationSelectors::default(),
             operation_routes: BTreeMap::new(),
             resources: ResourceSet::default(),
@@ -374,6 +377,8 @@ pub struct ZkGasBlockSnapshot {
     pub authorization_validations: u64,
     /// Raw non-legacy access-list address items, including duplicates and Anchor entries.
     pub access_list_items: u64,
+    /// Independent raw-prefix construction receipt, summed across transaction scopes.
+    pub access_list_construction: AccessListConstructionDiagnostics,
     /// Actual accepted nonempty code preparations across this prefix.
     pub code_preparation: CodePreparationSelectors,
     /// Canonical payload of all included signed transactions.
@@ -394,6 +399,16 @@ pub struct ZkGasBlockSnapshot {
 }
 
 impl ZkGasBlockSnapshot {
+    /// Returns checked raw-prefix pairs; an incomplete capture cannot price as zero.
+    pub fn access_list_construction_pairs(&self) -> Result<u64, ZkGasError> {
+        if self.access_list_construction.incomplete.is_some() {
+            return Err(ZkGasError::InvalidInput("incomplete_access_list_construction"));
+        }
+        let pairs = self.access_list_construction.comparison_pairs;
+        ZkGasModel.price_access_list_construction_pairs(pairs)?;
+        Ok(pairs)
+    }
+
     /// Returns the aggregate ordinary plus transient journal units within the single priced domain.
     ///
     /// Both independent diagnostics must be complete. Addition and the existing aggregate
@@ -445,6 +460,8 @@ struct SelectorPrefix {
     authorization_validations: u64,
     /// Additive raw access-list address item count, without deduplication.
     access_list_items: u64,
+    /// Checked raw-prefix construction receipts across finalized transaction scopes.
+    access_list_construction: AccessListConstructionDiagnostics,
     /// Additive accepted code preparations, counted by occurrence rather than hash.
     code_preparation: CodePreparationSelectors,
     /// Additive canonical signed payload across this prefix.
@@ -464,6 +481,13 @@ struct SelectorPrefix {
 impl SelectorPrefix {
     /// Merges one transaction into this prefix after validating the complete delta.
     fn merge_transaction(&mut self, transaction: &TransactionSelectors) {
+        self.access_list_construction.merge(transaction.access_list_construction.unwrap_or_else(
+            || {
+                AccessListConstructionDiagnostics::uncaptured(
+                    transaction.metadata.access_list_items,
+                )
+            },
+        ));
         self.storage_journal.merge(transaction.storage_journal.diagnostics);
         self.transient_storage_journal.merge(transaction.transient_storage_journal.diagnostics());
         if self.diagnostic.is_none() {
@@ -482,6 +506,9 @@ impl SelectorPrefix {
                 .checked_add(self.transient_storage_journal.comparison_work_units_upper)
                 .ok_or(ZkGasAccumulatorError::ArithmeticOverflow)?;
             ZkGasModel.price_storage_journal_work(journal_units)?;
+            ZkGasModel.price_access_list_construction_pairs(
+                self.access_list_construction.comparison_pairs,
+            )?;
             let next_non_anchor = self
                 .non_anchor_transactions
                 .checked_add(non_anchor)
@@ -564,6 +591,7 @@ impl SelectorPrefix {
             native_value_transfers: self.native_value_transfers,
             authorization_validations: self.authorization_validations,
             access_list_items: self.access_list_items,
+            access_list_construction: self.access_list_construction,
             code_preparation: self.code_preparation,
             transaction_payload: self.transaction_payload,
             operation_routes: self.operation_routes.values().copied().collect(),
@@ -612,6 +640,43 @@ pub struct ZkGasAccumulator {
 }
 
 impl ZkGasAccumulator {
+    /// Records one whole signed raw access list before execution, then drops its scratch map.
+    ///
+    /// Raw owner items share one transaction-local prefix scope. A second capture, mismatched
+    /// address-item count or arithmetic failure is sticky and prevents a valid quote. Empty
+    /// zero-item scopes may omit this call; nonempty scopes cannot silently omit their receipt.
+    pub fn observe_access_list_construction<I, J>(
+        &mut self,
+        items: I,
+    ) -> Result<(), ZkGasAccumulatorError>
+    where
+        I: IntoIterator<Item = (Address, J)>,
+        J: IntoIterator<Item = U256>,
+    {
+        let result = (|| {
+            let transaction =
+                self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
+            if let Some(receipt) = transaction.access_list_construction.as_mut() {
+                receipt
+                    .incomplete
+                    .get_or_insert(AccessListConstructionIncompleteness::DuplicateCapture);
+                return Err(ZkGasError::InvalidInput("duplicate_access_list_construction").into());
+            }
+            let receipt = AccessListConstructionDiagnostics::capture(
+                items,
+                transaction.metadata.access_list_items,
+            );
+            let incomplete = receipt.incomplete.is_some();
+            transaction.access_list_construction = Some(receipt);
+            if incomplete {
+                return Err(ZkGasError::InvalidInput("incomplete_access_list_construction").into());
+            }
+            Ok(())
+        })();
+        self.retain_diagnostic(result.err());
+        result
+    }
+
     /// Starts a fresh transaction selector scope.
     pub fn begin_transaction(
         &mut self,

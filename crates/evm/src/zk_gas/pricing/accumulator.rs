@@ -491,7 +491,7 @@ pub struct ZkGasBlockSnapshot {
     pub account_journal: AccountJournalDiagnostics,
     /// Progressive block-cache population proxy, separate from transaction-local journal work.
     pub account_cache: AccountCacheDiagnostics,
-    /// Independent progressive physical-slot population and forward changed-slot reserve.
+    /// Progressive physical-slot population with read-through and forward changed-slot reserve.
     pub storage_transition: StorageTransitionDiagnostics,
     /// Transient-only map work; its units join the ordinary term without sharing owner/key state.
     pub transient_storage_journal: TransientStorageJournalDiagnostics,
@@ -503,7 +503,7 @@ pub struct ZkGasBlockSnapshot {
 }
 
 impl ZkGasBlockSnapshot {
-    /// Returns complete forward-transition units, accepting readonly population with zero work.
+    /// Returns complete read-through and forward-map units from validated physical receipts.
     pub fn storage_transition_work_units(&self) -> Result<u64, ZkGasError> {
         let d = self.storage_transition;
         if d.incomplete.is_some() {
@@ -515,7 +515,10 @@ impl ZkGasBlockSnapshot {
             d.observed_storage_slots > d.physical_slot_receipts ||
             d.max_owner_slots > d.observed_storage_slots ||
             d.max_low32_group > d.max_owner_slots ||
-            d.query_budget != d.changed_slots.checked_mul(2).ok_or_else(invalid)? ||
+            d.query_budget !=
+                d.physical_slot_receipts
+                    .checked_add(d.changed_slots.checked_mul(2).ok_or_else(invalid)?)
+                    .ok_or_else(invalid)? ||
             (d.observed_storage_slots == 0 &&
                 (d.physical_slot_receipts != 0 ||
                     d.max_owner_slots != 0 ||
@@ -1900,17 +1903,17 @@ mod storage_transition_scope_tests {
                 committed.storage_transition.observed_storage_slots,
                 committed.storage_transition.work_units
             ),
-            (1, 2)
+            (1, 3)
         );
         assert_eq!(
             (
                 attempted.storage_transition.observed_storage_slots,
                 attempted.storage_transition.work_units
             ),
-            (3, 10)
+            (3, 17)
         );
-        assert_eq!(committed.storage_transition_work_units().unwrap(), 2);
-        assert_eq!(attempted.storage_transition_work_units().unwrap(), 10);
+        assert_eq!(committed.storage_transition_work_units().unwrap(), 3);
+        assert_eq!(attempted.storage_transition_work_units().unwrap(), 17);
         assert_eq!(
             ZkGasAccumulator::default().committed_snapshot().storage_transition,
             StorageTransitionDiagnostics::EMPTY
@@ -1960,9 +1963,9 @@ mod storage_transition_scope_tests {
     fn readonly_nonempty_and_multiowner_diagnostics_validate_without_global_formula() {
         let mut a = ZkGasAccumulator::default();
         finish(&mut a, &[(Address::ZERO, U256::ZERO, false)], true);
-        assert_eq!(a.committed_snapshot().storage_transition_work_units().unwrap(), 0);
+        assert_eq!(a.committed_snapshot().storage_transition_work_units().unwrap(), 1);
         let mut snapshot = a.committed_snapshot();
-        snapshot.storage_transition.query_budget = 1;
+        snapshot.storage_transition.query_budget = 0;
         assert!(snapshot.storage_transition_work_units().is_err());
         let d = StorageTransitionDiagnostics {
             physical_slot_receipts: 15,
@@ -1971,14 +1974,14 @@ mod storage_transition_scope_tests {
             max_owner_slots: 10,
             max_low32_group: 6,
             comparison_equivalents: 6,
-            query_budget: 4,
-            work_units: 24,
+            query_budget: 19,
+            work_units: 114,
             completed_transactions: 1,
             incomplete: None,
         };
         snapshot.storage_transition = d;
-        assert_eq!(snapshot.storage_transition_work_units().unwrap(), 24);
-        snapshot.storage_transition.work_units = 25;
+        assert_eq!(snapshot.storage_transition_work_units().unwrap(), 114);
+        snapshot.storage_transition.work_units = 115;
         assert!(snapshot.storage_transition_work_units().is_err());
         snapshot.storage_transition = d;
         snapshot.storage_transition.work_units = 1_000_000_000_001;

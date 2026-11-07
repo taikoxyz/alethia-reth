@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "3e335de20582fca48f84b3df1b2ecd8d8d7281de02442ab35a134e4635431d73";
+    "eea6f1da87ee129d2d9f759ae6cef01cb8ac93988376a86efb290398e6db5da6";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -48,7 +48,7 @@ pub(crate) const ACCESS_LIST_ADDRESS_PAIR_TARIFF: i128 = 128000000000000000000;
 /// Independent raw address-pair domain; no change to storage-key or generic bounds.
 pub(crate) const ACCESS_LIST_ADDRESS_PAIR_BOUND: u64 = 1000000000000;
 
-/// Normalized empirical forward storage-transition price; no second discount.
+/// Normalized empirical read-through and forward storage-map price; no second discount.
 pub(crate) const STORAGE_TRANSITION_WORK_TARIFF: i128 = 384000000000000000000;
 /// Independent checked storage-transition domain; inherited bounds unchanged.
 pub(crate) const STORAGE_TRANSITION_WORK_BOUND: u64 = 1000000000000;

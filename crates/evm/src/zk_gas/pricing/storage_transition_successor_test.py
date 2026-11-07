@@ -1,4 +1,4 @@
-"""Independent storage-transition identity, immutable inherited prices and checked domain."""
+"""Read-through storage identity, immutable inherited prices and unchanged checked domain."""
 import copy
 import importlib.util
 import json
@@ -14,15 +14,19 @@ class StorageTransitionSuccessorTests(unittest.TestCase):
         self.evidence=json.loads((BASE/MODEL.EVIDENCE_PATH).read_bytes())
     def test_independent_transition_tariff_and_inherited_prices(self):
         result=MODEL.transform(self.parent,self.evidence)
-        block=dict(result['block_local'])
-        self.assertEqual(block.pop('storage_transition_work_tariff',None),384*10**18)
-        self.assertEqual(block,self.parent['block_local'])
+        self.assertEqual(result['block_local']['storage_transition_work_tariff'],384*10**18)
+        self.assertEqual(result['block_local'],self.parent['block_local'])
         self.assertEqual(result['proposal_once'],self.parent['proposal_once'])
         self.assertEqual(result['account_cache_policy'],self.parent['account_cache_policy'])
-        arithmetic=dict(result['arithmetic'])
-        self.assertEqual(arithmetic.pop('storage_transition_work_unit_bound'),10**12)
-        arithmetic['declared_worst_case_scaled_pgu']-=384*10**30
-        self.assertEqual(arithmetic,self.parent['arithmetic'])
+        self.assertEqual(result['arithmetic']['storage_transition_work_unit_bound'],10**12)
+        self.assertEqual(result['arithmetic'],self.parent['arithmetic'])
+        self.assertEqual(result['ownership'],self.parent['ownership'])
+        self.assertEqual(result['storage_transition_policy']['transaction_budget'],
+                         'physical_slot_count_tx_owner+2*changed_slot_count_tx_owner')
+        self.assertEqual(self.parent['storage_transition_policy']['transaction_budget'],
+                         '2*changed_slot_count_tx_owner')
+        self.assertIsNone(result['successor']['fixture_tag'])
+        self.assertEqual(result['successor']['fixture_publication_state'],'unpublished_at_model_generation')
     def test_parent_evidence_and_policy_tamper_rejected(self):
         for target in ['parent','evidence']:
             parent,evidence=copy.deepcopy(self.parent),copy.deepcopy(self.evidence)
@@ -34,7 +38,7 @@ class StorageTransitionSuccessorTests(unittest.TestCase):
         with self.assertRaises(ValueError):MODEL.validate_successor(result,self.parent,self.evidence)
     def test_i128_declaration_boundary(self):
         parent=copy.deepcopy(self.parent)
-        parent['arithmetic']['declared_worst_case_scaled_pgu']=2**127-1-384*10**30
+        parent['arithmetic']['declared_worst_case_scaled_pgu']=2**127-1
         self.assertEqual(MODEL.checked_declaration(parent),2**127-1)
         parent['arithmetic']['declared_worst_case_scaled_pgu']+=1
         with self.assertRaises(ValueError):MODEL.checked_declaration(parent)

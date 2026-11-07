@@ -330,7 +330,7 @@ def render(specification: Mapping[str, Any]) -> str:
         "",
     ])
     lines.extend([
-        "/// Normalized empirical forward storage-transition price; no second discount.",
+        "/// Normalized empirical read-through and forward storage-map price; no second discount.",
         f"pub(crate) const STORAGE_TRANSITION_WORK_TARIFF: i128 = {block['storage_transition_work_tariff']};",
         "/// Independent checked storage-transition domain; inherited bounds unchanged.",
         f"pub(crate) const STORAGE_TRANSITION_WORK_BOUND: u64 = {specification['arithmetic']['storage_transition_work_unit_bound']};",

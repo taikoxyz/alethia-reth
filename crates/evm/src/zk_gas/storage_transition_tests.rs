@@ -29,8 +29,8 @@ fn final_physical_changed_receipt_is_captured_on_both_real_paths() {
             max_owner_slots: 1,
             max_low32_group: 1,
             comparison_equivalents: 1,
-            query_budget: 2,
-            work_units: 2,
+            query_budget: 3,
+            work_units: 3,
             completed_transactions: 1,
             incomplete: None,
         }
@@ -38,15 +38,15 @@ fn final_physical_changed_receipt_is_captured_on_both_real_paths() {
     let ZkGasShadowStatus::Incomplete { known, .. } = plain.shadow_report().status() else {
         panic!("final receipt must support the ordinary incomplete block quote")
     };
-    assert_eq!(known.storage_transition_work_units(), 2);
+    assert_eq!(known.storage_transition_work_units(), 3);
     assert_eq!(
         known.storage_transition_scaled(),
-        ZkGasModel.price_storage_transition_work(2).unwrap()
+        ZkGasModel.price_storage_transition_work(3).unwrap()
     );
 }
 
 #[test]
-fn final_noop_and_revert_keep_physical_keys_without_changed_work_or_semantic_drift() {
+fn final_noop_and_revert_keep_physical_read_work_without_semantic_drift() {
     for suffix in [
         vec![opcode::STOP],
         vec![opcode::PUSH0, opcode::PUSH0, opcode::REVERT],
@@ -73,7 +73,7 @@ fn final_noop_and_revert_keep_physical_keys_without_changed_work_or_semantic_dri
                 commit(&mut evm);
                 let d = evm.zk_gas_pricing_snapshot().unwrap().storage_transition;
                 assert_eq!((d.physical_slot_receipts, d.observed_storage_slots), (1, 1));
-                assert_eq!((d.changed_slots, d.query_budget, d.work_units), (0, 0, 0));
+                assert_eq!((d.changed_slots, d.query_budget, d.work_units), (0, 1, 1));
                 assert_eq!(d.incomplete, None);
             } else {
                 assert!(evm.zk_gas_pricing_snapshot().is_none());
@@ -119,7 +119,7 @@ fn cross_transaction_restore_rejected_candidate_and_fresh_block_are_independent(
             (d.physical_slot_receipts, d.changed_slots, d.observed_storage_slots),
             (9, 2, 3)
         );
-        assert_eq!((d.comparison_equivalents, d.query_budget, d.work_units), (3, 4, 12));
+        assert_eq!((d.comparison_equivalents, d.query_budget, d.work_units), (3, 13, 39));
         let mut tx = tx_env(100_000);
         tx.nonce = 3;
         tx.data = U256::from(3).to_be_bytes::<32>().to_vec().into();
@@ -128,7 +128,7 @@ fn cross_transaction_restore_rejected_candidate_and_fresh_block_are_independent(
         assert_eq!(evm.zk_gas_pricing_snapshot().unwrap().storage_transition, d);
         assert_eq!(
             evm.zk_gas_attempted_pricing_snapshot().unwrap().block.storage_transition.work_units,
-            18
+            54
         );
         evm.set_zk_gas_pricing_enabled(false);
         evm.set_zk_gas_pricing_enabled(true);
@@ -182,11 +182,11 @@ fn reverted_child_uses_storage_owner_and_retains_read_population_only() {
         let d = snapshots[0];
         assert_eq!(
             (d.physical_slot_receipts, d.changed_slots, d.observed_storage_slots, d.query_budget),
-            (2, 1, 2, 2)
+            (2, 1, 2, 4)
         );
         assert_eq!(
             (d.max_owner_slots, d.comparison_equivalents, d.work_units),
-            if spawn == opcode::CALL { (1, 1, 2) } else { (2, 2, 4) }
+            if spawn == opcode::CALL { (1, 1, 4) } else { (2, 2, 8) }
         );
     }
 }

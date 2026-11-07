@@ -47,7 +47,7 @@ pub(super) struct KnownBlockPricingInput<'a> {
     pub(super) account_journal_work_units: u64,
     /// Progressive observed-transaction block-cache work, in its independent domain.
     pub(super) account_cache_work_units: u64,
-    /// Independent block-local forward storage-transition reserve.
+    /// Independent block-local read-through and forward storage-map reserve.
     pub(super) storage_transition_work_units: u64,
     /// Committed operation aggregates in canonical route order.
     pub(super) operation_routes: &'a [OperationRoutePricingInput],
@@ -633,7 +633,8 @@ impl ZkGasModel {
         checked_mul(STORAGE_JOURNAL_WORK_TARIFF, units)
     }
 
-    /// Prices the independent normalized forward storage-transition reserve without a discount.
+    /// Prices the independent normalized read-through and forward storage-map reserve without a
+    /// discount.
     pub fn price_storage_transition_work(self, units: u64) -> Result<i128, ZkGasError> {
         if units > STORAGE_TRANSITION_WORK_BOUND {
             return Err(ZkGasError::SelectorOutOfRange {
@@ -2642,10 +2643,10 @@ mod storage_transition_component_tests {
         let ZkGasShadowStatus::Incomplete { known, .. } = report.status() else {
             panic!("valid physical receipt")
         };
-        assert_eq!(known.storage_transition_work_units(), 2);
-        assert_eq!(known.storage_transition_scaled(), 768 * FIXED_POINT_SCALE);
+        assert_eq!(known.storage_transition_work_units(), 3);
+        assert_eq!(known.storage_transition_scaled(), 1152 * FIXED_POINT_SCALE);
         let mut input = storage_journal_tariff_tests::journal_input(0);
-        input.storage_transition_work_units = 2;
+        input.storage_transition_work_units = 3;
         let direct = ZkGasModel.price_block(&input).unwrap();
         let complete = ZkGasModel
             .complete_block_shadow_report(
@@ -2658,11 +2659,11 @@ mod storage_transition_component_tests {
         input.storage_transition_work_units = 0;
         assert_eq!(
             direct.total_scaled - ZkGasModel.price_block(&input).unwrap().total_scaled,
-            768 * FIXED_POINT_SCALE
+            1152 * FIXED_POINT_SCALE
         );
         for bad in [
-            known.with_storage_transition_for_test(3, known.storage_transition_scaled()),
-            known.with_storage_transition_for_test(2, 0),
+            known.with_storage_transition_for_test(4, known.storage_transition_scaled()),
+            known.with_storage_transition_for_test(3, 0),
         ] {
             assert_eq!(
                 validate_shadow_report(&ZkGasShadowReport::from_status(

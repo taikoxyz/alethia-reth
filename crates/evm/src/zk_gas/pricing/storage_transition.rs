@@ -1,4 +1,4 @@
-//! Independent block-local forward storage-transition population and comparison reserve.
+//! Block-local read-through and forward storage-map population and comparison reserve.
 
 use alloy_primitives::{Address, U256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,7 +18,7 @@ pub enum StorageTransitionIncompleteness {
     CollectorUnavailable,
 }
 
-/// Empirical forward storage-transition reserve; these are not guest hash-probe counts.
+/// Empirical read-through/forward storage reserve; these are not guest hash-probe counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StorageTransitionDiagnostics {
     /// Sum of physical storage entries across finalized transaction receipts.
@@ -33,9 +33,9 @@ pub struct StorageTransitionDiagnostics {
     pub max_low32_group: u64,
     /// Largest owner C=ceil((N+7M)/8), not a formula over total population.
     pub comparison_equivalents: u64,
-    /// Sum of twice each transaction/owner changed count.
+    /// Sum of physical key counts plus twice each transaction/owner changed count.
     pub query_budget: u64,
-    /// Sum of owner C after the whole incoming batch times its2X budget.
+    /// Sum of owner C after the whole incoming batch times its J+2X budget.
     pub work_units: u64,
     /// Number of single-use physical receipts included in this prefix.
     pub completed_transactions: u64,
@@ -43,7 +43,7 @@ pub struct StorageTransitionDiagnostics {
     pub incomplete: Option<StorageTransitionIncompleteness>,
 }
 impl StorageTransitionDiagnostics {
-    /// Complete zero for a fresh prefix; readonly N>0,U=0 is also valid.
+    /// Complete zero for a fresh prefix; nonempty readonly receipts reserve read-through work.
     pub const EMPTY: Self = Self {
         physical_slot_receipts: 0,
         changed_slots: 0,
@@ -158,7 +158,7 @@ impl StorageTransitionLedger {
                 let c = numerator / 8 + u64::from(numerator % 8 != 0);
                 let j = u64::try_from(keys.len()).ok()?;
                 let x = u64::try_from(keys.values().filter(|flag| **flag).count()).ok()?;
-                let budget = x.checked_mul(2)?;
+                let budget = j.checked_add(x.checked_mul(2)?)?;
                 diagnostics.physical_slot_receipts =
                     diagnostics.physical_slot_receipts.checked_add(j)?;
                 diagnostics.changed_slots = diagnostics.changed_slots.checked_add(x)?;
@@ -215,6 +215,26 @@ mod tests {
         StorageTransitionReceipt::capture(rows.iter().copied())
     }
     #[test]
+    fn read_through_queries_are_reserved_once_per_receipt_with_owner_density() {
+        let owner = Address::ZERO;
+        let mut ledger = StorageTransitionLedger::default();
+        let keys: Vec<_> = (1_u64..=4).map(|i| U256::from(i) << 48).collect();
+        ledger.merge(Some(&receipt(
+            &keys.iter().map(|key| (owner, *key, false)).collect::<Vec<_>>(),
+        )));
+        assert_eq!((ledger.diagnostics().query_budget, ledger.diagnostics().work_units), (4, 16));
+        ledger.merge(Some(&receipt(&[(owner, keys[0], false), (owner, keys[1], false)])));
+        assert_eq!(
+            (ledger.diagnostics().observed_storage_slots, ledger.diagnostics().work_units),
+            (4, 24)
+        );
+        ledger.merge(Some(&receipt(&[(owner, keys[0], true)])));
+        assert_eq!((ledger.diagnostics().query_budget, ledger.diagnostics().work_units), (9, 36));
+        ledger.merge(Some(&receipt(&[(Address::repeat_byte(1), keys[0], true)])));
+        assert_eq!((ledger.diagnostics().query_budget, ledger.diagnostics().work_units), (12, 39));
+    }
+
+    #[test]
     fn growth_readonly_then_write_and_repeated_key_budget() {
         let a = Address::ZERO;
         let mut ledger = StorageTransitionLedger::default();
@@ -229,12 +249,12 @@ mod tests {
                 first.query_budget,
                 first.work_units
             ),
-            (2, 1, 2, 2, 2, 4)
+            (2, 1, 2, 2, 4, 8)
         );
         ledger.merge(Some(&receipt(&[(a, U256::from(3), false)])));
         assert_eq!(
             (ledger.diagnostics().observed_storage_slots, ledger.diagnostics().work_units),
-            (3, 4)
+            (3, 10)
         );
         let same_prefix = (U256::from(1) << 64) + U256::from(1);
         ledger.merge(Some(&receipt(&[(a, U256::from(1), true), (a, same_prefix, true)])));
@@ -248,11 +268,11 @@ mod tests {
                 d.query_budget,
                 d.work_units
             ),
-            (4, 2, 3, 3, 6, 16)
+            (4, 2, 3, 3, 11, 28)
         );
         assert_eq!(
             i128::from(d.work_units) * STORAGE_TRANSITION_WORK_TARIFF,
-            6144 * 10_i128.pow(18)
+            10752 * 10_i128.pow(18)
         );
     }
     #[test]
@@ -279,13 +299,13 @@ mod tests {
                 d.comparison_equivalents,
                 d.work_units
             ),
-            (16, 10, 6, 6, 12)
+            (16, 10, 6, 6, 78)
         );
         let mut readonly = StorageTransitionLedger::default();
         readonly.merge(Some(&receipt(&[(a, U256::ZERO, false)])));
         assert_eq!(
             (readonly.diagnostics().observed_storage_slots, readonly.diagnostics().work_units),
-            (1, 0)
+            (1, 1)
         );
     }
     #[test]
@@ -304,7 +324,7 @@ mod tests {
                 d.query_budget,
                 d.work_units
             ),
-            (3, 3, 1, 6, 6)
+            (3, 3, 1, 9, 9)
         );
     }
     #[test]
@@ -357,9 +377,26 @@ mod layout_and_finite_tests {
         let d = ledger.diagnostics();
         assert_eq!(
             (d.observed_storage_slots, d.max_low32_group, d.comparison_equivalents, d.work_units),
-            (3, 2, 3, 18)
+            (3, 2, 3, 27)
         );
     }
+    #[test]
+    fn packed_read_shape_reserves_queries_without_claiming_actual_pgu() {
+        let owner = Address::ZERO;
+        let mut ledger = StorageTransitionLedger::default();
+        for t in 0_u64..89 {
+            let mut slots = vec![(owner, U256::ZERO, true)];
+            slots.extend((1..=128).map(|i| (owner, U256::from(t * 128 + i) << 48, false)));
+            ledger.merge(Some(&StorageTransitionReceipt::capture(slots)));
+        }
+        let d = ledger.diagnostics();
+        assert_eq!(
+            (d.physical_slot_receipts, d.changed_slots, d.observed_storage_slots),
+            (11481, 89, 11393)
+        );
+        assert_eq!((d.query_budget, d.work_units), (11659, 67_167_499));
+    }
+
     #[test]
     fn finite_transition_shape_has_target_units_without_claiming_whole_block_units() {
         let mut ledger = StorageTransitionLedger::default();
@@ -374,10 +411,10 @@ mod layout_and_finite_tests {
             (d.physical_slot_receipts, d.changed_slots, d.observed_storage_slots),
             (4160, 4160, 4097)
         );
-        assert_eq!((d.query_budget, d.work_units), (8320, 17_313_920));
+        assert_eq!((d.query_budget, d.work_units), (12480, 25_970_880));
         assert_eq!(
             super::super::ZkGasModel.price_storage_transition_work(d.work_units).unwrap(),
-            6_648_545_280 * super::super::FIXED_POINT_SCALE
+            9_972_817_920 * super::super::FIXED_POINT_SCALE
         );
     }
 }

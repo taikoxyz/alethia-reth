@@ -50,7 +50,7 @@ pub struct ZkGasKnownBlockBreakdown {
     account_journal_work_units: u64,
     /// Progressive observed-transaction block-cache work, in its independent domain.
     account_cache_work_units: u64,
-    /// Independent block-local forward storage-transition reserve.
+    /// Independent block-local read-through and forward storage-map reserve.
     storage_transition_work_units: u64,
     /// Independent journal contribution in normalized fixed-point PGU.
     storage_journal_scaled: i128,
@@ -58,7 +58,7 @@ pub struct ZkGasKnownBlockBreakdown {
     account_journal_scaled: i128,
     /// Independently normalized progressive block-cache contribution.
     account_cache_scaled: i128,
-    /// Independent block-local forward storage-transition reserve.
+    /// Independent block-local read-through and forward storage-map reserve.
     storage_transition_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
@@ -114,11 +114,11 @@ impl ZkGasKnownBlockBreakdown {
         access_list_address_scaled: i128,
         account_journal_work_units: u64,
         account_cache_work_units: u64,
-        // Independent block-local forward storage-transition reserve.
+        // Independent block-local read-through and forward storage-map reserve.
         storage_transition_work_units: u64,
         account_journal_scaled: i128,
         account_cache_scaled: i128,
-        // Independent block-local forward storage-transition reserve.
+        // Independent block-local read-through and forward storage-map reserve.
         storage_transition_scaled: i128,
     ) -> Self {
         Self {
@@ -300,11 +300,12 @@ impl ZkGasKnownBlockBreakdown {
         self.account_cache_scaled
     }
 
-    /// Independent forward storage-transition work sealed with the known subtotal.
+    /// Independent read-through and forward storage-map work sealed with the known subtotal.
     pub const fn storage_transition_work_units(self) -> u64 {
         self.storage_transition_work_units
     }
-    /// Normalized forward storage-transition contribution, retained once during completion.
+    /// Normalized read-through and forward storage-map contribution, retained once during
+    /// completion.
     pub const fn storage_transition_scaled(self) -> i128 {
         self.storage_transition_scaled
     }
@@ -446,7 +447,7 @@ pub enum ZkGasShadowDiagnostic {
     StorageJournal(StorageJournalIncompleteness),
     /// Account work has incomplete or inconsistent physical-population capture.
     AccountJournal(AccountJournalIncompleteness),
-    /// Required forward-transition receipt or arithmetic was incomplete.
+    /// Required read-through/forward-map receipt or arithmetic was incomplete.
     StorageTransition(StorageTransitionIncompleteness),
     /// The pure model rejected the committed execution/resource selectors.
     Pricing(ZkGasError),
@@ -576,7 +577,7 @@ pub struct ZkGasShadowReport {
     account_journal: AccountJournalDiagnostics,
     /// Progressive block-cache population and work, independently sealed.
     account_cache: AccountCacheDiagnostics,
-    /// Independent forward storage-transition population and2X reserve.
+    /// Independent read-through and forward storage-map population and J+2X reserve.
     storage_transition: StorageTransitionDiagnostics,
     /// Independent transient diagnostics whose units join the same sealed journal price once.
     transient_storage_journal: TransientStorageJournalDiagnostics,
@@ -636,7 +637,7 @@ impl ZkGasShadowReport {
         self.account_cache
     }
 
-    /// Returns per-block physical-slot population and empirical forward-transition diagnostics.
+    /// Returns per-block physical-slot population and empirical read-through/forward diagnostics.
     pub const fn storage_transition(self) -> StorageTransitionDiagnostics {
         self.storage_transition
     }

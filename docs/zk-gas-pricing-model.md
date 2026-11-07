@@ -3,20 +3,31 @@
 ## Status and scope
 
 This document describes the SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
-alethia-reth. The current runtime artifact is the progressive storage-transition **candidate**
-`3e335de20582fca48f84b3df1b2ecd8d8d7281de02442ab35a134e4635431d73`, derived from immutable
-parent `022232270da81c96dd9d7a12899d52ac011f46144d7f90d778a585aaeca5b7bd`. It adds an
-independent 384 normalized PGU per block-local storage-transition work unit and preserves every
-parent tariff and its meaning. The [candidate section](#candidate-progressive-storage-transition-work)
-records its formula, opened calibration evidence and limitations. Retained-input and historical
-price-sensitivity validation for this successor is complete:82 retained inputs,29 original
-numeric actuals and50 historical proposals/9600blocks. Full estimates cover all29 actuals;
-four smaller literal-node deficits remain, maximum153,346,391PGU, with no measured >2B residual.
-Historical node/full price totals change+0.032639%/+0.018942%; this is older-program price
-sensitivity, not current-program accuracy or an admission guarantee. Earlier78-input gates
-retain their `0222` identity and are not relabeled as the current82-input result.
-This remains the initial Shadow model without a public version selector, and consensus Unzen
-behavior is unchanged.
+alethia-reth. The current runtime artifact is the progressive storage read-through **candidate**
+`eea6f1da87ee129d2d9f759ae6cef01cb8ac93988376a86efb290398e6db5da6`, derived from immutable
+parent `3e335de20582fca48f84b3df1b2ecd8d8d7281de02442ab35a134e4635431d73`. It retains every
+numeric tariff, discount and arithmetic domain, including384 normalized PGU per storage work
+unit, and expands that component's transaction budget from2X toJ+2X. The existing public
+`storage_transition_*` fields now include read-through queries as well as changed-slot forward
+passes; there is no new selector or component charged alongside an unchanged2X component.
+The [read-through candidate section](#candidate-progressive-storage-read-through-reserve) records
+its formula, measured deficiency, fresh retained-input results and limitations. All86 retained
+inputs/37groups were requoted once across9,642blocks: full estimates cover all33 original numeric
+actuals,29 literal-node sums cover, and four lower-priority node deficits remain (maximum153,343,319PGU).
+No measured residual exceeds2B in this finite cohort. The50-proposal/9600-block history changes
++0.041124% node/+0.023870% full over3e335; its absent numeric actuals and416f/SDK6.1 provenance make
+this price sensitivity only, not currentb76 accuracy or an admission guarantee. Artificial
+read-cache successors now quote about5.0–5.3x actual; these stress results do not establish an
+ordinary-mainnet overquote ratio or a global workload bound.
+
+The earlier3e335 checkpoint's82-input checks remain unchanged:29 original numeric actuals,
+50 historical proposals/9600blocks, full estimates covering all29 actuals and four lower-priority
+literal-node deficits (maximum153,346,391PGU). Its historical node/full additions over0222 were
++0.032639%/+0.018942%, older-program sensitivity rather than current-program accuracy. Subsequent
+89-user read-cache stress evidence demonstrates a further2.890B literal-node gap at28.062Mgas;
+the earlier finite cohort did not establish a universal bound. Earlier results retain their own
+model identities. Consensus Unzen behavior is unchanged and the Shadow model still has no public
+version selector.
 
 The previous `af30` checkpoint added 128 normalized PGU per **transaction-local Account-journal**
 work unit to immutable parent `69d2b812…`. For that checkpoint, all 21 retained full quotes covered
@@ -29,7 +40,7 @@ Earlier model-specific sections retain their original checkpoint identities. All
 empirical results, not universal bounds or production SDK parity certification.
 
 The original calibration calls itself `accepted_runtime_export`; the current successor purpose is
-`block_local_empirical_storage_transition_candidate`. These identify calibration and
+`block_local_empirical_storage_read_through_candidate`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -92,8 +103,8 @@ This document is the human-readable guide. The checked-in sources divide authori
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
 - [`storage_transition_successor.py`](../crates/evm/src/zk_gas/pricing/storage_transition_successor.py)
-  derives the current independent storage-transition candidate from immutable0222 and the
-  [opened prefix-panel evidence](../crates/evm/src/zk_gas/pricing/successors/storage-transition-v1.json).
+  derives the current read-through/forward candidate from immutable3e335 and the
+  [opened read-cache evidence](../crates/evm/src/zk_gas/pricing/successors/storage-read-cache-v1.json).
   [`storage_transition.rs`](../crates/evm/src/zk_gas/pricing/storage_transition.rs) owns the physical
   finalized receipt and separate committed/attempted per-owner block unions.
 - [`account_cache_successor.py`](../crates/evm/src/zk_gas/pricing/account_cache_successor.py)
@@ -1823,6 +1834,9 @@ containers and broader compositions. No mainnet admission rule is activated by t
 
 ### Candidate: progressive storage-transition work
 
+This section records the original3e335 checkpoint, whose2X policy and numerical results remain
+raw historical evidence. The current J+2X policy is described in the following section.
+
 The closed two-block prefix panel has an Anchor-only first block and 64 successful storage-update
 transactions in the second. The immutable `0222` estimate is 998,599,458 literal node PGU for both
 inputs. Its reference actual is 363,477,553 PGU; the sole successor actual is 3,550,141,992 PGU at
@@ -1925,10 +1939,134 @@ storage not represented by observed final Journal keys, unusual lifecycle paths,
 families remain follow-ups. The measured margin may cover later construction in these two inputs,
 but the candidate does not separately price or prove a bound for every such operation.
 In particular, read-filled block-long PlainStorage entry work can grow while X stays small; it is
-the next finite measurement candidate, not an already demonstrated additional deficit. Dispersed
+the next candidate at that checkpoint; later read-cache measurements below confirm a further deficit. Dispersed
 low32 keys with conditional full-hash collisions also need a separate short-comparison check.
 
-`storage_transition_successor.py` authenticates immutable `successors/parent-02223227.json` and
-`successors/storage-transition-v1.json`, preserving inherited pricing objects byte-for-value and
-adding this separate policy, domain, tariff and source/evidence provenance. `generate.py` checks
+At3e335, `storage_transition_successor.py` authenticated immutable `successors/parent-02223227.json`
+and `successors/storage-transition-v1.json`, adding this separate policy/domain/tariff. Their bytes
+remain immutable; current generation instead inherits the3e335 snapshot as described below. `generate.py` checks
 that transform before generating Rust constants. No SP1 resampling is performed by generation.
+
+
+### Candidate: progressive storage read-through reserve
+
+Two closed finite panels use an Anchor-only first block and successful phase-advancing body reads
+in the second. Body slots start at1, are read/checked once and never written; only phase0 changes.
+The89-user point was chosen before measurements solely by EVM gas packing:
+`floor((30M-2*1M)/312223)=89`. Both real Anchor costs remain in actual gas/workload; no startup
+or prefix cost is subtracted. The old3e335 quotes and original SP1b76/SDK6.3 actuals are:
+
+| Input | Actual SP1 PGU |3e335 literal node PGU |3e335 full PGU | Actual charged gas |
+| --- | ---: | ---: | ---: | ---: |
+|64×128 reference |430,578,358|1,643,693,938|1,961,030,144|20,256,761|
+|64×128 sole fresh-G successor |2,954,417,885|1,643,693,938|1,960,992,560|20,256,761|
+|89×128 reference |534,307,327|2,390,442,635|2,769,944,473|28,062,336|
+|89×128 sole fresh-G successor |5,280,821,062|2,390,442,635|2,770,850,065|28,062,336|
+
+The89 successor has measured positive gaps2,890,378,427 node /2,509,970,997 full PGU, exceeding the
+>2B-at<=30Mgas priority screen. Its independently reconstructed245retained body locals have the
+actual target map's ownG equal to the selected fresh reference word and fullH=0. This is local
+hash-chain evidence, not proof of all11,392 placements, whole population or isolated map PGU.
+All four actuals become opened stress/calibration evidence when used for this fix, not holdouts.
+No new input, actual or seed search is requested by this model generation.
+
+The missing scope is read-through work in block-long `CacheAccount.account.storage`. A Journal
+Vacant load calls ordinary State::storage, whose PlainStorage entry inserts a successful value,
+including0. Journal Occupied reads do not query this cache again. StorageWarmed rollback retains
+keys and only restores coldness; StorageChanged restores values. The existing finalization walk
+already captures these physical readonly keys before propagating handler errors. CacheAccount's
+later changed-only commit filtering does not erase entries already cached by reads.
+
+Keep the existing owner-separated all-J union, after-whole-batch C and public field names:
+
+```text
+K(o) <- K(o) union J(o,t)
+C(o) = ceil((|K(o)| + 7*largest_same_low32_group(K(o))) / 8)
+B(o,t) = |J(o,t)| + 2*X(o,t)
+storage_transition_work_units = sum_t,sum_o(C(o) * B(o,t))
+storage_transition_scaled = storage_transition_work_units * 384 * 10^18
+```
+
+J is the actual finalized physical key count, not SLOAD opcode count or declared access-list keys.
+The J term supplies one successful ordinary read-through allowance per key/TX; repeated keys
+across TXs are charged again without duplicating population. Within-TX warm/cold rollback keeps
+the key. X retains the two potential changed-slot forward passes; same-TX noops/REVERTs have X0
+but still pay J work. Committed/attempted isolation, batch atomicity, sticky missing/duplicate/
+overflow errors, Disabled/suspended zero collection, fresh block reset and proposal-once0 remain.
+Diagnostic query_budget validates the additive identity `physical_slot_receipts + 2*changed_slots`;
+nonempty readonly receipts now have positive work. The raw/scaled public API and1e12 work domain
+are unchanged. This replaces the previous budget; it does not add a second copy of2X or discount.
+
+For the89 target owner only, J129/X1 and C_t=1+128t give sumC512729. Work changes from1,025,458
+units to67,167,499, an extra66,142,041units or25,398,543,744PGU. Before requoting, that target-only
+arithmetic predicted node>=27,788,986,379/full>=28,169,393,809. Fresh quotes add another6,144PGU
+for other owners, obtaining27,788,992,523 node and28,169,399,953 full for the89 successor.
+These are the actual new host quote totals, distinct from the retained SP1 measurement.
+
+| Read-cache input | Retained actual SP1 PGU | EEA literal node PGU | EEA full PGU |
+| --- | ---: | ---: | ---: |
+|64×128 reference |430,578,358|14,835,335,026|15,152,671,232|
+|64×128 sole fresh-G successor |2,954,417,885|14,835,335,026|15,152,633,648|
+|89×128 reference |534,307,327|27,788,992,523|28,168,494,361|
+|89×128 sole fresh-G successor |5,280,821,062|27,788,992,523|28,169,399,953|
+
+The89 successor is now5.26225x node/5.33428x full actual; the64 successor is5.02141x/5.12881x.
+The artificial89 reference's52.00938x node overquote remains explicit. The earlier prefix-update
+successor (actual3,550,141,992) now quotes10,971,432,738 node/11,274,050,633 full,3.09042x/3.17566x.
+These synthetic concentration families deliberately trade precision for a conservative price;
+they do not imply an ordinary-mainnet relation changed from2x to5x. A comparable ordinary-workload
+accuracy ratio was not measured by the history sensitivity cohort.
+
+All86 retained inputs were quoted once in37groups, with zero native/SP1 runs, new inputs or
+same-input retries. Across9,642blocks, all inherited components, selectors, public outputs,
+proposal-once values and raw Unzen scores remain exact; only storage-transition units/contribution,
+their additive totals and explicit model/executable identities change. Independent raw-number
+recomputation covers every row/block. All33 numeric full estimates cover their original actuals;
+29 literal-node estimates cover. The four node deficits remain below priority, maximum153,343,319PGU;
+three controls remain explicitly unmeasured. Original program/SDK strata are retained rather than
+presenting mixed-program observations as current-program accuracy certification. This finite
+sample establishes no universal workload bound.
+
+| Historical50-proposal sensitivity metric |3e335 total PGU | EEA total PGU | Additional PGU | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| Literal sum of integer block-node prices |92,887,659,232|92,925,858,400|38,199,168|+0.041124%|
+| Full proposal prices |160,031,170,253|160,069,369,421|38,199,168|+0.023870%|
+
+All50 historical proposals/9600blocks have positive additions. Maximum proposal-node uplift is
+0.082066%; the maximum relative block uplift is0.102877% and maximum absolute block addition
+36,096PGU (different block extrema). Median/p95 block additions are3,840PGU. The small score changes
+do not materially change the earlier price scale for this cohort, but there are **no numeric
+actuals** in these50 proposals:416f/SDK6.1 metadata remains price sensitivity only, never an
+underpricing count or currentb76 precision certification. Material future ordinary-history impact
+still requires discussion before endorsing a model change.
+
+Host verification includes282 author EVM tests,62 Python/model tests, independent full source/model
+review and12 independent behavior tests, then37trace/140default-CLI tests and five strict production
+host clippy targets. The pinned genuine192-block replay changes its component from1,622 to3,699units,
+an exact797,568PGU addition; inherited goldens remain intact. The fresh quote executable
+`401a7e3d…` was built from Raiko200ccc8e-dirty/Reth5d6e281-dirty source, without relabeling old native
+or actual artifacts as new builds. These are cached host gates, without a guest/SDK/ELF rebuild,
+new SP1 measurement or production-program parity claim.
+
+`storage_transition_successor.py` now authenticates immutable `successors/parent-3e335de2.json`
+and `successors/storage-read-cache-v1.json`; every inherited numeric pricing object, proposal-once
+object, ownership list and arithmetic domain must remain exact. The declared384*1e12 domain was
+already present in3e335 and is not added twice. Only work policy/provenance/model identity changes.
+The evidence records `fixture-unzen-prefixed-storage-read-cache-v1` with an explicit
+unpublished-at-model-generation state and null released tag; those generation-time fields stay
+immutable, as do its generation-time repricing/validation flags; later host results are recorded
+here. The four original inputs and their3e335 quotes/raw actuals were subsequently published
+in the [immutable read-cache fixture](https://github.com/taikoxyz/raiko2-atlas/releases/tag/fixture-unzen-prefixed-storage-read-cache-v1)
+at commit`2f92878202a9b80058c0d0fc60ec26c15d188081`. Independent genuine remote download/readback
+verified the tag,9,672,438-byte asset digest, all inner identities and committed integrity commands;
+the prior latest release stayed unchanged. Publication and later requotes do not rewrite model
+identity or original samples. The original prefix-update fixture/evidence is not overwritten.
+
+This remains an empirical comparison reserve, not a universal hash-probe, equality or PGU bound.
+A backend error before Journal insertion is not a successful represented query; valid canonical
+witnesses must resolve missing slots honestly. Custom preseeded caches/bundles, unobserved system
+storage paths, alternate lifecycles, resize/clone/backend/bundle residuals remain qualified TODOs.
+Symbolic long-equality zero-factor layouts and honest absent-zero body reads are separate future
+boundaries; they are not newly measured here and do not alter either closed panel. In particular,
+current shorter-comparison totals do not justify fitting a lower per-unit price before those
+boundaries are tested. No claim of current production guest parity follows from host-source checks.

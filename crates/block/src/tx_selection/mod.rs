@@ -3,7 +3,7 @@
 //! This module provides a unified interface for selecting and executing transactions
 //! from the mempool, used by both the payload builder and the RPC pre-building endpoint.
 
-use alethia_reth_primitives::transaction::is_allowed_tx_type;
+use alethia_reth_primitives::{etna::etna_tx_length, transaction::is_allowed_tx_type};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256};
@@ -21,12 +21,15 @@ use reth_transaction_pool::{
 use tracing::trace;
 
 use self::{
-    limits::{DaRatioState, da_limit_error, exceeds_list_limits, lists_empty_error},
+    limits::{
+        DaRatioState, ListLimitCheck, block_bytes_error, da_limit_error, exceeds_list_limits,
+        lists_empty_error,
+    },
     overflow::ZkGasBudgetExceeded,
 };
 use crate::executor::{TxSelectionExecutor, is_zk_gas_limit_exceeded};
 
-/// DA-limit checking and adaptive zlib sizing helpers.
+/// Per-list limit checks (gas, DA size with adaptive zlib sizing, transaction bytes).
 mod limits;
 /// Memory of zk gas overflows and the execution state each happened at.
 mod overflow;
@@ -37,14 +40,15 @@ pub use overflow::{ZkOverflowMemory, advance_selection_state, selection_state_se
 /// Returns the appropriate pool error for the exceeded limit.
 fn limit_exceeded_error(
     gas_limit: u64,
-    exceeds_gas: bool,
-    exceeds_da: Option<u64>,
+    check: ListLimitCheck,
     config: &TxSelectionConfig,
 ) -> InvalidPoolTransactionError {
-    if exceeds_gas {
+    if check.exceeds_gas {
         InvalidPoolTransactionError::ExceedsGasLimit(gas_limit, config.gas_limit_per_list)
-    } else if let Some(size) = exceeds_da {
+    } else if let Some(size) = check.exceeds_da {
         da_limit_error(size, config.max_da_bytes_per_list)
+    } else if let (Some(size), Some(limit)) = (check.exceeds_bytes, config.max_tx_bytes_per_list) {
+        block_bytes_error(size, limit)
     } else {
         // Caller only invokes this when at least one limit is exceeded;
         // catch logic bugs in dev but avoid crashing in production.
@@ -80,6 +84,13 @@ pub struct TxSelectionConfig {
     pub locals: Vec<Address>,
     /// Digest of the execution state selection starts from; see [`selection_state_seed`].
     pub state_seed: B256,
+    /// Maximum total size, in bytes, of one list's transactions as an Etna executionBlock carries
+    /// them: the sum of their [`etna_tx_length`], where every transaction, legacy included, counts
+    /// its EIP-2718 bytes plus the RLP string header around them. The bound is inclusive. A
+    /// transaction that does not fit the current list starts a new one while `max_lists` allows;
+    /// otherwise it is left out and selection moves on to the next candidate. `None` disables the
+    /// cap; only Etna builds set it.
+    pub max_tx_bytes_per_list: Option<u64>,
 }
 
 /// A successfully executed transaction with metadata.
@@ -102,6 +113,9 @@ pub struct ExecutedTxList {
     pub total_gas_used: u64,
     /// Total DA bytes used by all transactions in this list.
     pub total_da_bytes: u64,
+    /// Total size, in bytes, of the transactions in this list as an Etna executionBlock carries
+    /// them; see [`TxSelectionConfig::max_tx_bytes_per_list`].
+    pub total_tx_bytes: u64,
 }
 
 /// Outcome of the transaction selection process.
@@ -211,7 +225,7 @@ where
             continue;
         }
 
-        // 4. Calculate DA size upfront (needed for limit checks)
+        // 4. Calculate DA size and Etna executionBlock size upfront (needed for limit checks)
         let tx = pool_tx.to_consensus();
         if !is_allowed_tx_type(tx.inner()) {
             best_txs.mark_invalid(
@@ -221,6 +235,7 @@ where
             continue;
         }
         let da_size = tx_estimated_size_fjord_bytes(&tx.encoded_2718());
+        let tx_bytes = etna_tx_length(tx.inner()) as u64;
 
         // 5. Early reject transactions that cannot fit in any list
         if pool_tx.gas_limit() > config.gas_limit_per_list {
@@ -235,6 +250,13 @@ where
         }
         if da_size > config.max_da_bytes_per_list {
             best_txs.mark_invalid(&pool_tx, da_limit_error(da_size, config.max_da_bytes_per_list));
+            continue;
+        }
+        if let Some(limit) = config.max_tx_bytes_per_list &&
+            tx_bytes > limit
+        {
+            trace!(target: "tx_selection", ?pool_tx, tx_bytes, limit, "skipping transaction larger than the list byte budget");
+            best_txs.mark_invalid(&pool_tx, block_bytes_error(tx_bytes, limit));
             continue;
         }
 
@@ -256,20 +278,22 @@ where
         // 6. Check if transaction fits in current list; if not, try starting a new one
         let current_index = lists.len().saturating_sub(1);
         let current = lists.get(current_index).ok_or_else(lists_empty_error)?;
-        let (exceeds_gas, exceeds_da) = exceeds_list_limits(
+        let check = exceeds_list_limits(
             current,
             &tx,
             pool_tx.gas_limit(),
             da_size,
+            tx_bytes,
             &mut da_guard_states[current_index],
             config,
         );
 
-        if exceeds_gas || exceeds_da.is_some() {
+        if check.exceeds_any() {
             if lists.len() >= config.max_lists {
-                let err =
-                    limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
-                best_txs.mark_invalid(&pool_tx, err);
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    limit_exceeded_error(pool_tx.gas_limit(), check, config),
+                );
                 continue;
             }
             // Start a new list
@@ -280,18 +304,20 @@ where
             // where a single tx's actual compressed size exceeds the limit).
             let current_index = lists.len().saturating_sub(1);
             let current = lists.get(current_index).ok_or_else(lists_empty_error)?;
-            let (exceeds_gas, exceeds_da) = exceeds_list_limits(
+            let check = exceeds_list_limits(
                 current,
                 &tx,
                 pool_tx.gas_limit(),
                 da_size,
+                tx_bytes,
                 &mut da_guard_states[current_index],
                 config,
             );
-            if exceeds_gas || exceeds_da.is_some() {
-                let err =
-                    limit_exceeded_error(pool_tx.gas_limit(), exceeds_gas, exceeds_da, config);
-                best_txs.mark_invalid(&pool_tx, err);
+            if check.exceeds_any() {
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    limit_exceeded_error(pool_tx.gas_limit(), check, config),
+                );
                 continue;
             }
         }
@@ -353,9 +379,10 @@ where
         let current = lists.last_mut().ok_or_else(lists_empty_error)?;
         current.total_gas_used += gas_used;
         current.total_da_bytes += da_size;
+        current.total_tx_bytes += tx_bytes;
         current.transactions.push(ExecutedTx { tx, gas_used, da_size });
 
-        trace!(target: "tx_selection", gas_used, da_size, "included transaction from pool");
+        trace!(target: "tx_selection", gas_used, da_size, tx_bytes, "included transaction from pool");
     }
 
     Ok(SelectionOutcome::Completed(lists))
@@ -379,7 +406,7 @@ mod tests {
 
     use super::{
         ExecutedTxList, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
-        advance_selection_state, select_and_execute_pool_transactions,
+        advance_selection_state, etna_tx_length, select_and_execute_pool_transactions,
     };
     use crate::{
         executor::TaikoBlockExecutor,
@@ -416,6 +443,7 @@ mod tests {
             min_tip: 0,
             locals: vec![],
             state_seed,
+            max_tx_bytes_per_list: None,
         }
     }
 
@@ -489,6 +517,18 @@ mod tests {
         list.transactions.iter().map(|etx| *etx.tx.tx_hash()).collect()
     }
 
+    /// Returns the copy of `tx` that `pool` hands to selection. The test pool stores mock
+    /// transactions and rebuilds them with its own placeholder signature, so byte lengths are
+    /// taken from this copy.
+    fn pooled(pool: &TestPool, tx: &Recovered<TransactionSigned>) -> Recovered<TransactionSigned> {
+        pool.get(tx.tx_hash()).expect("test tx should be in the pool").to_consensus()
+    }
+
+    /// Returns the length `tx` adds to an Etna executionBlock, its [`etna_tx_length`].
+    fn etna_len(tx: &Recovered<TransactionSigned>) -> u64 {
+        etna_tx_length(tx.inner()) as u64
+    }
+
     fn select_near_limit_transaction(reserved_zk_gas: u64) -> (SelectionOutcome, u64) {
         let chain_spec = Arc::new(unzen_chain_spec());
         let mut state = State::builder()
@@ -521,6 +561,7 @@ mod tests {
                 min_tip: 0,
                 locals: vec![],
                 state_seed: B256::ZERO,
+                max_tx_bytes_per_list: None,
             },
             &ZkOverflowMemory::default(),
             || false,
@@ -557,6 +598,7 @@ mod tests {
                 min_tip: 0,
                 locals: vec![],
                 state_seed: B256::ZERO,
+                max_tx_bytes_per_list: None,
             },
             &ZkOverflowMemory::default(),
             || false,
@@ -827,6 +869,57 @@ mod tests {
         assert!(lists[0].transactions.is_empty());
         assert_eq!(receipts, 0);
         // Selection stops before running the tx, so nothing is remembered as an overflow.
+        assert!(overflows.is_empty());
+    }
+
+    #[test]
+    fn tx_selection_skips_a_transaction_beyond_the_byte_budget_and_keeps_selecting() {
+        // In tip order: two legacy transactions with 3,000 bytes of calldata, then one with 100.
+        let tx = |caller, tip, input_len| {
+            recovered_tx_with_input(
+                caller,
+                BENCH_SUCCESS_TARGET,
+                0,
+                tip,
+                Bytes::from(vec![0; input_len]),
+            )
+        };
+        let txs = [
+            tx(BENCH_INCLUDED_CALLER, 30, 3_000),
+            tx(BENCH_LATE_CALLER, 20, 3_000),
+            tx(BENCH_SUCCESS_CALLER, 10, 100),
+        ];
+        let accounts = senders(&txs);
+        let pool = testing_pool();
+        add_to_pool(&pool, txs.clone());
+        let [a, b, c] = txs.each_ref().map(|tx| pooled(&pool, tx));
+        let overflows = ZkOverflowMemory::default();
+
+        // `b` does not fit after `a`, so it is left out and `c`, which fits, is still selected.
+        let config = TxSelectionConfig {
+            max_tx_bytes_per_list: Some(etna_len(&a) + etna_len(&c)),
+            ..overflow_test_config(1, B256::ZERO)
+        };
+        let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(list_hashes(&lists[0]), hashes([&a, &c]));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&a) + etna_len(&c));
+        assert_eq!(receipts, 2);
+        // A transaction left out for the byte budget is not a zk gas overflow, and it stays in
+        // the pool for a later block.
+        assert!(overflows.is_empty());
+        assert!(pool.contains(b.tx_hash()));
+
+        // One byte less leaves room for `a` only.
+        let config = TxSelectionConfig {
+            max_tx_bytes_per_list: Some(etna_len(&a) + etna_len(&c) - 1),
+            ..overflow_test_config(1, B256::ZERO)
+        };
+        let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(list_hashes(&lists[0]), hashes([&a]));
+        assert_eq!(lists[0].total_tx_bytes, etna_len(&a));
+        assert_eq!(receipts, 1);
         assert!(overflows.is_empty());
     }
 

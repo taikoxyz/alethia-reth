@@ -127,6 +127,7 @@ reth-payload-validator = { git = "https://github.com/ethereum-optimism/reth", ta
 reth-primitives = { git = "https://github.com/ethereum-optimism/reth", package = "reth-ethereum-primitives", tag = "op-v2.6.0-2", default-features = false }
 reth-primitives-traits = { version = "0.7.1", default-features = false }
 reth-provider = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
+reth-prune-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
 reth-revm = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false, features = [
     "portable",
 ] }

@@ -3,7 +3,8 @@ use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
 use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
-use alloy_primitives::U256;
+use alloy_primitives::{B256, Bloom, U256};
+use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
 use reth_evm::{
@@ -11,10 +12,10 @@ use reth_evm::{
     execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_execution_types::BlockExecutionResult;
-use reth_primitives_traits::logs_bloom;
+use reth_primitives_traits::{SealedHeader, logs_bloom};
 use reth_revm::context::Block as _;
 
-use crate::factory::TaikoBlockExecutionCtx;
+use crate::{config::TaikoNextBlockEnvAttributes, factory::TaikoBlockExecutionCtx};
 
 /// A block assembler for the Taiko network that implements the `BlockAssembler` trait.
 ///
@@ -100,6 +101,45 @@ where
     }
 }
 
+/// Returns an upper bound on the RLP length of every Etna header [`TaikoBlockAssembler`] can
+/// assemble for a block built on `parent` in the environment `attributes` describes.
+///
+/// The bound is the length of a header built the way [`TaikoBlockAssembler::assemble_block`]
+/// builds an Etna header, with the post-execution fields at their longest (`gasUsed` at the gas
+/// limit, a `u64::MAX` zk gas difficulty), so the two must change together; the payload builder
+/// test `etna_header_reserve_bounds_a_maximal_assembled_header` pins them.
+pub fn etna_header_length_bound(
+    parent: &SealedHeader,
+    attributes: &TaikoNextBlockEnvAttributes,
+) -> usize {
+    Header {
+        parent_hash: parent.hash(),
+        ommers_hash: EMPTY_OMMER_ROOT_HASH,
+        beneficiary: attributes.suggested_fee_recipient,
+        state_root: B256::ZERO,
+        transactions_root: B256::ZERO,
+        receipts_root: B256::ZERO,
+        logs_bloom: Bloom::ZERO,
+        difficulty: U256::from(u64::MAX),
+        number: parent.number + 1,
+        gas_limit: attributes.gas_limit,
+        gas_used: attributes.gas_limit,
+        timestamp: attributes.timestamp,
+        extra_data: attributes.extra_data.clone(),
+        mix_hash: attributes.prev_randao,
+        nonce: BEACON_NONCE.into(),
+        base_fee_per_gas: Some(attributes.base_fee_per_gas),
+        withdrawals_root: Some(EMPTY_WITHDRAWALS),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+        parent_beacon_block_root: Some(attributes.parent_beacon_block_root.unwrap_or_default()),
+        requests_hash: Some(EMPTY_REQUESTS_HASH),
+        block_access_list_hash: None,
+        slot_number: None,
+    }
+    .length()
+}
+
 #[cfg(test)]
 mod test {
     use alloy_consensus::{Header, Signed, TxLegacy};
@@ -116,12 +156,12 @@ mod test {
 
     use super::*;
     use crate::factory::{TaikoBlockExecutionCtx, TaikoBlockExecutorFactory};
-    use alethia_reth_evm::spec::TaikoSpecId;
+    use alethia_reth_evm::{env::TaikoEvmEnv, spec::TaikoSpecId};
 
     #[test]
     fn assembled_unzen_block_uses_final_zk_gas_as_difficulty() {
         let assembler = TaikoBlockAssembler;
-        let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut evm_env: TaikoEvmEnv = EvmEnv::default();
         evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
         evm_env.block_env.timestamp = U256::from(1);
@@ -171,7 +211,7 @@ mod test {
     #[test]
     fn assembled_unzen_block_sets_requests_hash() {
         let assembler = TaikoBlockAssembler;
-        let mut evm_env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut evm_env: TaikoEvmEnv = EvmEnv::default();
         evm_env.cfg_env.spec = TaikoSpecId::UNZEN;
         evm_env.block_env.number = U256::from(1);
         evm_env.block_env.timestamp = U256::from(1);

@@ -834,6 +834,27 @@ fn etna_standalone_simulation_counts_intrinsic_against_the_limit() {
 }
 
 #[test]
+fn etna_standalone_intrinsic_charge_respects_the_remaining_budget() {
+    // With less than one intrinsic charge left, the charge itself fails before execution.
+    let reserved = UNZEN_ZK_GAS_SCHEDULE.block_limit - TX_INTRINSIC_ZK_GAS + 1;
+    for inspected in [false, true] {
+        let db = db_with_contract(Bytecode::new_raw(Bytes::from(vec![opcode::STOP])));
+        let mut evm = if inspected {
+            TaikoEvmFactory.create_evm_with_inspector(
+                db,
+                evm_env(TaikoSpecId::ETNA),
+                NoOpInspector {},
+            )
+        } else {
+            TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::ETNA))
+        };
+        evm.reserve_block_zk_gas(reserved).expect("reserve fits");
+        let error = evm.transact(tx_env(21_000)).expect_err("intrinsic exceeds the budget");
+        assert_eq!(error.to_string(), ZK_GAS_LIMIT_ERR);
+    }
+}
+
+#[test]
 fn etna_system_calls_do_not_charge_transaction_intrinsic() {
     for inspected in [false, true] {
         let db = db_with_contract(Bytecode::new_raw(Bytes::from(vec![opcode::STOP])));

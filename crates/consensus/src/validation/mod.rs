@@ -181,7 +181,7 @@ where
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
 
-        // Non-genesis Etna headers use the 13-byte [pctg | proposalId(6) | anchorBlockNumber(6)]
+        // Non-genesis Etna headers use the 13-byte [pctg | generation(6) | anchorBlockNumber(6)]
         // layout, and Shasta/Unzen headers the 7-byte [pctg | proposalId(6)] layout — the only
         // shapes the drivers produce. Reject anything else at import so a misbehaving block
         // producer fails loudly here instead of minting headers whose fields consumers cannot

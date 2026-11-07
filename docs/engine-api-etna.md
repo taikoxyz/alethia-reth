@@ -39,28 +39,33 @@ post-Shasta timestamp ordering. It removes the anchor transaction:
 
 For the two anchor fields, the execution layer checks only that the root is nonzero and that
 `extraData` has 13 bytes. It does not fetch L1 data, decode the anchor number, or compare anchors
-with the parent's, or enforce the first byte's value or the generation. The application derives and
-checks those fields under SPEC.md sections 3.2–3.4, and prover guests authenticate the anchor against
-L1 headers. The root is the L1 anchor's execution state root, not its block hash. `l1Origin` is
-driver bookkeeping; the Etna client records the anchor's number and hash there.
+with the parent's, or enforce the first byte's value or the generation. The Etna client (the
+taiko-client-rs ABCI application) derives and checks those fields under SPEC.md sections 3.2–3.4,
+and prover guests authenticate the anchor against L1 headers. The root is the L1 anchor's execution
+state root, not its block hash. `l1Origin` is driver bookkeeping; the Etna client records the
+anchor's number and hash there.
 
-Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0 (100), `generation` bytes 1..6, and
-`anchorBlockNumber` bytes 7..12. Both `uint48` fields are big-endian and must fit without
-truncation, and `anchorBlockNumber` is the final value after validation and inheritance. Shasta and
-Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2 genesis header keeps
-a zero root, is exempt from the `extraData` and body rules, and performs no EIP-4788 call.
+Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0, `generation` bytes 1..6, and
+`anchorBlockNumber` bytes 7..12. SPEC.md CONS-3.2-5 fixes byte 0 at 100; the EL applies byte 0 as
+the base-fee share but does not enforce its value. Both `uint48` fields are big-endian and must fit
+without truncation, and `anchorBlockNumber` is the final value after validation and inheritance.
+Shasta and Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2 genesis
+header keeps a zero root, is exempt from the `extraData` and body rules, and performs no EIP-4788
+call.
 
 ### Gas limits and base fee
 
 For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` contain no legacy
 1,000,000 gas anchor reserve, and the builder uses the complete supplied limit for ordinary
 transactions. EIP-4396 always uses the raw parent header's `gasLimit` and `gasUsed`, including at
-the boundary, where the parent still contains the anchor. SPEC.md section 3.2 fixes the target gas
+the boundary, where the parent still contains the anchor. SPEC.md section 3.2 fixes the block gas
 limit to the chain constant and defines the EIP-4396 base fee.
 
-Standalone Etna `eth_call` and `eth_estimateGas` runs each start with the full block zk-gas budget,
-including the transaction's intrinsic zk gas. An over-limit call returns an explicit zk-limit error.
-System calls have no transaction intrinsic charge, and pre-Etna RPC accounting stays unchanged.
+Standalone Etna simulations (`eth_call`, `eth_estimateGas`, `debug_traceCall` and similar calls, and
+the replays behind transaction and block traces) charge each transaction's intrinsic zk gas, and
+every run or replayed transaction starts from the full block zk-gas budget. An over-limit run
+answers JSON-RPC `-32603` with the message `Revm error: zk gas limit exceeded`. System calls have no
+transaction intrinsic charge, and pre-Etna RPC accounting stays unchanged.
 
 ## Engine API methods
 
@@ -76,7 +81,8 @@ The V2 methods are not served. Version and fork checks follow the standard Osaka
 Taiko activates Cancun, Prague, and Osaka at Unzen, so the three methods reject a target before
 Unzen; every network has already activated Unzen. `getPayloadV5` checks the resolved job's own
 timestamp, so a later head change or reorg does not affect an existing job. An ID stays retrievable
-only while the unchanged upstream payload store retains it.
+only while the unchanged upstream payload store retains it. That store keeps one resolved payload,
+so once a later build resolves, an earlier ID answers `-38001`.
 
 A `null`-attribute FCU performs normal forkchoice validation and returns no payload ID. Non-`VALID`
 FCU results are returned as statuses without publishing L1-origin or proposal metadata, so drivers
@@ -159,14 +165,16 @@ internal payload ranking still uses actual fees.
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
 | An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays; with attributes, also a build on that ancestor (never `-38006`) |
-| A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
+| A transaction whose signer cannot be recovered | Payload status `INVALID` |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.
 
 `-38100` is definitive: the node cannot build on that parent, so the client must halt rather than
-retry. It appears only when an Etna FCUv3 build fails because the parent's state is pruned; every
-other build failure is transient, and `getPayloadV5` never answers `-38100`.
+retry. It appears only when an Etna FCUv3 build fails because the parent's state is pruned, and
+`getPayloadV5` never answers `-38100`. Every other build failure answers `-32603` without saying
+whether it is transient; the deterministic ones, such as a sealed block above `maxBlockBytes`, are
+not reachable with valid attributes.
 
 ### FCU attributes
 
@@ -232,6 +240,6 @@ also enforce `maxBlockBytes` ([byte limit](#byte-limit)), which preselection doe
 
 `--devnet-etna-timestamp <TIMESTAMP>` (or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP`) schedules Etna at
 that timestamp on canonical Taiko devnet or on a custom Genesis JSON whose fields outside `alloc`
-match canonical devnet; other chains log a warning and keep their schedule. `0` activates Etna at
+match canonical devnet; on any other chain the flag fails startup. `0` activates Etna at
 genesis. Offline commands such as `stage run` and `re-execute` cannot reproduce an overridden
 schedule. See the [custom genesis recipe](../README.md#custom-devnet-genesis-with-etna).

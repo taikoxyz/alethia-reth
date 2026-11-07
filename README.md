@@ -90,14 +90,20 @@ configuration, see the [Etna Engine API guide](docs/engine-api-etna.md).
 ## Custom devnet genesis with Etna
 
 No built-in genesis predeploys the EIP-4788 (`0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`) or
-EIP-2935 (`0x0000F90827F1C53a10cb7A02335B175320002935`) system contracts. To have both at genesis,
-copy [`crates/chainspec/src/genesis/devnet.json`](crates/chainspec/src/genesis/devnet.json), add
-their canonical runtime bytecode to `alloc` only (every other field must match canonical devnet),
-and start a fresh node with the [Etna override](docs/engine-api-etna.md#devnet-activation-override):
+EIP-2935 (`0x0000F90827F1C53a10cb7A02335B175320002935`) system contracts, and canonical devnet's
+`alloc` still holds the pre-Etna `Anchor`. Do not only add the two system contracts to that alloc:
+with Etna active, the old `anchorV4` stays callable with the public golden-touch key, so anyone
+could save a forged L1 checkpoint. Build the genesis with taiko-mono's
+`packages/protocol/script/layer2/build_etna_genesis.py`
+([taikoxyz/taiko-mono#22286](https://github.com/taikoxyz/taiko-mono/pull/22286)) and pass
+[`crates/chainspec/src/genesis/devnet.json`](crates/chainspec/src/genesis/devnet.json) as `--base`.
+It changes only `alloc`, installing both system contracts, the Etna `Anchor` with `etnaTimestamp`
+0, and `SignalServiceL2`. Then start a fresh node with the
+[Etna override](docs/engine-api-etna.md#devnet-activation-override) at that same timestamp, `0`:
 
 ```sh
-./target/release/alethia-reth node --chain ./custom-devnet.json \
-  --devnet-etna-timestamp 0 --datadir ./custom-devnet-data
+./target/release/alethia-reth node --chain ./etna-devnet.json \
+  --devnet-etna-timestamp 0 --datadir ./etna-devnet-data
 ```
 
 ## License

@@ -592,7 +592,7 @@ mod test {
         let mutations: &[fn(&mut TaikoPayloadAttributes)] = &[
             // A zero root is the pre-Etna shape and must not alias an Etna job.
             |a| a.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
-            // proposalId is bytes 1..=6 and anchorBlockNumber bytes 7..=12.
+            // generation is bytes 1..=6 and anchorBlockNumber bytes 7..=12.
             |a| {
                 a.block_metadata.extra_data =
                     Bytes::from_static(&[50, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 9])

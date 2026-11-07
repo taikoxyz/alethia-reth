@@ -317,6 +317,11 @@ where
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Executes a prover candidate block and returns the transactions that were actually committed.
+    ///
+    /// Invalid non-anchor transactions are skipped and zk gas exhaustion stops the list, as in a
+    /// given-list build. At Etna this serves candidate lists such as a forced-inclusion singleton
+    /// build; it must not validate a committed Etna block, which
+    /// [`BlockExecutor::execute_block`] executes without filtering.
     pub fn execute_block_with_committed_transactions<'tx>(
         mut self,
         transactions: impl IntoIterator<Item = Recovered<&'tx R::Transaction>>,
@@ -354,9 +359,9 @@ where
 /// Shared prover-mode filter: executes a single transaction and classifies the failure.
 ///
 /// Lives on the inherent impl so both [`Self::execute_block_with_committed_transactions`] and the
-/// trait-level [`BlockExecutor::execute_block`] route through one place — the filtering rules
-/// (zk gas truncation, invalid tx, gas-exceeds-block) cannot drift between the two prover entry
-/// points.
+/// pre-Etna trait-level [`BlockExecutor::execute_block`] route through one place — the filtering
+/// rules (zk gas truncation, invalid tx, gas-exceeds-block) cannot drift between the two prover
+/// entry points.
 #[cfg(feature = "prover")]
 impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
 where
@@ -613,7 +618,13 @@ where
     }
 
     /// Executes all transactions in a block, applying pre and post execution changes.
-    /// NOTE: For proving system, we skip the invalid transactions directly inside this function.
+    ///
+    /// Before Etna, the proving system re-derives blocks from candidate lists, so this skips
+    /// invalid non-anchor transactions and stops at zk gas exhaustion. An Etna block is a
+    /// committed list (SPEC PROOF-6.2-22/23): every listed transaction must execute exactly as on
+    /// node import, so an unrecoverable signer (the zero address), a blob transaction or any
+    /// execution error fails the whole block. Candidate-list derivation at Etna, such as a forced
+    /// inclusion singleton build, uses [`Self::execute_block_with_committed_transactions`].
     #[cfg(feature = "prover")]
     fn execute_block(
         mut self,
@@ -624,13 +635,27 @@ where
     {
         self.apply_pre_execution_changes()?;
 
-        let requires_legacy_anchor = !self.spec.is_etna_active(self.evm.block().timestamp().to());
-        for (idx, tx) in transactions.into_iter().enumerate() {
-            let is_anchor_transaction = requires_legacy_anchor && idx == 0;
-            let (tx_env, tx) = tx.into_parts();
-            if !requires_legacy_anchor && tx.tx().is_eip4844() {
-                continue;
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
+            for (idx, tx) in transactions.into_iter().enumerate() {
+                let (tx_env, tx) = tx.into_parts();
+                if *tx.signer() == Address::ZERO {
+                    return Err(BlockExecutionError::Validation(BlockValidationError::msg(
+                        format!("Etna transaction {idx} has no recoverable signer"),
+                    )));
+                }
+                if tx.tx().is_eip4844() {
+                    return Err(BlockExecutionError::Validation(BlockValidationError::msg(
+                        format!("Etna transaction {idx} is a blob transaction"),
+                    )));
+                }
+                self.execute_transaction((tx_env, tx))?;
             }
+            return self.apply_post_execution_changes();
+        }
+
+        for (idx, tx) in transactions.into_iter().enumerate() {
+            let is_anchor_transaction = idx == 0;
+            let (tx_env, tx) = tx.into_parts();
             // Check transaction signature at first, if invalid, skip it directly.
             if !is_anchor_transaction && *tx.signer() == Address::ZERO {
                 continue;

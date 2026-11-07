@@ -1044,6 +1044,30 @@ mod test {
         );
     }
 
+    #[test]
+    fn etna_executor_charges_transaction_intrinsic_once() {
+        let mut db = db_with_contracts(&[(BENCH_CALLER, 0)]);
+        insert_contract(
+            &mut db,
+            BENCH_SUCCESS_TARGET,
+            Bytecode::new_raw(Bytes::from(vec![opcode::STOP])),
+        );
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let ctx = etna_execution_ctx(B256::with_last_byte(1));
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx.clone(),
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().expect("block-start system calls");
+        executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
+            .unwrap();
+        assert_eq!(ctx.finalized_block_zk_gas(), 243_000);
+    }
+
     #[cfg(feature = "prover")]
     #[test]
     fn execute_block_stops_after_non_anchor_zk_gas_exhaustion() {

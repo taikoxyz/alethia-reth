@@ -6,10 +6,10 @@ unscheduled (`ForkCondition::Never`), so the Etna rules are a handoff, not an ac
 The Engine API method change is not gated on Etna: it applies to Unzen traffic as soon as a node
 runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
-Derivation rules live in taiko-mono's `packages/protocol/docs/Derivation.md`
-([taikoxyz/taiko-mono#22189](https://github.com/taikoxyz/taiko-mono/pull/22189), which includes
-[#22237](https://github.com/taikoxyz/taiko-mono/pull/22237); checked at `5d35cdd`) and track
-[taikoxyz/taiko-mono#22147](https://github.com/taikoxyz/taiko-mono/issues/22147). Activation
+Etna block production and validation follow taiko-mono's
+[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/49df560256c3f20f0868f6c6e555443c2b1fd669/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks)
+and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/49df560256c3f20f0868f6c6e555443c2b1fd669/packages/protocol/docs/etna/ANCHORLESS.md).
+The older proposal-based `Derivation.md` describes the pre-Etna flow. Activation
 prerequisites and open work are listed in the description of
 [taikoxyz/alethia-reth#248](https://github.com/taikoxyz/alethia-reth/pull/248).
 
@@ -31,7 +31,7 @@ post-Shasta timestamp ordering. It removes the anchor transaction:
 | Field | Non-genesis Etna rule |
 | --- | --- |
 | `parentBeaconBlockRoot` | Nonzero. It is the execution state root of the L1 block at the final `anchorBlockNumber`. |
-| `extraData` | Exactly 13 bytes: `[basefeeSharingPctg(1) \| proposalId(6) \| anchorBlockNumber(6)]`. |
+| `extraData` | Exactly 13 bytes: `[100(1) \| generation(6) \| anchorBlockNumber(6)]` under the Etna production rules. |
 | `withdrawalsRoot` | The empty withdrawals root; the body carries no withdrawals. |
 | `blobGasUsed`, `excessBlobGas` | `0`. |
 | `requestsHash` | `sha256("")`. |
@@ -39,12 +39,12 @@ post-Shasta timestamp ordering. It removes the anchor transaction:
 
 For the two anchor fields, the execution layer checks only that the root is nonzero and that
 `extraData` has 13 bytes. It does not fetch L1 data, decode the anchor number, or compare anchors
-with the parent's. Drivers derive both values, including inherited anchors and the genesis case, as
-Derivation.md specifies, and prover guests authenticate them against L1 headers. The root is neither
-the L1 anchor block hash nor `l1Origin.l1BlockHash`, which is the L1 block that included the
-proposal.
+with the parent's, or enforce the first byte's value or the generation. The application derives and
+checks those fields under SPEC.md sections 3.2–3.4, and prover guests authenticate the anchor against
+L1 headers. The root is the L1 anchor's execution state root, not its block hash. `l1Origin` is
+driver bookkeeping; the Etna client records the anchor's number and hash there.
 
-Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0, `proposalId` bytes 1..6, and
+Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0 (100), `generation` bytes 1..6, and
 `anchorBlockNumber` bytes 7..12. Both `uint48` fields are big-endian and must fit without
 truncation, and `anchorBlockNumber` is the final value after validation and inheritance. Shasta and
 Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2 genesis header keeps
@@ -55,8 +55,12 @@ a zero root, is exempt from the `extraData` and body rules, and performs no EIP-
 For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` contain no legacy
 1,000,000 gas anchor reserve, and the builder uses the complete supplied limit for ordinary
 transactions. EIP-4396 always uses the raw parent header's `gasLimit` and `gasUsed`, including at
-the boundary, where the parent still contains the anchor. Derivation.md defines how drivers derive
-target limits from the manifest.
+the boundary, where the parent still contains the anchor. SPEC.md section 3.2 fixes the target gas
+limit to the chain constant and defines the EIP-4396 base fee.
+
+Standalone Etna `eth_call` and `eth_estimateGas` runs each start with the full block zk-gas budget,
+including the transaction's intrinsic zk gas. An over-limit call returns an explicit zk-limit error.
+System calls have no transaction intrinsic charge, and pre-Etna RPC accounting stays unchanged.
 
 ## Engine API methods
 

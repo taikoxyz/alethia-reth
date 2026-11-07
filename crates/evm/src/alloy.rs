@@ -26,7 +26,7 @@ use crate::{
     handler::{TaikoEvmHandler, get_treasury_address},
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::ZkGasInspector,
+        adapter::{ZK_GAS_LIMIT_ERR, ZkGasInspector},
         meter::{ZkGasMeter, ZkGasOutcome},
     },
 };
@@ -58,12 +58,22 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
+    /// Whether standalone Etna execution charges transaction intrinsic zk gas after resetting
+    /// the meter. System calls temporarily disable this because they are not block transactions.
+    /// The block executor disables the entry reset and owns its intrinsic charge separately.
+    charge_intrinsic_per_transact: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
+        Self {
+            inner: evm,
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+            charge_intrinsic_per_transact: true,
+        }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -393,6 +403,14 @@ where
         // reach the meter through the block executor.
         if self.reset_zk_gas_per_transact {
             self.reset_transaction_zk_gas();
+            // Etna standalone simulations use the same transaction charge as block execution.
+            // Keep pre-Etna RPC accounting unchanged and let the block executor charge its own.
+            if self.charge_intrinsic_per_transact &&
+                self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
+                let Err(ZkGasOutcome::LimitExceeded) = self.charge_tx_intrinsic_zk_gas()
+            {
+                return Err(EVMError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
+            }
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
         self.ctx_mut().set_tx(tx);
@@ -500,6 +518,7 @@ where
         let mut gas_limit = tx.gas_limit;
         let mut basefee = 0;
         let mut disable_nonce_check = true;
+        let mut charge_intrinsic = false;
 
         // ensure the block gas limit is >= the tx
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
@@ -507,6 +526,7 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // disable the nonce check
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         let mut res = self.transact(tx);
 
@@ -516,6 +536,7 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // swap back to the previous nonce check flag
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         // NOTE: We assume that only the contract storage is modified. Revm currently marks the
         // caller and block beneficiary accounts as "touched" when we do the above transact calls,

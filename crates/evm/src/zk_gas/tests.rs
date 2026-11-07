@@ -776,6 +776,85 @@ spawn_limit_test!(create_limit_rejection_prevents_child_dispatch, SpawnFamily::C
 spawn_limit_test!(create2_limit_rejection_prevents_child_dispatch, SpawnFamily::Create2);
 
 #[test]
+fn etna_standalone_simulation_charges_intrinsic_once_per_run() {
+    for (spec, expected) in [(TaikoSpecId::UNZEN, 0), (TaikoSpecId::ETNA, 243_000)] {
+        for inspected in [false, true] {
+            let db = db_with_contract(Bytecode::new_raw(Bytes::from(vec![opcode::STOP])));
+            let mut evm = if inspected {
+                TaikoEvmFactory.create_evm_with_inspector(db, evm_env(spec), NoOpInspector {})
+            } else {
+                TaikoEvmFactory.create_evm(db, evm_env(spec))
+            };
+            for _ in 0..2 {
+                let result = evm.transact(tx_env(21_000)).expect("standalone transfer");
+                assert!(result.result.is_success());
+                assert_eq!(evm.meter().unwrap().tx_zk_gas_used(), expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn etna_standalone_simulation_counts_intrinsic_against_the_limit() {
+    // Hash 38,361 words: dynamic work alone costs about 99.8M zk gas, but adding the
+    // transaction intrinsic exceeds 100M. Unzen retains its historical RPC accounting.
+    let code = Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH3,
+        0x12,
+        0xbb,
+        0x20,
+        opcode::PUSH0,
+        opcode::KECCAK256,
+        opcode::STOP,
+    ]));
+    for spec in [TaikoSpecId::UNZEN, TaikoSpecId::ETNA] {
+        for inspected in [false, true] {
+            let mut evm = if inspected {
+                TaikoEvmFactory.create_evm_with_inspector(
+                    db_with_contract(code.clone()),
+                    evm_env(spec),
+                    NoOpInspector {},
+                )
+            } else {
+                TaikoEvmFactory.create_evm(db_with_contract(code.clone()), evm_env(spec))
+            };
+            let result = evm.transact(tx_env(4_000_000));
+            if spec == TaikoSpecId::ETNA {
+                assert!(
+                    result
+                        .expect_err("intrinsic pushes Etna over its budget")
+                        .to_string()
+                        .contains(ZK_GAS_LIMIT_ERR)
+                );
+            } else {
+                assert!(result.expect("legacy simulation remains unchanged").result.is_success());
+            }
+        }
+    }
+}
+
+#[test]
+fn etna_system_calls_do_not_charge_transaction_intrinsic() {
+    for inspected in [false, true] {
+        let db = db_with_contract(Bytecode::new_raw(Bytes::from(vec![opcode::STOP])));
+        let mut evm = if inspected {
+            TaikoEvmFactory.create_evm_with_inspector(
+                db,
+                evm_env(TaikoSpecId::ETNA),
+                NoOpInspector {},
+            )
+        } else {
+            TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::ETNA))
+        };
+        evm.transact_system_call(Address::with_last_byte(0xfe), BENCH_TARGET, Bytes::new())
+            .unwrap();
+        assert_eq!(evm.meter().unwrap().tx_zk_gas_used(), 0);
+        evm.transact(tx_env(21_000)).expect("normal transaction after system call");
+        assert_eq!(evm.meter().unwrap().tx_zk_gas_used(), 243_000);
+    }
+}
+
+#[test]
 fn transact_meters_each_run_from_zero_on_a_reused_evm() {
     // RPC helpers like `eth_estimateGas` build one EVM and re-run the same transaction many
     // times (initial run, optimistic run, binary search). Every run must meter against a fresh

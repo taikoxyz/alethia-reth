@@ -67,7 +67,7 @@ impl fmt::Display for InvalidEtnaExtraData {
         write!(
             f,
             "Etna block {} requires {ETNA_EXTRA_DATA_LEN}-byte extraData \
-             [basefeeSharingPctg | proposalId | anchorBlockNumber], got {} bytes",
+             [basefeeSharingPctg | generation | anchorBlockNumber], got {} bytes",
             self.block_number, self.len
         )
     }

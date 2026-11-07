@@ -5,7 +5,7 @@
 pub const SHASTA_EXTRA_DATA_LEN: usize = 7;
 
 /// Exact length of the non-genesis Etna extra data layout:
-/// `[basefeeSharingPctg | proposalId(6) | anchorBlockNumber(6)]`, both `uint48` big-endian.
+/// `[basefeeSharingPctg | generation(6) | anchorBlockNumber(6)]`, both `uint48` big-endian.
 /// The execution layer checks only the length; derivation and provers own the anchor number.
 pub const ETNA_EXTRA_DATA_LEN: usize = 13;
 

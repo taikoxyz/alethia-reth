@@ -50,12 +50,6 @@ truncation, and `anchorBlockNumber` is the final value after validation and inhe
 Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2 genesis header keeps
 a zero root, is exempt from the `extraData` and body rules, and performs no EIP-4788 call.
 
-Shared consensus enforces these rules, so P2P downloads, backfill, staged sync, and
-`engine_newPayloadV4` reject the same blocks. alethia-reth's execution ignores the withdrawals and
-blob-gas commitments, while taiko-geth's Taiko `Finalize` credits `body.Withdrawals` and its header
-check requires only a non-nil `withdrawalsHash`, so every client must reject these commitments at
-import.
-
 ### Gas limits and base fee
 
 For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` contain no legacy
@@ -92,16 +86,10 @@ Dropping V2 takes effect as soon as a node runs this version, not when Etna acti
 call a driver makes moves to the three methods above, including L1 derivation, preconfirmation
 import, set-head FCUs, and beacon sync, and Unzen traffic follows the same
 [FCU attributes](#fcu-attributes) and [V5 normalization](#v5-normalization-and-v4-import) rules.
-Release this version together with both drivers, and upgrade each node's execution client and
-driver together. Both drivers' CI runs against `alethia-reth:main`, so their switches must merge in
-the same window as this change. taiko-geth's FCUv3, getPayloadV5, and newPayloadV4 handlers accept
-Unzen timestamps, but no driver has run Unzen through them yet, so run Unzen round trips against
-both execution clients before the release.
 
-Neither execution client builds or imports a pre-Unzen block through these methods. A node whose
+Neither alethia-reth nor taiko-geth builds or imports a pre-Unzen block through these methods. A node whose
 head is before Unzen can catch up only through P2P sync or a post-Unzen snapshot; L1 derivation
-alone stops at the pre-Unzen rejection. The `--devnet-unzen-timestamp` override is removed, so the
-devnet always activates Unzen at genesis.
+alone stops at the pre-Unzen rejection.
 
 Drivers keep computing the pre-Etna `l1Origin.buildPayloadArgsId` exactly as before: version byte 2
 and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Both drivers compare the
@@ -110,10 +98,11 @@ would re-insert blocks preconfirmed before the upgrade. An Etna job's fingerprin
 preimage with version byte 2 plus its nonzero `parentBeaconBlockRoot`, hashed between the withdrawals
 and the transaction-list hash; `extraData` is hashed for every job. After `extraData`, an Etna job
 hashes `0x01 ‖ u64_be(maxBlockBytes)` (big-endian, eight bytes), so jobs with different byte
-bounds get distinct IDs. Pre-Etna jobs carry no byte bound, so their IDs are unchanged. alethia-reth stamps every payload ID this way, so its FCUv3 IDs for Unzen jobs keep their
-V2-era values. taiko-client-rs computes the fingerprint with alethia-reth's `payload_id_taiko`, so it
-must move to this alethia-reth version together with its FCUv3 switch: earlier versions also hash a
-zero root, which changes every Unzen fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
+bounds get distinct IDs. Pre-Etna jobs carry no byte bound, so their IDs are unchanged.
+alethia-reth stamps every payload ID this way, so its FCUv3 IDs for Unzen jobs keep their V2-era
+values. taiko-client-rs computes the fingerprint with alethia-reth's `payload_id_taiko`, so it must
+move to this alethia-reth version together with its FCUv3 switch: earlier versions also hash a zero
+root, which changes every Unzen fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
 
 ### V5 normalization and V4 import
 
@@ -165,69 +154,15 @@ internal payload ranking still uses actual fees.
 | An Etna FCUv3 build that fails on a parent whose state is pruned | JSON-RPC `-38100` (`cannot build on parent`; `data` is diagnostic text) |
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
-| An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays, unless the node runs with `--engine.allow-unwind-canonical-header`, which moves it back to that ancestor; with attributes, also a build on that ancestor (never `-38006`) |
+| An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays; with attributes, also a build on that ancestor (never `-38006`) |
 | A transaction with a malformed signature | Possibly a JSON-RPC internal error instead of `INVALID` (upstream Reth) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.
 
-`-38100` is definitive: the node cannot build on that parent and the client must halt rather than
-retry. alethia-reth never answers `-38006` (too deep reorg): its chain spec selects Reth's OP Stack
-forkchoice handling, which accepts an FCU to any canonical ancestor, including one below the
-finalized block, without moving the head unless the node runs with
-`--engine.allow-unwind-canonical-header` (see
-[Rewinding for governance recovery](#rewinding-for-governance-recovery)). Reth reports every failed
-build as `missing payload`, so after an Etna FCUv3 build fails the node reads the parent's state
-once more and answers `-38100` only when that read reports the state pruned: `StateAtBlockPruned`,
-or `InsufficientChangesets` for a block below the history prune boundary. Every other failure keeps
-its answer and is transient: timeouts, `SYNCING`, unknown blocks, a missing Finish checkpoint, and
-any other build error. `getPayloadV5` never answers `-38100`.
-
-### Rewinding for governance recovery
-
-After a governance recovery, the driver rewinds the execution layer to the last checkpoint block `c`
-and builds the recovered chain from `c + 1`. A normal node never moves its head back: an FCU whose
-head is a canonical ancestor answers `VALID` and leaves the head where it is, and with attributes it
-builds on that ancestor without making it canonical. Moving the head back needs Reth's
-`--engine.allow-unwind-canonical-header`, under which every FCU to a canonical ancestor, with or
-without attributes, unwinds the canonical chain to that ancestor at once. Never run a validator or
-lander execution layer with that flag permanently: the routine FCUs that drivers send to older
-canonical parents, for example to re-check an earlier block, would unwind the chain.
-
-Rewind with this one-shot procedure:
-
-1. Stop all Engine API traffic to the node and restart it once with both
-   `--engine.allow-unwind-canonical-header` and
-   `--engine.always-process-payload-attributes-on-canonical-head`.
-2. Send exactly one `engine_forkchoiceUpdatedV3` with `headBlockHash`, `safeBlockHash`, and
-   `finalizedBlockHash` all set to the hash of block `c`, and `null` attributes. It answers `VALID`
-   without a payload ID, and from then on `eth_blockNumber` returns `c`. The node removes the
-   persisted blocks above `c` in the background, so `eth_getBlockByNumber` can keep returning block
-   `c + 1` for a while. Poll it until it returns `null`, with a time bound that allows for the
-   number of blocks above `c`; a non-null answer before the bound runs out is not a failure. If
-   block `c + 1` is still present when the bound runs out, halt and hand the node to an operator,
-   who continues with step 3.
-3. Stop the node gracefully (SIGTERM, which lets it finish a removal still in progress) and restart
-   it without the two flags. `eth_blockNumber` returns `c`, block `c` keeps its hash, block `c + 1`
-   is absent, and the `safe` and `finalized` tags resolve to block `c`. If block `c + 1` is still
-   present, for example after an ungraceful stop, repeat from step 1.
-4. Resume normal driving. Repeating the step 2 FCU is now a no-op, and an FCU with attributes on `c`
-   builds block `c + 1`, which `engine_newPayloadV4` and an FCU make canonical as usual. Later
-   restarts keep the new chain.
-
-Without the unwind flag, the step 2 FCU still answers `VALID`, but `eth_blockNumber` keeps the old
-head and block `c + 1` never goes away, so drivers must check both before building on `c`. The
-second flag changes nothing on alethia-reth, whose forkchoice handling already processes attributes
-on canonical ancestors at any depth; it is part of the procedure so the procedure does not rely on
-that. With or without the flags, an FCU with attributes to a canonical ancestor below the finalized
-block builds on it instead of answering `-38006`; with the flags, it also unwinds the head to that
-ancestor.
-
-The rewind does not touch alethia-reth's L1-origin records: `taiko_headL1Origin` keeps naming the
-old head until the next build that is not a preconfirmation records an origin, and the records above
-`c` remain until rebuilt blocks replace them. On a node that runs `--proofs-history`, the
-proof-history store does not see the rewind either: it waits until the canonical chain passes its
-old head and then reconciles as it does after any reorg it missed.
+`-38100` is definitive: the node cannot build on that parent, so the client must halt rather than
+retry. It appears only when an Etna FCUv3 build fails because the parent's state is pruned; every
+other build failure is transient, and `getPayloadV5` never answers `-38100`.
 
 ### FCU attributes
 
@@ -235,18 +170,15 @@ Every FCUv3 request with attributes sends `withdrawals: []`, a `parentBeaconBloc
 Unzen and the nonzero anchor state root for Etna), and a `blockMetadata.timestamp` equal to
 `payloadAttributes.timestamp`. For an Etna target, also send no `anchorTransaction` and exactly 13
 bytes of `blockMetadata.extraData`. That field keeps its Base64 encoding; do not send hex.
-An explicit transaction list, including an empty one, is derived input; an absent list selects from
-the transaction pool.
 
 Etna attributes carry one additional top-level member next to `anchorTransaction`:
 
 | Member | Type | Rule |
 | --- | --- | --- |
-| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. The built block's `rlp([header, [tx…]])`, including its outer list header and with every transaction as an RLP byte string of its EIP-2718 bytes ([byte limit](#byte-limit)), is at most this many bytes. Rejected before Etna. |
+| `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. Bounds the built block's length ([byte limit](#byte-limit)). Rejected before Etna. |
 
 The existing `blockMetadata.txList` selects the build mode: present (including an empty list)
-means a given-list build; absent means a pool build. FI ordering and queue decisions belong to
-the driver, using the same generic given-list interface described below.
+means a given-list build; absent means a pool build.
 
 ### Build modes
 
@@ -265,27 +197,13 @@ receipt, or fee behind. An ordinary EVM revert or out-of-gas is included and cha
 - **Pool.** The builder selects from its own transaction pool by effective tip, within the gas,
   zk-gas, and byte budgets left. As build policy, not a consensus rule, a pool transaction that
   exceeds the zk-gas limit is discarded together with its sender's later nonces and selection
-  continues with other senders. The builder remembers such transactions and bounds the work spent on
-  overflowing trials: once the gas limits of remembered transactions that overflow again add up to
-  the pool's gas budget, it skips remembered transactions, and once those of first-time overflows
-  do, it stops selecting.
+  continues with other senders.
 
 #### Driver-owned forced inclusion
 
-The driver authenticates and classifies the FI entry, obtains ordinary candidates if desired,
-and submits an ordered `blockMetadata.txList` of `[FI, ordinary…]`. The EL applies ordinary
-given-list execution and byte limits; it does not know the FI queue or select pool transactions
-after a privileged first transaction. With the protocol's 124,000-byte block limit, an eligible
-FI transaction of at most 8,192 bytes fits before optional ordinary transactions consume bytes.
-
-The driver detects inclusion by comparing the keccak256 of transaction 0's EIP-2718 encoding
-with the entry's `txHash`. To establish a legal skip, it builds `[FI]` alone on the committed
-parent with the same block attributes, `maxBlockBytes=124000`, and full gas/zk-gas budgets.
-Only a completed empty singleton build can authorize skipping an otherwise eligible transaction;
-an omission from a longer candidate list or an RPC failure is not skip evidence. If the FI
-attempt yields an empty block, the driver may request a separate pool build for ordinary work.
-Candidate acquisition, retries, queue progression and inclusion/skip validation stay in the
-ABCI application; the EL supplies bounded execution and the failure classifications above.
+The driver owns the forced-inclusion queue and sends `[FI, ordinary…]` as a given list; the EL
+applies the ordinary given-list rules. Only a completed empty build of `[FI]` alone on the same
+parent and attributes is skip evidence; an omission from a longer list or an RPC failure is not.
 
 #### Byte limit
 
@@ -294,13 +212,8 @@ header. Every transaction, legacy included, counts as an RLP byte string holding
 bytes, the form in which the consensus envelope and the published blob carry it. Ethereum's
 block-body form keeps a legacy transaction as a bare RLP list, so here a legacy transaction also
 counts the RLP string header around that list; a typed transaction counts the same in both forms.
-The bound is inclusive. The header is sealed only after execution, so
-the builder reserves room for the longest header the job can seal: the job's own header fields,
-fixed-size roots and bloom, `gasUsed` equal to `gasLimit`, and a `difficulty` of `u64::MAX`. What
-remains after that reserve and the list headers is the transaction byte budget shared by the
-transactions in the given list or selected from the pool. In every mode a transaction larger than
-what is left is left out and the build moves on. Before returning a block, the builder checks its exact
-executionBlock length and fails the job rather than return a block above `maxBlockBytes`.
+The bound is inclusive. The builder reserves room for the largest header the job can seal, so a
+block may stop up to 16 bytes short of the bound; it never exceeds it.
 
 ## `taikoAuth` preselection
 
@@ -309,28 +222,12 @@ Preselection simulates the next block under the parent's fork rules and `extraDa
 applies pre-execution system calls. On an Etna parent it drops the legacy 2,000,000 zk-gas anchor
 reserve. At the boundary the parent is still pre-Etna, so the first Etna block is selected with that
 reserve. Results are estimates; the builder enforces the actual gas and zk-gas limits. Etna builds
-also enforce `maxBlockBytes`, the inclusive bound on the executionBlock's RLP length with every
-transaction as an RLP byte string of its EIP-2718 bytes ([byte limit](#byte-limit)), which
-preselection does not apply.
-Drivers' Etna branches that send a trailing `blockContext` argument get no error from alethia-reth,
-which ignores extra positional parameters and simulates under the parent's rules. taiko-geth rejects
-the extra argument, so drivers must stop sending it.
+also enforce `maxBlockBytes` ([byte limit](#byte-limit)), which preselection does not apply.
 
 ## Devnet activation override
 
-`--devnet-etna-timestamp <TIMESTAMP>` or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP=<TIMESTAMP>` applies only
-to canonical Taiko devnet and custom Genesis JSON whose parsed fields outside `alloc` all match
-canonical devnet, including the complete chain config and its extra fields. It restores canonical
-devnet's Taiko/Ethereum fork table (Unzen/Osaka at genesis), rebuilds the genesis header from the
-custom allocation, and schedules Etna at the requested timestamp. `0` activates Etna at genesis;
-a nonzero value activates it at that timestamp. Other chains log a warning and keep their schedule.
-
-Omitting the flag leaves built-in devnet Etna unscheduled. Custom JSON without the flag uses the
-generic Ethereum parser and does not gain Taiko forks implicitly. See the
-[custom genesis recipe](../README.md#custom-devnet-genesis-with-etna) for predeploys. Use a fresh data
-directory when changing genesis. Offline commands such as `stage run` and `re-execute` cannot
-reproduce an overridden schedule.
-
-No built-in genesis, the devnet's included, predeploys the EIP-2935 or EIP-4788 contracts. On a
-devnet with the Etna override, both system calls are no-ops until the keyless deployments run or
-an alloc-only custom genesis predeploys the canonical runtimes. Storage writes start in block 1.
+`--devnet-etna-timestamp <TIMESTAMP>` (or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP`) schedules Etna at
+that timestamp on canonical Taiko devnet or on a custom Genesis JSON whose fields outside `alloc`
+match canonical devnet; other chains log a warning and keep their schedule. `0` activates Etna at
+genesis. Offline commands such as `stage run` and `re-execute` cannot reproduce an overridden
+schedule. See the [custom genesis recipe](../README.md#custom-devnet-genesis-with-etna).

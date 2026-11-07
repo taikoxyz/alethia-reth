@@ -77,13 +77,11 @@ impl std::fmt::Display for MissingUnzenHeaderDifficulty {
 
 impl std::error::Error for MissingUnzenHeaderDifficulty {}
 
-/// Carries an Etna header's base-fee share into the EVM environment, so replay paths that rebuild
-/// the EVM from this environment keep fee sharing.
+/// Carries an Etna header's base-fee share into the EVM environment, so replay paths keep fee
+/// sharing.
 ///
-/// Only a 13-byte Etna `extraData` yields an authoritative percentage; any other length (the exempt
-/// genesis or a malformed header) leaves it unset. This never fails: consensus and the block
-/// executor reject malformed Etna headers, and an error here would pre-empt the consensus rejection
-/// on engine-tree import paths.
+/// Only a 13-byte `extraData` sets it. This never fails: rejecting a malformed Etna header is left
+/// to consensus and the block executor.
 fn with_taiko_fee_context(
     block_env: BlockEnv,
     spec: TaikoSpecId,

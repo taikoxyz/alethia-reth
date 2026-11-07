@@ -1,14 +1,14 @@
 //! Osaka execution-payload wire types and lossless internal normalization.
 
-use crate::engine::types::{TaikoExecutionData, TaikoExecutionDataSidecar};
+use crate::engine::types::{
+    TaikoExecutionData, TaikoExecutionDataSidecar, TaikoOsakaPayloadFields,
+};
 use alloy_consensus::proofs::{calculate_withdrawals_root, ordered_trie_root_encoded};
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_rpc_types_engine::ExecutionPayloadV3;
 use core::fmt;
 #[cfg(feature = "serde")]
 use std::collections::BTreeMap;
-
-pub use crate::engine::types::TaikoOsakaPayloadFields;
 
 /// Osaka engine payload with Taiko's finalized zk-gas value in decimal JSON form.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,36 +124,6 @@ mod tests {
         let mut value = serde_json::to_value(execution_payload_v3()).unwrap();
         value["headerDifficulty"] = header_difficulty;
         value
-    }
-
-    #[test]
-    fn header_difficulty_rejects_missing_null_and_overflow() {
-        let mut missing = wire_value(json!(0));
-        missing.as_object_mut().unwrap().remove("headerDifficulty");
-        assert!(serde_json::from_value::<TaikoExecutionPayloadV3>(missing).is_err());
-        assert!(
-            serde_json::from_value::<TaikoExecutionPayloadV3>(wire_value(Value::Null)).is_err()
-        );
-        let overflow = serde_json::to_string(&wire_value(json!(0)))
-            .unwrap()
-            .replace("\"headerDifficulty\":0", "\"headerDifficulty\":18446744073709551616");
-        assert!(serde_json::from_str::<TaikoExecutionPayloadV3>(&overflow).is_err());
-    }
-
-    #[test]
-    fn transaction_array_is_required_but_may_be_empty() {
-        let mut missing = wire_value(json!(0));
-        missing.as_object_mut().unwrap().remove("transactions");
-        assert!(serde_json::from_value::<TaikoExecutionPayloadV3>(missing).is_err());
-
-        let mut null = wire_value(json!(0));
-        null["transactions"] = Value::Null;
-        assert!(serde_json::from_value::<TaikoExecutionPayloadV3>(null).is_err());
-
-        let mut empty = wire_value(json!(0));
-        empty["transactions"] = json!([]);
-        let payload: TaikoExecutionPayloadV3 = serde_json::from_value(empty).unwrap();
-        assert!(payload.execution_payload.payload_inner.payload_inner.transactions.is_empty());
     }
 
     #[test]

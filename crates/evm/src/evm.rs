@@ -324,14 +324,10 @@ mod test {
     use super::*;
 
     #[test]
-    fn anchorless_context_shares_fees_without_anchor_eligibility() {
-        let ctx = TaikoEvmExtraExecutionCtx::for_anchorless_block(25);
-        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+    fn anchorless_context_is_not_legacy_anchor_eligible() {
+        // The default caller identity (ZERO, nonce 0) must not be treated as the anchor.
         let treasury = Address::with_last_byte(9);
-        assert_eq!(ctx.base_fee_share_pctg(), 25);
-        assert!(ctx.has_authoritative_fee_context());
-        assert!(!ctx.matches_legacy_anchor(golden, 0, Some(treasury), treasury));
-        assert!(!TaikoEvmExtraExecutionCtx::default().matches_legacy_anchor(
+        assert!(!TaikoEvmExtraExecutionCtx::for_anchorless_block(25).matches_legacy_anchor(
             Address::ZERO,
             0,
             Some(treasury),

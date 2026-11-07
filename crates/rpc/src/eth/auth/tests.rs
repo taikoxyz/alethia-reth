@@ -3,9 +3,7 @@ use super::{
     *,
 };
 use alethia_reth_block::{executor::TaikoBlockExecutor, factory::TaikoBlockExecutionCtx};
-use alethia_reth_chainspec::{
-    TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoChainSpec,
-};
+use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
@@ -218,13 +216,6 @@ fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
     assert!(super::combined_tx_lists_gas_limit(u64::MAX, 2).is_err());
 }
 
-/// Returns a devnet chain spec whose Etna rules activate at timestamp 100.
-fn chain_spec_with_etna_at_100() -> TaikoChainSpec {
-    let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
-    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
-    chain_spec
-}
-
 #[test]
 fn reserves_anchor_zk_gas_for_tx_pool_selection() {
     let mut state =
@@ -249,7 +240,8 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
         TAIKO_DEVNET.clone(),
         RethReceiptBuilder::default(),
     );
-    let chain_spec = chain_spec_with_etna_at_100();
+    let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
 
     // An Etna parent is followed by no anchor, so preselection reserves nothing.
     let parent = |timestamp| Header { timestamp, ..Default::default() };

@@ -320,11 +320,8 @@ where
 
 /// Requires a non-genesis Etna header to commit to empty withdrawals and zero blob gas.
 ///
-/// `engine_newPayloadV4` rejects Etna payloads with withdrawals or blob gas during conversion, but
-/// P2P downloads, backfill, and staged sync import blocks without that conversion. Taiko
-/// execution ignores both commitments (block contexts drop body withdrawals and the blob fee
-/// environment is fixed), so without this rule those paths would accept header variants that the
-/// Engine API rejects.
+/// Execution ignores both, so this applies `engine_newPayloadV4`'s rejection to P2P, backfill and
+/// staged-sync imports, which skip that conversion.
 fn validate_etna_body_commitments<H: BlockHeader>(header: &H) -> Result<(), ConsensusError> {
     if header.withdrawals_root() != Some(EMPTY_WITHDRAWALS) {
         return Err(ConsensusError::msg(format!(

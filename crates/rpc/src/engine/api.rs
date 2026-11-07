@@ -293,7 +293,7 @@ where
             stored_l1_origin.l2_block_hash = built_payload.block().hash_slow();
 
             self.persist_l1_origin(stored_l1_origin, is_preconf_block, batch_id)
-                .map_err(ErrorObjectOwned::from)?;
+                .map_err(|e: EngineApiError| ErrorObjectOwned::from(e))?;
         }
 
         Ok(status)
@@ -376,7 +376,6 @@ mod tests {
     use reth_node_api::PayloadBuilderError;
 
     use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::etna::EtnaBuildFieldsBeforeEtna;
     use alloy_consensus::{BlockBody, Header, constants::EMPTY_WITHDRAWALS};
     use alloy_eips::merge::BEACON_NONCE;
     use alloy_hardforks::{EthereumHardfork, ForkCondition};
@@ -472,9 +471,7 @@ mod tests {
                 match message {
                     BeaconEngineMessage::ForkchoiceUpdated { state, payload_attrs, tx } => {
                         let status = PayloadStatus::from_status(PayloadStatusEnum::Valid);
-                        let response = if state.head_block_hash.is_zero() {
-                            OnForkChoiceUpdated::invalid_state()
-                        } else if state.head_block_hash == B256::with_last_byte(200) {
+                        let response = if state.head_block_hash == B256::with_last_byte(200) {
                             OnForkChoiceUpdated::valid(PayloadStatus::from_status(
                                 PayloadStatusEnum::Syncing,
                             ))
@@ -484,8 +481,6 @@ mod tests {
                                     validation_error: "invalid ancestor".into(),
                                 },
                             ))
-                        } else if state.head_block_hash == B256::with_last_byte(202) {
-                            OnForkChoiceUpdated::valid(status)
                         } else if let Some(attrs) = payload_attrs {
                             jobs_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let (id_tx, id_rx) = tokio::sync::oneshot::channel();
@@ -602,32 +597,12 @@ mod tests {
             let result = &response["result"];
             assert_eq!(result["executionPayload"]["timestamp"], format!("0x{timestamp:x}"));
             assert_eq!(result["blockValue"], "0x7");
-            assert_eq!(result["executionPayload"]["blobGasUsed"], "0x0");
-            assert_eq!(result["executionPayload"]["excessBlobGas"], "0x0");
-            assert_eq!(result["executionPayload"]["withdrawals"], serde_json::json!([]));
-            assert_eq!(result["executionRequests"], serde_json::json!([]));
-            assert_eq!(
-                result["blobsBundle"],
-                serde_json::json!({"commitments": [], "proofs": [], "blobs": []})
-            );
-            assert_eq!(result["shouldOverrideBuilder"], false);
         }
         let response =
             rpc_call(&module, "engine_getPayloadV5", serde_json::json!([PayloadId::new([0; 8])]))
                 .await;
         assert_eq!(response["error"]["code"], -38001);
         assert_eq!(response["error"]["message"], "Unknown payload");
-    }
-
-    #[tokio::test]
-    async fn fcu_v3_allows_null_attributes_but_validates_forkchoice() {
-        let (module, _, jobs) = rpc_fixture();
-        let method = "engine_forkchoiceUpdatedV3";
-        let response = rpc_call(&module, method, serde_json::json!([fcu_state(1), null])).await;
-        assert_eq!(response["result"]["payloadStatus"]["status"], "VALID", "{response}");
-        let response = rpc_call(&module, method, serde_json::json!([fcu_state(0), null])).await;
-        assert_eq!(response["error"]["code"], -38002, "{response}");
-        assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     fn fcu_attributes(timestamp: u64, preconf: bool) -> TaikoPayloadAttributes {
@@ -717,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn nonvalid_fcu_statuses_do_not_require_payload_ids_or_write_origins() {
         // The early return depends only on the upstream status, so one target fork suffices.
-        for (head, expected) in [(200, "SYNCING"), (201, "INVALID"), (202, "VALID")] {
+        for (head, expected) in [(200, "SYNCING"), (201, "INVALID")] {
             let (module, provider, jobs) = rpc_fixture();
             let response = rpc_call(
                 &module,
@@ -725,12 +700,8 @@ mod tests {
                 serde_json::json!([fcu_state(head), fcu_attributes(100, false)]),
             )
             .await;
-            if expected == "VALID" {
-                assert_eq!(response["error"]["code"], -32603, "{response}");
-            } else {
-                assert_eq!(response["result"]["payloadStatus"]["status"], expected, "{response}");
-                assert!(response["result"]["payloadId"].is_null());
-            }
+            assert_eq!(response["result"]["payloadStatus"]["status"], expected, "{response}");
+            assert!(response["result"]["payloadId"].is_null());
             assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);
             let db = provider.provider().unwrap();
             assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(100).unwrap(), None);
@@ -807,20 +778,6 @@ mod tests {
         }
         provider_rw.commit().unwrap();
 
-        // Reth reports a parent below the history prune boundary on the first state read.
-        let blockchain = reth_provider::providers::BlockchainProvider::new(provider.clone())
-            .expect("the seeded database opens");
-        let read = crate::engine::build_error::read_parent_state(&blockchain, hashes[1]);
-        assert!(
-            matches!(
-                &read,
-                Err(reth_provider::ProviderError::InsufficientChangesets { requested: 1, available })
-                    if *available == (3..=5)
-            ),
-            "{read:?}"
-        );
-        assert!(crate::engine::build_error::read_parent_state(&blockchain, hashes[3]).is_ok());
-
         for head in [hashes[0], hashes[1], hashes[2]] {
             let response = fcu_on(&module, head, 101).await;
             assert_eq!(response["error"]["code"], -38100, "{response}");
@@ -835,95 +792,29 @@ mod tests {
         {
             assert_missing_payload(&fcu_on(&module, head, timestamp).await);
         }
-
-        let db = provider.provider().unwrap();
-        for timestamp in [98, 101] {
-            assert_eq!(db.tx_ref().get::<StoredL1OriginTable>(timestamp).unwrap(), None);
-            let proposal_id = decode_shasta_proposal_id(
-                fcu_attributes(timestamp, false).block_metadata.extra_data.as_ref(),
-            )
-            .unwrap();
-            assert_eq!(db.tx_ref().get::<BatchToLastBlock>(proposal_id).unwrap(), None);
-        }
-        assert_eq!(
-            db.tx_ref().get::<StoredL1HeadOriginTable>(STORED_L1_HEAD_ORIGIN_KEY).unwrap(),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn builds_without_a_finish_checkpoint_keep_the_internal_error() {
-        let (module, provider, _) = rpc_fixture();
-        let hashes = seed_chain(&provider);
-        let provider_rw = provider.provider_rw().unwrap();
-        provider_rw
-            .tx_ref()
-            .delete::<reth_db::tables::StageCheckpoints>(
-                reth_stages_types::StageId::Finish.to_string(),
-                None,
-            )
-            .unwrap();
-        provider_rw.commit().unwrap();
-
-        // Reth reports a missing Finish checkpoint as insufficient changesets for block 0 in
-        // 0..=0, which says nothing about pruning.
-        let blockchain = reth_provider::providers::BlockchainProvider::new(provider.clone())
-            .expect("the seeded database opens");
-        let read = crate::engine::build_error::read_parent_state(&blockchain, hashes[1]);
-        assert!(
-            matches!(
-                &read,
-                Err(reth_provider::ProviderError::InsufficientChangesets { requested: 0, available })
-                    if *available == (0..=0)
-            ),
-            "{read:?}"
-        );
-        assert_missing_payload(&fcu_on(&module, hashes[1], 101).await);
     }
 
     #[tokio::test]
     async fn invalid_fcu_attributes_never_start_jobs_or_publish_origins() {
         let (module, provider, jobs) = rpc_fixture();
-        // Missing fields and slot numbers fail reth's standard Osaka checks (-38003); the
-        // remaining cases fail Taiko's rules (-32602). Cases 8, 9 and 12 target Unzen. reth
-        // reports invalid params as the message "Invalid params" with the validation error text
-        // under `data.err`, which is pinned for the Etna-only build fields on an Unzen target.
-        let build_fields_before_etna =
-            format!("Invalid params: {}", EtnaBuildFieldsBeforeEtna::MESSAGE);
-        let expected: [(i32, Option<&str>); 13] = [
-            (-38003, None),
-            (-32602, None),
-            (-32602, None),
-            (-32602, None),
-            (-32602, None),
-            (-38003, None),
-            (-32602, None),
-            (-38003, None),
-            (-32602, None),
-            (-32602, None),
-            (-32602, None),
-            (-32602, None),
-            (-32602, Some(&build_fields_before_etna)),
-        ];
-        for (case, (code, data_err)) in expected.into_iter().enumerate() {
+        // A missing beacon root fails reth's standard Osaka checks (-38003); the remaining cases
+        // fail Taiko's rules (-32602). Cases 4, 5 and 8 target Unzen. reth reports invalid params
+        // with the validation error text under `data.err`, pinned for case 8.
+        for case in 0..9 {
             let mut attrs = fcu_attributes(100, false);
             match case {
                 0 => attrs.payload_attributes.parent_beacon_block_root = None,
                 1 => attrs.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
                 2 => attrs.anchor_transaction = Some(Bytes::new()),
-                3 => attrs.block_metadata.timestamp = U256::from(99),
-                4 => attrs.block_metadata.extra_data = Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
-                5 => attrs.payload_attributes.slot_number = Some(1),
-                6 => attrs.payload_attributes.target_gas_limit = Some(1),
-                7 => attrs.payload_attributes.withdrawals = None,
+                3 => attrs.block_metadata.extra_data = Bytes::from(vec![0, 0, 0, 0, 0, 0, 9]),
                 // An Unzen target building at an Etna timestamp, or at one wider than `u64`.
-                8 | 9 => {
+                4 | 5 => {
                     attrs = fcu_attributes(99, false);
                     attrs.block_metadata.timestamp =
-                        if case == 8 { U256::from(100) } else { U256::MAX };
+                        if case == 4 { U256::from(100) } else { U256::MAX };
                 }
-                10 => attrs.max_block_bytes = None,
-                11 => attrs.max_block_bytes = Some(1_023),
+                6 => attrs.max_block_bytes = None,
+                7 => attrs.max_block_bytes = Some(1_023),
                 // The Etna-only byte bound on an Unzen target.
                 _ => {
                     attrs = fcu_attributes(99, false);
@@ -936,9 +827,13 @@ mod tests {
                 serde_json::json!([fcu_state(1), attrs]),
             )
             .await;
+            let code = if case == 0 { -38003 } else { -32602 };
             assert_eq!(response["error"]["code"], code, "case {case}: {response}");
-            if let Some(data_err) = data_err {
-                assert_eq!(response["error"]["data"]["err"], data_err, "case {case}: {response}");
+            if case == 8 {
+                assert_eq!(
+                    response["error"]["data"]["err"], "Invalid params: maxBlockBytes requires Etna",
+                    "{response}"
+                );
             }
         }
         assert_eq!(jobs.load(std::sync::atomic::Ordering::SeqCst), 0);

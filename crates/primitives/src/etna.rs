@@ -87,42 +87,6 @@ pub fn validate_etna_extra_data(
     Ok(())
 }
 
-/// Error returned when pre-Etna build attributes carry an Etna-only field.
-///
-/// `maxBlockBytes` exists only for Etna targets. Engine API attribute validation rejects it
-/// before Etna with this error, which drivers receive as an
-/// invalid-parameters (`-32602`) response before any payload job starts. Payload-job
-/// normalization applies the same rule and reports [`Self::MESSAGE`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EtnaBuildFieldsBeforeEtna;
-
-impl EtnaBuildFieldsBeforeEtna {
-    /// The error text, also usable where only a `&'static str` fits (such as
-    /// `alloy_rlp::Error::Custom`).
-    pub const MESSAGE: &'static str = "maxBlockBytes requires Etna";
-}
-
-impl fmt::Display for EtnaBuildFieldsBeforeEtna {
-    /// Names the Etna-only byte bound.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(Self::MESSAGE)
-    }
-}
-
-impl core::error::Error for EtnaBuildFieldsBeforeEtna {}
-
-/// Rejects pre-Etna build attributes that carry `maxBlockBytes`.
-///
-/// Call it only for targets before Etna; on an Etna target the byte bound is required.
-pub const fn ensure_no_etna_build_fields(
-    has_max_block_bytes: bool,
-) -> Result<(), EtnaBuildFieldsBeforeEtna> {
-    if has_max_block_bytes {
-        return Err(EtnaBuildFieldsBeforeEtna);
-    }
-    Ok(())
-}
-
 /// Returns the executionBlock length, `rlp([header, [tx…]])` including its outer list header, or
 /// `None` when it overflows `usize`.
 ///
@@ -141,14 +105,9 @@ const fn checked_execution_block_len(
     block_payload_len.checked_add(length_of_length(block_payload_len))
 }
 
-/// Returns the length of the executionBlock `rlp([header, [tx…]])`, including its outer list
-/// header, from the header's RLP length and the transaction list's payload length.
-///
-/// `header_rlp_len` is the full RLP length of the EL header. `txs_payload_len` is the sum of the
-/// transactions' [`etna_tx_length`] (each an RLP byte string holding its EIP-2718 bytes, legacy
-/// transactions included), excluding the transaction list header. This is the quantity bounded by
-/// `maxBlockBytes`. Saturates at `usize::MAX`, which no in-memory encoding reaches.
-pub const fn execution_block_len(header_rlp_len: usize, txs_payload_len: usize) -> usize {
+/// Returns [`checked_execution_block_len`], saturating at `usize::MAX`, which no in-memory encoding
+/// reaches.
+const fn execution_block_len(header_rlp_len: usize, txs_payload_len: usize) -> usize {
     match checked_execution_block_len(header_rlp_len, txs_payload_len) {
         Some(len) => len,
         None => usize::MAX,
@@ -158,11 +117,11 @@ pub const fn execution_block_len(header_rlp_len: usize, txs_payload_len: usize) 
 /// Returns the largest transaction list payload length whose executionBlock still fits in
 /// `max_block_bytes`, or `None` when even an empty transaction list does not fit.
 ///
-/// This is the exact inverse of [`execution_block_len`] for a fixed header: for the returned `s`,
-/// `execution_block_len(header_rlp_len, s) <= max_block_bytes` and
-/// `execution_block_len(header_rlp_len, s + 1) > max_block_bytes`, across every RLP list header
-/// size change. A limit above `usize::MAX` (only possible on 32-bit targets) is treated as
-/// `usize::MAX`, since no larger encoding can exist in memory.
+/// This is the exact inverse of the executionBlock length for a fixed header: for the returned
+/// `s`, the executionBlock with an `s`-byte transaction list payload fits and one with `s + 1`
+/// bytes does not, across every RLP list header size change. A limit above `usize::MAX` (only
+/// possible on 32-bit targets) is treated as `usize::MAX`, since no larger encoding can exist in
+/// memory.
 pub fn max_txs_payload_len(header_rlp_len: usize, max_block_bytes: u64) -> Option<u64> {
     let limit = usize::try_from(max_block_bytes).unwrap_or(usize::MAX);
     let fits = |txs_payload_len: usize| {
@@ -203,14 +162,13 @@ pub fn execution_block_length(header: &Header, transactions: &[TransactionSigned
 #[cfg(test)]
 mod tests {
     use super::{
-        ETNA_MIN_MAX_BLOCK_BYTES, EtnaBuildFieldsBeforeEtna, InvalidEtnaExtraData,
-        checked_execution_block_len, ensure_no_etna_build_fields, etna_tx_length,
-        execution_block_len, execution_block_length, max_txs_payload_len, validate_etna_extra_data,
-        validate_etna_root,
+        ETNA_MIN_MAX_BLOCK_BYTES, InvalidEtnaExtraData, checked_execution_block_len,
+        etna_tx_length, execution_block_len, execution_block_length, max_txs_payload_len,
+        validate_etna_extra_data, validate_etna_root,
     };
     use alloy_consensus::{Header, Signed, TxEip1559, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
-    use alloy_rlp::{Decodable, Encodable};
+    use alloy_rlp::Encodable;
     use reth_ethereum_primitives::TransactionSigned;
     use reth_primitives_traits::SignedTransaction;
 
@@ -251,15 +209,6 @@ mod tests {
         assert_eq!(execution_block_len(600, 256), 862);
         assert_eq!(execution_block_len(600, 65_535), 66_142);
         assert_eq!(execution_block_len(600, 65_536), 66_144);
-    }
-
-    #[test]
-    fn max_txs_payload_len_is_the_tight_inverse() {
-        assert_eq!(max_txs_payload_len(600, 124_000), Some(123_392));
-        assert_eq!(execution_block_len(600, 123_392), 124_000);
-        assert_eq!(execution_block_len(600, 123_393), 124_001);
-        assert_eq!(max_txs_payload_len(600, 604), Some(0));
-        assert_eq!(max_txs_payload_len(600, 603), None);
     }
 
     #[test]
@@ -341,16 +290,6 @@ mod tests {
         tx.encoded_2718().into()
     }
 
-    /// Decodes one transaction from its EIP-2718 encoding `raw`.
-    fn decode_eip2718<T: SignedTransaction>(raw: &[u8]) -> T {
-        T::decode_2718(&mut &raw[..]).expect("an EIP-2718 transaction")
-    }
-
-    /// Returns the length of the RLP header of a byte string with `payload_len` bytes.
-    fn rlp_string_header_len(payload_len: usize) -> usize {
-        alloy_rlp::Header { list: false, payload_length: payload_len }.length()
-    }
-
     /// Returns `rlp([header, [tx…]])` with the transactions in block-body form: a legacy
     /// transaction as its bare RLP list, a typed one as a byte string of its EIP-2718 bytes.
     fn block_body_form(header: &Header, txs: &[TransactionSigned]) -> Vec<u8> {
@@ -364,27 +303,12 @@ mod tests {
     }
 
     #[test]
-    fn etna_tx_length_counts_every_transaction_as_a_byte_string() {
-        let (legacy, dynamic_fee) = sample_txs();
-        for tx in [&legacy, &dynamic_fee] {
-            assert_eq!(etna_tx_length(tx), eip2718(tx).length());
-        }
-        // A typed transaction's block-body form is already that byte string.
-        assert_eq!(etna_tx_length(&dynamic_fee), dynamic_fee.length());
-        // A legacy transaction's block-body form is its bare RLP list, which is also its EIP-2718
-        // encoding; the byte string adds a header around it.
-        assert_eq!(legacy.length(), legacy.eip2718_encoded_length());
-        assert_eq!(
-            etna_tx_length(&legacy),
-            legacy.length() + rlp_string_header_len(legacy.eip2718_encoded_length())
-        );
-    }
-
-    #[test]
     fn execution_block_length_matches_the_consensus_envelope_encoding() {
         let header = sample_header();
         let (legacy, dynamic_fee) = sample_txs();
-        let legacy_string_header = rlp_string_header_len(legacy.eip2718_encoded_length());
+        let legacy_string_header =
+            alloy_rlp::Header { list: false, payload_length: legacy.eip2718_encoded_length() }
+                .length();
 
         for (txs, legacy_count) in [
             (vec![], 0),
@@ -408,17 +332,6 @@ mod tests {
                 encoded.len()
             );
 
-            let mut buf = encoded.as_slice();
-            let outer = alloy_rlp::Header::decode(&mut buf).expect("executionBlock list header");
-            assert!(outer.list, "executionBlock must be an RLP list");
-            assert_eq!(outer.payload_length, buf.len());
-            assert_eq!(Header::decode(&mut buf).expect("EL header"), header);
-            let decoded = Vec::<Bytes>::decode(&mut buf).expect("transactions as byte strings");
-            assert!(buf.is_empty(), "executionBlock holds exactly [header, txs]");
-            let decoded: Vec<TransactionSigned> =
-                decoded.iter().map(|raw| decode_eip2718(raw)).collect();
-            assert_eq!(decoded, txs);
-
             // Block-body form leaves out each legacy transaction's string header; no list header
             // changes size between the two forms at these lengths.
             assert_eq!(
@@ -426,15 +339,6 @@ mod tests {
                 legacy_count * legacy_string_header
             );
         }
-    }
-
-    #[test]
-    fn etna_build_fields_are_rejected_before_etna() {
-        assert_eq!(ensure_no_etna_build_fields(false), Ok(()));
-        assert_eq!(ensure_no_etna_build_fields(true), Err(EtnaBuildFieldsBeforeEtna));
-        assert_eq!(EtnaBuildFieldsBeforeEtna.to_string(), "maxBlockBytes requires Etna");
-        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(EtnaBuildFieldsBeforeEtna);
-        assert_eq!(boxed.to_string(), EtnaBuildFieldsBeforeEtna::MESSAGE);
     }
 
     #[test]

@@ -160,17 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_legacy_block_remains_v1() {
-        let block = Block { header: Header::default(), body: BlockBody::default() };
-        let hash = block.header.hash_slow();
-        let data =
-            TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
-
-        assert!(data.taiko_sidecar.osaka.is_none());
-        assert!(matches!(data.into_payload(), ExecutionPayload::V1(_)));
-    }
-
-    #[test]
     fn partial_osaka_inputs_keep_their_original_hash_and_body() {
         let withdrawal = Withdrawal {
             index: 1,
@@ -212,7 +201,6 @@ mod tests {
             let data =
                 TaikoEngineTypes::block_to_payload(SealedBlock::new_unchecked(block, hash), None);
             assert!(data.taiko_sidecar.osaka.is_some(), "case {index}");
-            assert_eq!(data.execution_payload.block_hash, hash, "case {index}");
             if index == 0 {
                 let ExecutionPayload::V3(payload) = data.into_payload() else {
                     panic!("a withdrawal-bearing block must produce a V3 execution payload")

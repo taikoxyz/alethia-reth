@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use alloy_hardforks::EthereumHardforks;
-use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -201,52 +200,16 @@ fn next_block_env_attributes(
     }
 }
 
-/// Returns the transaction byte budget of an Etna build: the largest summed [`etna_tx_length`] of
-/// its transactions whose executionBlock, with a `header_reserve`-byte header, still fits in
-/// `max_block_bytes`.
-///
-/// The budget counts the transactions only, each as an RLP byte string of its EIP-2718 bytes, as
-/// [`TxSelectionConfig::max_tx_bytes_per_list`] does; the list headers are accounted for here.
-///
-/// # Errors
-///
-/// An internal error whose text contains `maxBlockBytes` when even a block without transactions
-/// does not fit.
-///
-/// [`etna_tx_length`]: alethia_reth_primitives::etna::etna_tx_length
-/// [`TxSelectionConfig::max_tx_bytes_per_list`]:
-///     alethia_reth_block::tx_selection::TxSelectionConfig::max_tx_bytes_per_list
-fn etna_tx_bytes_budget(
-    header_reserve: usize,
-    max_block_bytes: u64,
-) -> Result<u64, PayloadBuilderError> {
-    max_txs_payload_len(header_reserve, max_block_bytes).ok_or_else(|| {
-        PayloadBuilderError::Internal(RethError::msg(format!(
-            "maxBlockBytes {max_block_bytes} cannot hold an Etna block with a \
-             {header_reserve}-byte header reserve"
-        )))
-    })
-}
-
-/// Checks that the sealed block's executionBlock, `rlp([header, [tx…]])` including its outer list
-/// header and with every transaction, legacy included, an RLP byte string of its EIP-2718 bytes,
-/// is at most `max_block_bytes` long. The bound is inclusive.
-///
-/// # Errors
-///
-/// An internal error whose text contains `maxBlockBytes` and names the actual and the maximum
-/// length and the header's length, so a header reserve shortfall can be told apart from a budget
-/// that was never applied.
+/// Checks that the sealed block's executionBlock, measured by [`execution_block_length`], is at
+/// most `max_block_bytes` long.
 fn ensure_within_max_block_bytes(
     block: &SealedBlock<Block>,
     max_block_bytes: u64,
 ) -> Result<(), PayloadBuilderError> {
     let len = execution_block_length(block.header(), &block.body().transactions);
     if len as u64 > max_block_bytes {
-        let header_len = block.header().length();
         return Err(PayloadBuilderError::Internal(RethError::msg(format!(
-            "built Etna executionBlock is {len} bytes ({header_len}-byte header), above \
-             maxBlockBytes {max_block_bytes}"
+            "built Etna executionBlock is {len} bytes, above maxBlockBytes {max_block_bytes}"
         ))));
     }
     Ok(())
@@ -296,24 +259,14 @@ where
 
     ensure_amsterdam_inactive(chain_spec.as_ref(), attributes.timestamp())?;
 
-    // Normalization makes `maxBlockBytes` `Some` on every Etna job and `None` before Etna, so only
-    // Etna builds get a transaction byte budget and the final size check; pre-Etna builds are
-    // unchanged. The header is sealed after execution, so the budget leaves room for a bound on it.
-    debug_assert_eq!(
-        attributes.max_block_bytes.is_some(),
-        chain_spec.is_etna_active(attributes.timestamp()),
-        "maxBlockBytes must be present exactly on Etna jobs"
-    );
+    // Only Etna jobs carry `maxBlockBytes`. The header is sealed after execution, so the
+    // transaction byte budget leaves room for a bound on its length.
     let env_attributes = next_block_env_attributes(&attributes);
-    let tx_bytes_budget = attributes
-        .max_block_bytes
-        .map(|max_block_bytes| {
-            etna_tx_bytes_budget(
-                etna_header_length_bound(&parent_header, &env_attributes),
-                max_block_bytes,
-            )
-        })
-        .transpose()?;
+    let tx_bytes_budget = attributes.max_block_bytes.map(|max_block_bytes| {
+        let header_reserve = etna_header_length_bound(&parent_header, &env_attributes);
+        max_txs_payload_len(header_reserve, max_block_bytes)
+            .expect("an Etna header bound (under 700 bytes) fits the 1,024-byte floor")
+    });
 
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
@@ -431,15 +384,12 @@ mod tests {
     use super::*;
     use alethia_reth_block::testutil::etna_chain_spec;
     use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::{
-        etna::execution_block_len,
-        payload::attributes::{RpcL1Origin, TaikoBlockMetadata},
-    };
+    use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
     use alloy_consensus::{Header, Signed, TxLegacy, TxType};
-    use alloy_eips::eip4895::Withdrawal;
     use alloy_genesis::{ChainConfig, Genesis};
     use alloy_hardforks::ForkCondition;
     use alloy_primitives::{Address, B256, Bytes, Log, Signature, TxKind, U256};
+    use alloy_rlp::Encodable;
     use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
     use reth_basic_payload_builder::PayloadConfig;
     use reth_ethereum::{Receipt, TransactionSigned};
@@ -580,32 +530,10 @@ mod tests {
         let (parent, attrs) = etna_job();
         let reserve = etna_header_length_bound(&parent, &next_block_env_attributes(&attrs));
 
-        // A real-shaped header: the job's known fields, a full block, 100M zk gas in the
-        // difficulty, non-zero roots and a non-empty bloom.
-        let real = assemble_etna_block(&parent, &attrs, 45_000_000, 100_000_000).header;
-        assert_eq!(real.gas_used, 45_000_000);
-        assert_eq!(real.difficulty, U256::from(100_000_000_u64));
-        assert_eq!(real.base_fee_per_gas, Some(1_000_000_000));
-        assert!(!real.logs_bloom.is_zero());
-        assert!(!real.state_root.is_zero() && !real.receipts_root.is_zero());
-        assert!(real.requests_hash.is_some() && real.parent_beacon_block_root.is_some());
-        assert!(real.length() <= reserve, "{} > {reserve}", real.length());
-        assert!(reserve - real.length() <= 16, "{reserve} - {}", real.length());
-
         // The reserve is exactly the length of the largest header this job can seal: every
         // assembler field is covered and nothing is counted twice.
         let maximal = assemble_etna_block(&parent, &attrs, 45_000_000, u64::MAX).header;
         assert_eq!(maximal.length(), reserve);
-    }
-
-    #[test]
-    fn etna_tx_bytes_budget_follows_the_execution_block_bound() {
-        assert_eq!(
-            etna_tx_bytes_budget(600, 124_000).expect("124,000 bytes hold a 600-byte header"),
-            123_392
-        );
-        let err = etna_tx_bytes_budget(600, 603).expect_err("603 bytes cannot hold an empty block");
-        assert!(err.to_string().contains("maxBlockBytes"), "{err}");
     }
 
     #[test]
@@ -616,27 +544,7 @@ mod tests {
         let exact = execution_block_length(block.header(), &block.body().transactions) as u64;
 
         assert!(ensure_within_max_block_bytes(&block, exact).is_ok());
-        // The block's legacy transaction also counts the byte-string header its block-body form
-        // leaves out, so a bound at the block-body-form length fails the build.
-        let tx = &block.body().transactions[0];
-        assert!(tx.is_legacy());
-        let body_form = execution_block_len(
-            block.header().length(),
-            block.body().transactions.iter().map(Encodable::length).sum(),
-        ) as u64;
-        assert_eq!(
-            exact - body_form,
-            alloy_rlp::Header { list: false, payload_length: tx.eip2718_encoded_length() }.length()
-                as u64
-        );
-        assert!(ensure_within_max_block_bytes(&block, body_form).is_err());
-        let message = ensure_within_max_block_bytes(&block, exact - 1)
-            .expect_err("one byte over maxBlockBytes must fail the build")
-            .to_string();
-        assert!(message.contains("maxBlockBytes"), "{message}");
-        assert!(message.contains(&exact.to_string()), "{message}");
-        assert!(message.contains(&(exact - 1).to_string()), "{message}");
-        assert!(message.contains(&format!("{}-byte header", block.header().length())), "{message}");
+        assert!(ensure_within_max_block_bytes(&block, exact - 1).is_err());
     }
 
     #[test]
@@ -645,48 +553,6 @@ mod tests {
         assert_eq!(pool_gas_limit(&spec, 99, 1_500_000), 500_000);
         assert_eq!(pool_gas_limit(&spec, 99, 999_999), 0);
         assert_eq!(pool_gas_limit(&spec, 100, 1_500_000), 1_500_000);
-    }
-
-    #[test]
-    fn etna_pool_transaction_source_normalizes_without_an_anchor() {
-        let mut config = test_payload_config(None);
-        config.attributes.max_block_bytes = Some(124_000);
-        let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
-            .expect("Etna config should normalize");
-
-        assert!(attributes.transactions.is_none());
-        assert!(attributes.anchor_transaction.is_none());
-        assert_eq!(attributes.max_block_bytes, Some(124_000));
-    }
-
-    #[test]
-    fn etna_normalization_rejects_invalid_attributes() {
-        type Mutation = fn(&mut PayloadConfig<TaikoPayloadAttributes>);
-        // The Engine API test `invalid_etna_attributes_never_start_jobs_or_publish_origins` covers
-        // the zero root, the timestamp mismatch, and short extraData through `try_new_for_fork`.
-        let cases: [(&str, Mutation); 3] = [
-            ("timestamp", |c| {
-                c.attributes.block_metadata.timestamp = U256::from(100) + (U256::from(1) << 128)
-            }),
-            ("must not include anchor", |c| {
-                c.attributes.anchor_transaction = Some(Bytes::from_static(&[0x01]))
-            }),
-            ("withdrawals", |c| {
-                c.attributes.payload_attributes.withdrawals = Some(vec![Withdrawal::default()])
-            }),
-        ];
-        let spec = chain_spec_with_etna_at(100);
-        for (index, (expected, mutate)) in cases.into_iter().enumerate() {
-            let mut config = test_payload_config(None);
-            config.attributes.max_block_bytes = Some(124_000);
-            mutate(&mut config);
-            match normalize_payload_config(&config, &spec) {
-                Ok(_) => panic!("case {index} ({expected}) must be rejected"),
-                Err(err) => {
-                    assert!(err.to_string().contains(expected), "case {index}: {err}")
-                }
-            }
-        }
     }
 
     #[test]

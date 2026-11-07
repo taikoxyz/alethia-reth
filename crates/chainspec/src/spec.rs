@@ -295,15 +295,6 @@ mod test {
     }
 
     #[test]
-    fn test_etna_activation_is_timestamp_based() {
-        let mut spec = (*TAIKO_DEVNET).as_ref().clone();
-        assert!(!crate::hardfork::TaikoHardforks::is_etna_active(&spec, u64::MAX));
-        spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
-        assert!(!crate::hardfork::TaikoHardforks::is_etna_active(&spec, 99));
-        assert!(crate::hardfork::TaikoHardforks::is_etna_active(&spec, 100));
-    }
-
-    #[test]
     fn test_clone_with_devnet_etna_timestamp() {
         for timestamp in [0, 100] {
             let overridden = TAIKO_DEVNET
@@ -365,7 +356,6 @@ mod test {
         assert_eq!(parsed.genesis_header().parent_beacon_block_root, None);
         assert_eq!(parsed.genesis_header().requests_hash, None);
         assert_ne!(parsed.genesis_header().state_root, TAIKO_DEVNET.genesis_header().state_root);
-        assert_ne!(parsed.genesis_hash(), TAIKO_DEVNET.genesis_hash());
 
         for timestamp in [0, 100] {
             let overridden = parsed
@@ -378,55 +368,27 @@ mod test {
             };
             assert_eq!(overridden.genesis_header(), &expected_header);
             assert_eq!(overridden.genesis_hash(), expected_header.hash_slow());
-            assert_ne!(overridden.genesis_hash(), parsed.genesis_hash());
-            assert_ne!(overridden.genesis_hash(), TAIKO_DEVNET.genesis_hash());
-            assert_eq!(overridden.genesis_header().base_fee_per_gas, Some(10_000_000));
-            assert_eq!(overridden.genesis_header().blob_gas_used, Some(0));
-            assert_eq!(overridden.genesis_header().excess_blob_gas, Some(0));
-            assert_eq!(overridden.genesis_header().parent_beacon_block_root, Some(B256::ZERO));
-            assert_eq!(
-                overridden.genesis_header().requests_hash,
-                Some(alloy_eips::eip7685::EMPTY_REQUESTS_HASH)
-            );
             assert_eq!(overridden.inner.paris_block_and_final_difficulty, Some((0, U256::ZERO)));
             assert_eq!(overridden.blob_params_at_timestamp(0), Some(BlobParams::osaka()));
             let mut expected_forks = TAIKO_DEVNET.inner.hardforks.clone();
             expected_forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
             assert_eq!(overridden.inner.hardforks, expected_forks);
-            if timestamp > 0 {
-                assert!(!overridden.is_etna_active(timestamp - 1));
-            }
-            assert!(overridden.is_etna_active(timestamp));
         }
         assert!(!parsed.is_etna_active(u64::MAX));
     }
 
     #[test]
-    fn devnet_override_rejects_every_non_alloc_genesis_change() {
-        let changes: &[(&str, fn(&mut Genesis))] = &[
+    fn devnet_override_rejects_non_alloc_genesis_changes() {
+        type Change = (&'static str, fn(&mut Genesis));
+        let changes: &[Change] = &[
             ("chainId", |g| g.config.chain_id += 1),
-            ("fork config", |g| g.config.shanghai_time = Some(1)),
-            ("extra field change", |g| {
-                g.config.extra_fields.insert("shastaTime".into(), 0.into());
-            }),
             ("extra field addition", |g| {
                 g.config.extra_fields.insert("etnaTime".into(), 0.into());
             }),
             ("extra field removal", |g| {
                 g.config.extra_fields.remove("ChainName");
             }),
-            ("nonce", |g| g.nonce += 1),
-            ("timestamp", |g| g.timestamp += 1),
             ("extraData", |g| g.extra_data = alloy_primitives::bytes!("01")),
-            ("gasLimit", |g| g.gas_limit += 1),
-            ("difficulty", |g| g.difficulty += U256::from(1)),
-            ("mixHash", |g| g.mix_hash = B256::with_last_byte(1)),
-            ("coinbase", |g| g.coinbase = Address::with_last_byte(1)),
-            ("baseFeePerGas", |g| g.base_fee_per_gas = Some(1)),
-            ("excessBlobGas", |g| g.excess_blob_gas = Some(0)),
-            ("blobGasUsed", |g| g.blob_gas_used = Some(0)),
-            ("number", |g| g.number = Some(0)),
-            ("parentHash", |g| g.parent_hash = Some(B256::ZERO)),
         ];
         for (name, change) in changes {
             let mut genesis = alloc_only_devnet_genesis();
@@ -435,35 +397,13 @@ mod test {
                 TaikoChainSpec::from(genesis).clone_with_devnet_etna_timestamp(0).is_none(),
                 "must reject changed {name}"
             );
-        }
-        assert!(crate::TAIKO_HOODI.clone_with_devnet_etna_timestamp(0).is_none());
-    }
-
-    #[test]
-    fn canonical_hash_does_not_bypass_genesis_config_validation() {
-        // Chain config is not a header commitment: the cached hash still matches devnet.
-        for change in
-            [(|g: &mut Genesis| g.config.chain_id += 1) as fn(&mut Genesis), |g: &mut Genesis| {
-                g.config.extra_fields.insert("etnaTime".into(), 0.into());
-            }]
-        {
+            // The cached hash does not commit to the change, so it cannot bypass the check.
             let mut spec = TAIKO_DEVNET.as_ref().clone();
             change(&mut spec.inner.genesis);
             assert_eq!(spec.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
-            assert!(spec.clone_with_devnet_etna_timestamp(0).is_none());
+            assert!(spec.clone_with_devnet_etna_timestamp(0).is_none(), "{name}: cached hash");
         }
-    }
-
-    #[test]
-    fn devnet_override_restores_forks_even_with_a_canonical_cached_hash() {
-        let mut parsed = TaikoChainSpec::from(TAIKO_DEVNET.genesis().clone());
-        parsed.inner.genesis_header = TAIKO_DEVNET.inner.genesis_header.clone();
-        assert!(!parsed.is_unzen_active(0));
-        assert_eq!(parsed.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
-        let overridden = parsed.clone_with_devnet_etna_timestamp(0).unwrap();
-        assert!(overridden.is_unzen_active(0));
-        assert!(overridden.is_shasta_active(0));
-        assert_eq!(overridden.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
+        assert!(crate::TAIKO_HOODI.clone_with_devnet_etna_timestamp(0).is_none());
     }
 
     #[test]

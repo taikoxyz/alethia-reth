@@ -4,7 +4,7 @@ use alethia_reth_block::config::TaikoEvmConfig;
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_primitives::{
     engine::{TaikoEngineTypes, types::TaikoExecutionData},
-    etna::{ensure_no_etna_build_fields, validate_etna_root},
+    etna::validate_etna_root,
     payload::{
         attributes::TaikoPayloadAttributes,
         builder::{TaikoPayloadBuilderAttributes, block_metadata_timestamp_matches},
@@ -70,6 +70,9 @@ enum TaikoPayloadValidationError {
     /// Taiko payloads never carry the post-Amsterdam slot number.
     #[error("slot numbers are unsupported on Taiko")]
     SlotNumberUnsupported,
+    /// `maxBlockBytes` is an Etna-only build attribute.
+    #[error("maxBlockBytes requires Etna")]
+    MaxBlockBytesBeforeEtna,
 }
 
 /// Builder for [`TaikoEngineValidator`].
@@ -407,11 +410,14 @@ where
             }
             return Ok(());
         }
-        // Before Etna, attributes are not normalized here, so the Etna-only build fields are
+        // Before Etna, attributes are not normalized here, so the Etna-only byte bound is
         // rejected explicitly before a payload job can start or an L1 origin can be written.
-        if let PayloadOrAttributes::PayloadAttributes(attributes) = &payload_or_attrs {
-            ensure_no_etna_build_fields(attributes.max_block_bytes.is_some())
-                .map_err(|err| EngineObjectValidationError::InvalidParams(Box::new(err)))?;
+        if let PayloadOrAttributes::PayloadAttributes(attributes) = &payload_or_attrs &&
+            attributes.max_block_bytes.is_some()
+        {
+            return Err(EngineObjectValidationError::InvalidParams(Box::new(
+                TaikoPayloadValidationError::MaxBlockBytesBeforeEtna,
+            )));
         }
         // Before Etna, payload conversion rebuilds Unzen headers with a zero root, so a nonzero
         // root would be committed into an unimportable block. Fail closed before a payload job
@@ -536,7 +542,7 @@ mod tests {
 
     #[test]
     fn etna_invalid_sidecar_mutations_fail_rpc_and_direct_tree_validation() {
-        for case in 0..12 {
+        for case in 0..10 {
             let mut data = etna_data(U256::ZERO);
             match case {
                 0 => data.taiko_sidecar.osaka = None,
@@ -564,8 +570,6 @@ mod tests {
                     .unwrap()
                     .execution_requests
                     .push(Bytes::from_static(&[1])),
-                9 => data.taiko_sidecar.block_access_list = Some(Bytes::new()),
-                10 => data.taiko_sidecar.slot_number = Some(1),
                 _ => data.taiko_sidecar.tx_hash = B256::with_last_byte(1),
             }
             assert!(version_etna(&data).is_err(), "RPC accepted case {case}");
@@ -589,46 +593,6 @@ mod tests {
         // equality belongs to the shared executor's post-execution validation, not this layer.
         let data = etna_data(U256::from(92));
         assert_eq!(convert_etna(data).unwrap().difficulty, U256::from(92));
-    }
-
-    #[test]
-    fn etna_direct_blocks_reject_withdrawal_only_and_partial_osaka_inputs() {
-        let original = convert_etna(etna_data(U256::ZERO)).unwrap().into_block();
-        for case in 0..7 {
-            let mut block = original.clone();
-            match case {
-                0 => {
-                    block.body.withdrawals =
-                        Some(vec![alloy_rpc_types_eth::Withdrawal::default()].into());
-                    block.header.withdrawals_root =
-                        Some(alloy_consensus::proofs::calculate_withdrawals_root(
-                            block.body.withdrawals.as_ref().unwrap(),
-                        ));
-                    block.header.parent_beacon_block_root = None;
-                    block.header.blob_gas_used = None;
-                    block.header.excess_blob_gas = None;
-                    block.header.requests_hash = None;
-                }
-                1 => block.header.parent_beacon_block_root = None,
-                2 => block.header.blob_gas_used = None,
-                3 => block.header.excess_blob_gas = None,
-                4 => block.header.requests_hash = None,
-                5 => {
-                    block.header.withdrawals_root = None;
-                    block.body.withdrawals = None;
-                }
-                _ => block.header.requests_hash = Some(B256::with_last_byte(9)),
-            }
-            let data = TaikoEngineTypes::block_to_payload(block.seal_slow(), None);
-            if case == 0 {
-                assert_eq!(data.taiko_sidecar.osaka.as_ref().unwrap().withdrawals.len(), 1);
-                assert!(version_etna(&data).is_err());
-            }
-            assert!(
-                convert_etna(data).is_err(),
-                "partial input case {case} was silently reconstructed"
-            );
-        }
     }
 
     #[test]

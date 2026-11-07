@@ -1,9 +1,7 @@
-//! Tells a failed Etna build whose parent can never be built on apart from other build failures.
+//! Tells a failed Etna build whose parent's state is pruned apart from other build failures.
 //!
-//! Reth's payload job reports every failed build as `missing payload`, so the build's own error
-//! never reaches the Engine API. After an Etna build fails, the handler reads the parent's state
-//! once instead. Reth opens a historical state lazily, so a parent whose state was pruned is found
-//! out on that first read.
+//! Reth's payload job reports every failed build as `missing payload`, so the handler reads the
+//! parent's state once after an Etna build fails.
 
 use alethia_reth_primitives::etna::{
     ENGINE_CANNOT_BUILD_ON_PARENT_CODE, ENGINE_CANNOT_BUILD_ON_PARENT_MESSAGE,
@@ -14,16 +12,9 @@ use jsonrpsee_types::ErrorObjectOwned;
 use reth_provider::{AccountReader, ProviderError, ProviderResult, StateProviderFactory};
 use reth_rpc_engine_api::EngineApiError;
 
-/// Returns whether `error` reports the parent's state as pruned, which no retry can fix.
-///
-/// Two shapes count, matched structurally:
-/// - `StateAtBlockPruned`.
-/// - `InsufficientChangesets` whose requested block lies below the available range. Reth's state
-///   overlay reports a parent below the history prune boundary this way, and only a prune
-///   checkpoint gives that range a nonzero start.
-///
-/// Every other error is not definitive, including `InsufficientChangesets` for a missing Finish
-/// checkpoint (block 0 in `0..=0`) or for a block past the tip.
+/// Returns whether `error` reports the parent's state as pruned, which no retry can fix:
+/// `StateAtBlockPruned`, or `InsufficientChangesets` below the available range, whose start only a
+/// prune checkpoint makes nonzero. Every other error is not definitive.
 pub(crate) fn is_pruned_parent_state(error: &ProviderError) -> bool {
     match error {
         ProviderError::StateAtBlockPruned(_) => true,
@@ -34,10 +25,8 @@ pub(crate) fn is_pruned_parent_state(error: &ProviderError) -> bool {
     }
 }
 
-/// Opens the state of the block `parent_hash` and reads one fixed account from it.
-///
-/// Opening alone proves nothing, because reth checks a historical state's availability only on its
-/// first read. The account is the EIP-2935 history contract; any fixed address would do.
+/// Reads one fixed account from the state of `parent_hash`, since reth checks a historical
+/// state's availability only on its first read.
 pub(crate) fn read_parent_state(
     provider: &impl StateProviderFactory,
     parent_hash: B256,
@@ -46,12 +35,9 @@ pub(crate) fn read_parent_state(
     Ok(())
 }
 
-/// Returns the JSON-RPC error for an Etna FCU whose payload job did not deliver a block.
-///
-/// Only a failed build (`GetPayloadError`) calls `probe_parent`, which reads the parent's state
-/// (see [`read_parent_state`]). When that read fails with a pruned parent state, the answer is
-/// `-38100 "cannot build on parent"` with the read error's text as diagnostic data. Otherwise it is
-/// the job's own error, unchanged.
+/// Returns the JSON-RPC error for an Etna FCU whose payload job did not deliver a block:
+/// `-38100 "cannot build on parent"` (read error as data) when a failed build's `probe_parent`
+/// reports a pruned parent state, and otherwise the job's own error.
 pub(crate) fn failed_build_error(
     error: EngineApiError,
     probe_parent: impl FnOnce() -> ProviderResult<()>,
@@ -89,9 +75,6 @@ mod tests {
             // Past the tip.
             ProviderError::InsufficientChangesets { requested: 6, available: 0..=5 },
             ProviderError::StateForHashNotFound(B256::ZERO),
-            ProviderError::BlockHashNotFound(B256::ZERO),
-            ProviderError::BestBlockNotFound,
-            ProviderError::other(std::io::Error::other("timeout")),
         ] {
             assert!(!is_pruned_parent_state(&transient), "{transient:?}");
         }

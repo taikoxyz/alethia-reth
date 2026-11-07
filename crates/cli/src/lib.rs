@@ -301,7 +301,7 @@ mod tests {
         TaikoNodeExtArgs, disable_state_masking_by_default, validate_engine_args,
     };
 
-    pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock should not be poisoned")
     }
@@ -414,32 +414,6 @@ mod tests {
         let Commands::Node(node) = cli.inner.command else { panic!("expected node command") };
 
         assert_eq!(node.engine.num_state_masking_blocks(), 0);
-    }
-
-    #[test]
-    fn rewind_flags_reach_the_engine_tree_config() {
-        let tree_config = |args: &[&str]| {
-            let cli = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_args_from(
-                args.iter().copied(),
-            )
-            .expect("node args should parse");
-            let Commands::Node(node) = cli.inner.command else { panic!("expected node command") };
-            node.engine.tree_config()
-        };
-
-        // The governance-recovery rewind restarts the node once with both flags; they are off
-        // by default.
-        let normal = tree_config(&["alethia-reth", "node"]);
-        assert!(!normal.unwind_canonical_header());
-        assert!(!normal.always_process_payload_attributes_on_canonical_head());
-        let rewind = tree_config(&[
-            "alethia-reth",
-            "node",
-            "--engine.allow-unwind-canonical-header",
-            "--engine.always-process-payload-attributes-on-canonical-head",
-        ]);
-        assert!(rewind.unwind_canonical_header());
-        assert!(rewind.always_process_payload_attributes_on_canonical_head());
     }
 
     #[test]

@@ -139,7 +139,6 @@ reth-rpc-engine-api = { git = "https://github.com/ethereum-optimism/reth", tag =
 reth-rpc-eth-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
 reth-rpc-eth-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
 reth-rpc-server-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-stages-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
 reth-storage-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
 reth-storage-errors = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
 reth-storage-overlay = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }

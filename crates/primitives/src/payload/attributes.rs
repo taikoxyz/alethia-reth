@@ -90,14 +90,9 @@ pub struct TaikoPayloadAttributes {
     /// instead of building an anchor transaction from checkpoint parameters.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub anchor_transaction: Option<AlloyBytes>,
-    /// Upper bound on the built block's executionBlock length (wire name `maxBlockBytes`, a JSON
-    /// number).
-    ///
-    /// Required on every Etna build, given-list builds included, at least
-    /// [`ETNA_MIN_MAX_BLOCK_BYTES`](crate::etna::ETNA_MIN_MAX_BLOCK_BYTES), and forbidden before
-    /// Etna. The built block's `rlp([header, [tx…]])`, including its outer list header and with
-    /// every transaction, legacy included, an RLP byte string of its EIP-2718 bytes, is at most
-    /// this many bytes.
+    /// Upper bound on the built block's `rlp([header, [tx…]])` length (wire name `maxBlockBytes`,
+    /// a JSON number). Required at Etna, at least
+    /// [`ETNA_MIN_MAX_BLOCK_BYTES`](crate::etna::ETNA_MIN_MAX_BLOCK_BYTES), forbidden before.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
     pub max_block_bytes: Option<u64>,
 }
@@ -287,9 +282,6 @@ mod tests {
         // L1 origin defaults remain zeroed and stable.
         assert_eq!(first.l1_origin.block_id, U256::ZERO);
         assert_eq!(first.l1_origin, second.l1_origin);
-
-        // Local dev-mode builds never use the Etna build fields.
-        assert_eq!(first.max_block_bytes, None);
     }
 
     #[test]

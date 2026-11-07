@@ -104,26 +104,10 @@ where
 /// Returns an upper bound on the RLP length of every Etna header [`TaikoBlockAssembler`] can
 /// assemble for a block built on `parent` in the environment `attributes` describes.
 ///
-/// A payload builder seals the header only after execution, so it derives its transaction byte
-/// budget from this bound instead. The bound is the length of a header template built the way
-/// [`TaikoBlockAssembler::assemble_block`] builds an Etna header, so the two must change together:
-/// - The fields taken from the parent and `attributes` are exact: the parent hash, beneficiary,
-///   block number (`parent.number + 1`), gas limit, timestamp, extraData, mixHash and base fee come
-///   from the same parent and attributes as the block environment, and the ommers hash, nonce and
-///   withdrawals root are constants.
-/// - The fields known only after execution are fixed-size or bounded: the state, transactions and
-///   receipts roots are always 32 bytes and the logs bloom always 256 bytes, whatever their value;
-///   `gasUsed` never exceeds the gas limit, because the executor rejects a transaction whose gas
-///   limit exceeds the block's remaining gas; and the difficulty carries the block's zk gas, a
-///   `u64`, so `u64::MAX` bounds it. An RLP integer never gets shorter as it grows.
-/// - Every optional field an Etna header carries is present (blob gas used and excess blob gas, the
-///   beacon root, the requests hash); a header without one of them is only shorter. The block
-///   access list hash and slot number stay absent, as the assembler leaves them.
-///
-/// The test
-/// `alethia_reth_payload::builder::tests::etna_header_reserve_bounds_a_maximal_assembled_header`
-/// (`crates/payload/src/builder/mod.rs`) pins this: the bound must equal the length of a header the
-/// assembler builds with `gasUsed` at the gas limit and a `u64::MAX` difficulty.
+/// The bound is the length of a header built the way [`TaikoBlockAssembler::assemble_block`]
+/// builds an Etna header, with the post-execution fields at their longest (`gasUsed` at the gas
+/// limit, a `u64::MAX` zk gas difficulty), so the two must change together; the payload builder
+/// test `etna_header_reserve_bounds_a_maximal_assembled_header` pins them.
 pub fn etna_header_length_bound(
     parent: &SealedHeader,
     attributes: &TaikoNextBlockEnvAttributes,

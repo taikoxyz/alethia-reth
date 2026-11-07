@@ -32,7 +32,3 @@ reth-node-builder = { workspace = true }
 reth-storage-api = { workspace = true }
 reth-tracing = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
-tempfile = { workspace = true }

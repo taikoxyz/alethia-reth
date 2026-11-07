@@ -500,30 +500,7 @@ fn etna_header_requires_empty_withdrawals_and_zero_blob_gas() {
         assert!(matches!(err, ConsensusError::Other(_)), "{name}: unexpected error {err:?}");
     }
 
-    // Genesis keeps its genesis-file header fields, matching the beacon-root exemption.
-    let genesis = Header {
-        number: 0,
-        parent_beacon_block_root: Some(B256::ZERO),
-        withdrawals_root: None,
-        blob_gas_used: None,
-        excess_blob_gas: None,
-        ..etna_header()
-    };
-    consensus
-        .validate_header(&SealedHeader::seal_slow(genesis))
-        .expect("the Etna genesis header is exempt from body commitments");
-}
-
-#[test]
-fn etna_header_requires_thirteen_byte_extra_data() {
-    let consensus = test_consensus(etna_chain_spec());
-    // `primitives::etna` covers every length; one legacy 7-byte header checks the wiring.
-    let header = Header { extra_data: Bytes::from(vec![0; 7]), ..etna_header() };
-    let err = consensus
-        .validate_header(&SealedHeader::seal_slow(header))
-        .expect_err("a non-13-byte Etna extraData must be rejected");
-    assert!(err.to_string().contains("extraData"), "{err}");
-
+    // Genesis keeps its genesis-file header fields: no root, body commitments or extraData layout.
     let genesis = Header {
         number: 0,
         extra_data: Bytes::new(),
@@ -535,7 +512,18 @@ fn etna_header_requires_thirteen_byte_extra_data() {
     };
     consensus
         .validate_header(&SealedHeader::seal_slow(genesis))
-        .expect("the Etna genesis is exempt from the extraData layout");
+        .expect("the Etna genesis header is exempt from the non-genesis header rules");
+}
+
+#[test]
+fn etna_header_requires_thirteen_byte_extra_data() {
+    let consensus = test_consensus(etna_chain_spec());
+    // `primitives::etna` covers every length; one legacy 7-byte header checks the wiring.
+    let header = Header { extra_data: Bytes::from(vec![0; 7]), ..etna_header() };
+    let err = consensus
+        .validate_header(&SealedHeader::seal_slow(header))
+        .expect_err("a non-13-byte Etna extraData must be rejected");
+    assert!(err.to_string().contains("extraData"), "{err}");
 }
 
 #[test]

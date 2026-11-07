@@ -410,6 +410,7 @@ where
             min_tip,
             locals: locals.unwrap_or_default(),
             state_seed,
+            max_tx_bytes_per_list: None,
         };
 
         match select_and_execute_pool_transactions(

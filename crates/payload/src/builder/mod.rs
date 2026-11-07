@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use alloy_hardforks::EthereumHardforks;
+use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
 use reth_errors::RethError;
-use reth_ethereum::EthPrimitives;
+use reth_ethereum::{Block, EthPrimitives};
 use reth_evm::{
     ConfigureEvm,
     execute::{BlockBuilder, BlockBuilderOutcome},
@@ -14,12 +15,13 @@ use reth_evm_ethereum::RethReceiptBuilder;
 use reth_execution_cache::{CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider};
 use reth_payload_builder::EthBuiltPayload;
 use reth_payload_builder_primitives::PayloadBuilderError;
+use reth_primitives_traits::SealedBlock;
 use reth_provider::{BlockReader, ChainSpecProvider, StateProviderFactory};
 use reth_revm::{database::StateProviderDatabase, db::State};
 use tracing::{debug, warn};
 
 use alethia_reth_block::{
-    assembler::TaikoBlockAssembler,
+    assembler::{TaikoBlockAssembler, etna_header_length_bound},
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     factory::TaikoBlockExecutorFactory,
     tx_selection::{ZkOverflowMemory, selection_state_seed},
@@ -27,8 +29,9 @@ use alethia_reth_block::{
 use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_consensus::validation::ANCHOR_V3_V4_GAS_LIMIT;
 use alethia_reth_evm::factory::TaikoEvmFactory;
-use alethia_reth_primitives::payload::{
-    attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes,
+use alethia_reth_primitives::{
+    etna::{execution_block_length, max_txs_payload_len},
+    payload::{attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes},
 };
 
 use self::execution::{
@@ -183,6 +186,72 @@ fn ensure_amsterdam_inactive(
     Ok(())
 }
 
+/// Returns the block environment the payload job executes in, derived from its attributes.
+fn next_block_env_attributes(
+    attributes: &TaikoPayloadBuilderAttributes,
+) -> TaikoNextBlockEnvAttributes {
+    TaikoNextBlockEnvAttributes {
+        timestamp: attributes.timestamp(),
+        suggested_fee_recipient: attributes.beneficiary,
+        prev_randao: attributes.mix_hash,
+        gas_limit: attributes.gas_limit,
+        extra_data: attributes.extra_data.clone(),
+        base_fee_per_gas: attributes.base_fee_per_gas,
+        parent_beacon_block_root: attributes.parent_beacon_block_root,
+    }
+}
+
+/// Returns the transaction byte budget of an Etna build: the largest summed [`etna_tx_length`] of
+/// its transactions whose executionBlock, with a `header_reserve`-byte header, still fits in
+/// `max_block_bytes`.
+///
+/// The budget counts the transactions only, each as an RLP byte string of its EIP-2718 bytes, as
+/// [`TxSelectionConfig::max_tx_bytes_per_list`] does; the list headers are accounted for here.
+///
+/// # Errors
+///
+/// An internal error whose text contains `maxBlockBytes` when even a block without transactions
+/// does not fit.
+///
+/// [`etna_tx_length`]: alethia_reth_primitives::etna::etna_tx_length
+/// [`TxSelectionConfig::max_tx_bytes_per_list`]:
+///     alethia_reth_block::tx_selection::TxSelectionConfig::max_tx_bytes_per_list
+fn etna_tx_bytes_budget(
+    header_reserve: usize,
+    max_block_bytes: u64,
+) -> Result<u64, PayloadBuilderError> {
+    max_txs_payload_len(header_reserve, max_block_bytes).ok_or_else(|| {
+        PayloadBuilderError::Internal(RethError::msg(format!(
+            "maxBlockBytes {max_block_bytes} cannot hold an Etna block with a \
+             {header_reserve}-byte header reserve"
+        )))
+    })
+}
+
+/// Checks that the sealed block's executionBlock, `rlp([header, [tx…]])` including its outer list
+/// header and with every transaction, legacy included, an RLP byte string of its EIP-2718 bytes,
+/// is at most `max_block_bytes` long. The bound is inclusive.
+///
+/// # Errors
+///
+/// An internal error whose text contains `maxBlockBytes` and names the actual and the maximum
+/// length and the header's length, so a header reserve shortfall can be told apart from a budget
+/// that was never applied.
+fn ensure_within_max_block_bytes(
+    block: &SealedBlock<Block>,
+    max_block_bytes: u64,
+) -> Result<(), PayloadBuilderError> {
+    let len = execution_block_length(block.header(), &block.body().transactions);
+    if len as u64 > max_block_bytes {
+        let header_len = block.header().length();
+        return Err(PayloadBuilderError::Internal(RethError::msg(format!(
+            "built Etna executionBlock is {len} bytes ({header_len}-byte header), above \
+             maxBlockBytes {max_block_bytes}"
+        ))));
+    }
+    Ok(())
+}
+
 /// Build a Taiko payload for the given parent/header and job attributes.
 ///
 /// `zk_overflows` carries zk gas overflows from earlier mempool selections into this one.
@@ -227,6 +296,25 @@ where
 
     ensure_amsterdam_inactive(chain_spec.as_ref(), attributes.timestamp())?;
 
+    // Normalization makes `maxBlockBytes` `Some` on every Etna job and `None` before Etna, so only
+    // Etna builds get a transaction byte budget and the final size check; pre-Etna builds are
+    // unchanged. The header is sealed after execution, so the budget leaves room for a bound on it.
+    debug_assert_eq!(
+        attributes.max_block_bytes.is_some(),
+        chain_spec.is_etna_active(attributes.timestamp()),
+        "maxBlockBytes must be present exactly on Etna jobs"
+    );
+    let env_attributes = next_block_env_attributes(&attributes);
+    let tx_bytes_budget = attributes
+        .max_block_bytes
+        .map(|max_block_bytes| {
+            etna_tx_bytes_budget(
+                etna_header_length_bound(&parent_header, &env_attributes),
+                max_block_bytes,
+            )
+        })
+        .transpose()?;
+
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
         state_provider = Box::new(CachedStateProvider::new(
@@ -241,15 +329,6 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, parent_hash=?parent_header.hash(), parent_number=parent_header.number, "building new payload");
 
-    let env_attributes = TaikoNextBlockEnvAttributes {
-        timestamp: attributes.timestamp(),
-        suggested_fee_recipient: attributes.beneficiary,
-        prev_randao: attributes.mix_hash,
-        gas_limit: attributes.gas_limit,
-        extra_data: attributes.extra_data.clone(),
-        base_fee_per_gas: attributes.base_fee_per_gas,
-        parent_beacon_block_root: attributes.parent_beacon_block_root,
-    };
     // New-mode pool selection starts from this payload's parent and block environment.
     let block_state_seed = selection_state_seed(parent_header.hash(), &env_attributes, &[]);
     let mut builder = evm_config
@@ -270,7 +349,13 @@ where
     let total_fees = match &attributes.transactions {
         Some(transactions) => {
             debug!(target: "payload_builder", id=%payload_id, tx_count=transactions.len(), "using provided transaction list");
-            match execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)? {
+            match execute_provided_transactions(
+                &mut builder,
+                transactions,
+                base_fee,
+                tx_bytes_budget,
+                &cancel,
+            )? {
                 ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
                 ExecutionOutcome::Completed(fees) => fees,
             }
@@ -289,6 +374,7 @@ where
                 base_fee,
                 gas_limit,
                 zk_overflows,
+                tx_bytes_budget,
             };
 
             match execute_pool_transactions(&mut builder, &pool, &client, &ctx, &cancel)? {
@@ -333,22 +419,37 @@ where
 
     debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?block.sealed_header(), "sealed built block");
 
+    if let Some(max_block_bytes) = attributes.max_block_bytes {
+        ensure_within_max_block_bytes(block.sealed_block(), max_block_bytes)?;
+    }
+
     Ok(BuildOutcome::Freeze(EthBuiltPayload::new(Arc::new(block), total_fees, None, None)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alethia_reth_block::testutil::etna_chain_spec;
     use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
-    use alloy_consensus::Header;
+    use alethia_reth_primitives::{
+        etna::execution_block_len,
+        payload::attributes::{RpcL1Origin, TaikoBlockMetadata},
+    };
+    use alloy_consensus::{Header, Signed, TxLegacy, TxType};
     use alloy_eips::eip4895::Withdrawal;
     use alloy_genesis::{ChainConfig, Genesis};
     use alloy_hardforks::ForkCondition;
-    use alloy_primitives::{Address, B256, Bytes, U256};
+    use alloy_primitives::{Address, B256, Bytes, Log, Signature, TxKind, U256};
     use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
     use reth_basic_payload_builder::PayloadConfig;
+    use reth_ethereum::{Receipt, TransactionSigned};
+    use reth_evm::{
+        block::BlockExecutionResult,
+        execute::{BlockAssembler, BlockAssemblerInput},
+    };
     use reth_primitives_traits::SealedHeader;
+    use reth_revm::db::BundleState;
+    use reth_storage_api::noop::NoopProvider;
     use std::sync::Arc;
 
     fn test_payload_config(tx_list: Option<Bytes>) -> PayloadConfig<TaikoPayloadAttributes> {
@@ -387,6 +488,7 @@ mod tests {
                 signature: [0; 65],
             },
             anchor_transaction: None,
+            max_block_bytes: None,
         };
 
         PayloadConfig::new(parent_header, attributes, payload_id)
@@ -396,6 +498,145 @@ mod tests {
         let mut spec = TaikoChainSpec::default();
         spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
         spec
+    }
+
+    /// Normalizes an Etna pool job with a 45M gas limit, a 1 gwei base fee, 13-byte extraData and
+    /// a non-zero beacon root, and returns its parent with it.
+    fn etna_job() -> (SealedHeader, TaikoPayloadBuilderAttributes) {
+        let mut config = test_payload_config(None);
+        config.attributes.base_fee_per_gas = U256::from(1_000_000_000_u64);
+        config.attributes.block_metadata.gas_limit = 45_000_000;
+        config.attributes.max_block_bytes = Some(124_000);
+        let attributes = normalize_payload_config(&config, &etna_chain_spec())
+            .expect("the Etna job should normalize");
+        assert_eq!(attributes.extra_data.len(), 13);
+        assert!(attributes.parent_beacon_block_root.is_some_and(|root| !root.is_zero()));
+        (config.parent_header.as_ref().clone(), attributes)
+    }
+
+    /// Assembles the block the Etna builder seals for `attributes` on `parent`, through the
+    /// builder's own block environment and the real assembler, after one transaction with a log,
+    /// `gas_used` gas and `zk_gas` zk gas.
+    fn assemble_etna_block(
+        parent: &SealedHeader,
+        attributes: &TaikoPayloadBuilderAttributes,
+        gas_used: u64,
+        zk_gas: u64,
+    ) -> reth_ethereum::Block {
+        let evm_config = TaikoEvmConfig::new(Arc::new(etna_chain_spec()));
+        let env_attributes = next_block_env_attributes(attributes);
+        let evm_env =
+            evm_config.next_evm_env(parent, &env_attributes).expect("the Etna block env builds");
+        let ctx = evm_config
+            .context_for_next_block(parent, env_attributes)
+            .expect("the Etna execution context builds");
+        ctx.set_finalized_block_zk_gas(zk_gas);
+        let tx: TransactionSigned = Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(167),
+                nonce: 0,
+                gas_price: 1_000_000_000,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::repeat_byte(0x66)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            Signature::new(U256::from(1), U256::from(2), false),
+        )
+        .into();
+        let output = BlockExecutionResult {
+            receipts: vec![Receipt {
+                tx_type: TxType::Legacy,
+                success: true,
+                cumulative_gas_used: gas_used,
+                logs: vec![Log::new_unchecked(
+                    Address::repeat_byte(0x77),
+                    vec![B256::repeat_byte(0x88)],
+                    Bytes::from_static(&[0x99; 32]),
+                )],
+            }],
+            requests: Default::default(),
+            gas_used,
+            blob_gas_used: 0,
+        };
+        evm_config
+            .block_assembler
+            .assemble_block(BlockAssemblerInput::<TaikoBlockExecutorFactory>::new(
+                evm_env,
+                ctx,
+                parent,
+                vec![tx],
+                &output,
+                &BundleState::default(),
+                &NoopProvider::default(),
+                B256::repeat_byte(0xab),
+                None,
+            ))
+            .expect("the Etna block should assemble")
+    }
+
+    #[test]
+    fn etna_header_reserve_bounds_a_maximal_assembled_header() {
+        let (parent, attrs) = etna_job();
+        let reserve = etna_header_length_bound(&parent, &next_block_env_attributes(&attrs));
+
+        // A real-shaped header: the job's known fields, a full block, 100M zk gas in the
+        // difficulty, non-zero roots and a non-empty bloom.
+        let real = assemble_etna_block(&parent, &attrs, 45_000_000, 100_000_000).header;
+        assert_eq!(real.gas_used, 45_000_000);
+        assert_eq!(real.difficulty, U256::from(100_000_000_u64));
+        assert_eq!(real.base_fee_per_gas, Some(1_000_000_000));
+        assert!(!real.logs_bloom.is_zero());
+        assert!(!real.state_root.is_zero() && !real.receipts_root.is_zero());
+        assert!(real.requests_hash.is_some() && real.parent_beacon_block_root.is_some());
+        assert!(real.length() <= reserve, "{} > {reserve}", real.length());
+        assert!(reserve - real.length() <= 16, "{reserve} - {}", real.length());
+
+        // The reserve is exactly the length of the largest header this job can seal: every
+        // assembler field is covered and nothing is counted twice.
+        let maximal = assemble_etna_block(&parent, &attrs, 45_000_000, u64::MAX).header;
+        assert_eq!(maximal.length(), reserve);
+    }
+
+    #[test]
+    fn etna_tx_bytes_budget_follows_the_execution_block_bound() {
+        assert_eq!(
+            etna_tx_bytes_budget(600, 124_000).expect("124,000 bytes hold a 600-byte header"),
+            123_392
+        );
+        let err = etna_tx_bytes_budget(600, 603).expect_err("603 bytes cannot hold an empty block");
+        assert!(err.to_string().contains("maxBlockBytes"), "{err}");
+    }
+
+    #[test]
+    fn ensure_within_max_block_bytes_is_exact() {
+        let (parent, attrs) = etna_job();
+        let block =
+            SealedBlock::seal_slow(assemble_etna_block(&parent, &attrs, 21_000, 100_000_000));
+        let exact = execution_block_length(block.header(), &block.body().transactions) as u64;
+
+        assert!(ensure_within_max_block_bytes(&block, exact).is_ok());
+        // The block's legacy transaction also counts the byte-string header its block-body form
+        // leaves out, so a bound at the block-body-form length fails the build.
+        let tx = &block.body().transactions[0];
+        assert!(tx.is_legacy());
+        let body_form = execution_block_len(
+            block.header().length(),
+            block.body().transactions.iter().map(Encodable::length).sum(),
+        ) as u64;
+        assert_eq!(
+            exact - body_form,
+            alloy_rlp::Header { list: false, payload_length: tx.eip2718_encoded_length() }.length()
+                as u64
+        );
+        assert!(ensure_within_max_block_bytes(&block, body_form).is_err());
+        let message = ensure_within_max_block_bytes(&block, exact - 1)
+            .expect_err("one byte over maxBlockBytes must fail the build")
+            .to_string();
+        assert!(message.contains("maxBlockBytes"), "{message}");
+        assert!(message.contains(&exact.to_string()), "{message}");
+        assert!(message.contains(&(exact - 1).to_string()), "{message}");
+        assert!(message.contains(&format!("{}-byte header", block.header().length())), "{message}");
     }
 
     #[test]
@@ -408,12 +649,14 @@ mod tests {
 
     #[test]
     fn etna_pool_transaction_source_normalizes_without_an_anchor() {
-        let config = test_payload_config(None);
+        let mut config = test_payload_config(None);
+        config.attributes.max_block_bytes = Some(124_000);
         let attributes = normalize_payload_config(&config, &chain_spec_with_etna_at(100))
             .expect("Etna config should normalize");
 
         assert!(attributes.transactions.is_none());
         assert!(attributes.anchor_transaction.is_none());
+        assert_eq!(attributes.max_block_bytes, Some(124_000));
     }
 
     #[test]
@@ -435,6 +678,7 @@ mod tests {
         let spec = chain_spec_with_etna_at(100);
         for (index, (expected, mutate)) in cases.into_iter().enumerate() {
             let mut config = test_payload_config(None);
+            config.attributes.max_block_bytes = Some(124_000);
             mutate(&mut config);
             match normalize_payload_config(&config, &spec) {
                 Ok(_) => panic!("case {index} ({expected}) must be rejected"),

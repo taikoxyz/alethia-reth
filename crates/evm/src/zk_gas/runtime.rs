@@ -224,8 +224,8 @@ impl PendingPricingStep {
     pub(crate) fn observe_storage_journal(self, accumulator: &mut ZkGasAccumulator) {
         accumulator.observe_account_journal_opcode(self.opcode);
         match self.model_input {
-            Ok(PendingModelInput::StorageLoad(storage))
-            | Ok(PendingModelInput::StorageStore(storage)) => {
+            Ok(PendingModelInput::StorageLoad(storage)) |
+            Ok(PendingModelInput::StorageStore(storage)) => {
                 accumulator.observe_storage_journal(
                     storage.target,
                     storage.occupancy_before,
@@ -264,8 +264,8 @@ impl PendingPricingStep {
         accumulator: &mut ZkGasAccumulator,
     ) -> Result<(), ZkGasAccumulatorError> {
         let raw_gas = self.gas_remaining.saturating_sub(interpreter.gas.remaining());
-        let selected_spawn = is_spawn_opcode(self.opcode)
-            && matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
+        let selected_spawn = is_spawn_opcode(self.opcode) &&
+            matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
         if selected_spawn {
             let memory = matches!(self.opcode, 0xf1 | 0xf2 | 0xf4 | 0xfa)
                 .then(|| self.memory_selectors(interpreter));
@@ -273,8 +273,8 @@ impl PendingPricingStep {
             return Ok(());
         }
 
-        if interpreter.bytecode.instruction_result().is_none_or(InstructionResult::is_ok)
-            && let Some(address) = self.resource_account
+        if interpreter.bytecode.instruction_result().is_none_or(InstructionResult::is_ok) &&
+            let Some(address) = self.resource_account
         {
             accumulator.observe_state_access(StateAccess::Account(address))?;
         }
@@ -301,9 +301,9 @@ impl PendingPricingStep {
         let unexpected_halt = instruction_result.is_some_and(|result| {
             !(result.is_ok() || self.opcode == 0xfd && result == InstructionResult::Revert)
         });
-        let revert_with_unmodeled_gas = self.opcode == 0xfd
-            && instruction_result == Some(InstructionResult::Revert)
-            && raw_gas != 0;
+        let revert_with_unmodeled_gas = self.opcode == 0xfd &&
+            instruction_result == Some(InstructionResult::Revert) &&
+            raw_gas != 0;
         let (model_input, feature_error) = match model_input {
             Ok(input) if !unexpected_halt && !revert_with_unmodeled_gas => (input, false),
             Ok(_) | Err(()) => (OperationModelInput::None, true),
@@ -440,8 +440,8 @@ fn capture_transient_storage_input<DB: Database>(
     let target = interpreter.input.target_address();
     let slots = context.journaled_state.inner.transient_storage.get(&target);
     let occupancy_before = slots.map_or(0, |slots| slots.len());
-    let materializes = new.is_some_and(|value| !value.is_zero())
-        && slots.is_none_or(|slots| !slots.contains_key(&key));
+    let materializes = new.is_some_and(|value| !value.is_zero()) &&
+        slots.is_none_or(|slots| !slots.contains_key(&key));
     Ok(PendingTransientStorageInput { target, key, occupancy_before, store, materializes })
 }
 
@@ -532,8 +532,8 @@ pub(crate) fn bn254_work_units(input: &[u8]) -> u64 {
     while scalar >= BN254_GROUP_ORDER {
         scalar -= BN254_GROUP_ORDER;
     }
-    scalar.bit_len() as u64
-        + scalar.to_be_bytes::<32>().iter().map(|byte| u64::from(byte.count_ones())).sum::<u64>()
+    scalar.bit_len() as u64 +
+        scalar.to_be_bytes::<32>().iter().map(|byte| u64::from(byte.count_ones())).sum::<u64>()
 }
 
 #[cfg(test)]
@@ -582,8 +582,8 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
 
         // Materialize an exceptional halt before charging so the `OutOfGas` spend-all is
         // reflected in the measured step gas (see the function docs).
-        if let Err(result) = step_result
-            && interpreter.bytecode.action().is_none()
+        if let Err(result) = step_result &&
+            interpreter.bytecode.action().is_none()
         {
             interpreter.halt(result);
         }
@@ -593,8 +593,8 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
         }
 
         if let Some(meter) = meter.as_deref_mut() {
-            let charge = if is_spawn_opcode(opcode)
-                && matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)))
+            let charge = if is_spawn_opcode(opcode) &&
+                matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)))
             {
                 meter.charge_spawn_opcode(opcode)
             } else {
@@ -608,8 +608,8 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
         }
 
         if let (Some(step), Some(accumulator), Some(hooks)) =
-            (pricing_step, pricing.as_deref_mut(), pricing_hooks)
-            && let Err(error) = (hooks.finish)(step, interpreter, context, accumulator)
+            (pricing_step, pricing.as_deref_mut(), pricing_hooks) &&
+            let Err(error) = (hooks.finish)(step, interpreter, context, accumulator)
         {
             accumulator.retain_diagnostic(Some(error));
         }

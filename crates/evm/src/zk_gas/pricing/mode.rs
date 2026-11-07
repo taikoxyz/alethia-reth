@@ -4,7 +4,8 @@ use super::{
     AccessListConstructionDiagnostics, AccessListConstructionIncompleteness,
     AccountCacheDiagnostics, AccountCacheIncompleteness, AccountJournalDiagnostics,
     AccountJournalIncompleteness, CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors,
-    StorageJournalDiagnostics, StorageJournalIncompleteness, TransactionPayloadSelectors,
+    StorageJournalDiagnostics, StorageJournalIncompleteness, StorageTransitionDiagnostics,
+    StorageTransitionIncompleteness, TransactionPayloadSelectors,
     TransientStorageJournalDiagnostics, ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError,
     ZkGasModel, model::KnownBlockPricingInput,
 };
@@ -49,12 +50,16 @@ pub struct ZkGasKnownBlockBreakdown {
     account_journal_work_units: u64,
     /// Progressive observed-transaction block-cache work, in its independent domain.
     account_cache_work_units: u64,
+    /// Independent block-local forward storage-transition reserve.
+    storage_transition_work_units: u64,
     /// Independent journal contribution in normalized fixed-point PGU.
     storage_journal_scaled: i128,
     /// Independently normalized empirical Account-journal density reserve.
     account_journal_scaled: i128,
     /// Independently normalized progressive block-cache contribution.
     account_cache_scaled: i128,
+    /// Independent block-local forward storage-transition reserve.
+    storage_transition_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Normal dispatched opcode/confirmed-spawn count sealed with its reserve.
@@ -109,8 +114,12 @@ impl ZkGasKnownBlockBreakdown {
         access_list_address_scaled: i128,
         account_journal_work_units: u64,
         account_cache_work_units: u64,
+        // Independent block-local forward storage-transition reserve.
+        storage_transition_work_units: u64,
         account_journal_scaled: i128,
         account_cache_scaled: i128,
+        // Independent block-local forward storage-transition reserve.
+        storage_transition_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
@@ -119,9 +128,11 @@ impl ZkGasKnownBlockBreakdown {
             storage_journal_work_units,
             account_journal_work_units,
             account_cache_work_units,
+            storage_transition_work_units,
             storage_journal_scaled,
             account_journal_scaled,
             account_cache_scaled,
+            storage_transition_scaled,
             authorization_validations,
             authorization_scaled,
             access_list_items,
@@ -289,6 +300,15 @@ impl ZkGasKnownBlockBreakdown {
         self.account_cache_scaled
     }
 
+    /// Independent forward storage-transition work sealed with the known subtotal.
+    pub const fn storage_transition_work_units(self) -> u64 {
+        self.storage_transition_work_units
+    }
+    /// Normalized forward storage-transition contribution, retained once during completion.
+    pub const fn storage_transition_scaled(self) -> i128 {
+        self.storage_transition_scaled
+    }
+
     #[cfg(test)]
     pub(super) const fn with_account_cache_for_test(mut self, units: u64, scaled: i128) -> Self {
         self.account_cache_work_units = units;
@@ -329,6 +349,17 @@ impl ZkGasKnownBlockBreakdown {
     }
 
     #[cfg(test)]
+    pub(in crate::zk_gas) const fn with_storage_transition_for_test(
+        mut self,
+        units: u64,
+        scaled: i128,
+    ) -> Self {
+        self.storage_transition_work_units = units;
+        self.storage_transition_scaled = scaled;
+        self
+    }
+
+    #[cfg(test)]
     pub(in crate::zk_gas) const fn from_parts_for_test(
         fixed_scaled: i128,
         operations_scaled: i128,
@@ -360,6 +391,8 @@ impl ZkGasKnownBlockBreakdown {
             known_subtotal_scaled,
             known_subtotal_pgu,
             CodePreparationSelectors { nonempty_events: 0, total_bytes: 0 },
+            0,
+            0,
             0,
             0,
             0,
@@ -413,6 +446,8 @@ pub enum ZkGasShadowDiagnostic {
     StorageJournal(StorageJournalIncompleteness),
     /// Account work has incomplete or inconsistent physical-population capture.
     AccountJournal(AccountJournalIncompleteness),
+    /// Required forward-transition receipt or arithmetic was incomplete.
+    StorageTransition(StorageTransitionIncompleteness),
     /// The pure model rejected the committed execution/resource selectors.
     Pricing(ZkGasError),
 }
@@ -506,6 +541,9 @@ impl ZkGasShadowStatus {
             Self::Diagnostic(ZkGasShadowDiagnostic::StorageJournal(_)) => {
                 "storage_journal_incomplete"
             }
+            Self::Diagnostic(ZkGasShadowDiagnostic::StorageTransition(_)) => {
+                "storage_transition_incomplete"
+            }
             Self::Diagnostic(ZkGasShadowDiagnostic::Pricing(ZkGasError::UnknownRoute(_))) => {
                 "pricing_unknown_route"
             }
@@ -538,6 +576,8 @@ pub struct ZkGasShadowReport {
     account_journal: AccountJournalDiagnostics,
     /// Progressive block-cache population and work, independently sealed.
     account_cache: AccountCacheDiagnostics,
+    /// Independent forward storage-transition population and2X reserve.
+    storage_transition: StorageTransitionDiagnostics,
     /// Independent transient diagnostics whose units join the same sealed journal price once.
     transient_storage_journal: TransientStorageJournalDiagnostics,
     /// Raw access-list construction receipt diagnostics, separate from physical journal work.
@@ -554,6 +594,7 @@ impl ZkGasShadowReport {
             storage_journal: StorageJournalDiagnostics::EMPTY,
             account_journal: AccountJournalDiagnostics::EMPTY,
             account_cache: AccountCacheDiagnostics::EMPTY,
+            storage_transition: StorageTransitionDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
             access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
@@ -595,6 +636,11 @@ impl ZkGasShadowReport {
         self.account_cache
     }
 
+    /// Returns per-block physical-slot population and empirical forward-transition diagnostics.
+    pub const fn storage_transition(self) -> StorageTransitionDiagnostics {
+        self.storage_transition
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
@@ -603,6 +649,10 @@ impl ZkGasShadowReport {
             account_cache: AccountCacheDiagnostics {
                 incomplete: Some(AccountCacheIncompleteness::CollectorUnavailable),
                 ..AccountCacheDiagnostics::EMPTY
+            },
+            storage_transition: StorageTransitionDiagnostics {
+                incomplete: Some(StorageTransitionIncompleteness::CollectorUnavailable),
+                ..StorageTransitionDiagnostics::EMPTY
             },
             account_journal: AccountJournalDiagnostics {
                 incomplete: Some(AccountJournalIncompleteness::CollectorUnavailable),
@@ -634,6 +684,7 @@ impl ZkGasShadowReport {
             storage_journal: StorageJournalDiagnostics::EMPTY,
             account_journal: AccountJournalDiagnostics::EMPTY,
             account_cache: AccountCacheDiagnostics::EMPTY,
+            storage_transition: StorageTransitionDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
             access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
@@ -651,6 +702,11 @@ impl ZkGasBlockSnapshot {
             None if self.account_journal.incomplete.is_some() => ZkGasShadowStatus::Diagnostic(
                 ZkGasShadowDiagnostic::AccountJournal(self.account_journal.incomplete.unwrap()),
             ),
+            None if self.storage_transition.incomplete.is_some() => {
+                ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::StorageTransition(
+                    self.storage_transition.incomplete.unwrap(),
+                ))
+            }
             None if self.storage_journal.incomplete.is_some() => ZkGasShadowStatus::Diagnostic(
                 ZkGasShadowDiagnostic::StorageJournal(self.storage_journal.incomplete.unwrap()),
             ),
@@ -675,6 +731,7 @@ impl ZkGasBlockSnapshot {
                     storage_journal_work_units,
                     account_journal_work_units: self.account_journal_work_units()?,
                     account_cache_work_units: self.account_cache_work_units()?,
+                    storage_transition_work_units: self.storage_transition_work_units()?,
                     operation_routes: &self.operation_routes,
                     resources: self.resources,
                     transaction_payload: self.transaction_payload,
@@ -693,6 +750,7 @@ impl ZkGasBlockSnapshot {
             storage_journal: self.storage_journal,
             account_journal: self.account_journal,
             account_cache: self.account_cache,
+            storage_transition: self.storage_transition,
             transient_storage_journal: self.transient_storage_journal,
             access_list_construction: self.access_list_construction,
         }

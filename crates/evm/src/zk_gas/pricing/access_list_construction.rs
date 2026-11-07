@@ -129,8 +129,8 @@ impl AccessListConstructionDiagnostics {
         if low_pairs.checked_add(other_pairs) != Some(owner_pairs) {
             return Err(inconsistent);
         }
-        if low_pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND
-            || other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
+        if low_pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND ||
+            other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
         {
             return Err(AccessListConstructionIncompleteness::PairBoundExceeded);
         }
@@ -182,9 +182,9 @@ impl AccessListConstructionDiagnostics {
         self.other_pairs = other_pairs;
         self.owner_pairs = owner_pairs;
         self.incomplete = incomplete.or(
-            if address_pairs > ACCESS_LIST_ADDRESS_PAIR_BOUND
-                || pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND
-                || other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
+            if address_pairs > ACCESS_LIST_ADDRESS_PAIR_BOUND ||
+                pairs > ACCESS_LIST_CONSTRUCTION_PAIR_BOUND ||
+                other_pairs > ACCESS_LIST_CONSTRUCTION_OTHER_PAIR_BOUND
             {
                 Some(AccessListConstructionIncompleteness::PairBoundExceeded)
             } else if pairs.checked_add(other_pairs) != Some(owner_pairs) {
@@ -233,6 +233,7 @@ mod tests {
                 )
                 .unwrap();
             collector.complete_account_journal_population([]).unwrap();
+            collector.complete_storage_transition_population([]).unwrap();
             collector.commit_transaction().unwrap();
             match collector.committed_snapshot().shadow_report().status() {
                 ZkGasShadowStatus::Incomplete { known, .. } => {
@@ -267,9 +268,11 @@ mod tests {
                 .unwrap();
             if commit {
                 collector.complete_account_journal_population([]).unwrap();
+                collector.complete_storage_transition_population([]).unwrap();
                 collector.commit_transaction().unwrap();
             } else {
                 collector.complete_account_journal_population([]).unwrap();
+                collector.complete_storage_transition_population([]).unwrap();
                 collector.reset_transaction();
             }
         }
@@ -361,6 +364,7 @@ mod tests {
             .observe_access_list_construction((0..4).map(|_| (Address::ZERO, Vec::<U256>::new())))
             .unwrap();
         collector.complete_account_journal_population([]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.commit_transaction().unwrap();
         let full = ZkGasModel
             .complete_block_shadow_report(
@@ -417,6 +421,7 @@ mod tests {
             begin(&mut collector, 1);
             collector.observe_access_list_construction([(Address::ZERO, keys)]).unwrap();
             collector.complete_account_journal_population([]).unwrap();
+            collector.complete_storage_transition_population([]).unwrap();
             collector.commit_transaction().unwrap();
             match collector.committed_snapshot().shadow_report().status() {
                 ZkGasShadowStatus::Incomplete { known, .. } => {
@@ -728,10 +733,12 @@ mod tests {
         collector.observe_access_list_construction([(Address::ZERO, vec![U256::ZERO; 3])]).unwrap();
         assert_eq!(collector.committed_snapshot().access_list_construction.comparison_pairs, 0);
         collector.complete_account_journal_population([]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.commit_transaction().unwrap();
         begin(&mut collector, 1);
         collector.observe_access_list_construction([(Address::ZERO, vec![U256::ZERO; 3])]).unwrap();
         collector.complete_account_journal_population([]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.reset_transaction();
         collector.reset_transaction();
         assert_eq!(collector.committed_snapshot().access_list_construction.comparison_pairs, 3);
@@ -751,6 +758,7 @@ mod tests {
         let mut missing = ZkGasAccumulator::default();
         begin(&mut missing, 1);
         missing.complete_account_journal_population([]).unwrap();
+        missing.complete_storage_transition_population([]).unwrap();
         missing.commit_transaction().unwrap();
         assert_eq!(
             missing.committed_snapshot().access_list_construction.incomplete,
@@ -769,6 +777,7 @@ mod tests {
                 .is_err()
         );
         duplicate.complete_account_journal_population([]).unwrap();
+        duplicate.complete_storage_transition_population([]).unwrap();
         duplicate.commit_transaction().unwrap();
         let snapshot = duplicate.committed_snapshot();
         assert_eq!(snapshot.access_list_construction.comparison_pairs, 3);
@@ -783,6 +792,7 @@ mod tests {
             mismatch.observe_access_list_construction([(Address::ZERO, vec![U256::ZERO])]).is_err()
         );
         mismatch.complete_account_journal_population([]).unwrap();
+        mismatch.complete_storage_transition_population([]).unwrap();
         mismatch.reset_transaction();
         assert_eq!(
             mismatch.attempted_snapshot().block.access_list_construction.incomplete,
@@ -791,6 +801,7 @@ mod tests {
         let mut empty = ZkGasAccumulator::default();
         begin(&mut empty, 0);
         empty.complete_account_journal_population([]).unwrap();
+        empty.complete_storage_transition_population([]).unwrap();
         empty.commit_transaction().unwrap();
         assert_eq!(
             empty.committed_snapshot().access_list_construction,
@@ -833,6 +844,7 @@ mod tests {
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
                 account_cache_work_units: 0,
+                storage_transition_work_units: 0,
                 operation_routes: &[],
                 resources: Default::default(),
                 transaction_payload: Default::default(),

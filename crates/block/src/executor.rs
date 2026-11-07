@@ -112,12 +112,12 @@ pub fn is_zk_gas_difficulty_mismatch(error: &BlockExecutionError) -> bool {
 /// recoverable variant is added. Callers remain responsible for never applying it to the anchor
 /// transaction, which must always be fatal.
 pub fn is_recoverable_non_anchor_tx_error(error: &BlockExecutionError) -> bool {
-    is_zk_gas_limit_exceeded(error)
-        || matches!(
+    is_zk_gas_limit_exceeded(error) ||
+        matches!(
             error,
             BlockExecutionError::Validation(
-                BlockValidationError::InvalidTx { .. }
-                    | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+                BlockValidationError::InvalidTx { .. } |
+                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
             )
         )
 }
@@ -261,6 +261,8 @@ where
                 account_journal_scaled = ?known.account_journal_scaled(),
                 account_cache_work_units = known.account_cache_work_units(),
                 account_cache_scaled = ?known.account_cache_scaled(),
+                storage_transition_work_units = known.storage_transition_work_units(),
+                storage_transition_scaled = ?known.storage_transition_scaled(),
                 storage_journal_work_units = known.storage_journal_work_units(),
                 storage_journal_scaled = ?known.storage_journal_scaled(),
                 operations_scaled = ?known.operations_scaled(),
@@ -1391,8 +1393,8 @@ mod test {
         };
         assert_eq!(
             known.transaction_payload_scaled(),
-            256 * i128::from(expected_payload_bytes)
-                * alethia_reth_evm::zk_gas::pricing::FIXED_POINT_SCALE
+            256 * i128::from(expected_payload_bytes) *
+                alethia_reth_evm::zk_gas::pricing::FIXED_POINT_SCALE
         );
     }
 }

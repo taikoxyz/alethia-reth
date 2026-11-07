@@ -174,8 +174,8 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
             return Ok(());
         }
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
-        if tx.caller != golden_touch
-            || tx.kind != TxKind::Call(get_treasury_address(self.ctx().cfg.chain_id))
+        if tx.caller != golden_touch ||
+            tx.kind != TxKind::Call(get_treasury_address(self.ctx().cfg.chain_id))
         {
             return Ok(());
         }
@@ -477,9 +477,9 @@ where
         // Instantiate exactly one collector for the selected execution path. The system-call
         // wrapper temporarily suspends this bracket, so pre-block/anchor marker work is not
         // collected even though ordinary system calls reuse `transact` internally.
-        if self.collect_zk_gas_pricing
-            && !self.suspend_zk_gas_pricing
-            && self.zk_gas_pricing().is_none()
+        if self.collect_zk_gas_pricing &&
+            !self.suspend_zk_gas_pricing &&
+            self.zk_gas_pricing().is_none()
         {
             self.set_zk_gas_pricing_enabled(true);
         }
@@ -497,9 +497,9 @@ where
         let native_value_transfer_candidate = if collect_pricing {
             let treasury = get_treasury_address(self.chain_id());
             let is_anchor = self.base_evm().extra_execution_ctx.as_ref().is_some_and(|context| {
-                context.anchor_caller_address() == tx.caller
-                    && context.anchor_caller_nonce() == tx.nonce
-                    && tx.kind.to() == Some(&treasury)
+                context.anchor_caller_address() == tx.caller &&
+                    context.anchor_caller_nonce() == tx.nonce &&
+                    tx.kind.to() == Some(&treasury)
             });
             // Count the raw list, never the applied/unique/recovered-valid subset: conversion
             // eagerly recovers every signed entry before this hook on both execution paths.
@@ -600,12 +600,15 @@ where
         // building and derived-block execution skip invalid transactions and keep executing on
         // this EVM, and an errored run must not leave the journal for the next transaction.
         let state = self.ctx_mut().journal_mut().finalize();
-        if !self.suspend_zk_gas_pricing
-            && let Some(accumulator) = self.zk_gas_pricing_mut()
+        if !self.suspend_zk_gas_pricing &&
+            let Some(accumulator) = self.zk_gas_pricing_mut()
         {
             // This physical-key receipt also advances each pricing prefix's virtual block-cache
             // population. It is collected only while pricing is active, including handler errors.
             let _ = accumulator.complete_account_journal_population(state.keys().copied());
+            // Only the observing path retains a final physical-key/changed receipt. No extra
+            // state walk or DB lookup is introduced; empty transactions still supply a receipt.
+            let mut storage_transition = Vec::new();
             for (address, account) in &state {
                 let _ = accumulator.observe_state_access(StateAccess::Account(*address));
                 if let Some(code) = &account.info.code {
@@ -615,7 +618,9 @@ where
                     });
                 }
                 for (slot, value) in &account.storage {
-                    let access = if value.is_changed() {
+                    let changed = value.is_changed();
+                    storage_transition.push((*address, *slot, changed));
+                    let access = if changed {
                         StateAccess::StorageWrite { address: *address, slot: *slot }
                     } else {
                         StateAccess::StorageRead { address: *address, slot: *slot }
@@ -623,11 +628,12 @@ where
                     let _ = accumulator.observe_state_access(access);
                 }
             }
+            let _ = accumulator.complete_storage_transition_population(storage_transition);
         }
         let result = result?;
-        if !self.suspend_zk_gas_pricing
-            && let Some(accumulator) = self.zk_gas_pricing_mut()
-            && let Err(error) = accumulator.finalize_native_value_transfer(
+        if !self.suspend_zk_gas_pricing &&
+            let Some(accumulator) = self.zk_gas_pricing_mut() &&
+            let Err(error) = accumulator.finalize_native_value_transfer(
                 native_value_transfer_candidate && result.is_success(),
             )
         {
@@ -653,8 +659,8 @@ where
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
         // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)
-            && contract == get_treasury_address(self.chain_id())
+        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+            contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
                 .ok_or(EVMError::Custom("invalid encoded anchor system call data".to_string()))?;

@@ -272,6 +272,7 @@ mod tests {
             accumulator.begin_transaction(TransactionMetadata::default()).unwrap();
             accumulator.observe_account_journal_opcode(0x31);
             accumulator.complete_account_journal_population([Address::ZERO]).unwrap();
+            accumulator.complete_storage_transition_population([]).unwrap();
             if committed {
                 accumulator.commit_transaction().unwrap();
             } else {
@@ -291,6 +292,7 @@ mod tests {
         let mut duplicate = ZkGasAccumulator::default();
         duplicate.begin_transaction(TransactionMetadata::default()).unwrap();
         duplicate.complete_account_journal_population([]).unwrap();
+        duplicate.complete_storage_transition_population([]).unwrap();
         assert!(duplicate.complete_account_journal_population([]).is_err());
         duplicate.commit_transaction().unwrap();
         assert!(duplicate.committed_snapshot().account_journal_work_units().is_err());

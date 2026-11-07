@@ -74,6 +74,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
                 account_cache_work_units: 0,
+                storage_transition_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: count,
@@ -621,6 +622,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
                 account_cache_work_units: 0,
+                storage_transition_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: 0,
@@ -893,6 +895,7 @@ fn zk_gas_shadow_report_marks_exact_resources_and_mpt_as_missing() {
         })
         .expect("operation prices");
     accumulator.complete_account_journal_population([]).unwrap();
+    accumulator.complete_storage_transition_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
 
     let report = accumulator.committed_snapshot().shadow_report();
@@ -1027,6 +1030,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
         })
         .expect("operation prices");
     accumulator.complete_account_journal_population([]).unwrap();
+    accumulator.complete_storage_transition_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
     let snapshot = accumulator.committed_snapshot();
     let mpt = MptSelectors {
@@ -1050,6 +1054,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -1092,6 +1097,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
         .observe_state_access(StateAccess::Account(Address::with_last_byte(0xaa)))
         .expect("EVM-local resource is observed");
     accumulator.complete_account_journal_population([]).unwrap();
+    accumulator.complete_storage_transition_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
     let snapshot = accumulator.committed_snapshot();
     let original = snapshot.shadow_report();
@@ -1121,6 +1127,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -1177,6 +1184,7 @@ fn zk_gas_pricing_completion_rejects_exact_resources_below_any_evm_local_dimensi
         })
         .expect("code resource is observed");
     accumulator.complete_account_journal_population([]).unwrap();
+    accumulator.complete_storage_transition_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
     let snapshot = accumulator.committed_snapshot();
     let report = snapshot.shadow_report();
@@ -1501,6 +1509,7 @@ fn zk_gas_pricing_accumulator_preserves_feature_error_attribution() {
         })
         .expect("feature error prices");
     accumulator.complete_account_journal_population([]).unwrap();
+    accumulator.complete_storage_transition_population([]).unwrap();
     accumulator.commit_transaction().expect("transaction commits");
 
     let snapshot = accumulator.committed_snapshot();
@@ -2447,7 +2456,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "022232270da81c96dd9d7a12899d52ac011f46144d7f90d778a585aaeca5b7bd"
+        "3e335de20582fca48f84b3df1b2ecd8d8d7281de02442ab35a134e4635431d73"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2725,6 +2734,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2766,6 +2776,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
@@ -2810,6 +2821,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2843,6 +2855,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
@@ -2975,6 +2988,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -3465,8 +3479,8 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
     let precompile_gas_used = probe.precompile_gas_used.expect("precompile gas recorded");
 
     let expected = probe.steps.iter().fold(
-        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04)))
-            * precompile_gas_used,
+        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
+            precompile_gas_used,
         |acc, step| {
             let raw_gas = if step.opcode == opcode::STATICCALL {
                 schedule.spawn_estimates.staticcall
@@ -3477,8 +3491,8 @@ fn unzen_adapter_uses_spawn_estimate_for_precompile_dispatch() {
         },
     );
     let naive_expected = probe.steps.iter().fold(
-        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04)))
-            * precompile_gas_used,
+        u64::from(schedule.precompile_multiplier(&Address::with_last_byte(0x04))) *
+            precompile_gas_used,
         |acc, step| {
             acc + (step.raw_gas * u64::from(schedule.opcode_multipliers[step.opcode as usize]))
         },
@@ -3530,8 +3544,8 @@ fn production_metered_path_matches_inspector_path_for_precompile_dispatch() {
             assert_eq!(production, inspected);
             assert!(
                 production.operation_routes.iter().any(|row| {
-                    row.route == OperationRoute::Precompile(0x04)
-                        && row.accepted_absolute_scaled > 0
+                    row.route == OperationRoute::Precompile(0x04) &&
+                        row.accepted_absolute_scaled > 0
                 }),
                 "identity precompile must be priced separately from STATICCALL"
             );
@@ -4131,8 +4145,8 @@ fn confirmed_call_memory_is_independent_of_forwarded_gas_and_child_failure() {
             child_growth
                 .operation_routes
                 .iter()
-                .any(|row| row.route == OperationRoute::Opcode(opcode::MSTORE8)
-                    && row.accepted_absolute_scaled > 16_000 * FIXED_POINT_SCALE)
+                .any(|row| row.route == OperationRoute::Opcode(opcode::MSTORE8) &&
+                    row.accepted_absolute_scaled > 16_000 * FIXED_POINT_SCALE)
         );
     }
 }
@@ -4339,8 +4353,8 @@ fn metered_paths_match_for_dynamic_opcode_and_custom_inspector_composition() {
 fn assert_spawn_limit_rejected_before_dispatch(family: SpawnFamily) {
     let schedule = &UNZEN_ZK_GAS_SCHEDULE;
     let child = Address::with_last_byte(0xD2);
-    let spawn_charge = family.spawn_raw_gas(schedule)
-        * u64::from(schedule.opcode_multipliers[usize::from(family.opcode())]);
+    let spawn_charge = family.spawn_raw_gas(schedule) *
+        u64::from(schedule.opcode_multipliers[usize::from(family.opcode())]);
     let admitted = family.prefix_zk_gas(schedule) + spawn_charge - 1;
     let reserved = schedule.block_limit - admitted;
 
@@ -5040,12 +5054,14 @@ fn payload_selectors_commit_and_discard_atomically() {
     collector.observe_transaction_payload(payload).unwrap();
     assert_eq!(collector.committed_snapshot().transaction_payload, Default::default());
     collector.complete_account_journal_population([]).unwrap();
+    collector.complete_storage_transition_population([]).unwrap();
     collector.reset_transaction();
     assert_eq!(collector.committed_snapshot().transaction_payload, Default::default());
     assert_eq!(collector.attempted_snapshot().block.transaction_payload, payload);
     collector.begin_transaction(TransactionMetadata::default()).unwrap();
     collector.observe_transaction_payload(payload).unwrap();
     collector.complete_account_journal_population([]).unwrap();
+    collector.complete_storage_transition_population([]).unwrap();
     collector.commit_transaction().unwrap();
     assert_eq!(collector.committed_snapshot().transaction_payload, payload);
     assert_eq!(
@@ -5161,6 +5177,7 @@ fn completion_revalidates_sealed_payload_selectors_and_price() {
     collector.begin_transaction(TransactionMetadata::default()).unwrap();
     collector.observe_transaction_payload(payload).unwrap();
     collector.complete_account_journal_population([]).unwrap();
+    collector.complete_storage_transition_population([]).unwrap();
     collector.commit_transaction().unwrap();
     let report = collector.committed_snapshot().shadow_report();
     let ZkGasShadowStatus::Incomplete { known, missing } = report.status() else {
@@ -5811,3 +5828,6 @@ fn account_journal_system_call_preserves_open_scope_and_restores_after_error() {
         assert_eq!(after.account_journal.incomplete, None);
     }
 }
+
+#[path = "storage_transition_tests.rs"]
+mod storage_transition_tests;

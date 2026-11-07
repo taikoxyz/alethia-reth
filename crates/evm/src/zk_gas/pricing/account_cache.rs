@@ -53,8 +53,11 @@ impl AccountCacheDiagnostics {
 /// Separate virtual membership for each committed/attempted prefix; never physical DB telemetry.
 #[derive(Debug, Default)]
 pub(super) struct AccountCacheLedger {
+    /// Distinct finalized physical account keys in this independent block prefix.
     accounts: BTreeSet<Address>,
+    /// First-four network-byte density of the observed account union.
     groups: BTreeMap<[u8; 4], u64>,
+    /// Checked progressive work and scalar population diagnostics.
     diagnostics: AccountCacheDiagnostics,
 }
 impl AccountCacheLedger {

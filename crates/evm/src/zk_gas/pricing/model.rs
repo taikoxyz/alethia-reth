@@ -13,7 +13,7 @@ use super::{
         MAXIMUM_TERMS_PER_SCOPE, MPT_TARIFFS, NORMAL_DISPATCH_TARIFF, OPCODE_ROUTE_INDEX,
         PARENT_MPT_TARIFFS, PRECOMPILE_ROUTE_INDEX, PROPOSAL_STARTUP, RESOURCE_TARIFFS, ROUTES,
         SPAWN_ROUTE_INDEX, STORAGE_JOURNAL_WORK_BOUND, STORAGE_JOURNAL_WORK_TARIFF,
-        TRANSACTION_PAYLOAD_TARIFFS,
+        STORAGE_TRANSITION_WORK_BOUND, STORAGE_TRANSITION_WORK_TARIFF, TRANSACTION_PAYLOAD_TARIFFS,
     },
     types::{
         AccessClass, BlockPricingInput, CalldataAccessClass, CodePreparationSelectors,
@@ -47,6 +47,8 @@ pub(super) struct KnownBlockPricingInput<'a> {
     pub(super) account_journal_work_units: u64,
     /// Progressive observed-transaction block-cache work, in its independent domain.
     pub(super) account_cache_work_units: u64,
+    /// Independent block-local forward storage-transition reserve.
+    pub(super) storage_transition_work_units: u64,
     /// Committed operation aggregates in canonical route order.
     pub(super) operation_routes: &'a [OperationRoutePricingInput],
     /// Canonical payload already attributed to the committed block scope.
@@ -305,6 +307,7 @@ impl ZkGasModel {
             storage_journal_work_units: input.storage_journal_work_units,
             account_journal_work_units: input.account_journal_work_units,
             account_cache_work_units: input.account_cache_work_units,
+            storage_transition_work_units: input.storage_transition_work_units,
             operation_routes: input.operation_routes,
             resources: input.resources,
             transaction_payload: input.transaction_payload,
@@ -326,9 +329,11 @@ impl ZkGasModel {
             storage_journal_work_units: known.storage_journal_work_units(),
             account_journal_work_units: known.account_journal_work_units(),
             account_cache_work_units: known.account_cache_work_units(),
+            storage_transition_work_units: known.storage_transition_work_units(),
             storage_journal_scaled: known.storage_journal_scaled(),
             account_journal_scaled: known.account_journal_scaled(),
             account_cache_scaled: known.account_cache_scaled(),
+            storage_transition_scaled: known.storage_transition_scaled(),
             operations_scaled: known.operations_scaled(),
             normal_dispatch_count: known.normal_dispatch_count(),
             normal_dispatch_scaled: known.normal_dispatch_scaled(),
@@ -378,6 +383,7 @@ impl ZkGasModel {
             known.storage_journal_scaled(),
             known.account_journal_scaled(),
             known.account_cache_scaled(),
+            known.storage_transition_scaled(),
             known.operations_scaled(),
             resources,
             mpt,
@@ -398,9 +404,11 @@ impl ZkGasModel {
             storage_journal_work_units: known.storage_journal_work_units(),
             account_journal_work_units: known.account_journal_work_units(),
             account_cache_work_units: known.account_cache_work_units(),
+            storage_transition_work_units: known.storage_transition_work_units(),
             storage_journal_scaled: known.storage_journal_scaled(),
             account_journal_scaled: known.account_journal_scaled(),
             account_cache_scaled: known.account_cache_scaled(),
+            storage_transition_scaled: known.storage_transition_scaled(),
             operations_scaled: known.operations_scaled(),
             normal_dispatch_count: known.normal_dispatch_count(),
             normal_dispatch_scaled: known.normal_dispatch_scaled(),
@@ -448,8 +456,8 @@ impl ZkGasModel {
                 return Err(ZkGasError::InvalidInput("duplicate_operation_route"));
             }
             let route = lookup_route(accumulated.route)?;
-            if matches!(accumulated.route, OperationRoute::Precompile(_))
-                && accumulated.normal_dispatch_count != 0
+            if matches!(accumulated.route, OperationRoute::Precompile(_)) &&
+                accumulated.normal_dispatch_count != 0
             {
                 return Err(ZkGasError::InvalidInput("precompile_normal_dispatch_count"));
             }
@@ -489,6 +497,8 @@ impl ZkGasModel {
         let storage_journal = self.price_storage_journal_work(input.storage_journal_work_units)?;
         let account_journal = self.price_account_journal_work(input.account_journal_work_units)?;
         let account_cache = self.price_account_cache_work(input.account_cache_work_units)?;
+        let storage_transition =
+            self.price_storage_transition_work(input.storage_transition_work_units)?;
         let resources = price_resources(input.resources)?;
         let payload = self.price_transaction_payload(input.transaction_payload)?.total_scaled;
         let known_subtotal = checked_sum(&[
@@ -502,6 +512,7 @@ impl ZkGasModel {
             storage_journal,
             account_journal,
             account_cache,
+            storage_transition,
             operations,
             resources,
             payload,
@@ -535,8 +546,10 @@ impl ZkGasModel {
             access_list_address,
             input.account_journal_work_units,
             input.account_cache_work_units,
+            input.storage_transition_work_units,
             account_journal,
             account_cache,
+            storage_transition,
         ))
     }
 
@@ -620,6 +633,17 @@ impl ZkGasModel {
         checked_mul(STORAGE_JOURNAL_WORK_TARIFF, units)
     }
 
+    /// Prices the independent normalized forward storage-transition reserve without a discount.
+    pub fn price_storage_transition_work(self, units: u64) -> Result<i128, ZkGasError> {
+        if units > STORAGE_TRANSITION_WORK_BOUND {
+            return Err(ZkGasError::SelectorOutOfRange {
+                selector: "storage_transition_work_units",
+                value: units,
+            });
+        }
+        checked_mul(STORAGE_TRANSITION_WORK_TARIFF, units)
+    }
+
     /// Prices empirical Account work in its independent domain without another discount.
     pub fn price_account_journal_work(self, units: u64) -> Result<i128, ZkGasError> {
         if units > ACCOUNT_JOURNAL_WORK_BOUND {
@@ -653,9 +677,9 @@ impl ZkGasModel {
     ) -> Result<i128, ZkGasError> {
         let events = bounded("code_preparation_nonempty_events", selectors.nonempty_events)?;
         let bytes = bounded("code_preparation_total_bytes", selectors.total_bytes)?;
-        if (events == 0) != (bytes == 0)
-            || bytes < events
-            || bytes > events.checked_mul(24_576).ok_or(ZkGasError::ArithmeticOverflow)?
+        if (events == 0) != (bytes == 0) ||
+            bytes < events ||
+            bytes > events.checked_mul(24_576).ok_or(ZkGasError::ArithmeticOverflow)?
         {
             return Err(ZkGasError::InvalidInput("code_preparation"));
         }
@@ -749,8 +773,8 @@ fn validate_shadow_report(
         return Err(ZkGasCompletionError::UnexpectedZkGasIncompleteness(missing));
     }
     ensure_nonnegative(known.fixed_scaled(), "fixed")?;
-    if ZkGasModel.price_authorization_validations(known.authorization_validations())?
-        != known.authorization_scaled()
+    if ZkGasModel.price_authorization_validations(known.authorization_validations())? !=
+        known.authorization_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("authorization_scaled"));
     }
@@ -758,48 +782,53 @@ fn validate_shadow_report(
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("access_list_scaled"));
     }
-    if ZkGasModel.price_access_list_construction_pairs(known.access_list_construction_pairs())?
-        != known.access_list_construction_scaled()
+    if ZkGasModel.price_access_list_construction_pairs(known.access_list_construction_pairs())? !=
+        known.access_list_construction_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown(
             "access_list_construction_scaled",
         ));
     }
     if ZkGasModel
-        .price_access_list_construction_other_pairs(known.access_list_construction_other_pairs())?
-        != known.access_list_construction_other_scaled()
+        .price_access_list_construction_other_pairs(known.access_list_construction_other_pairs())? !=
+        known.access_list_construction_other_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown(
             "access_list_construction_other_scaled",
         ));
     }
-    if ZkGasModel.price_access_list_address_pairs(known.access_list_address_pairs())?
-        != known.access_list_address_scaled()
+    if ZkGasModel.price_access_list_address_pairs(known.access_list_address_pairs())? !=
+        known.access_list_address_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("access_list_address_scaled"));
     }
-    if ZkGasModel.price_code_preparation(known.code_preparation())?
-        != known.code_preparation_scaled()
+    if ZkGasModel.price_code_preparation(known.code_preparation())? !=
+        known.code_preparation_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("code_preparation_scaled"));
     }
-    if ZkGasModel.price_storage_journal_work(known.storage_journal_work_units())?
-        != known.storage_journal_scaled()
+    if ZkGasModel.price_storage_journal_work(known.storage_journal_work_units())? !=
+        known.storage_journal_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("storage_journal_scaled"));
     }
-    if ZkGasModel.price_account_journal_work(known.account_journal_work_units())?
-        != known.account_journal_scaled()
+    if ZkGasModel.price_account_journal_work(known.account_journal_work_units())? !=
+        known.account_journal_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("account_journal_scaled"));
     }
-    if ZkGasModel.price_account_cache_work(known.account_cache_work_units())?
-        != known.account_cache_scaled()
+    if ZkGasModel.price_account_cache_work(known.account_cache_work_units())? !=
+        known.account_cache_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("account_cache_scaled"));
     }
-    if ZkGasModel.price_normal_dispatches(known.normal_dispatch_count())?
-        != known.normal_dispatch_scaled()
+    if ZkGasModel.price_storage_transition_work(known.storage_transition_work_units())? !=
+        known.storage_transition_scaled()
+    {
+        return Err(ZkGasCompletionError::InconsistentKnownBreakdown("storage_transition_scaled"));
+    }
+    if ZkGasModel.price_normal_dispatches(known.normal_dispatch_count())? !=
+        known.normal_dispatch_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("normal_dispatch_scaled"));
     }
@@ -810,16 +839,16 @@ fn validate_shadow_report(
     if price_resources(known.evm_local_resources())? != known.evm_local_resources_scaled() {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("evm_local_resources_scaled"));
     }
-    if ZkGasModel.price_transaction_payload(known.transaction_payload())?.total_scaled
-        != known.transaction_payload_scaled()
+    if ZkGasModel.price_transaction_payload(known.transaction_payload())?.total_scaled !=
+        known.transaction_payload_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("transaction_payload_scaled"));
     }
     if known.feature_error_scaled() > known.operations_scaled() {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("feature_error_scaled"));
     }
-    if checked_add(known.normal_dispatch_scaled(), known.feature_error_scaled())?
-        > known.operations_scaled()
+    if checked_add(known.normal_dispatch_scaled(), known.feature_error_scaled())? >
+        known.operations_scaled()
     {
         return Err(ZkGasCompletionError::InconsistentKnownBreakdown("normal_dispatch_scaled"));
     }
@@ -834,6 +863,7 @@ fn validate_shadow_report(
         known.storage_journal_scaled(),
         known.account_journal_scaled(),
         known.account_cache_scaled(),
+        known.storage_transition_scaled(),
         known.operations_scaled(),
         known.evm_local_resources_scaled(),
         known.transaction_payload_scaled(),
@@ -1062,9 +1092,9 @@ fn validate_unparameterized_model_input(
     route: &RouteSpec,
     input: &OperationPricingInput,
 ) -> Result<(), ZkGasError> {
-    let consumes_work_units = matches!(route.incremental, Some(rule) if rule.selector == Selector::WorkUnits)
-        || matches!(route.structural, Some(rule) if rule.selector == Selector::WorkUnits)
-        || (route.model_kind == ModelKind::Linear && route.coefficients[3] == 3);
+    let consumes_work_units = matches!(route.incremental, Some(rule) if rule.selector == Selector::WorkUnits) ||
+        matches!(route.structural, Some(rule) if rule.selector == Selector::WorkUnits) ||
+        (route.model_kind == ModelKind::Linear && route.coefficients[3] == 3);
     match input.model_input {
         OperationModelInput::None => Ok(()),
         OperationModelInput::WorkUnits { .. } if consumes_work_units => Ok(()),
@@ -1119,8 +1149,8 @@ fn price_storage(route: &RouteSpec, input: &OperationPricingInput) -> Result<i12
             checked_add(c[0], extra)
         }
         (OperationRoute::Opcode(0x55), OperationModelInput::StorageStore { access, branch }) => {
-            if access == AccessClass::Cold
-                && matches!(branch, StorageBranch::DirtyRewrite | StorageBranch::RestoreOriginal)
+            if access == AccessClass::Cold &&
+                matches!(branch, StorageBranch::DirtyRewrite | StorageBranch::RestoreOriginal)
             {
                 return Err(ZkGasError::InvalidInput("cold_dirty_sstore"));
             }
@@ -1292,8 +1322,8 @@ fn validate_exact_raw_gas(
     route: &RouteSpec,
     input: &OperationPricingInput,
 ) -> Result<(), ZkGasError> {
-    if let Some(expected) = route.exact_raw_gas
-        && required_raw_gas(input)? != expected
+    if let Some(expected) = route.exact_raw_gas &&
+        required_raw_gas(input)? != expected
     {
         return Err(ZkGasError::InvalidInput("exact_raw_gas"));
     }
@@ -1473,8 +1503,8 @@ mod tests {
                 result
                     .accepted_absolute_scaled
                     .max(result.incremental_scaled)
-                    .max(result.structural_scaled)
-                    + result.normal_dispatch_scaled
+                    .max(result.structural_scaled) +
+                    result.normal_dispatch_scaled
             );
         }
         let mut error = normal_mulmod();
@@ -1513,6 +1543,7 @@ mod tests {
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
                 account_cache_work_units: 0,
+                storage_transition_work_units: 0,
                 transaction_payload: Default::default(),
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
@@ -1556,6 +1587,7 @@ mod tests {
             .unwrap();
         collector.observe_step(normal_mulmod()).unwrap();
         collector.complete_account_journal_population([]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.commit_transaction().unwrap();
         let report = collector.committed_snapshot().shadow_report();
         let ZkGasShadowStatus::Incomplete { known, missing } = report.status() else {
@@ -1680,6 +1712,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
             known,
@@ -1716,6 +1750,8 @@ mod tests {
             0,
             0,
             CodePreparationSelectors::default(),
+            0,
+            0,
             0,
             0,
             0,
@@ -1776,6 +1812,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
             known,
@@ -1820,6 +1858,8 @@ mod tests {
             0,
             0,
             1,
+            0,
+            0,
             0,
             0,
             0,
@@ -1872,6 +1912,8 @@ mod tests {
             0,
             0,
             0,
+            0,
+            0,
         );
         let report = ZkGasShadowReport::from_status(ZkGasShadowStatus::Incomplete {
             known,
@@ -1908,6 +1950,8 @@ mod tests {
             0,
             0,
             CodePreparationSelectors::default(),
+            0,
+            0,
             0,
             0,
             0,
@@ -2014,6 +2058,7 @@ mod tests {
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
                 account_cache_work_units: 0,
+                storage_transition_work_units: 0,
                 transaction_payload: TransactionPayloadSelectors::default(),
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
@@ -2107,6 +2152,7 @@ mod tests {
                     storage_journal_work_units: 0,
                     account_journal_work_units: 0,
                     account_cache_work_units: 0,
+                    storage_transition_work_units: 0,
                     transaction_payload: TransactionPayloadSelectors::default(),
                     started_non_anchor_transactions: 0,
                     native_value_transfers: 0,
@@ -2352,7 +2398,7 @@ mod storage_journal_tariff_tests {
         );
     }
 
-    fn journal_input(units: u64) -> BlockPricingInput<'static> {
+    pub(super) fn journal_input(units: u64) -> BlockPricingInput<'static> {
         BlockPricingInput {
             access_list_construction_pairs: 0,
             access_list_construction_other_pairs: 0,
@@ -2365,6 +2411,7 @@ mod storage_journal_tariff_tests {
             storage_journal_work_units: units,
             account_journal_work_units: 0,
             account_cache_work_units: 0,
+            storage_transition_work_units: 0,
             operation_routes: &[],
             resources: ResourceSelectors::default(),
             transaction_payload: TransactionPayloadSelectors {
@@ -2399,6 +2446,7 @@ mod storage_journal_tariff_tests {
             alloy_primitives::U256::ZERO,
         );
         collector.complete_account_journal_population([]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.commit_transaction().unwrap();
         let report = collector.committed_snapshot().shadow_report();
         let ZkGasShadowStatus::Incomplete { known, .. } = report.status() else {
@@ -2453,6 +2501,7 @@ mod account_journal_component_tests {
             .unwrap();
         collector.observe_account_journal_opcode(0x31);
         collector.complete_account_journal_population([alloy_primitives::Address::ZERO]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.commit_transaction().unwrap();
         let snap = collector.committed_snapshot();
         let report = snap.shadow_report();
@@ -2510,6 +2559,7 @@ mod account_cache_component_tests {
             })
             .unwrap();
         collector.complete_account_journal_population([alloy_primitives::Address::ZERO]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
         collector.commit_transaction().unwrap();
         let report = collector.committed_snapshot().shadow_report();
         let ZkGasShadowStatus::Incomplete { known, .. } = report.status() else {
@@ -2558,5 +2608,92 @@ mod account_cache_component_tests {
             ZkGasModel.price_account_cache_work(ACCOUNT_CACHE_WORK_BOUND + 1),
             Err(ZkGasError::SelectorOutOfRange { selector: "account_cache_work_units", .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod storage_transition_component_tests {
+    use super::*;
+    #[test]
+    fn independent_component_closes_once_and_rejects_forged_seals() {
+        let mut collector = super::super::ZkGasAccumulator::default();
+        collector
+            .begin_transaction(super::super::TransactionMetadata {
+                is_anchor: true,
+                ..Default::default()
+            })
+            .unwrap();
+        collector
+            .observe_transaction_payload(TransactionPayloadSelectors {
+                canonical_transaction_bytes: 1,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        collector.complete_account_journal_population([]).unwrap();
+        collector
+            .complete_storage_transition_population([(
+                alloy_primitives::Address::ZERO,
+                alloy_primitives::U256::ZERO,
+                true,
+            )])
+            .unwrap();
+        collector.commit_transaction().unwrap();
+        let report = collector.committed_snapshot().shadow_report();
+        let ZkGasShadowStatus::Incomplete { known, .. } = report.status() else {
+            panic!("valid physical receipt")
+        };
+        assert_eq!(known.storage_transition_work_units(), 2);
+        assert_eq!(known.storage_transition_scaled(), 768 * FIXED_POINT_SCALE);
+        let mut input = storage_journal_tariff_tests::journal_input(0);
+        input.storage_transition_work_units = 2;
+        let direct = ZkGasModel.price_block(&input).unwrap();
+        let complete = ZkGasModel
+            .complete_block_shadow_report(
+                &report,
+                ResourceSelectors::default(),
+                MptSelectors::default(),
+            )
+            .unwrap();
+        assert_eq!(direct, complete);
+        input.storage_transition_work_units = 0;
+        assert_eq!(
+            direct.total_scaled - ZkGasModel.price_block(&input).unwrap().total_scaled,
+            768 * FIXED_POINT_SCALE
+        );
+        for bad in [
+            known.with_storage_transition_for_test(3, known.storage_transition_scaled()),
+            known.with_storage_transition_for_test(2, 0),
+        ] {
+            assert_eq!(
+                validate_shadow_report(&ZkGasShadowReport::from_status(
+                    ZkGasShadowStatus::Incomplete {
+                        known: bad,
+                        missing: ZkGasIncompleteness::ExactBlockResourcesAndMptSelectorsUnavailable
+                    }
+                )),
+                Err(ZkGasCompletionError::InconsistentKnownBreakdown("storage_transition_scaled"))
+            );
+        }
+        assert_eq!(
+            ZkGasModel.price_storage_transition_work(1_000_000_000_001),
+            Err(ZkGasError::SelectorOutOfRange {
+                selector: "storage_transition_work_units",
+                value: 1_000_000_000_001
+            })
+        );
+        let once = ZkGasModel
+            .price_proposal_once(&ProposalPricingInput {
+                canonical_transaction_bytes: 0,
+                nonempty_payload_transactions: 0,
+                true_unattempted_transactions: 0,
+                source_blob_counts: &[1],
+                proposal_blob_hash_count: 1,
+                provider_blob_count: 1,
+                provider_commitment_count: 1,
+                provider_proof_count: 1,
+                parent_mpt: MptSelectors::default(),
+            })
+            .unwrap();
+        assert_eq!((once.storage_transition_work_units, once.storage_transition_scaled), (0, 0));
     }
 }

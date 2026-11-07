@@ -30,7 +30,11 @@ use reth_node_builder::{
 use reth_provider::providers::BlockchainProvider;
 use reth_rpc::eth::EthApiTypes;
 use serde_json::Value;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 type TestTypes = RethFullAdapter<Arc<TempDatabase<DatabaseEnv>>, TaikoNode>;
 pub type TestNode = FullNode<NodeAdapter<TestTypes>, <TaikoNode as Node<TestTypes>>::AddOns>;
@@ -88,6 +92,8 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             signature: [0; 65],
         },
         anchor_transaction: None,
+        // Every Etna target carries the driver's block-size bound.
+        max_block_bytes: (timestamp >= 100).then_some(124_000),
     }
 }
 
@@ -108,16 +114,117 @@ impl TableSet for TaikoTables {
 }
 
 pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<TestNode> {
+    let path = tempdir_path();
+    // The database owns the directory and removes it when the node is dropped.
+    Ok(launch(chain_spec, &path, path.clone(), EngineMode::Normal).await?.node)
+}
+
+/// The engine flags a node launches with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineMode {
+    /// Stock engine flags, as every validator and lander EL runs.
+    Normal,
+    /// The one-shot rewind flags of the governance-recovery procedure:
+    /// `--engine.allow-unwind-canonical-header` and
+    /// `--engine.always-process-payload-attributes-on-canonical-head`.
+    Rewind,
+}
+
+/// A data directory that outlives the nodes launched on it; removed when dropped.
+pub struct Datadir(PathBuf);
+
+impl Datadir {
+    /// Reserves a fresh temporary directory; nothing is created until a node launches on it.
+    pub fn new() -> Self {
+        Self(tempdir_path())
+    }
+}
+
+impl Drop for Datadir {
+    /// Removes the directory with everything the nodes launched on it left behind.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A node on a [`Datadir`] that can be stopped and launched again on the same data.
+pub struct RestartableNode {
+    /// The running node.
+    pub node: TestNode,
+    /// The task runtime whose graceful shutdown stops the node.
+    runtime: Runtime,
+    /// A strong reference to the node database, so `stop` can close it itself.
+    database: Arc<TempDatabase<DatabaseEnv>>,
+    /// A strong reference to the proof-history database, closed by `stop` the same way.
+    proof_history: Arc<reth_optimism_trie::db::MdbxProofsStorage>,
+}
+
+impl RestartableNode {
+    /// Shuts the node down the way SIGTERM does (the engine persists its canonical blocks) and
+    /// closes both MDBX environments before returning, so the next launch can open them again.
+    pub async fn stop(self) -> eyre::Result<()> {
+        let Self { node, runtime, database, proof_history } = self;
+        drop(node);
+        let stopped = tokio::task::spawn_blocking(move || {
+            runtime.graceful_shutdown_with_timeout(Duration::from_secs(5))
+        })
+        .await?;
+        eyre::ensure!(stopped, "node shutdown timed out");
+        // The engine and persistence OS threads release their database handles after the
+        // graceful shutdown returns. Whoever drops the last handle closes the environment, and a
+        // reopen in this process fails with MDBX_BUSY while that close is still running, so
+        // take the last handles here and close both environments on this task.
+        let database = last_handle(database, "the node database").await?;
+        let proof_history = last_handle(proof_history, "the proof-history database").await?;
+        tokio::task::spawn_blocking(move || drop((database, proof_history))).await?;
+        Ok(())
+    }
+}
+
+/// Waits, for at most 10 seconds, until `shared` is the only strong reference left, then takes
+/// its value so the caller decides where it is dropped.
+async fn last_handle<T>(shared: Arc<T>, what: &str) -> eyre::Result<T> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while Arc::strong_count(&shared) > 1 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| eyre::eyre!("{what} was still shared 10 s after the node stopped"))?;
+    Arc::into_inner(shared)
+        .ok_or_else(|| eyre::eyre!("{what} was shared again after the node stopped"))
+}
+
+/// Launches a node on `datadir`, reopening whatever earlier launches left there.
+pub async fn launch_at(
+    chain_spec: Arc<TaikoChainSpec>,
+    datadir: &Datadir,
+    mode: EngineMode,
+) -> eyre::Result<RestartableNode> {
+    // Point the database's delete-on-drop path at a directory that never exists, so stopping
+    // the node keeps the data for the next launch; `Datadir` removes it at the end.
+    launch(chain_spec, &datadir.0, datadir.0.join("kept"), mode).await
+}
+
+/// Launches a node whose database lives in `path`; dropping the last database handle removes
+/// `remove_on_drop`.
+async fn launch(
+    chain_spec: Arc<TaikoChainSpec>,
+    path: &Path,
+    remove_on_drop: PathBuf,
+    mode: EngineMode,
+) -> eyre::Result<RestartableNode> {
     let runtime = Runtime::test();
     TEST_RUNTIMES.lock().unwrap().push(runtime.clone());
-    let path = tempdir_path();
+    let path = path.to_path_buf();
     let database: Arc<TempDatabase<DatabaseEnv>> = Arc::new(TempDatabase::new(
         init_db_for::<PathBuf, TaikoTables>(
             path.clone(),
             DatabaseArguments::new(ClientVersion::default()),
         )?,
-        path.clone(),
+        remove_on_drop,
     ));
+    let kept_database = Arc::clone(&database);
     let mut config =
         NodeConfig::new(chain_spec).with_unused_ports().with_disabled_discovery().with_rpc(
             RpcServerArgs::default()
@@ -132,7 +239,7 @@ pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<T
     let taiko = TaikoNode;
     let builder = NodeBuilder::new(config)
         .with_database(database)
-        .with_launch_context(runtime)
+        .with_launch_context(runtime.clone())
         .with_types_and_provider::<TaikoNode, BlockchainProvider<_>>()
         .with_components(taiko.components_builder())
         .with_add_ons(taiko.add_ons());
@@ -144,6 +251,8 @@ pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<T
             ..alethia_reth_node::proof_history::ProofHistoryConfig::disabled()
         },
     )?;
+    let handles = handles.expect("proof history is enabled");
+    let proof_history = Arc::clone(handles.0.inner());
     let builder = builder.extend_rpc_modules(move |mut ctx| {
         // Mirror the binary's authenticated `taikoAuth` registration.
         let taiko_auth = TaikoAuthExt::new(
@@ -153,21 +262,27 @@ pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<T
             ctx.node().evm_config().clone(),
         );
         ctx.auth_module.merge_auth_methods(taiko_auth.into_rpc())?;
-        alethia_reth_node::proof_history::install_proof_history_rpc(&mut ctx, handles.unwrap())
+        alethia_reth_node::proof_history::install_proof_history_rpc(&mut ctx, handles)
     });
     let handle = tokio::time::timeout(
         Duration::from_secs(30),
         builder.launch_with_fn(|builder| {
+            let rewind = mode == EngineMode::Rewind;
+            // The same two settings reth derives from the two `--engine.*` flags.
+            let tree = TreeConfig::default()
+                .with_cross_block_cache_size(1024 * 1024)
+                .with_always_process_payload_attributes_on_canonical_head(rewind)
+                .with_unwind_canonical_header(rewind);
             let launcher = EngineNodeLauncher::new(
                 builder.task_executor().clone(),
                 builder.config().datadir(),
-                TreeConfig::default().with_cross_block_cache_size(1024 * 1024),
+                tree,
             );
             builder.launch_with(launcher)
         }),
     )
     .await??;
-    Ok(handle.node)
+    Ok(RestartableNode { node: handle.node, runtime, database: kept_database, proof_history })
 }
 
 pub async fn fcu(
@@ -193,22 +308,31 @@ pub async fn fcu(
     .await??)
 }
 
-pub fn signed_tx(
+/// The golden-touch key; `signed_tx` signs with it.
+const GOLDEN_TOUCH_KEY: &str = "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
+
+/// Key of `0x70997970c51812dc3a010c7d01b50e0d17dc79c8`, funded in the fixture genesis.
+pub const POOL_SENDER_KEY: &str =
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+
+/// An EIP-1559 transaction on the fixture chain with a 1,000,000 gas limit and a 1 gwei fee cap,
+/// signed by `key`.
+fn sign_eip1559(
+    key: &str,
     nonce: u64,
-    anchor: bool,
+    tip: u128,
     target: Address,
     input: Bytes,
 ) -> reth_ethereum_primitives::TransactionSigned {
     use alloy_consensus::{SignableTransaction, Signed, TxEip1559};
     use alloy_signer::SignerSync;
-    let signer: alloy_signer_local::PrivateKeySigner =
-        "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38".parse().unwrap();
+    let signer: alloy_signer_local::PrivateKeySigner = key.parse().unwrap();
     let tx = TxEip1559 {
         chain_id: 167001,
         nonce,
         gas_limit: 1_000_000,
         max_fee_per_gas: 1_000_000_000,
-        max_priority_fee_per_gas: if anchor { 0 } else { 7 },
+        max_priority_fee_per_gas: tip,
         to: target.into(),
         value: U256::ZERO,
         access_list: Default::default(),
@@ -216,6 +340,129 @@ pub fn signed_tx(
     };
     let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
     Signed::new_unhashed(tx, signature).into()
+}
+
+pub fn signed_tx(
+    nonce: u64,
+    anchor: bool,
+    target: Address,
+    input: Bytes,
+) -> reth_ethereum_primitives::TransactionSigned {
+    sign_eip1559(GOLDEN_TOUCH_KEY, nonce, if anchor { 0 } else { 7 }, target, input)
+}
+
+/// An EIP-1559 transaction with tip 7 signed by `key`.
+pub fn signed_tx_with_key(
+    key: &str,
+    nonce: u64,
+    target: Address,
+    input: Bytes,
+) -> reth_ethereum_primitives::TransactionSigned {
+    sign_eip1559(key, nonce, 7, target, input)
+}
+
+/// A legacy EIP-155 transaction on the fixture chain with a 1,000,000 gas limit and a 1 gwei gas
+/// price, signed by `key`.
+pub fn signed_legacy_tx_with_key(
+    key: &str,
+    nonce: u64,
+    target: Address,
+    input: Bytes,
+) -> reth_ethereum_primitives::TransactionSigned {
+    use alloy_consensus::{SignableTransaction, Signed, TxLegacy};
+    use alloy_signer::SignerSync;
+    let signer: alloy_signer_local::PrivateKeySigner = key.parse().unwrap();
+    let tx = TxLegacy {
+        chain_id: Some(167001),
+        nonce,
+        gas_price: 1_000_000_000,
+        gas_limit: 1_000_000,
+        to: target.into(),
+        value: U256::ZERO,
+        input,
+    };
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    Signed::new_unhashed(tx, signature).into()
+}
+
+/// The raw EIP-2718 bytes submitted to the transaction pool.
+pub fn raw_2718(tx: &reth_ethereum_primitives::TransactionSigned) -> Bytes {
+    use alloy_eips::eip2718::Encodable2718;
+    tx.encoded_2718().into()
+}
+
+/// Submits `tx` to the node's pool through `eth_sendRawTransaction`.
+pub async fn send_raw(
+    http: &impl ClientT,
+    tx: &reth_ethereum_primitives::TransactionSigned,
+) -> eyre::Result<B256> {
+    Ok(http.request("eth_sendRawTransaction", rpc_params![raw_2718(tx)]).await?)
+}
+
+/// Pool-only Etna attributes with the given byte bound.
+pub fn pool_mode(
+    mut attrs: TaikoPayloadAttributes,
+    max_block_bytes: u64,
+) -> TaikoPayloadAttributes {
+    attrs.block_metadata.tx_list = None;
+    attrs.max_block_bytes = Some(max_block_bytes);
+    attrs
+}
+
+/// The JSON-RPC error code carried by a failed request, if the failure is a call error.
+pub fn rpc_error_code(error: &eyre::Report) -> Option<i32> {
+    match error.downcast_ref::<jsonrpsee::core::ClientError>()? {
+        jsonrpsee::core::ClientError::Call(error) => Some(error.code()),
+        _ => None,
+    }
+}
+
+/// The node's head number from `eth_blockNumber`.
+pub async fn head_number(http: &impl ClientT) -> eyre::Result<u64> {
+    let number: alloy_primitives::U64 = http.request("eth_blockNumber", rpc_params![]).await?;
+    Ok(number.to())
+}
+
+/// The canonical block hash at `number` from `eth_getBlockByNumber`, `None` when absent.
+pub async fn hash_at(http: &impl ClientT, number: u64) -> eyre::Result<Option<B256>> {
+    block_hash(http, serde_json::to_value(alloy_primitives::U64::from(number))?).await
+}
+
+/// Polls `eth_getBlockByNumber(number)` every 50 ms until it returns null, for at most 30 s.
+///
+/// A rewind moves the head at once, but the node removes the persisted blocks above the new head
+/// in the background, so they stay readable for a while.
+pub async fn wait_until_absent(http: &impl ClientT, number: u64) {
+    let mut poll = tokio::time::interval(Duration::from_millis(50));
+    let mut last = String::new();
+    let removed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            poll.tick().await;
+            match hash_at(http, number).await {
+                Ok(None) => break,
+                Ok(Some(hash)) => last = format!("block {hash}"),
+                // A read that races the removal counts as not yet removed.
+                Err(error) => last = format!("read error {error:#}"),
+            }
+        }
+    })
+    .await;
+    assert!(
+        removed.is_ok(),
+        "block {number} was still readable 30 s after the rewind (last answer: {last}): the \
+         background removal of the blocks above the new head did not finish"
+    );
+}
+
+/// The block hash `eth_getBlockByNumber` reports for a tag such as `"finalized"`.
+pub async fn hash_of_tag(http: &impl ClientT, tag: &str) -> eyre::Result<Option<B256>> {
+    block_hash(http, tag.into()).await
+}
+
+/// The `hash` of the block `eth_getBlockByNumber` returns for `block`, `None` when it is null.
+async fn block_hash(http: &impl ClientT, block: Value) -> eyre::Result<Option<B256>> {
+    let block: Value = http.request("eth_getBlockByNumber", rpc_params![block, false]).await?;
+    Ok(if block.is_null() { None } else { Some(serde_json::from_value(block["hash"].clone())?) })
 }
 
 pub fn with_txs(
@@ -238,22 +485,35 @@ pub async fn build(
     client: &impl ClientT,
     spec: Arc<TaikoChainSpec>,
     parent: &alloy_consensus::Header,
+    attrs: TaikoPayloadAttributes,
+) -> eyre::Result<Built> {
+    use reth_chainspec::EthChainSpec;
+    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
+    // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
+    let finalized = spec.genesis_hash();
+    build_at(client, spec, parent, 0, finalized, attrs).await
+}
+
+/// Builds on `parent` with an FCU whose safe and finalized hashes are `finalized`.
+pub async fn build_at(
+    client: &impl ClientT,
+    spec: Arc<TaikoChainSpec>,
+    parent: &alloy_consensus::Header,
+    grandparent_timestamp: u64,
+    finalized: B256,
     mut attrs: TaikoPayloadAttributes,
 ) -> eyre::Result<Built> {
     use alethia_reth_consensus::eip4396::{MIN_BASE_FEE, calculate_next_block_eip4396_base_fee};
     use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
-    use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
-    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
-    // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
-        parent.timestamp,
+        parent.timestamp - grandparent_timestamp,
         parent.base_fee_per_gas.unwrap(),
         MIN_BASE_FEE,
     ));
     attrs.l1_origin.block_id = U256::from(parent.number + 1);
-    let status = fcu(client, spec.genesis_hash(), parent.hash_slow(), Some(attrs.clone())).await?;
+    let status = fcu(client, finalized, parent.hash_slow(), Some(attrs.clone())).await?;
     assert!(status.payload_status.status.is_valid(), "{status:?}");
     let id = status.payload_id.unwrap();
     let root = attrs.payload_attributes.parent_beacon_block_root.unwrap();

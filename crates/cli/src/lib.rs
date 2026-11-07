@@ -417,6 +417,32 @@ mod tests {
     }
 
     #[test]
+    fn rewind_flags_reach_the_engine_tree_config() {
+        let tree_config = |args: &[&str]| {
+            let cli = TaikoCli::<TaikoChainSpecParser, TaikoCliExtArgs>::try_parse_args_from(
+                args.iter().copied(),
+            )
+            .expect("node args should parse");
+            let Commands::Node(node) = cli.inner.command else { panic!("expected node command") };
+            node.engine.tree_config()
+        };
+
+        // The governance-recovery rewind restarts the node once with both flags; they are off
+        // by default.
+        let normal = tree_config(&["alethia-reth", "node"]);
+        assert!(!normal.unwind_canonical_header());
+        assert!(!normal.always_process_payload_attributes_on_canonical_head());
+        let rewind = tree_config(&[
+            "alethia-reth",
+            "node",
+            "--engine.allow-unwind-canonical-header",
+            "--engine.always-process-payload-attributes-on-canonical-head",
+        ]);
+        assert!(rewind.unwind_canonical_header());
+        assert!(rewind.always_process_payload_attributes_on_canonical_head());
+    }
+
+    #[test]
     fn engine_args_validation_rejects_masking_and_invalid_thresholds() {
         disable_state_masking_by_default();
         let mut engine = EngineArgs::default();

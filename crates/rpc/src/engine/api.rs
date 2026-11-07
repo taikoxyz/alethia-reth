@@ -238,16 +238,17 @@ where
         {
             Some(payload) => {
                 let timestamp = payload.payload_attributes.timestamp;
-                let batch_id = self
-                    .chain_spec
-                    .is_shasta_active(timestamp)
+                let is_etna_build = self.chain_spec.is_etna_active(timestamp);
+                // Etna extraData bytes 1..6 hold the recovery generation, not a proposal ID, so
+                // Etna builds leave the proposal-to-last-block index untouched.
+                let batch_id = (self.chain_spec.is_shasta_active(timestamp) && !is_etna_build)
                     .then(|| decode_shasta_proposal_id(payload.block_metadata.extra_data.as_ref()))
                     .flatten();
                 (
                     Some(StoredL1Origin::from(&payload.l1_origin)),
                     payload.l1_origin.is_preconf_block(),
                     batch_id,
-                    self.chain_spec.is_etna_active(timestamp),
+                    is_etna_build,
                 )
             }
             None => (None, false, None, false),
@@ -681,9 +682,10 @@ mod tests {
                     fcu_attributes(timestamp, preconf).block_metadata.extra_data.as_ref(),
                 )
                 .unwrap();
+                // Etna (100) bytes 1..6 are the generation, which never indexes a proposal.
                 assert_eq!(
                     db.tx_ref().get::<BatchToLastBlock>(proposal_id).unwrap(),
-                    (valid && !preconf).then_some(timestamp)
+                    (valid && !preconf && timestamp < 100).then_some(timestamp)
                 );
             }
         }

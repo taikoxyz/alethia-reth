@@ -1,12 +1,93 @@
 //! Transactional collection for block-local zk gas pricing selectors.
 
+#[cfg(test)]
+mod account_cache_prefix_tests {
+    use super::*;
+
+    fn finish(a: &mut ZkGasAccumulator, keys: &[Address], accepted: bool) {
+        a.begin_transaction(TransactionMetadata::default()).unwrap();
+        a.observe_transaction_payload(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 1,
+            nonempty_payload_transactions: 0,
+        })
+        .unwrap();
+        a.complete_account_journal_population(keys.iter().copied()).unwrap();
+        if accepted {
+            a.commit_transaction().unwrap();
+        } else {
+            a.reset_transaction();
+        }
+    }
+
+    #[test]
+    fn account_cache_progressive_population_and_repeated_transactions() {
+        let mut a = ZkGasAccumulator::default();
+        finish(&mut a, &[Address::with_last_byte(1)], true);
+        finish(&mut a, &[Address::with_last_byte(2)], true);
+        finish(&mut a, &[Address::with_last_byte(1)], true);
+        let d = a.committed_snapshot().account_cache;
+        assert_eq!((d.observed_accounts, d.max_prefix_group), (2, 2));
+        assert_eq!((d.query_budget, d.work_units, d.completed_transactions), (6, 10, 3));
+        assert_eq!(a.committed_snapshot().account_cache_work_units().unwrap(), 10);
+    }
+
+    #[test]
+    fn account_cache_rejected_population_does_not_leak_into_committed_prefix() {
+        let mut a = ZkGasAccumulator::default();
+        finish(&mut a, &[Address::with_last_byte(1), Address::with_last_byte(2)], false);
+        finish(&mut a, &[Address::with_last_byte(3)], true);
+        assert_eq!(a.committed_snapshot().account_cache.work_units, 2);
+        assert_eq!(a.attempted_snapshot().block.account_cache.work_units, 14);
+        assert_eq!(ZkGasAccumulator::default().committed_snapshot().account_cache.work_units, 0);
+    }
+
+    #[test]
+    fn account_cache_warm_opcodes_do_not_repeat_db_proxy_and_invalid_receipts_fail_closed() {
+        let mut a = ZkGasAccumulator::default();
+        a.begin_transaction(TransactionMetadata::default()).unwrap();
+        a.observe_transaction_payload(TransactionPayloadSelectors {
+            canonical_transaction_bytes: 1,
+            nonempty_payload_transactions: 0,
+        })
+        .unwrap();
+        for _ in 0..128 {
+            a.observe_account_journal_opcode(0x31);
+        }
+        a.complete_account_journal_population([Address::ZERO]).unwrap();
+        a.commit_transaction().unwrap();
+        assert_eq!(a.committed_snapshot().account_cache.query_budget, 2);
+        assert_eq!(a.committed_snapshot().account_cache.work_units, 2);
+        assert_eq!(a.committed_snapshot().account_journal.potential_query_budget, 256);
+
+        let mut duplicate = ZkGasAccumulator::default();
+        duplicate.begin_transaction(TransactionMetadata::default()).unwrap();
+        duplicate.complete_account_journal_population([]).unwrap();
+        assert!(duplicate.complete_account_journal_population([]).is_err());
+        duplicate.reset_transaction();
+        assert_eq!(
+            duplicate.attempted_snapshot().block.account_cache.incomplete,
+            Some(super::super::AccountCacheIncompleteness::InvalidPopulation)
+        );
+        assert!(duplicate.attempted_snapshot().block.account_cache_work_units().is_err());
+
+        let mut missing = ZkGasAccumulator::default();
+        missing.begin_transaction(TransactionMetadata::default()).unwrap();
+        missing.reset_transaction();
+        assert_eq!(
+            missing.attempted_snapshot().block.account_cache.incomplete,
+            Some(super::super::AccountCacheIncompleteness::InvalidPopulation)
+        );
+    }
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use alloy_primitives::{Address, B256, U256};
 
 use super::{
-    AccountJournalDiagnostics, account_journal::AccountJournalLedger,
-    storage_journal::StorageJournalLedger, transient_journal::TransientStorageJournalLedger,
+    AccountCacheDiagnostics, AccountJournalDiagnostics, account_cache::AccountCacheLedger,
+    account_journal::AccountJournalLedger, storage_journal::StorageJournalLedger,
+    transient_journal::TransientStorageJournalLedger,
 };
 
 use super::{
@@ -312,6 +393,8 @@ struct TransactionSelectors {
     storage_journal: StorageJournalLedger,
     /// Scalar Account budget and exact physical-population receipt for this transaction.
     account_journal: AccountJournalLedger,
+    /// Finalized physical keys retained only until both prefix merges complete.
+    account_cache_keys: Option<Vec<Address>>,
     /// Independent transaction-local transient map work and distinct materialization scope.
     transient_storage_journal: TransientStorageJournalLedger,
     /// First observation failure that makes this quote untrusted.
@@ -332,6 +415,7 @@ impl TransactionSelectors {
             resources: ResourceSet::default(),
             storage_journal: StorageJournalLedger::default(),
             account_journal: AccountJournalLedger::default(),
+            account_cache_keys: None,
             transient_storage_journal: TransientStorageJournalLedger::default(),
             diagnostic: None,
             has_operation_trace: false,
@@ -395,6 +479,8 @@ pub struct ZkGasBlockSnapshot {
     pub storage_journal: StorageJournalDiagnostics,
     /// Empirical Account density reserve, finalized separately for each observing transaction.
     pub account_journal: AccountJournalDiagnostics,
+    /// Progressive block-cache population proxy, separate from transaction-local journal work.
+    pub account_cache: AccountCacheDiagnostics,
     /// Transient-only map work; its units join the ordinary term without sharing owner/key state.
     pub transient_storage_journal: TransientStorageJournalDiagnostics,
     /// First diagnostic retained in this prefix, if any.
@@ -405,6 +491,39 @@ pub struct ZkGasBlockSnapshot {
 }
 
 impl ZkGasBlockSnapshot {
+    /// Returns complete progressive block-cache work; partial observations fail closed.
+    pub fn account_cache_work_units(&self) -> Result<u64, ZkGasError> {
+        let d = self.account_cache;
+        if d.incomplete.is_some() {
+            return Err(ZkGasError::InvalidInput("incomplete_account_cache_work"));
+        }
+        if (d.completed_transactions == 0 && d != AccountCacheDiagnostics::EMPTY)
+            || d.max_prefix_group > d.observed_accounts
+            || (d.observed_accounts == 0
+                && (d.max_prefix_group != 0 || d.comparison_equivalents != 0 || d.work_units != 0))
+            || (d.observed_accounts > 0
+                && (d.max_prefix_group == 0
+                    || d.comparison_equivalents < d.max_prefix_group
+                    || d.comparison_equivalents > d.observed_accounts
+                    || d.work_units < d.query_budget))
+        {
+            return Err(ZkGasError::InvalidInput("inconsistent_account_cache_work"));
+        }
+        let numerator = d
+            .observed_accounts
+            .checked_add(
+                d.max_prefix_group
+                    .checked_mul(4)
+                    .ok_or(ZkGasError::InvalidInput("inconsistent_account_cache_work"))?,
+            )
+            .ok_or(ZkGasError::InvalidInput("inconsistent_account_cache_work"))?;
+        if d.comparison_equivalents != numerator / 5 + u64::from(numerator % 5 != 0) {
+            return Err(ZkGasError::InvalidInput("inconsistent_account_cache_work"));
+        }
+        ZkGasModel.price_account_cache_work(d.work_units)?;
+        Ok(d.work_units)
+    }
+
     /// Returns finalized Account work, rejecting missing/duplicate or overflowed captures.
     pub fn account_journal_work_units(&self) -> Result<u64, ZkGasError> {
         if self.account_journal.incomplete.is_some() {
@@ -533,6 +652,8 @@ struct SelectorPrefix {
     storage_journal: StorageJournalDiagnostics,
     /// Per-TX Account units and checked density diagnostics; never a block-wide product.
     account_journal: AccountJournalDiagnostics,
+    /// Prefix-local virtual State-cache population and progressive work.
+    account_cache: AccountCacheLedger,
     /// Checked transient observations, additive across finalized transaction scopes.
     transient_storage_journal: TransientStorageJournalDiagnostics,
     /// First diagnostic included in this prefix.
@@ -552,6 +673,12 @@ impl SelectorPrefix {
         self.storage_journal.merge(transaction.storage_journal.diagnostics);
         let account = transaction.account_journal.diagnostics();
         self.account_journal.merge(account);
+        self.account_cache.merge(
+            transaction.account_cache_keys.as_deref(),
+            transaction.storage_journal.diagnostics.materialization_count_upper,
+            account.incomplete.is_none()
+                && transaction.storage_journal.diagnostics.incomplete.is_none(),
+        );
         self.transient_storage_journal.merge(transaction.transient_storage_journal.diagnostics());
         if self.diagnostic.is_none() {
             self.diagnostic = transaction.diagnostic;
@@ -667,6 +794,7 @@ impl SelectorPrefix {
             resources: self.resources.selectors(),
             storage_journal: self.storage_journal,
             account_journal: self.account_journal,
+            account_cache: self.account_cache.diagnostics(),
             transient_storage_journal: self.transient_storage_journal,
             diagnostic: self.diagnostic,
         }
@@ -720,6 +848,8 @@ impl ZkGasAccumulator {
     /// Supplies actual finalized journal map keys once, on success and handler error alike.
     ///
     /// Keys must be the distinct map iterator, not declared AL owners or resource observations.
+    /// A compact receipt also feeds independent committed/attempted progressive cache proxies.
+    /// It is dropped after both merges; unobserved preexecution cache keys are not fabricated.
     pub fn complete_account_journal_population(
         &mut self,
         addresses: impl IntoIterator<Item = Address>,
@@ -727,7 +857,11 @@ impl ZkGasAccumulator {
         let result = (|| {
             let transaction =
                 self.in_flight.as_mut().ok_or(ZkGasAccumulatorError::NoActiveTransaction)?;
-            transaction.account_journal.complete(addresses);
+            let keys: Vec<_> = addresses.into_iter().collect();
+            transaction.account_journal.complete(keys.iter().copied());
+            if transaction.account_cache_keys.is_none() {
+                transaction.account_cache_keys = Some(keys);
+            }
             if transaction.account_journal.diagnostics().incomplete.is_some() {
                 return Err(ZkGasError::InvalidInput("incomplete_account_journal_work").into());
             }
@@ -1440,6 +1574,8 @@ mod storage_journal_failure_tests {
         );
         let mut baseline = snapshot.clone();
         baseline.storage_journal = StorageJournalDiagnostics::default();
+        // Both dependent receipts were deliberately incomplete in this synthetic control.
+        baseline.account_cache = AccountCacheDiagnostics::EMPTY;
         assert!(matches!(
             snapshot.shadow_report().status(),
             super::super::ZkGasShadowStatus::Diagnostic(

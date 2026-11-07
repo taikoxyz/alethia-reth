@@ -304,6 +304,8 @@ pub struct BlockPricingInput<'a> {
     pub storage_journal_work_units: u64,
     /// Independently normalized empirical Account-journal density reserve.
     pub account_journal_work_units: u64,
+    /// Progressive observed-transaction block-cache work, in its independent domain.
+    pub account_cache_work_units: u64,
     /// Committed per-route candidate aggregates.
     pub operation_routes: &'a [OperationRoutePricingInput],
     /// Unique-resource selectors.
@@ -376,10 +378,14 @@ pub struct PricingBreakdown {
     pub storage_journal_work_units: u64,
     /// Independently normalized empirical Account-journal density reserve.
     pub account_journal_work_units: u64,
+    /// Progressive observed-transaction block-cache work, in its independent domain.
+    pub account_cache_work_units: u64,
     /// Additive ordinary/transient journal reserve, outside operation-route composition.
     pub storage_journal_scaled: i128,
     /// Independently normalized empirical Account-journal density reserve.
     pub account_journal_scaled: i128,
+    /// Independently normalized progressive block-cache contribution.
+    pub account_cache_scaled: i128,
     /// Block operation contribution after per-route composition.
     pub operations_scaled: i128,
     /// Block unique-resource contribution.

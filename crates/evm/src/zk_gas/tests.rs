@@ -73,6 +73,7 @@ fn zk_gas_authorization_tariff_is_effective_normalized_once_and_bounded() {
                 access_list_address_pairs: 0,
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
+                account_cache_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: count,
@@ -619,6 +620,7 @@ fn zk_gas_access_list_normalization_bounds_and_complete_scope_close_once() {
                 access_list_address_pairs: 0,
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
+                account_cache_work_units: 0,
                 started_non_anchor_transactions: 0,
                 native_value_transfers: 0,
                 authorization_validations: 0,
@@ -1047,6 +1049,7 @@ fn zk_gas_pricing_complete_shadow_report_adds_exact_mpt_once() {
             access_list_address_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -1117,6 +1120,7 @@ fn zk_gas_pricing_completion_replaces_evm_local_resources_with_the_authoritative
             access_list_address_pairs: 0,
             storage_journal_work_units: snapshot.storage_journal_work_units().unwrap(),
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: snapshot.transaction_payload,
             started_non_anchor_transactions: snapshot.started_non_anchor_transactions,
             native_value_transfers: snapshot.native_value_transfers,
@@ -2443,7 +2447,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "af30c61656fd456ab290a837b44c181e4ff54e575a949d3579f07df20659a949"
+        "022232270da81c96dd9d7a12899d52ac011f46144d7f90d778a585aaeca5b7bd"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2720,6 +2724,7 @@ fn zk_gas_model_uses_the_explicit_feature_error_floor() {
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2760,6 +2765,7 @@ fn zk_gas_model_matches_python_block_breakdown_and_single_ceiling() {
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 2,
             native_value_transfers: 1,
@@ -2803,6 +2809,7 @@ fn zk_gas_model_composes_route_aggregates_before_block_sum() {
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -2835,6 +2842,7 @@ fn zk_gas_model_accepts_the_declared_selector_maximum() {
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: maximum,
             native_value_transfers: maximum,
@@ -2966,6 +2974,7 @@ fn zk_gas_model_fails_closed_for_unknown_missing_out_of_range_and_overflow() {
             access_list_address_pairs: 0,
             storage_journal_work_units: 0,
             account_journal_work_units: 0,
+            account_cache_work_units: 0,
             transaction_payload: Default::default(),
             started_non_anchor_transactions: 0,
             native_value_transfers: 0,
@@ -5677,6 +5686,18 @@ fn account_journal_real_population_excludes_unused_al_and_retains_absent_reverte
                             );
                             evm.commit_transaction_zk_gas_pricing().unwrap();
                             let d = evm.zk_gas_pricing_snapshot().unwrap().account_journal;
+                            let cache = evm.zk_gas_pricing_snapshot().unwrap().account_cache;
+                            assert_eq!(cache.observed_accounts, result.state.len() as u64);
+                            assert_eq!(cache.query_budget, 2 * result.state.len() as u64);
+                            assert_eq!(cache.completed_transactions, 1);
+                            assert_eq!(cache.incomplete, None);
+                            assert_eq!(
+                                cache,
+                                evm.zk_gas_attempted_pricing_snapshot()
+                                    .unwrap()
+                                    .block
+                                    .account_cache
+                            );
                             assert_eq!(d.potential_query_budget, 4);
                             assert_eq!(d.physical_account_count, result.state.len() as u64);
                             assert_eq!(d.completed_transactions, 1);

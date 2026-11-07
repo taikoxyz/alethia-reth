@@ -832,6 +832,7 @@ mod tests {
                 code_preparation: Default::default(),
                 storage_journal_work_units: 0,
                 account_journal_work_units: 0,
+                account_cache_work_units: 0,
                 operation_routes: &[],
                 resources: Default::default(),
                 transaction_payload: Default::default(),

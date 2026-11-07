@@ -259,6 +259,8 @@ where
                 code_preparation_scaled = ?known.code_preparation_scaled(),
                 account_journal_work_units = known.account_journal_work_units(),
                 account_journal_scaled = ?known.account_journal_scaled(),
+                account_cache_work_units = known.account_cache_work_units(),
+                account_cache_scaled = ?known.account_cache_scaled(),
                 storage_journal_work_units = known.storage_journal_work_units(),
                 storage_journal_scaled = ?known.storage_journal_scaled(),
                 operations_scaled = ?known.operations_scaled(),

@@ -603,6 +603,8 @@ where
         if !self.suspend_zk_gas_pricing
             && let Some(accumulator) = self.zk_gas_pricing_mut()
         {
+            // This physical-key receipt also advances each pricing prefix's virtual block-cache
+            // population. It is collected only while pricing is active, including handler errors.
             let _ = accumulator.complete_account_journal_population(state.keys().copied());
             for (address, account) in &state {
                 let _ = accumulator.observe_state_access(StateAccess::Account(*address));

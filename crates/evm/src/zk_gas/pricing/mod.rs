@@ -1,6 +1,7 @@
 //! Pure fixed-point evaluator for the accepted schema-9 zk gas model.
 
 mod access_list_construction;
+mod account_cache;
 mod account_journal;
 mod accumulator;
 mod generated;
@@ -13,6 +14,7 @@ mod types;
 pub use access_list_construction::{
     AccessListConstructionDiagnostics, AccessListConstructionIncompleteness,
 };
+pub use account_cache::{AccountCacheDiagnostics, AccountCacheIncompleteness};
 pub use account_journal::{AccountJournalDiagnostics, AccountJournalIncompleteness};
 pub use accumulator::{
     StateAccess, TransactionMetadata, ZkGasAccumulator, ZkGasAccumulatorError,

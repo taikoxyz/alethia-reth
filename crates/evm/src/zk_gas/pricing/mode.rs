@@ -2,11 +2,11 @@
 
 use super::{
     AccessListConstructionDiagnostics, AccessListConstructionIncompleteness,
-    AccountJournalDiagnostics, AccountJournalIncompleteness, CodePreparationSelectors,
-    RUNTIME_SPEC_SHA256, ResourceSelectors, StorageJournalDiagnostics,
-    StorageJournalIncompleteness, TransactionPayloadSelectors, TransientStorageJournalDiagnostics,
-    ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError, ZkGasModel,
-    model::KnownBlockPricingInput,
+    AccountCacheDiagnostics, AccountCacheIncompleteness, AccountJournalDiagnostics,
+    AccountJournalIncompleteness, CodePreparationSelectors, RUNTIME_SPEC_SHA256, ResourceSelectors,
+    StorageJournalDiagnostics, StorageJournalIncompleteness, TransactionPayloadSelectors,
+    TransientStorageJournalDiagnostics, ZkGasAccumulatorError, ZkGasBlockSnapshot, ZkGasError,
+    ZkGasModel, model::KnownBlockPricingInput,
 };
 use core::fmt;
 
@@ -47,10 +47,14 @@ pub struct ZkGasKnownBlockBreakdown {
     storage_journal_work_units: u64,
     /// Independently normalized empirical Account-journal density reserve.
     account_journal_work_units: u64,
+    /// Progressive observed-transaction block-cache work, in its independent domain.
+    account_cache_work_units: u64,
     /// Independent journal contribution in normalized fixed-point PGU.
     storage_journal_scaled: i128,
     /// Independently normalized empirical Account-journal density reserve.
     account_journal_scaled: i128,
+    /// Independently normalized progressive block-cache contribution.
+    account_cache_scaled: i128,
     /// Block operation contribution in fixed-point units.
     operations_scaled: i128,
     /// Normal dispatched opcode/confirmed-spawn count sealed with its reserve.
@@ -104,7 +108,9 @@ impl ZkGasKnownBlockBreakdown {
         access_list_address_pairs: u64,
         access_list_address_scaled: i128,
         account_journal_work_units: u64,
+        account_cache_work_units: u64,
         account_journal_scaled: i128,
+        account_cache_scaled: i128,
     ) -> Self {
         Self {
             fixed_scaled,
@@ -112,8 +118,10 @@ impl ZkGasKnownBlockBreakdown {
             code_preparation_scaled,
             storage_journal_work_units,
             account_journal_work_units,
+            account_cache_work_units,
             storage_journal_scaled,
             account_journal_scaled,
+            account_cache_scaled,
             authorization_validations,
             authorization_scaled,
             access_list_items,
@@ -272,6 +280,22 @@ impl ZkGasKnownBlockBreakdown {
         self.evm_local_known_subtotal_pgu
     }
 
+    /// Returns progressive block-cache empirical work units.
+    pub const fn account_cache_work_units(self) -> u64 {
+        self.account_cache_work_units
+    }
+    /// Returns the independent normalized block-cache contribution.
+    pub const fn account_cache_scaled(self) -> i128 {
+        self.account_cache_scaled
+    }
+
+    #[cfg(test)]
+    pub(super) const fn with_account_cache_for_test(mut self, units: u64, scaled: i128) -> Self {
+        self.account_cache_work_units = units;
+        self.account_cache_scaled = scaled;
+        self
+    }
+
     #[cfg(test)]
     pub(super) const fn with_account_journal_for_test(mut self, units: u64, scaled: i128) -> Self {
         self.account_journal_work_units = units;
@@ -336,6 +360,8 @@ impl ZkGasKnownBlockBreakdown {
             known_subtotal_scaled,
             known_subtotal_pgu,
             CodePreparationSelectors { nonempty_events: 0, total_bytes: 0 },
+            0,
+            0,
             0,
             0,
             0,
@@ -510,6 +536,8 @@ pub struct ZkGasShadowReport {
     storage_journal: StorageJournalDiagnostics,
     /// Finalized Account density and empirical potential-query diagnostics.
     account_journal: AccountJournalDiagnostics,
+    /// Progressive block-cache population and work, independently sealed.
+    account_cache: AccountCacheDiagnostics,
     /// Independent transient diagnostics whose units join the same sealed journal price once.
     transient_storage_journal: TransientStorageJournalDiagnostics,
     /// Raw access-list construction receipt diagnostics, separate from physical journal work.
@@ -525,6 +553,7 @@ impl ZkGasShadowReport {
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
             account_journal: AccountJournalDiagnostics::EMPTY,
+            account_cache: AccountCacheDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
             access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
@@ -560,11 +589,21 @@ impl ZkGasShadowReport {
         self.account_journal
     }
 
+    /// Returns progressive observed-transaction cache diagnostics, excluding unobserved system
+    /// keys.
+    pub const fn account_cache(self) -> AccountCacheDiagnostics {
+        self.account_cache
+    }
+
     /// Returns a typed report for an unexpectedly missing Shadow collector.
     pub const fn collector_unavailable() -> Self {
         Self {
             model_id: RUNTIME_SPEC_SHA256,
             status: ZkGasShadowStatus::Diagnostic(ZkGasShadowDiagnostic::CollectorUnavailable),
+            account_cache: AccountCacheDiagnostics {
+                incomplete: Some(AccountCacheIncompleteness::CollectorUnavailable),
+                ..AccountCacheDiagnostics::EMPTY
+            },
             account_journal: AccountJournalDiagnostics {
                 incomplete: Some(AccountJournalIncompleteness::CollectorUnavailable),
                 ..AccountJournalDiagnostics::EMPTY
@@ -594,6 +633,7 @@ impl ZkGasShadowReport {
             status,
             storage_journal: StorageJournalDiagnostics::EMPTY,
             account_journal: AccountJournalDiagnostics::EMPTY,
+            account_cache: AccountCacheDiagnostics::EMPTY,
             transient_storage_journal: TransientStorageJournalDiagnostics::EMPTY,
             access_list_construction: AccessListConstructionDiagnostics::EMPTY,
         }
@@ -634,6 +674,7 @@ impl ZkGasBlockSnapshot {
                     code_preparation: self.code_preparation,
                     storage_journal_work_units,
                     account_journal_work_units: self.account_journal_work_units()?,
+                    account_cache_work_units: self.account_cache_work_units()?,
                     operation_routes: &self.operation_routes,
                     resources: self.resources,
                     transaction_payload: self.transaction_payload,
@@ -651,6 +692,7 @@ impl ZkGasBlockSnapshot {
             status,
             storage_journal: self.storage_journal,
             account_journal: self.account_journal,
+            account_cache: self.account_cache,
             transient_storage_journal: self.transient_storage_journal,
             access_list_construction: self.access_list_construction,
         }

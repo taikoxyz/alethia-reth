@@ -2,28 +2,30 @@
 
 ## Status and scope
 
-This document describes the current SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
-alethia-reth. The runtime artifact has model identity
-`af30c61656fd456ab290a837b44c181e4ff54e575a949d3579f07df20659a949`. Relative to immutable
-parent `69d2b812552a4c5380da478ebcf35aeaaa851881371de738633584aa0d695b4f`, it adds **128 normalized
-PGU per Account-journal work unit**, using actual per-transaction physical Account population,
-address-prefix concentration and potential opcode-query budgets. The existing ordinary/transient
-journal and raw access-list supplements retain their prices and meanings. All inherited prices,
-global discount treatment and consensus Unzen behavior are unchanged. This remains the initial
-Shadow model, without a public version selector.
+This document describes the SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
+alethia-reth. The current runtime artifact is the progressive account-cache **candidate**
+`022232270da81c96dd9d7a12899d52ac011f46144d7f90d778a585aaeca5b7bd`, derived from immutable
+parent `af30c61656fd456ab290a837b44c181e4ff54e575a949d3579f07df20659a949`. It adds an
+independent 128 normalized PGU per progressive observed account-cache work unit, preserving all
+parent tariffs and their meanings. The [candidate section](#candidate-progressive-observed-account-cache-work)
+records its formula, evidence and preexecution-population limitations. The78-input repricing
+and50-proposal/9600-block historical sensitivity gates are complete: the demonstrated warm-first
+deficit is covered, with historical node/full totals increasing only0.03648%/0.02117%. This finite
+validation is not a global accuracy or natural-admission endorsement. This remains the initial
+Shadow model without a public version selector, and consensus Unzen behavior is unchanged.
 
-The motivating retained b76/SDK6.3 input measured 5,073,040,910 PGU against parent node
-2,380,285,007 / full 2,535,524,054 at 10,055,942 charged block gas. Its 2,692,755,903-PGU node
-deficit exceeds the 2B priority threshold. Genuine successor repricing covers this case and the
-older retained K512/R1400 sample; all 21 measured full quotes cover their original actuals, while
-four small literal-node deficits remain. The 50-proposal historical sensitivity panel changes
-by +0.2835% node / +0.1643% full. See the [Account-journal section](#empirical-account-journal-density-reserve)
-for formulas, conservative controls, exact results and residual TODOs. These are empirical
-reserves and finite evidence, not universal bounds, production SDK parity or normal-admission
-certification. Earlier model-specific sections retain their original checkpoint identities.
+The previous `af30` checkpoint added 128 normalized PGU per **transaction-local Account-journal**
+work unit to immutable parent `69d2b812…`. For that checkpoint, all 21 retained full quotes covered
+their original actuals, four small literal-node deficits remained, and the 50-proposal historical
+panel changed by +0.2835% node / +0.1643% full. Those results describe `af30`, not the new cache
+candidate. See the [Account-journal section](#empirical-account-journal-density-reserve) for its
+original formulas and results. The new warm-first case demonstrates a further block-lifetime
+population gap; its two opened actuals are now stress/calibration evidence rather than holdouts.
+Earlier model-specific sections retain their original checkpoint identities. All these are finite
+empirical results, not universal bounds or production SDK parity certification.
 
 The original calibration calls itself `accepted_runtime_export`; the current successor purpose is
-`block_local_empirical_account_journal_density_reserve`. These identify calibration and
+`block_local_empirical_progressive_account_cache_candidate`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -44,11 +46,11 @@ meter, block limit, or header-difficulty commitment.
 | Surface | Current status |
 | --- | --- |
 | EVM-local collection | Live in `Shadow` for executions that use `TaikoBlockExecutor`. |
-| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list-item/access-list-construction/access-list-address-pair/code-preparation/storage-journal/Account-journal/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
+| Runtime log | One `tracing` event per successful executor finish, target `zkgas`, for the committed prefix. `Incomplete` carries the model ID, status, EVM-local subtotal, and fixed/authorization/access-list-item/access-list-construction/access-list-address-pair/code-preparation/storage-journal/Account-journal/account-cache/operation/local-resource components; `Diagnostic` carries only the model ID and coarse status. |
 | Prover outcomes | With the `prover` feature, `CommittedBlockExecutionOutcome` and `DerivedBlockExecutionOutcome` return `zk_gas_shadow_report`, `attempted_zk_gas_shadow_report`, and `attempted_transaction_count`. The reports are EVM-local and incomplete, not complete block quotes. |
 | Exact block completion | Public evaluator API and tests exist, but this repository has no production caller. |
 | Proposal-once pricing | Public evaluator API and tests exist, but this repository has no production caller. |
-| Exact resources, block/parent MPT, and proposal selectors | No production producer is wired in this repository, and no published caller is identified by the artifact or documentation. |
+| Exact resources, block/parent MPT, and proposal selectors | No production producer is wired in this repository. The [companion Raiko tools](https://github.com/taikoxyz/raiko2/pull/296) consume these APIs for offline GuestInput replay and comparison; this does not wire them into Reth admission. |
 | Admission | Not implemented. There is no `Admission` mode. |
 
 The live log does not contain a block number or hash, exposes no metric, and does not include the
@@ -85,8 +87,13 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`account_cache_successor.py`](../crates/evm/src/zk_gas/pricing/account_cache_successor.py)
+  derives the current progressive block-cache component from immutableaf30 and the
+  [sealed warm-first evidence](../crates/evm/src/zk_gas/pricing/successors/account-cache-v1.json).
+  [`account_cache.rs`](../crates/evm/src/zk_gas/pricing/account_cache.rs) owns its independent
+  receipt and virtual-prefix ledger.
 - [`account_journal_successor.py`](../crates/evm/src/zk_gas/pricing/account_journal_successor.py)
-  derives the current Account-journal component from immutable69 and the
+  derives the inherited Account-journal checkpoint from immutable69 and the
   [sealed reference/successor evidence](../crates/evm/src/zk_gas/pricing/successors/account-journal-v1.json).
   It seals the Account policy, empirical residual margin and independent work domain while
   preserving every inherited numeric object.
@@ -133,7 +140,7 @@ This document is the human-readable guide. The checked-in sources divide authori
   92-row evidence, raw-item derivation in `access_list_successor.py`, authorization derivation in
   `authorization_successor.py`, CALL memory repair in `call_memory_successor.py`, and EXP derivation
   in `successor.py`. Those historical generator identities remain recorded in immutable snapshots;
-  only the current Account-journal successor is regenerated by the commands below.
+  only the current account-cache successor is regenerated by the commands below.
 - [`accepted-runtime-spec.sha256`](../crates/evm/src/zk_gas/pricing/accepted-runtime-spec.sha256)
   pins the accepted successor separately from the generators, avoiding a self-reference cycle.
 
@@ -594,6 +601,7 @@ block_price =
   + code_preparation_byte_tariff * prepared_code_bytes
   + storage_journal_work_tariff * (ordinary_journal_work_units + transient_journal_work_units)
   + account_journal_work_tariff * account_journal_work_units
+  + account_cache_work_tariff * account_cache_work_units
   + operation_price
   + exact_unique_resource_price
   + committed_transaction_payload_price
@@ -1205,16 +1213,16 @@ underpricing flags and original deficits instead of replacing them with projecte
 Verify the checked JSON address and generated Rust table with:
 
 ```bash
-~/.venv/bin/python -S -B -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/account_journal_successor.py --check
-~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py --check
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/account_cache_successor.py --check
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/account_journal_successor.py
-~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/account_cache_successor.py
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
 
@@ -1676,3 +1684,128 @@ fixture's asset metadata and checksums identify its separate density release. It
 still pending here; the sealed model/evidence and original quotes are not rewritten for a plan-name
 correction. No guest, ELF, SDK or observer was
 rebuilt, and full workspace Cargo/clippy or guest CI success is not claimed by these host checks.
+
+### Candidate: progressive observed account-cache work
+
+The warm-first finite panel exposed a block-lifetime gap after the Account-journal reserve:
+86 user transactions each warm and query128 globally disjoint absent accounts. Both retained
+inputs use29,669,999 charged block gas. With the immutable `af30c616…` model, both report
+1,354,594,058 literal node PGU. The reference actual is338,631,603 PGU; the sole same-shape
+successor actual is5,027,210,167 PGU. The successor's positive actual-minus-node gap is
+3,672,616,109 PGU; its full-proposal estimate1,519,000,777 also underestimates actual.
+These original columns remain `af30` results. Once used to develop this supplement, the two
+opened actuals are calibration/stress evidence, not an unopened accuracy holdout.
+
+The existing Account component finalizes its population separately per transaction. The backing
+`State.cache.accounts` persists across transactions in the same block. A freshly finalized
+Journal can therefore contain a small cohort while its first account loads query a much larger
+State cache. This candidate adds one separate block-aware proxy; it preserves all old Account,
+access-list, opcode, memory, resource, MPT and proposal-once tariffs and the existing discount.
+
+For each transaction `t`, retain the actual finalized Journal account keys `J_t`. The committed
+and attempted block prefixes each keep their own union `S_t` and first-four-network-byte group
+counts. Define:
+
+```text
+N_t = |S_t|; M_t = largest first4 network-byte group in S_t
+C_t = ceil((N_t + 4*M_t) / 5)
+B_t = 2*|J_t| + persistent_storage_materialization_count_upper_t
+account_cache_work_units = sum_t(C_t * B_t)
+account_cache_scaled = account_cache_work_units * 128 * 10^18
+```
+
+The initial128 PGU/unit is an empirical conservative candidate, not a universal PGU upper bound.
+Its independent unit domain is10^12. The2N budget allows one possible State basic lookup and one
+possible commit entry per physical account; the persistent-storage materialization upper adds
+possible State storage-owner lookups. It intentionally overcounts untouched commit entries.
+Exact locked `revm-database43.0.0` source places the account-map entry in these paths; the sampled
+guest's source links identify43.0.1, whose relevant entry paths agree. This is source reasoning,
+not a claim that every actual PGU is attributable to this map or these operations.
+
+The retained bounded prefix authenticates the selected shared hash state for Anchor's own
+CacheAccount map, but closes no complete target query chain. Target placement, whole-table
+pressure and the isolated cause of the full input delta remain unmeasured. Other affected
+Address maps and input changes may contribute. The reserve combines population scale and
+comparison density rather than claiming this particular conditional family is the sole cause.
+
+A repeated key across transactions is charged again in B, although the union deduplicates it.
+Repeated warm accesses within one Journal do not increase B; existing Account-journal opcode
+work remains independent. Included REVERT/halt retains physical keys. A rejected mining
+candidate contributes only to the attempted virtual population; it cannot inflate the committed
+union through incidental producer-local DB caching. A fresh block accumulator resets both
+populations. Disabled pricing does not collect or allocate these receipts or unions.
+
+The source callback `complete_account_journal_population` now also retains a compact physical-key
+receipt until both prefix merges complete. Missing/duplicate captures and checked arithmetic/domain
+failures prevent publication of a trustworthy subtotal. `AccountCacheDiagnostics` is separate from
+`AccountJournalDiagnostics`; known/full reports expose `account_cache_work_units` and
+`account_cache_scaled`, and shadow reports expose `.account_cache()`. Completion revalidates its
+sealed price and adds it exactly once; proposal-once contributes zero.
+
+This remains an **observed-transaction cache proxy**. Honest stateless validation starts with a
+fresh block State, but suspended preexecution system calls and direct DB consumers can load
+unobserved keys, and filtered system results need not enumerate those keys. Arbitrary prefilled
+host databases and custom inspectors deleting Journal keys are outside this population contract.
+Capturing raw pre-system key membership before filtering is a follow-up if required; initial
+population is not asserted to be exact or zero. Malformed-witness defense is a separate scope.
+
+`account_cache_successor.py` deterministically generates the candidate from the immutable saved
+`af30` parent and `successors/account-cache-v1.json`; `generate.py` authenticates that successor
+before generating the Rust table. Evidence retains input/native/quote/raw-actual identities.
+Generation does not resample SP1. The generation-time candidate status remains in the immutable
+evidence. The retained-input requote and50-proposal/9600-block price-sensitivity gates have since
+completed as recorded below. That historical cohort has older416f/SDK6.1 input provenance and no
+numeric actual PGU attached here; it cannot certify current-program PGU accuracy. A material change
+to natural-workload conclusions requires reassessment rather than assuming this reserve is neutral.
+
+Source regression covers progressive and repeated cross-transaction cohorts, rejected-candidate
+isolation, warm within-transaction repeats, first4 byte order/dispersion/rounding, persistent
+storage budget, missing/duplicate receipts, atomic overflow/domain failures, plain/inspected/Off,
+STOP/REVERT/INVALID, known/full sealing and proposal-once zero. It does not establish a universal
+workload bound. The historical-impact gate measures only the selected input cohort.
+
+#### Completed finite validation of the supplement
+
+Model `022232270da81c96dd9d7a12899d52ac011f46144d7f90d778a585aaeca5b7bd`
+has now produced78 real local quotations of retained canonical inputs, without changing or
+resampling their original SP1 observations. All inherited pricing components, selectors and
+public outputs are unchanged from the actualaf30 baselines. Every total change is exactly the
+separate128PGU/unit cache contribution; both ceiling paths and proposal-once zero are checked.
+
+| Warm-first input | Original actual PGU | af30 literal node PGU | New literal node PGU | New full proposal PGU |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed-G0 reference |338,631,603|1,354,594,058|17,441,782,794|17,606,176,969|
+| Sole reference-G successor |5,027,210,167|1,354,594,058|17,441,782,794|17,606,189,513|
+
+The demonstrated high-priority deficit is covered by the literal node price, about3.469x actual.
+The artificial reference overquote, about51.507x, remains explicit rather than being discarded.
+These opened cases are calibration/stress evidence, not normal historical admission samples.
+Across25 measured controlled inputs, all full quotes cover actual. The same four positive
+literal-node gaps remain, maximum153,352,535PGU, with no measured>2B residual. Three controlled
+inputs stay explicitly unmeasured.
+
+The separate50-proposal/9600-block historical sensitivity cohort changes as follows:
+
+| Metric | af30 total PGU | New total PGU | Additional PGU | Relative change |
+| --- | ---: | ---: | ---: | ---: |
+| Literal sum of integer block-node prices |92,823,492,832|92,857,351,648|33,858,816|+0.03648%|
+| Full proposal prices |159,967,003,341|160,000,862,669|33,859,328|+0.02117%|
+
+All50 proposals/9600blocks change. The largest proposal-node uplift is0.07178%, and the largest
+full-proposal uplift is0.02901%. The largest absolute block addition is48,128PGU; the largest
+relative block uplift is0.11127%. Median andp95 block additions are both3,328PGU. The extra512PGU
+in the full total belongs to attempted work; committed/attempted unions stay separate. Missing
+historical actuals are not filled or treated as currentb76 precision measurements.
+
+Validation comprises266 actual-source EVM tests,59 generator tests, independent source/lineage
+review, seven independently authored behavior cases plus two focused source tests,35 trace and132
+consumer CLI tests, five scoped host clippy targets, and independent78-row numeric/non-cache
+verification. The strict EVM test lint still encounters one unchanged pre-existing style warning;
+allowing only that lint passes the remaining checks. These cached-host checks do not claim a full
+Cargo workspace/all-feature run, guest build or production SDK parity. Requoting replays GuestInput
+natively; it performs no new canonical construction or SP1/SDK/guest/observer build or sample.
+
+The original af30 inputs/reports remain in the separate
+[data-only warm-first fixture](https://github.com/taikoxyz/raiko2-atlas/releases/tag/fixture-unzen-cache-state-warm-accounts-v1).
+The proxy's pre-system/direct-DB population limits remain open, together with other block-long
+containers and broader compositions. No mainnet admission rule is activated by this validation.

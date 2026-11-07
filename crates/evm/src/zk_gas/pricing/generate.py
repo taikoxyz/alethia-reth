@@ -46,7 +46,7 @@ def validate_artifact(payload: Mapping[str, Any]) -> str:
             f"{claimed!r}"
         )
     module_spec = importlib.util.spec_from_file_location(
-        "zk_gas_pricing_successor", BASE / "account_journal_successor.py"
+        "zk_gas_pricing_successor", BASE / "account_cache_successor.py"
     )
     assert module_spec is not None and module_spec.loader is not None
     successor = importlib.util.module_from_spec(module_spec)
@@ -330,6 +330,10 @@ def render(specification: Mapping[str, Any]) -> str:
         "",
     ])
     lines.extend([
+        "/// Independent normalized empirical block-cache work-unit price.",
+        f"pub(crate) const ACCOUNT_CACHE_WORK_TARIFF: i128 = {block['account_cache_work_tariff']};",
+        "/// Independently bounded progressive cache work; inherited domains unchanged.",
+        f"pub(crate) const ACCOUNT_CACHE_WORK_BOUND: u64 = {specification['arithmetic']['account_cache_work_unit_bound']};",
         "/// Independent normalized empirical Account-journal work-unit price.",
         f"pub(crate) const ACCOUNT_JOURNAL_WORK_TARIFF: i128 = {block['account_journal_work_tariff']};",
         "/// Independent Account work-unit domain; inherited bounds remain unchanged.",

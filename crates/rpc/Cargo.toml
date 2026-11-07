@@ -72,4 +72,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 reth-chain-state = { workspace = true }
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-prune-types = { workspace = true }
+reth-stages-types = { workspace = true }
 reth-trie = { workspace = true, features = ["test-utils"] }

@@ -237,9 +237,12 @@ mod tests {
 
     #[test]
     fn etna_candidate_lists_filter_but_committed_blocks_fail_closed() {
-        use crate::testutil::{BENCH_LIMIT_TARGET, etna_chain_spec, recovered_tx_with_chain_id};
+        use crate::{
+            executor::is_zk_gas_limit_exceeded,
+            testutil::{BENCH_LIMIT_TARGET, etna_chain_spec, recovered_tx_with_chain_id},
+        };
         use alloy_consensus::TxEip4844;
-        use reth_evm::block::BlockExecutor;
+        use reth_evm::{block::BlockExecutor, execute::Executor};
         let config = TaikoEvmConfig::new(Arc::new(etna_chain_spec()));
         let parent = SealedHeader::seal_slow(Header::default());
         let chain_id = config.chain_spec().inner.chain().id();
@@ -284,11 +287,11 @@ mod tests {
                 txs.iter().map(|t| t.signer()).collect(),
             )
         };
-        // The trait executor validates a committed Etna block: it executes every listed
-        // transaction and must not filter or truncate (PROOF-6.2-22/23). The zero address is
-        // funded so only the signer check can reject the unrecoverable-signer case.
+        // A committed Etna block executes every listed transaction and must not filter or
+        // truncate (PROOF-6.2-22/23), through the trait executor and reth's `Executor::execute`
+        // alike. The zero address is funded so only the signer check rejects that case.
+        let accounts = [(TEST_CALLER, 0), (Address::ZERO, 0)];
         let execute_committed = |block: &RecoveredBlock<Block>| {
-            let accounts = [(TEST_CALLER, 0), (Address::ZERO, 0)];
             let mut state = State::builder().with_database(db_with_contracts(&accounts)).build();
             let mut ctx = config.context_for_block(block.sealed_block()).unwrap();
             ctx.expected_difficulty = None;
@@ -301,12 +304,26 @@ mod tests {
             )
             .execute_block(block.transactions_recovered())
         };
-        for (name, first, truncates) in [
-            ("duplicate", valid.clone(), false),
-            ("nonce", invalid_nonce, false),
-            ("signature", invalid_signature, false),
-            ("type", blob.clone(), false),
-            ("zk", exhausted, true),
+        let assert_fails = |block: &RecoveredBlock<Block>, name: &str, expected: &str| {
+            let via_executor = config.executor(db_with_contracts(&accounts)).execute(block);
+            for (path, result) in
+                [("execute_block", execute_committed(block).err()), ("execute", via_executor.err())]
+            {
+                let error = result.unwrap_or_else(|| panic!("{path} {name} must fail closed"));
+                let matched = if expected == "zk" {
+                    is_zk_gas_limit_exceeded(&error)
+                } else {
+                    error.to_string().contains(expected)
+                };
+                assert!(matched, "{path} {name}: {error}");
+            }
+        };
+        for (name, first, truncates, error_text) in [
+            ("duplicate", valid.clone(), false, "nonce"),
+            ("nonce", invalid_nonce, false, "nonce"),
+            ("signature", invalid_signature, false, "no recoverable signer"),
+            ("type", blob.clone(), false, "blob transaction"),
+            ("zk", exhausted, true, "zk"),
         ] {
             let block = etna_block(&[first, valid.clone()]);
             let outcome = execute_derived_block(
@@ -334,13 +351,10 @@ mod tests {
                 expected.iter().map(|t| t.clone_inner()).collect::<Vec<_>>(),
                 "{name}"
             );
-            assert!(execute_committed(&block).is_err(), "committed {name} must fail closed");
+            assert_fails(&block, name, error_text);
         }
         // The executor would run a lone well-formed blob transaction; only the type check fails it.
-        assert!(
-            execute_committed(&etna_block(&[blob])).is_err(),
-            "committed blob must fail closed"
-        );
+        assert_fails(&etna_block(&[blob]), "lone blob", "blob transaction");
         let committed = execute_committed(&etna_block(&[valid])).expect("valid committed block");
         assert_eq!(committed.receipts.len(), 1);
     }

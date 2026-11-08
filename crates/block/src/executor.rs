@@ -320,8 +320,8 @@ where
     ///
     /// Invalid non-anchor transactions are skipped and zk gas exhaustion stops the list, as in a
     /// given-list build. At Etna this serves candidate lists such as a forced-inclusion singleton
-    /// build; it must not validate a committed Etna block, which
-    /// [`BlockExecutor::execute_block`] executes without filtering.
+    /// build. It does not validate a committed Etna block, since it drops what fails instead of
+    /// failing; [`BlockExecutor::execute_block`] and reth's `Executor::execute` do not filter.
     pub fn execute_block_with_committed_transactions<'tx>(
         mut self,
         transactions: impl IntoIterator<Item = Recovered<&'tx R::Transaction>>,
@@ -497,6 +497,26 @@ where
 
         let (tx_env, tx) = tx.into_parts();
 
+        // Prover inputs encode an unrecoverable signer as the zero address. An Etna block is a
+        // committed list (SPEC PROOF-6.2-22/23), so such a transaction, like a blob transaction
+        // that consensus rejects on import, fails it on every entry point; candidate-list
+        // derivation filters both before execution.
+        #[cfg(feature = "prover")]
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
+            if *tx.signer() == Address::ZERO {
+                return Err(BlockExecutionError::Validation(BlockValidationError::msg(format!(
+                    "Etna transaction {} has no recoverable signer",
+                    tx.tx().trie_hash()
+                ))));
+            }
+            if tx.tx().is_eip4844() {
+                return Err(BlockExecutionError::Validation(BlockValidationError::msg(format!(
+                    "Etna transaction {} is a blob transaction",
+                    tx.tx().trie_hash()
+                ))));
+            }
+        }
+
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
         let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
@@ -619,12 +639,11 @@ where
 
     /// Executes all transactions in a block, applying pre and post execution changes.
     ///
-    /// Before Etna, the proving system re-derives blocks from candidate lists, so this skips
-    /// invalid non-anchor transactions and stops at zk gas exhaustion. An Etna block is a
-    /// committed list (SPEC PROOF-6.2-22/23): every listed transaction must execute exactly as on
-    /// node import, so an unrecoverable signer (the zero address), a blob transaction or any
-    /// execution error fails the whole block. Candidate-list derivation at Etna, such as a forced
-    /// inclusion singleton build, uses [`Self::execute_block_with_committed_transactions`].
+    /// Before Etna, prover builds keep the legacy filtering here: invalid non-anchor transactions
+    /// are skipped and zk gas exhaustion stops the block. An Etna block is a committed list (SPEC
+    /// PROOF-6.2-22/23), so every listed transaction executes as on node import and any failure
+    /// fails the block. Candidate-list derivation at Etna, such as a forced-inclusion singleton
+    /// build, uses [`Self::execute_block_with_committed_transactions`].
     #[cfg(feature = "prover")]
     fn execute_block(
         mut self,
@@ -636,19 +655,8 @@ where
         self.apply_pre_execution_changes()?;
 
         if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
-            for (idx, tx) in transactions.into_iter().enumerate() {
-                let (tx_env, tx) = tx.into_parts();
-                if *tx.signer() == Address::ZERO {
-                    return Err(BlockExecutionError::Validation(BlockValidationError::msg(
-                        format!("Etna transaction {idx} has no recoverable signer"),
-                    )));
-                }
-                if tx.tx().is_eip4844() {
-                    return Err(BlockExecutionError::Validation(BlockValidationError::msg(
-                        format!("Etna transaction {idx} is a blob transaction"),
-                    )));
-                }
-                self.execute_transaction((tx_env, tx))?;
+            for tx in transactions {
+                self.execute_transaction(tx)?;
             }
             return self.apply_post_execution_changes();
         }

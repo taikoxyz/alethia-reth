@@ -15,7 +15,9 @@ use crate::eth::error::{TaikoApiError, internal_eth_error};
 use alethia_reth_chainspec::{TAIKO_DEVNET_CHAIN_ID, TAIKO_HOODI_CHAIN_ID, TAIKO_MAINNET_CHAIN_ID};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{BatchToLastBlock, StoredL1OriginTable};
-use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
+use alethia_reth_primitives::{
+    ETNA_EXTRA_DATA_LEN, decode_shasta_proposal_id, payload::attributes::RpcL1Origin,
+};
 
 use super::TaikoAuthExt;
 
@@ -140,6 +142,11 @@ where
                 return Ok(LastBlockSearchResult::LookbackExceeded);
             }
             scanned_blocks += 1;
+            // Etna blocks have no anchor transaction and carry the recovery generation in
+            // extraData bytes 1..6, so proposal-indexed history ends below the first one.
+            if block.header().extra_data().len() == ETNA_EXTRA_DATA_LEN {
+                break;
+            }
             // Anchor transactions are expected to be first; bail if missing.
             let Some(first_tx) = block.body().transactions().first() else {
                 break;

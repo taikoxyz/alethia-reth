@@ -1,7 +1,7 @@
-//! Taiko block executor integrating anchor pre-execution and tx filtering.
-#[cfg(feature = "prover")]
-use alloy_consensus::transaction::Recovered;
+//! Taiko block executor integrating fork-aware fee initialization and transaction filtering.
 use alloy_consensus::{Transaction, TransactionEnvelope, TxReceipt};
+#[cfg(feature = "prover")]
+use alloy_consensus::{Typed2718, transaction::Recovered};
 use alloy_eips::{Encodable2718, eip7685::Requests};
 use alloy_evm::{
     FromRecoveredTx, FromTxWithEncoded, RecoveredTx,
@@ -28,7 +28,10 @@ use alethia_reth_evm::{
     handler::get_treasury_address,
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
-use alethia_reth_primitives::decode_shasta_basefee_sharing_pctg;
+use alethia_reth_primitives::{
+    decode_shasta_basefee_sharing_pctg,
+    etna::{validate_etna_extra_data, validate_etna_root},
+};
 
 /// Block execution artifacts for transactions that were accepted by prover filtering.
 #[cfg(feature = "prover")]
@@ -76,6 +79,9 @@ impl std::error::Error for ZkGasDifficultyMismatch {}
 pub fn is_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
     match error {
         BlockExecutionError::Internal(err) => err.is_other::<ZkGasLimitExceeded>(),
+        BlockExecutionError::Validation(BlockValidationError::Other(err)) => {
+            err.is::<ZkGasLimitExceeded>()
+        }
         _ => false,
     }
 }
@@ -84,6 +90,9 @@ pub fn is_zk_gas_limit_exceeded(error: &BlockExecutionError) -> bool {
 pub fn is_zk_gas_difficulty_mismatch(error: &BlockExecutionError) -> bool {
     match error {
         BlockExecutionError::Internal(err) => err.is_other::<ZkGasDifficultyMismatch>(),
+        BlockExecutionError::Validation(BlockValidationError::Other(err)) => {
+            err.is::<ZkGasDifficultyMismatch>()
+        }
         _ => false,
     }
 }
@@ -127,8 +136,7 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     gas_used: u64,
     /// Flag indicating that zk gas exhausted the block and later transactions must not run.
     zk_gas_exhausted: bool,
-    /// Flag indicating whether the executor has been initialized with the anchor transaction info
-    /// in `apply_pre_execution_changes`.
+    /// Whether pre-execution initialized authoritative fee sharing and any legacy anchor context.
     evm_extra_execution_ctx_initialized: bool,
 }
 
@@ -147,9 +155,8 @@ where
     where
         Evm: TaikoAnchorEvm + TaikoZkGasEvm,
     {
-        // The executor installs the authoritative anchor context through the anchor system
-        // call in `apply_pre_execution_changes`; replay-only derivation must stay off so a
-        // missing initialization keeps failing loudly.
+        // Pre-execution installs authoritative fee context directly after Etna, or through the
+        // legacy anchor marker before it; replay-only derivation must stay off.
         evm.set_anchor_ctx_derivation_enabled(false);
         // The executor owns the per-transaction zk gas bracket (reset, intrinsic charge,
         // commit) in `execute_transaction_without_commit`; the wrapper's per-transact entry
@@ -168,9 +175,19 @@ where
         }
     }
 
-    /// Returns the dedicated truncation error used when zk gas exhausts the block.
-    fn zk_gas_limit_error() -> BlockExecutionError {
-        BlockExecutionError::other(ZkGasLimitExceeded)
+    /// Wraps a zk gas failure as a block validation error from Etna on, so the Engine tree returns
+    /// INVALID, while preserving the historical internal-error mapping before Etna.
+    fn zk_gas_error<E>(&self, error: E) -> BlockExecutionError
+    where
+        E: std::error::Error + Send + Sync + 'static,
+        Spec: TaikoExecutorSpec,
+        Evm: reth_evm::Evm,
+    {
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
+            BlockValidationError::other(error).into()
+        } else {
+            BlockExecutionError::other(error)
+        }
     }
 
     /// Synchronizes the finalized zk gas total from the EVM meter into the execution
@@ -195,7 +212,9 @@ where
         match self.evm.reserve_block_zk_gas(amount) {
             Ok(Some(zk_gas)) => self.ctx.set_finalized_block_zk_gas(zk_gas),
             Ok(None) => {}
-            Err(ZkGasOutcome::LimitExceeded) => return Err(Self::zk_gas_limit_error()),
+            Err(ZkGasOutcome::LimitExceeded) => {
+                return Err(BlockExecutionError::other(ZkGasLimitExceeded));
+            }
         }
         Ok(())
     }
@@ -234,14 +253,18 @@ where
 
     /// Validates the imported header difficulty, when present, against the finalized block
     /// zk gas recomputed by execution.
-    fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError> {
+    fn validate_expected_zk_gas_difficulty(&self) -> Result<(), BlockExecutionError>
+    where
+        Spec: TaikoExecutorSpec,
+        Evm: reth_evm::Evm,
+    {
         let Some(expected) = self.ctx.expected_difficulty() else { return Ok(()) };
         let got = U256::from(self.ctx.finalized_block_zk_gas());
         if got == expected {
             return Ok(());
         }
 
-        Err(BlockExecutionError::other(ZkGasDifficultyMismatch { expected, got }))
+        Err(self.zk_gas_error(ZkGasDifficultyMismatch { expected, got }))
     }
 }
 
@@ -284,7 +307,8 @@ where
     E: Evm<
             DB: StateDB + DatabaseCommit,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-        > + TaikoZkGasEvm,
+        > + TaikoZkGasEvm
+        + TaikoAnchorEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<
             Transaction: Transaction + Encodable2718 + Clone,
@@ -293,6 +317,11 @@ where
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
     /// Executes a prover candidate block and returns the transactions that were actually committed.
+    ///
+    /// Invalid non-anchor transactions are skipped and zk gas exhaustion stops the list, as in a
+    /// given-list build. At Etna this serves candidate lists such as a forced-inclusion singleton
+    /// build. It does not validate a committed Etna block, since it drops what fails instead of
+    /// failing; [`BlockExecutor::execute_block`] and reth's `Executor::execute` do not filter.
     pub fn execute_block_with_committed_transactions<'tx>(
         mut self,
         transactions: impl IntoIterator<Item = Recovered<&'tx R::Transaction>>,
@@ -302,9 +331,13 @@ where
     {
         self.apply_pre_execution_changes()?;
 
+        let requires_legacy_anchor = !self.spec.is_etna_active(self.evm.block().timestamp().to());
         let mut committed_transactions = Vec::new();
         for (idx, tx) in transactions.into_iter().enumerate() {
-            let is_anchor_transaction = idx == 0;
+            let is_anchor_transaction = requires_legacy_anchor && idx == 0;
+            if !requires_legacy_anchor && tx.inner().is_eip4844() {
+                continue;
+            }
             if !is_anchor_transaction && tx.signer() == Address::ZERO {
                 continue;
             }
@@ -326,16 +359,17 @@ where
 /// Shared prover-mode filter: executes a single transaction and classifies the failure.
 ///
 /// Lives on the inherent impl so both [`Self::execute_block_with_committed_transactions`] and the
-/// trait-level [`BlockExecutor::execute_block`] route through one place — the filtering rules
-/// (zk gas truncation, invalid tx, gas-exceeds-block) cannot drift between the two prover entry
-/// points.
+/// pre-Etna trait-level [`BlockExecutor::execute_block`] route through one place — the filtering
+/// rules (zk gas truncation, invalid tx, gas-exceeds-block) cannot drift between the two prover
+/// entry points.
 #[cfg(feature = "prover")]
 impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
 where
     E: Evm<
             DB: StateDB + DatabaseCommit,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-        > + TaikoZkGasEvm,
+        > + TaikoZkGasEvm
+        + TaikoAnchorEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
@@ -364,7 +398,8 @@ where
     E: Evm<
             DB: StateDB + DatabaseCommit,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
-        > + TaikoZkGasEvm,
+        > + TaikoZkGasEvm
+        + TaikoAnchorEvm,
     Spec: TaikoExecutorSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
@@ -378,21 +413,21 @@ where
     /// Result of transaction execution.
     type Result = EthTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
-    /// Applies any necessary changes before executing the block's transactions.
-    /// NOTE: Here we use a system call to set the Anchor transact sender account information and
-    /// decode the base fee share percentage from the block's extra data.
+    /// Validates the root, runs standard system calls, and initializes block fee sharing.
+    /// Before Etna, the legacy marker also supplies the golden-touch nonce for anchor execution.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
+        let is_etna_active = self.spec.is_etna_active(self.evm.block().timestamp().to());
+        let block_number = self.evm.block().number().to();
+        validate_etna_root(is_etna_active, block_number, self.ctx.parent_beacon_block_root)
+            .map_err(BlockExecutionError::other)?;
+        validate_etna_extra_data(is_etna_active, block_number, &self.ctx.extra_data)
+            .map_err(BlockExecutionError::other)?;
         self.system_caller.apply_blockhashes_contract_call(self.ctx.parent_hash, &mut self.evm)?;
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
-        // Initialize the golden touch address nonce if it is not already set.
+        // Initialize authoritative fee sharing once per block.
         if !self.evm_extra_execution_ctx_initialized {
-            let account_info =
-                self.evm.db_mut().basic(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS)).map_err(
-                    |e| BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into())),
-                )?;
-
             // Decode the base fee share percentage from the block's extra data.
             let base_fee_share_pgtg =
                 if self.spec.is_shasta_active(self.evm.block().timestamp().to()) {
@@ -403,18 +438,29 @@ where
                     0
                 };
 
-            self.evm
-                .transact_system_call(
-                    Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
-                    get_treasury_address(self.evm().chain_id()),
-                    encode_anchor_system_call_data(
-                        base_fee_share_pgtg,
-                        account_info.map_or(0, |account| account.nonce),
-                    ),
-                )
-                .map_err(|e| {
-                    BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
-                })?;
+            if is_etna_active {
+                self.evm.set_block_fee_context(base_fee_share_pgtg);
+            } else {
+                let account_info = self
+                    .evm
+                    .db_mut()
+                    .basic(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
+                    .map_err(|e| {
+                        BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
+                    })?;
+                self.evm
+                    .transact_system_call(
+                        Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS),
+                        get_treasury_address(self.evm().chain_id()),
+                        encode_anchor_system_call_data(
+                            base_fee_share_pgtg,
+                            account_info.map_or(0, |account| account.nonce),
+                        ),
+                    )
+                    .map_err(|e| {
+                        BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
+                    })?;
+            }
 
             self.evm_extra_execution_ctx_initialized = true;
         }
@@ -446,10 +492,32 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         if self.zk_gas_exhausted {
-            return Err(Self::zk_gas_limit_error());
+            return Err(self.zk_gas_error(ZkGasLimitExceeded));
         }
 
         let (tx_env, tx) = tx.into_parts();
+
+        // Prover inputs encode an unrecoverable signer as the zero address. An Etna block is a
+        // committed list (SPEC PROOF-6.2-22/23), so such a transaction, like a blob transaction
+        // that consensus rejects on import, fails it on every entry point; candidate-list
+        // derivation filters both before execution. Prover builds (including node tests) also
+        // reject an Etna `eth_simulateV1` call without `from`, which reth fills with the zero
+        // address; production builds do not enable this feature.
+        #[cfg(feature = "prover")]
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
+            if *tx.signer() == Address::ZERO {
+                return Err(BlockExecutionError::Validation(BlockValidationError::msg(format!(
+                    "Etna transaction {} has no recoverable signer",
+                    tx.tx().trie_hash()
+                ))));
+            }
+            if tx.tx().is_eip4844() {
+                return Err(BlockExecutionError::Validation(BlockValidationError::msg(format!(
+                    "Etna transaction {} is a blob transaction",
+                    tx.tx().trie_hash()
+                ))));
+            }
+        }
 
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
@@ -474,7 +542,7 @@ where
         if let Err(ZkGasOutcome::LimitExceeded) = self.evm.charge_tx_intrinsic_zk_gas() {
             self.zk_gas_exhausted = true;
             self.reset_current_transaction_zk_gas();
-            return Err(Self::zk_gas_limit_error());
+            return Err(self.zk_gas_error(ZkGasLimitExceeded));
         }
 
         let result = match self.evm.transact(tx_env) {
@@ -482,7 +550,7 @@ where
             Err(err) if err.to_string() == ZK_GAS_LIMIT_ERR => {
                 self.zk_gas_exhausted = true;
                 self.reset_current_transaction_zk_gas();
-                return Err(Self::zk_gas_limit_error());
+                return Err(self.zk_gas_error(ZkGasLimitExceeded));
             }
             Err(err) => {
                 self.reset_current_transaction_zk_gas();
@@ -496,7 +564,7 @@ where
         if self.evm.transaction_zk_gas_commit_would_exceed() {
             self.zk_gas_exhausted = true;
             self.reset_current_transaction_zk_gas();
-            return Err(Self::zk_gas_limit_error());
+            return Err(self.zk_gas_error(ZkGasLimitExceeded));
         }
 
         Ok(EthTxResult {
@@ -572,7 +640,12 @@ where
     }
 
     /// Executes all transactions in a block, applying pre and post execution changes.
-    /// NOTE: For proving system, we skip the invalid transactions directly inside this function.
+    ///
+    /// Before Etna, prover builds keep the legacy filtering here: invalid non-anchor transactions
+    /// are skipped and zk gas exhaustion stops the block. An Etna block is a committed list (SPEC
+    /// PROOF-6.2-22/23), so every listed transaction executes as on node import and any failure
+    /// fails the block. Candidate-list derivation at Etna, such as a forced-inclusion singleton
+    /// build, uses [`Self::execute_block_with_committed_transactions`].
     #[cfg(feature = "prover")]
     fn execute_block(
         mut self,
@@ -582,6 +655,13 @@ where
         Self: Sized,
     {
         self.apply_pre_execution_changes()?;
+
+        if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
+            for tx in transactions {
+                self.execute_transaction(tx)?;
+            }
+            return self.apply_post_execution_changes();
+        }
 
         for (idx, tx) in transactions.into_iter().enumerate() {
             let is_anchor_transaction = idx == 0;
@@ -647,12 +727,76 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, insert_contract,
-            recovered_tx, unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, etna_chain_spec,
+            etna_evm_env, etna_execution_ctx, insert_contract, recovered_tx, unzen_chain_spec,
+            unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     const BENCH_CALLER: Address = Address::with_last_byte(0x30);
+
+    #[test]
+    fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
+        let root = B256::with_last_byte(7);
+        let cases: [(Option<B256>, Option<Bytes>, &str); 4] = [
+            (None, None, "beacon"),
+            (Some(B256::ZERO), None, "beacon"),
+            (Some(root), Some(Bytes::new()), "extraData"),
+            (Some(root), Some(Bytes::from(vec![0; 7])), "extraData"),
+        ];
+        for (parent_beacon_block_root, extra_data, expected) in cases {
+            let mut state = State::builder().with_database(db_with_contracts(&[])).build();
+            let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+            let mut ctx = etna_execution_ctx(root);
+            ctx.parent_beacon_block_root = parent_beacon_block_root;
+            if let Some(extra_data) = extra_data {
+                ctx.extra_data = extra_data;
+            }
+            let mut executor = TaikoBlockExecutor::new(
+                evm,
+                ctx,
+                Arc::new(etna_chain_spec()),
+                RethReceiptBuilder::default(),
+            );
+            let err = executor.apply_pre_execution_changes().expect_err(expected);
+            assert!(err.to_string().contains(expected), "{expected}: {err}");
+        }
+    }
+
+    #[test]
+    fn etna_pre_execution_shares_fees_without_anchor_exemption() {
+        // At Etna, pre-execution installs the header fee share and never the legacy anchor marker,
+        // so a golden-touch call to the treasury pays and shares fees like any other transaction.
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(167);
+        let mut state = State::builder().with_database(db_with_contracts(&[(golden, 0)])).build();
+        let mut env = etna_evm_env();
+        env.block_env.basefee = 10;
+        env.block_env.beneficiary = Address::with_last_byte(0xBB);
+        let evm = TaikoEvmFactory.create_evm(&mut state, env);
+        let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
+        ctx.extra_data = vec![25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into();
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().unwrap();
+        let result = executor
+            .execute_transaction_without_commit(recovered_tx(golden, treasury, 0, 10))
+            .unwrap();
+        assert_eq!(result.result.result.tx_gas_used(), 21_000);
+        assert_eq!(
+            result.result.state[&golden].info.balance,
+            U256::from(10_000_000_000u64 - 210_000)
+        );
+        assert_eq!(result.result.state[&treasury].info.balance, U256::from(157_500));
+        assert_eq!(
+            result.result.state[&Address::with_last_byte(0xBB)].info.balance,
+            U256::from(52_500)
+        );
+    }
 
     #[test]
     fn test_encode_anchor_system_call_data() {
@@ -935,6 +1079,30 @@ mod test {
         );
     }
 
+    #[test]
+    fn etna_executor_charges_transaction_intrinsic_once() {
+        let mut db = db_with_contracts(&[(BENCH_CALLER, 0)]);
+        insert_contract(
+            &mut db,
+            BENCH_SUCCESS_TARGET,
+            Bytecode::new_raw(Bytes::from(vec![opcode::STOP])),
+        );
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let ctx = etna_execution_ctx(B256::with_last_byte(1));
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx.clone(),
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().expect("block-start system calls");
+        executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_SUCCESS_TARGET, 0, 1))
+            .unwrap();
+        assert_eq!(ctx.finalized_block_zk_gas(), 243_000);
+    }
+
     #[cfg(feature = "prover")]
     #[test]
     fn execute_block_stops_after_non_anchor_zk_gas_exhaustion() {
@@ -981,8 +1149,49 @@ mod test {
             Ok(_) => panic!("imported Unzen blocks must reject difficulty mismatches"),
             Err(err) => err,
         };
+        // Before Etna, zk-gas failures keep the internal mapping (JSON-RPC -32603), not INVALID.
+        assert!(matches!(err, BlockExecutionError::Internal(_)), "{err:?}");
         assert!(is_zk_gas_difficulty_mismatch(&err));
         assert!(err.to_string().contains("difficulty"));
+    }
+
+    #[test]
+    fn etna_zk_exhaustion_is_validation_and_remains_recoverable_for_derivation() {
+        let mut state =
+            State::builder().with_database(db_with_contracts(&[(BENCH_CALLER, 0)])).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let ctx = etna_execution_ctx(B256::with_last_byte(1));
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().unwrap();
+        let err = executor
+            .execute_transaction(recovered_tx(BENCH_CALLER, BENCH_LIMIT_TARGET, 0, 1))
+            .unwrap_err();
+        assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
+        assert!(is_zk_gas_limit_exceeded(&err));
+        assert!(is_recoverable_non_anchor_tx_error(&err));
+    }
+
+    #[test]
+    fn etna_difficulty_mismatch_is_a_nonrecoverable_validation_error() {
+        let mut state = State::builder().with_database(db_with_contracts(&[])).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut ctx = etna_execution_ctx(B256::with_last_byte(1));
+        ctx.expected_difficulty = Some(U256::from(1));
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        let err = executor.validate_expected_zk_gas_difficulty().unwrap_err();
+        assert!(matches!(err, BlockExecutionError::Validation(_)), "{err:?}");
+        assert!(is_zk_gas_difficulty_mismatch(&err));
+        assert!(!is_recoverable_non_anchor_tx_error(&err));
     }
 
     #[test]

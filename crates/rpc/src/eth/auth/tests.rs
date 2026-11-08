@@ -3,12 +3,13 @@ use super::{
     *,
 };
 use alethia_reth_block::{executor::TaikoBlockExecutor, factory::TaikoBlockExecutionCtx};
-use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
+use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1Origin,
     StoredL1OriginTable,
 };
+use alethia_reth_evm::env::TaikoEvmEnv;
 use alethia_reth_primitives::decode_shasta_proposal_id;
 use alloy_consensus::{BlockBody, Header, TxLegacy};
 use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
@@ -34,6 +35,7 @@ use reth_revm::{State, db::InMemoryDB};
 use std::{path::PathBuf, sync::Arc};
 
 use alethia_reth_evm::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+use alloy_hardforks::ForkCondition;
 
 // ---------------------------------------------------------------------------
 // Shared test helpers
@@ -62,7 +64,7 @@ fn anchor_v4_input() -> Bytes {
 }
 
 /// Builds a ProviderFactory wired with both reth and Taiko tables for lookup tests.
-fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
+pub(crate) fn create_taiko_test_provider_factory() -> ProviderFactory<MockNodeTypesWithDB> {
     create_taiko_test_provider_factory_with_chain_spec(MAINNET.clone())
 }
 
@@ -218,7 +220,7 @@ fn combined_tx_lists_gas_limit_rejects_u64_overflow() {
 fn reserves_anchor_zk_gas_for_tx_pool_selection() {
     let mut state =
         State::builder().with_database(InMemoryDB::default()).with_bundle_update().build();
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
     let evm = TaikoEvmFactory.create_evm(&mut state, env);
     let ctx = TaikoBlockExecutionCtx {
@@ -238,8 +240,16 @@ fn reserves_anchor_zk_gas_for_tx_pool_selection() {
         TAIKO_DEVNET.clone(),
         RethReceiptBuilder::default(),
     );
+    let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
+    chain_spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
 
-    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor)
+    // An Etna parent is followed by no anchor, so preselection reserves nothing.
+    let parent = |timestamp| Header { timestamp, ..Default::default() };
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, &parent(100))
+        .expect("an Etna parent reserves nothing");
+    assert_eq!(ctx.finalized_block_zk_gas(), 0);
+
+    super::reserve_anchor_zk_gas_for_tx_pool_selection(&mut executor, &chain_spec, &parent(99))
         .expect("tx-pool anchor reserve should fit");
 
     assert_eq!(ctx.finalized_block_zk_gas(), super::TX_POOL_ANCHOR_ZK_GAS_RESERVE);
@@ -295,6 +305,41 @@ fn returns_uncertain_when_head_l1_origin_missing() {
         err.message(),
         "proposal last block uncertain: BatchToLastBlockID missing and no newer proposal observed",
     );
+}
+
+#[test]
+/// Skips Etna blocks, empty ones included, to reach an uncached legacy batch below the fork, and
+/// never reads an Etna block's generation as a proposal ID.
+fn scans_past_etna_blocks_to_uncached_legacy_batches() {
+    let batch_id = U256::from(0x010203040506u64);
+    let input = anchor_v4_input();
+    // Block 1 is the last block of legacy batch 0x010203040506; block 2 is an Etna block whose
+    // first transaction looks like an anchor and whose generation bytes equal that batch ID;
+    // block 3, the head, is an empty Etna block.
+    let unzen_extra: Bytes = vec![0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06].into();
+    let etna_extra: Bytes = vec![100, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0, 0, 0, 0, 0, 9].into();
+    let blocks = [
+        (1, unzen_extra, vec![build_test_anchor_tx(&input)]),
+        (2, etna_extra.clone(), vec![build_test_anchor_tx(&input)]),
+        (3, etna_extra, vec![]),
+    ];
+
+    let (factory, provider_rw) = create_taiko_test_provider_factory_with_genesis();
+    let mut head_header = None;
+    for (number, extra_data, transactions) in blocks {
+        let header = Header { number, gas_limit: 1_000_000, extra_data, ..Default::default() };
+        let senders = vec![Address::ZERO; transactions.len()];
+        let block = header.clone().into_block(BlockBody { transactions, ..Default::default() });
+        provider_rw
+            .insert_block(&RecoveredBlock::new_unhashed(block, senders))
+            .expect("insert block");
+        head_header = Some(header);
+    }
+    provider_rw.commit().expect("commit");
+
+    let api = create_test_api(factory, head_header.expect("head header"));
+
+    assert_eq!(api.resolve_last_block_number_by_batch_id(batch_id).unwrap(), U256::from(1));
 }
 
 #[test]

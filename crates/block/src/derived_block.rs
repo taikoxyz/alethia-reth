@@ -62,6 +62,10 @@ fn attributes_from_derived_block(
 }
 
 /// Executes a candidate derived block in prover mode.
+///
+/// Invalid non-anchor transactions are dropped and zk gas exhaustion stops the list. At Etna this
+/// suits candidate lists such as a forced-inclusion singleton build, but it does not validate a
+/// committed Etna block (SPEC PROOF-6.2-22/23): use reth's `Executor::execute` for that.
 pub fn execute_derived_block<DB>(
     evm_config: &TaikoEvmConfig,
     parent_header: &SealedHeader,
@@ -233,5 +237,129 @@ mod tests {
         .expect("filtered block should assemble");
 
         assert_eq!(filtered_block.body().transactions().count(), 2);
+    }
+
+    #[test]
+    fn etna_candidate_lists_filter_but_committed_blocks_fail_closed() {
+        use crate::{
+            executor::is_zk_gas_limit_exceeded,
+            testutil::{BENCH_LIMIT_TARGET, etna_chain_spec, recovered_tx_with_chain_id},
+        };
+        use alloy_consensus::TxEip4844;
+        use reth_evm::{block::BlockExecutor, execute::Executor};
+        let config = TaikoEvmConfig::new(Arc::new(etna_chain_spec()));
+        let parent = SealedHeader::seal_slow(Header::default());
+        let chain_id = config.chain_spec().inner.chain().id();
+        let valid = test_transaction(chain_id, 0);
+        let invalid_nonce = test_transaction(chain_id, 99);
+        let invalid_signature = Recovered::new_unchecked(valid.clone_inner(), Address::ZERO);
+        let blob = TxEip4844 {
+            chain_id,
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_fee_per_blob_gas: 1,
+            blob_versioned_hashes: vec![B256::repeat_byte(1)],
+            ..Default::default()
+        };
+        let blob: Recovered<TransactionSigned> = Recovered::new_unchecked(
+            Signed::new_unchecked(
+                blob,
+                Signature::new(U256::from(1), U256::from(2), false),
+                B256::ZERO,
+            )
+            .into(),
+            TEST_CALLER,
+        );
+        let exhausted = recovered_tx_with_chain_id(TEST_CALLER, BENCH_LIMIT_TARGET, 0, 1, chain_id);
+        let etna_block = |txs: &[Recovered<TransactionSigned>]| {
+            RecoveredBlock::new_unhashed(
+                Block {
+                    header: Header {
+                        number: 1,
+                        timestamp: 1,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        extra_data: vec![0; 13].into(),
+                        parent_beacon_block_root: Some(B256::with_last_byte(7)),
+                        ..Default::default()
+                    },
+                    body: BlockBody {
+                        transactions: txs.iter().map(|t| t.clone_inner()).collect(),
+                        ..Default::default()
+                    },
+                },
+                txs.iter().map(|t| t.signer()).collect(),
+            )
+        };
+        // A committed Etna block executes every listed transaction and must not filter or
+        // truncate (PROOF-6.2-22/23), through the trait executor and reth's `Executor::execute`
+        // alike. The zero address is funded so only the signer check rejects that case.
+        let accounts = [(TEST_CALLER, 0), (Address::ZERO, 0)];
+        let execute_committed = |block: &RecoveredBlock<Block>| {
+            let mut state = State::builder().with_database(db_with_contracts(&accounts)).build();
+            let mut ctx = config.context_for_block(block.sealed_block()).unwrap();
+            ctx.expected_difficulty = None;
+            let evm = config.evm_with_env(&mut state, config.evm_env(block.header()).unwrap());
+            TaikoBlockExecutor::new(
+                evm,
+                ctx,
+                config.chain_spec().clone(),
+                config.executor_factory.receipt_builder(),
+            )
+            .execute_block(block.transactions_recovered())
+        };
+        let assert_fails = |block: &RecoveredBlock<Block>, name: &str, expected: &str| {
+            let via_executor = config.executor(db_with_contracts(&accounts)).execute(block);
+            for (path, result) in
+                [("execute_block", execute_committed(block).err()), ("execute", via_executor.err())]
+            {
+                let error = result.unwrap_or_else(|| panic!("{path} {name} must fail closed"));
+                let matched = if expected == "zk" {
+                    is_zk_gas_limit_exceeded(&error)
+                } else {
+                    error.to_string().contains(expected)
+                };
+                assert!(matched, "{path} {name}: {error}");
+            }
+        };
+        for (name, first, truncates, error_text) in [
+            ("duplicate", valid.clone(), false, "nonce"),
+            ("nonce", invalid_nonce, false, "nonce"),
+            ("signature", invalid_signature, false, "no recoverable signer"),
+            ("type", blob.clone(), false, "blob transaction"),
+            ("zk", exhausted, true, "zk"),
+        ] {
+            let block = etna_block(&[first, valid.clone()]);
+            let outcome = execute_derived_block(
+                &config,
+                &parent,
+                &block,
+                db_with_contracts(&[(TEST_CALLER, 0)]),
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let expected = if truncates { vec![] } else { vec![valid.clone()] };
+            assert_eq!(outcome.committed_transactions, expected, "{name}");
+            assert_eq!(outcome.execution_result.receipts.len(), expected.len(), "{name}");
+            let filtered = assemble_filtered_block(
+                &config,
+                &parent,
+                &block,
+                outcome.committed_transactions,
+                &outcome.execution_result,
+                outcome.finalized_block_zk_gas,
+                B256::ZERO,
+            )
+            .unwrap();
+            assert_eq!(
+                filtered.body().transactions,
+                expected.iter().map(|t| t.clone_inner()).collect::<Vec<_>>(),
+                "{name}"
+            );
+            assert_fails(&block, name, error_text);
+        }
+        // The executor would run a lone well-formed blob transaction; only the type check fails it.
+        assert_fails(&etna_block(&[blob]), "lone blob", "blob transaction");
+        let committed = execute_committed(&etna_block(&[valid])).expect("valid committed block");
+        assert_eq!(committed.receipts.len(), 1);
     }
 }

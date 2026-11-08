@@ -83,6 +83,44 @@ Use `--chain` with one of the supported presets:
 
 Use `./target/release/alethia-reth --help` for the full option list and defaults.
 
+For the Engine API driver contract (only `engine_forkchoiceUpdatedV3`, `engine_getPayloadV5`, and
+`engine_newPayloadV4`, for Unzen and Etna), payload normalization, the Etna fork rules, and devnet
+configuration, see the [Etna Engine API guide](docs/engine-api-etna.md).
+
+## Custom devnet genesis with Etna
+
+No built-in genesis predeploys the EIP-4788 (`0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`) or
+EIP-2935 (`0x0000F90827F1C53a10cb7A02335B175320002935`) system contracts, and canonical devnet's
+`alloc` still holds the pre-Etna `Anchor`. Do not only add the two system contracts to that alloc:
+with Etna active, the old `anchorV4` stays callable with the public golden-touch key, so anyone
+could save a forged L1 checkpoint. Build the genesis with `build_etna_genesis.py` from the draft
+[taikoxyz/taiko-mono#22286](https://github.com/taikoxyz/taiko-mono/pull/22286), which is not on
+taiko-mono `main` yet. In a checkout of that branch, set `chainId` to `167001`, `etnaTimestamp` to
+`"0x0"` and `remoteSignalService` to a deployed L1 SignalService in
+`packages/protocol/test/genesis/data/genesis_config.js`. Then run, from `packages/protocol` (pnpm
+and Foundry required), with `ALETHIA_RETH` set to this repository and `L1_SIGNAL_SERVICE` to that
+address:
+
+```sh
+pnpm install && pnpm genesis:gen
+python3 script/layer2/build_etna_genesis.py \
+  --base "$ALETHIA_RETH/crates/chainspec/src/genesis/devnet.json" \
+  --predeploys test/genesis/data/genesis_alloc.json \
+  --predeploy-config test/genesis/data/genesis_config.json \
+  --l1-signal-service "$L1_SIGNAL_SERVICE" \
+  --output "$ALETHIA_RETH/etna-devnet.json"
+```
+
+The script overlays the generated L2 predeploys (including the Etna `Anchor` and `SignalServiceL2`)
+and both system contracts onto `alloc`, drops the derived `stateRoot`, and refuses an `Anchor` whose
+`etnaTimestamp` is not 0. From this repository, start a fresh node with the
+[Etna override](docs/engine-api-etna.md#devnet-activation-override) at that same timestamp, `0`:
+
+```sh
+./target/release/alethia-reth node --chain ./etna-devnet.json \
+  --devnet-etna-timestamp 0 --datadir ./etna-devnet-data
+```
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

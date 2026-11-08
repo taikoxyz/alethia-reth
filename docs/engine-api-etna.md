@@ -38,8 +38,8 @@ post-Shasta timestamp ordering. It removes the anchor transaction:
 | `difficulty` | The block's zk gas (`0` for an empty block). |
 
 For the two anchor fields, the execution layer checks only that the root is nonzero and that
-`extraData` has 13 bytes. It does not fetch L1 data, decode the anchor number, or compare anchors
-with the parent's, or enforce the first byte's value or the generation. The Etna client (the
+`extraData` has 13 bytes. It does not fetch L1 data, decode the anchor number, compare anchors with
+the parent's, or enforce the first byte's value or the generation. The Etna client (the
 taiko-client-rs ABCI application) derives and checks those fields under SPEC.md sections 3.2–3.4,
 and prover guests authenticate the anchor against L1 headers. The root is the L1 anchor's execution
 state root, not its block hash. `l1Origin` is driver bookkeeping; the Etna client records the
@@ -63,9 +63,10 @@ limit to the chain constant and defines the EIP-4396 base fee.
 
 Standalone Etna simulations (`eth_call`, `eth_estimateGas`, `debug_traceCall` and similar calls, and
 the replays behind transaction and block traces) charge each transaction's intrinsic zk gas, and
-every run or replayed transaction starts from the full block zk-gas budget. An over-limit run
-answers JSON-RPC `-32603` with the message `Revm error: zk gas limit exceeded`. System calls have no
-transaction intrinsic charge, and pre-Etna RPC accounting stays unchanged.
+every run or replayed transaction starts from the full block zk-gas budget. `eth_simulateV1` runs
+through the block executor instead, with one cumulative budget per simulated block. An over-limit
+run answers JSON-RPC `-32603` with the message `Revm error: zk gas limit exceeded`. System calls
+have no transaction intrinsic charge, and pre-Etna RPC accounting stays unchanged.
 
 ## Engine API methods
 
@@ -81,8 +82,8 @@ The V2 methods are not served. Version and fork checks follow the standard Osaka
 Taiko activates Cancun, Prague, and Osaka at Unzen, so the three methods reject a target before
 Unzen; every network has already activated Unzen. `getPayloadV5` checks the resolved job's own
 timestamp, so a later head change or reorg does not affect an existing job. An ID stays retrievable
-only while the unchanged upstream payload store retains it. That store keeps one resolved payload,
-so once a later build resolves, an earlier ID answers `-38001`.
+only while the unchanged upstream payload store retains it. That store caches only the most recently
+resolved successful payload, so once another build succeeds, an earlier ID answers `-38001`.
 
 A `null`-attribute FCU performs normal forkchoice validation and returns no payload ID. Non-`VALID`
 FCU results are returned as statuses without publishing L1-origin or proposal metadata, so drivers
@@ -165,7 +166,7 @@ internal payload ranking still uses actual fees.
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
 | An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays; with attributes, also a build on that ancestor (never `-38006`) |
-| A transaction whose signer cannot be recovered | Payload status `INVALID` |
+| A transaction that cannot be decoded, has an unsupported type, or whose signer cannot be recovered | Payload status `INVALID` |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.
@@ -240,6 +241,8 @@ also enforce `maxBlockBytes` ([byte limit](#byte-limit)), which preselection doe
 
 `--devnet-etna-timestamp <TIMESTAMP>` (or `ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP`) schedules Etna at
 that timestamp on canonical Taiko devnet or on a custom Genesis JSON whose fields outside `alloc`
-match canonical devnet; on any other chain the flag fails startup. `0` activates Etna at
-genesis. Offline commands such as `stage run` and `re-execute` cannot reproduce an overridden
-schedule. See the [custom genesis recipe](../README.md#custom-devnet-genesis-with-etna).
+match canonical devnet; on any other chain the flag fails startup. `0` activates Etna at genesis; a
+genesis built with the [recipe](../README.md#custom-devnet-genesis-with-etna) works only with `0`.
+On canonical devnet itself, the pre-Etna `Anchor` stays callable and EIP-4788 and EIP-2935 have no
+code. Offline commands such as `stage run` and `re-execute` cannot reproduce an overridden schedule.
+See the [custom genesis recipe](../README.md#custom-devnet-genesis-with-etna).

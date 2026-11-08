@@ -17,8 +17,8 @@ pub const ETNA_MIN_MAX_BLOCK_BYTES: u64 = 1_024;
 /// build failed and a read of the parent's state then reports that state pruned.
 ///
 /// Only that FCU answers it; `engine_getPayloadV5` for the failed job keeps the unknown-payload
-/// answer. Drivers treat this code as a definitive build failure; every other build failure stays
-/// a transient internal error (`-32603`).
+/// answer. Drivers treat this code as a definitive build failure; every other build failure answers
+/// reth's internal error (`-32603`), which does not say whether a retry can succeed.
 pub const ENGINE_CANNOT_BUILD_ON_PARENT_CODE: i32 = -38_100;
 
 /// JSON-RPC error message paired with [`ENGINE_CANNOT_BUILD_ON_PARENT_CODE`].

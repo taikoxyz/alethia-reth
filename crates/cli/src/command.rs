@@ -120,8 +120,8 @@ fn apply_devnet_etna_override<S: TaikoDevnetConfigExt>(
     let Some(timestamp) = timestamp else { return Ok(()) };
     let overridden = chain.clone_with_devnet_etna_timestamp(timestamp).ok_or_else(|| {
         eyre::eyre!(
-            "--devnet-etna-timestamp {timestamp} requires the canonical Taiko devnet genesis, \
-             or a variant that differs only in alloc"
+            "--devnet-etna-timestamp (ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP) {timestamp} requires \
+             the canonical Taiko devnet genesis, or a variant that differs only in alloc"
         )
     })?;
     *chain = Arc::new(overridden);

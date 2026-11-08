@@ -142,10 +142,18 @@ where
                 return Ok(LastBlockSearchResult::LookbackExceeded);
             }
             scanned_blocks += 1;
-            // Etna blocks have no anchor transaction and carry the recovery generation in
-            // extraData bytes 1..6, so proposal-indexed history ends below the first one.
+            // Etna blocks, empty ones included, have no anchor transaction and carry the recovery
+            // generation in extraData bytes 1..6. Skip them so a lookup from an Etna head still
+            // reaches the proposal-indexed history below the fork.
             if block.header().extra_data().len() == ETNA_EXTRA_DATA_LEN {
-                break;
+                let Some(parent_number) = block.header().number().checked_sub(1) else {
+                    break;
+                };
+                current_block = self
+                    .provider
+                    .block_by_number_or_tag(BlockNumberOrTag::Number(parent_number))
+                    .map_err(internal_eth_error)?;
+                continue;
             }
             // Anchor transactions are expected to be first; bail if missing.
             let Some(first_tx) = block.body().transactions().first() else {

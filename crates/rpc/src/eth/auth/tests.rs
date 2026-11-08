@@ -308,26 +308,38 @@ fn returns_uncertain_when_head_l1_origin_missing() {
 }
 
 #[test]
-/// Never reads an Etna block's generation as a proposal ID, even after an anchorV4-shaped tx.
-fn etna_blocks_are_not_scanned_as_proposals() {
-    let generation = U256::from(0x010203040506u64);
-    let extra: Bytes = vec![100, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0, 0, 0, 0, 0, 9].into();
+/// Skips Etna blocks, empty ones included, to reach an uncached legacy batch below the fork, and
+/// never reads an Etna block's generation as a proposal ID.
+fn scans_past_etna_blocks_to_uncached_legacy_batches() {
+    let batch_id = U256::from(0x010203040506u64);
     let input = anchor_v4_input();
-    let header =
-        Header { number: 1, gas_limit: 1_000_000, extra_data: extra, ..Default::default() };
-    let body = BlockBody { transactions: vec![build_test_anchor_tx(&input)], ..Default::default() };
-    let block = header.clone().into_block(body);
-    let recovered = RecoveredBlock::new_unhashed(block, vec![Address::ZERO]);
+    // Block 1 is the last block of legacy batch 0x010203040506; block 2 is an Etna block whose
+    // first transaction looks like an anchor and whose generation bytes equal that batch ID;
+    // block 3, the head, is an empty Etna block.
+    let unzen_extra: Bytes = vec![0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06].into();
+    let etna_extra: Bytes = vec![100, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0, 0, 0, 0, 0, 9].into();
+    let blocks = [
+        (1, unzen_extra, vec![build_test_anchor_tx(&input)]),
+        (2, etna_extra.clone(), vec![build_test_anchor_tx(&input)]),
+        (3, etna_extra, vec![]),
+    ];
 
     let (factory, provider_rw) = create_taiko_test_provider_factory_with_genesis();
-    provider_rw.insert_block(&recovered).expect("insert block");
+    let mut head_header = None;
+    for (number, extra_data, transactions) in blocks {
+        let header = Header { number, gas_limit: 1_000_000, extra_data, ..Default::default() };
+        let senders = vec![Address::ZERO; transactions.len()];
+        let block = header.clone().into_block(BlockBody { transactions, ..Default::default() });
+        provider_rw
+            .insert_block(&RecoveredBlock::new_unhashed(block, senders))
+            .expect("insert block");
+        head_header = Some(header);
+    }
     provider_rw.commit().expect("commit");
 
-    let api = create_test_api(factory, header);
+    let api = create_test_api(factory, head_header.expect("head header"));
 
-    let err = api.resolve_last_block_number_by_batch_id(generation).unwrap_err();
-    assert_eq!(err.code(), -32000);
-    assert_eq!(err.message(), "not found");
+    assert_eq!(api.resolve_last_block_number_by_batch_id(batch_id).unwrap(), U256::from(1));
 }
 
 #[test]

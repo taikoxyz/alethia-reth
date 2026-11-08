@@ -62,6 +62,10 @@ fn attributes_from_derived_block(
 }
 
 /// Executes a candidate derived block in prover mode.
+///
+/// Invalid non-anchor transactions are dropped and zk gas exhaustion stops the list. At Etna this
+/// suits candidate lists such as a forced-inclusion singleton build, but it does not validate a
+/// committed Etna block (SPEC PROOF-6.2-22/23): use reth's `Executor::execute` for that.
 pub fn execute_derived_block<DB>(
     evm_config: &TaikoEvmConfig,
     parent_header: &SealedHeader,

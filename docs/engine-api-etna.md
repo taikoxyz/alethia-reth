@@ -166,7 +166,7 @@ internal payload ranking still uses actual fees.
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
 | An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays; with attributes, also a build on that ancestor (never `-38006`) |
-| A transaction that cannot be decoded, has an unsupported type, or whose signer cannot be recovered | Payload status `INVALID` |
+| A payload transaction that cannot be decoded, has an unsupported type, or whose signer cannot be recovered | Payload status `INVALID` (a given-list build drops such a transaction instead) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.

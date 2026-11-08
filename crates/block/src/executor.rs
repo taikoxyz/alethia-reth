@@ -500,7 +500,9 @@ where
         // Prover inputs encode an unrecoverable signer as the zero address. An Etna block is a
         // committed list (SPEC PROOF-6.2-22/23), so such a transaction, like a blob transaction
         // that consensus rejects on import, fails it on every entry point; candidate-list
-        // derivation filters both before execution.
+        // derivation filters both before execution. Prover builds (including node tests) also
+        // reject an Etna `eth_simulateV1` call without `from`, which reth fills with the zero
+        // address; production builds do not enable this feature.
         #[cfg(feature = "prover")]
         if self.spec.is_etna_active(self.evm.block().timestamp().to()) {
             if *tx.signer() == Address::ZERO {

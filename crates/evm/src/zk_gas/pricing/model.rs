@@ -2252,7 +2252,7 @@ mod tests {
             (0xf1, 1_000_000_000_000_000_000_000_000),
             (0xf2, 1_054_688_518_244_156_247_737_152),
             (0xf4, 6_000 * FIXED_POINT_SCALE),
-            (0xfa, 5_000_000_000_000_000_000_000_000),
+            (0xfa, 9_280 * FIXED_POINT_SCALE),
         ] {
             let mut input = OperationPricingInput {
                 route: OperationRoute::ConfirmedSpawn(opcode),

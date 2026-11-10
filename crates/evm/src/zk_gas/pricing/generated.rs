@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "eea6f1da87ee129d2d9f759ae6cef01cb8ac93988376a86efb290398e6db5da6";
+    "c0877d65a0b5fac178342645b5689001e0801718fe1dae0150c59c39ee1c15c1";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -1191,7 +1191,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         route: OperationRoute::Opcode(0x38),
         composition: Composition::Maximum,
         model_kind: ModelKind::FixedWithMemory,
-        coefficients: [5000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        coefficients: [2048000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
         required_input: RequiredInput::StaticRawGas,
         exact_raw_gas: Some(2),
@@ -1218,7 +1218,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         route: OperationRoute::Opcode(0x39),
         composition: Composition::Maximum,
         model_kind: ModelKind::FixedWithMemory,
-        coefficients: [5000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        coefficients: [1600000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
         required_input: RequiredInput::StaticRawGas,
         exact_raw_gas: None,
@@ -3968,14 +3968,27 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     RouteSpec {
         route: OperationRoute::Opcode(0xa3),
         composition: Composition::Maximum,
-        model_kind: ModelKind::FixedWithMemory,
-        coefficients: [5000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        model_kind: ModelKind::LogPiecewise,
+        coefficients: [
+            0,
+            45888000000000000000000,
+            0,
+            2688000000000000000000,
+            2688000000000000000000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
         memory: MemoryCoefficients {
             growth_event: 161142459292709706509,
             evm_gas_delta: 2719407004771945406,
             boundary_4k_event: 1925131900689577103907,
         },
-        required_input: RequiredInput::Log,
+        required_input: RequiredInput::None,
         exact_raw_gas: None,
         maximum_raw_gas: None,
         fallback_raw_gas_coefficient: None,
@@ -3999,14 +4012,27 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
     RouteSpec {
         route: OperationRoute::Opcode(0xa4),
         composition: Composition::Maximum,
-        model_kind: ModelKind::FixedWithMemory,
-        coefficients: [5000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        model_kind: ModelKind::LogPiecewise,
+        coefficients: [
+            0,
+            64064000000000000000000,
+            0,
+            2688000000000000000000,
+            2688000000000000000000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
         memory: MemoryCoefficients {
             growth_event: 161142459292709706509,
             evm_gas_delta: 2719407004771945406,
             boundary_4k_event: 1925131900689577103907,
         },
-        required_input: RequiredInput::Log,
+        required_input: RequiredInput::None,
         exact_raw_gas: None,
         maximum_raw_gas: None,
         fallback_raw_gas_coefficient: None,
@@ -4354,7 +4380,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         route: OperationRoute::ConfirmedSpawn(0xfa),
         composition: Composition::Maximum,
         model_kind: ModelKind::FixedWithMemory,
-        coefficients: [5000000000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        coefficients: [9280000000000000000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients {
             growth_event: 161142459292709706509,
             evm_gas_delta: 2719407004771945406,

@@ -3,7 +3,16 @@
 ## Status and scope
 
 This document describes the SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
-alethia-reth. The current runtime artifact is the progressive storage read-through **candidate**
+alethia-reth. The current runtime artifact is the ordinary-tariff **candidate**
+`c0877d65a0b5fac178342645b5689001e0801718fe1dae0150c59c39ee1c15c1`, derived from immutable EEA parent
+`eea6f1da87ee129d2d9f759ae6cef01cb8ac93988376a86efb290398e6db5da6`.
+It replaces only the accepted models for CODESIZE, small CODECOPY, LOG3, LOG4 and the
+confirmed STATICCALL wrapper. The [ordinary-tariff section](#candidate-ordinary-path-marginal-tariffs)
+records the sealed marginal evidence and retained constraints. All unrelated policies and the
+consensus Unzen schedule remain unchanged. Repricing and validation results belong to the model
+identity that actually produced them; earlier results below describe their original checkpoints.
+
+The inherited progressive storage read-through **candidate**
 `eea6f1da87ee129d2d9f759ae6cef01cb8ac93988376a86efb290398e6db5da6`, derived from immutable
 parent `3e335de20582fca48f84b3df1b2ecd8d8d7281de02442ab35a134e4635431d73`. It retains every
 numeric tariff, discount and arithmetic domain, including384 normalized PGU per storage work
@@ -40,7 +49,7 @@ Earlier model-specific sections retain their original checkpoint identities. All
 empirical results, not universal bounds or production SDK parity certification.
 
 The original calibration calls itself `accepted_runtime_export`; the current successor purpose is
-`block_local_empirical_storage_read_through_candidate`. These identify calibration and
+`block_local_empirical_ordinary_tariff_candidate`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -102,8 +111,11 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
+- [`ordinary_tariff_successor.py`](../crates/evm/src/zk_gas/pricing/ordinary_tariff_successor.py)
+  derives the current ordinary-tariff candidate from the immutable EEA snapshot and
+  [sealed raw marginal facts and qualification summary](../crates/evm/src/zk_gas/pricing/successors/ordinary-tariffs-v1.json).
 - [`storage_transition_successor.py`](../crates/evm/src/zk_gas/pricing/storage_transition_successor.py)
-  derives the current read-through/forward candidate from immutable3e335 and the
+  derives the inherited read-through/forward candidate from immutable3e335 and the
   [opened read-cache evidence](../crates/evm/src/zk_gas/pricing/successors/storage-read-cache-v1.json).
   [`storage_transition.rs`](../crates/evm/src/zk_gas/pricing/storage_transition.rs) owns the physical
   finalized receipt and separate committed/attempted per-owner block unions.
@@ -743,6 +755,37 @@ snapshots. Candidate sums remain unchanged. Dispatch is added after their route 
 structural floor cannot swallow it. All arithmetic uses fixed-point units; there is no per-event
 ceiling or second global discount.
 
+### Candidate ordinary-path marginal tariffs
+
+The current successor independently replays 46 authenticated same-program observations: 31 new fit
+rows and 15 retained LOG4 rows. All use ELF `b76baf2e…`, SDK 6.3.0 and the `evm-gas-only` CPU
+execute-only estimator. A common-input observation qualifies the earlier LOG4 observer: complete
+execution report, raw gas, PGU, instruction/syscall counts and public output agree; only observer
+executable/source/wall time and retained-event preset ordering differ. The portable qualification
+summary retains original report and source hashes. Full raw inputs/execution files are outside the
+Reth evidence. No reserved actual PGU entered fitting; the candidate was sealed before opening it.
+
+Every pair with a nonzero event-count difference within the same operation/length/pattern is
+recomputed from raw observations (34 pairs). Fixed prices are the positive maximum marginal PGU
+multiplied by 5/4 and rounded upward to 64 PGU. LOG3/LOG4 obtain separate unrounded base maxima
+from zero-length pairs. Their shared word maximum is
+`max(0, (signed marginal PGU - corresponding unrounded base) / ceil(length/32))`, then the same
+5/4 margin and 64-PGU rounding apply separately to bases and words. Every derived price covers
+its pair increment with the 25% margin. Variable loop/operand/check costs stay in the increments;
+scaffold observations receive no subtraction. STATICCALL includes one warmup at every N, so its
+incremental event count is the N difference. Retained LOG4 has two users and 2N events.
+
+Only the five accepted models change. CODESIZE retains exact raw gas 2, CODECOPY retains maximum
+raw gas 12 and its original fallback above that envelope, and STATICCALL retains the spawn-memory
+shape. LOG3/LOG4 use existing `log_piecewise` evaluation with zero topic/common-dispatch terms,
+separate base constants and the same word coefficient for nonempty data and additional words.
+Shared memory, independent 64-PGU normal dispatch, incremental/structural/feature-error terms,
+maximum composition, all domains, ownership, fixed/startup costs, discount and Unzen remain exact.
+In particular, the STATICCALL accepted coefficient does not replace its larger inherited 18,291-PGU
+incremental candidate. These are conservative finite empirical prices, not universal bounds or
+production SDK/GPU parity. Reserved and retained full-quote/node-block-sum comparisons remain
+separate downstream checks; the opened historical cohort is development/regression evidence.
+
 ### Model families and current exceptions
 
 The evaluator implements fixed, fixed-with-memory, linear/floored-linear, static-raw-gas,
@@ -757,10 +800,10 @@ Important current exceptions are:
   normal-event structural floor. Their feature-error paths remain separate.
 - `opcode:0x5e` (MCOPY) adds 48 PGU per copied word to its existing dispatch, constant and shared
   memory costs, keeping every memory expansion charge additive.
-- `opcode:0x39` (CODECOPY) uses a flat aggressive tariff inside its raw-gas envelope and switches
+- `opcode:0x39` (CODECOPY) uses a flat 1,600 PGU accepted body inside its raw-gas envelope and switches
   to a raw-gas fallback above it. The transition is not monotone.
-- Only LOG1 and LOG2 use the LOG-piecewise family. LOG0 is a raw-gas linear floor; LOG3 and LOG4 use
-  a fixed tariff plus shared memory.
+- LOG1 through LOG4 use the LOG-piecewise family. LOG0 remains a raw-gas linear floor; LOG3 and
+  LOG4 use separately measured base prices and a common per-word price plus shared memory.
 - `max_constant_and_linear` precompile routes take the maximum of the constant and native-gas
   linear terms; they do not add them. The route's structural and incremental candidates are then
   composed according to `Composition::Maximum`. Here native precompile gas is the forwarded gas
@@ -778,11 +821,13 @@ Shadow subtotals include:
 | --- | --- |
 | `opcode:0x04`, `0x05`, `0x06`, `0x07`, `0x08` (DIV, SDIV, MOD, SMOD, ADDMOD) | 800, 900, 800, 800, 1,100 structural floors |
 | `opcode:0x09` (normally executed MULMOD) | 1,600 structural floor |
-| `opcode:0x32` (ORIGIN), `opcode:0x38` (CODESIZE), `opcode:0xfd` (normal REVERT), `opcode:0x39` (CODECOPY within its raw-gas envelope) | 5,000,000 |
-| `opcode:0xa3`, `opcode:0xa4` (LOG3/LOG4) | 5,000,000 plus shared memory |
+| `opcode:0x32` (ORIGIN), `opcode:0xfd` (normal REVERT) | 5,000,000 |
+| `opcode:0x38` (CODESIZE, exact raw gas 2) | 2,048 |
+| `opcode:0x39` (CODECOPY, raw gas at most 12) | 1,600 |
+| `opcode:0xa3`, `opcode:0xa4` (LOG3/LOG4) | 45,888 / 64,064 base + 2,688 per data word + shared memory |
 | `opcode:0x3b` (EXTCODESIZE) | 1,000,000 |
 | `opcode:0xf1:confirmed_spawn_wrapper` (CALL) | 1,000,000 plus shared memory |
-| `opcode:0xfa:confirmed_spawn_wrapper` (STATICCALL) | 5,000,000 plus shared memory |
+| `opcode:0xfa:confirmed_spawn_wrapper` (STATICCALL) | 9,280 plus shared memory; inherited 18,291 incremental candidate still participates in maximum |
 | `precompile:0x01`, `0x02`, `0x06`, `0x07`, `0x08` | 20,000,000 constant floor in `max_constant_and_linear` |
 | Every opcode `feature_error_absolute_model` | `max(5,000,000, coefficient * interpreter_raw_gas)` |
 
@@ -1235,14 +1280,14 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/storage_transition_successor.py --check
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/ordinary_tariff_successor.py --check
 env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/storage_transition_successor.py
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/ordinary_tariff_successor.py
 env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```
@@ -2048,7 +2093,7 @@ an exact797,568PGU addition; inherited goldens remain intact. The fresh quote ex
 or actual artifacts as new builds. These are cached host gates, without a guest/SDK/ELF rebuild,
 new SP1 measurement or production-program parity claim.
 
-`storage_transition_successor.py` now authenticates immutable `successors/parent-3e335de2.json`
+`storage_transition_successor.py` authenticates the inherited checkpoint from immutable `successors/parent-3e335de2.json`
 and `successors/storage-read-cache-v1.json`; every inherited numeric pricing object, proposal-once
 object, ownership list and arithmetic domain must remain exact. The declared384*1e12 domain was
 already present in3e335 and is not added twice. Only work policy/provenance/model identity changes.

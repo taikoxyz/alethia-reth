@@ -2456,7 +2456,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "eea6f1da87ee129d2d9f759ae6cef01cb8ac93988376a86efb290398e6db5da6"
+        "c0877d65a0b5fac178342645b5689001e0801718fe1dae0150c59c39ee1c15c1"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2481,6 +2481,91 @@ fn assert_zk_gas_pricing_operation(
     assert_eq!(priced.normal_dispatch_scaled, i128::from(expected_count) * 64 * FIXED_POINT_SCALE);
     assert_eq!(priced.total_scaled, total_scaled + priced.normal_dispatch_scaled);
     assert_eq!(priced.total_pgu, None, "operation scope is not a rounding boundary");
+}
+
+#[test]
+fn ordinary_tariff_successor_preserves_typed_envelopes_and_route_maxima() {
+    let opcode = |opcode, raw_gas, model_input| OperationPricingInput {
+        route: OperationRoute::Opcode(opcode),
+        interpreter_raw_gas: Some(raw_gas),
+        native_gas: None,
+        model_input,
+        feature_error: false,
+    };
+    assert_zk_gas_pricing_operation(
+        opcode(0x38, 2, OperationModelInput::StaticRawGas { raw_gas: 2 }),
+        2_048 * FIXED_POINT_SCALE,
+        0,
+        0,
+        2_048 * FIXED_POINT_SCALE,
+    );
+    assert!(
+        ZkGasModel
+            .price_operation(&opcode(0x38, 3, OperationModelInput::StaticRawGas { raw_gas: 3 }))
+            .is_err()
+    );
+    assert!(ZkGasModel.price_operation(&opcode(0x38, 2, OperationModelInput::None)).is_err());
+    for raw_gas in [3, 6, 9, 12, 15] {
+        let accepted = if raw_gas <= 12 {
+            1_600 * FIXED_POINT_SCALE
+        } else {
+            1_012_500_977_514_389_997_828 * i128::from(raw_gas)
+        };
+        let incremental = 39 * FIXED_POINT_SCALE * i128::from(raw_gas);
+        assert_zk_gas_pricing_operation(
+            opcode(0x39, raw_gas, OperationModelInput::StaticRawGas { raw_gas }),
+            accepted,
+            incremental,
+            0,
+            accepted.max(incremental),
+        );
+    }
+    for (opcode_value, topic_count, base) in [(0xa3, 3, 45_888), (0xa4, 4, 64_064)] {
+        for data_bytes in [0_u64, 1, 32, 33, 256] {
+            let data_words = data_bytes.div_ceil(32);
+            let raw_gas = 375 + 375 * topic_count + 8 * data_bytes;
+            let accepted = (base + 2_688 * i128::from(data_words)) * FIXED_POINT_SCALE;
+            let incremental = 24 * FIXED_POINT_SCALE * i128::from(raw_gas);
+            assert_zk_gas_pricing_operation(
+                opcode(
+                    opcode_value,
+                    raw_gas,
+                    OperationModelInput::Log {
+                        topic_count,
+                        data_bytes,
+                        data_words,
+                        memory: MemorySelectors::default(),
+                    },
+                ),
+                accepted,
+                incremental,
+                0,
+                accepted.max(incremental),
+            );
+        }
+        assert!(
+            ZkGasModel
+                .price_operation(&opcode(
+                    opcode_value,
+                    375 + 375 * topic_count,
+                    OperationModelInput::None
+                ))
+                .is_err()
+        );
+    }
+    assert_zk_gas_pricing_operation(
+        OperationPricingInput {
+            route: OperationRoute::ConfirmedSpawn(0xfa),
+            interpreter_raw_gas: None,
+            native_gas: None,
+            model_input: OperationModelInput::SpawnMemory { memory: MemorySelectors::default() },
+            feature_error: false,
+        },
+        9_280 * FIXED_POINT_SCALE,
+        18_291 * FIXED_POINT_SCALE,
+        0,
+        18_291 * FIXED_POINT_SCALE,
+    );
 }
 
 #[test]
@@ -2590,10 +2675,10 @@ fn zk_gas_model_matches_python_operation_golden_vectors() {
                 1_769,
                 OperationModelInput::Log { topic_count: 3, data_bytes: 33, data_words: 2, memory },
             ),
-            5_002_099_871_395_006_146_537_446,
+            53_363_871_395_006_146_537_446,
             42_456_000_000_000_000_000_000,
             0,
-            5_002_099_871_395_006_146_537_446,
+            53_363_871_395_006_146_537_446,
         ),
         (
             opcode(0x31, 100, OperationModelInput::None),

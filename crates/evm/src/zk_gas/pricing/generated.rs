@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "c0877d65a0b5fac178342645b5689001e0801718fe1dae0150c59c39ee1c15c1";
+    "e8e574db50607857daadfd79f24e2cd6773177f6b46e4ee950f168379b4cab57";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -4527,20 +4527,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         route: OperationRoute::Precompile(0x2),
         composition: Composition::Maximum,
         model_kind: ModelKind::Linear,
-        coefficients: [
-            22653487066193225602,
-            20000000000000000000000000,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ],
+        coefficients: [22653487066193225602, 81024000000000000000000, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
         memory: MemoryCoefficients { growth_event: 0, evm_gas_delta: 0, boundary_4k_event: 0 },
         required_input: RequiredInput::None,
         exact_raw_gas: None,

@@ -2456,7 +2456,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "c0877d65a0b5fac178342645b5689001e0801718fe1dae0150c59c39ee1c15c1"
+        "e8e574db50607857daadfd79f24e2cd6773177f6b46e4ee950f168379b4cab57"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2481,6 +2481,30 @@ fn assert_zk_gas_pricing_operation(
     assert_eq!(priced.normal_dispatch_scaled, i128::from(expected_count) * 64 * FIXED_POINT_SCALE);
     assert_eq!(priced.total_scaled, total_scaled + priced.normal_dispatch_scaled);
     assert_eq!(priced.total_pgu, None, "operation scope is not a rounding boundary");
+}
+
+#[test]
+fn zk_gas_sha256_floor_retains_native_slopes_and_structural_maximum() {
+    let floor = 81_024 * FIXED_POINT_SCALE;
+    let accepted_slope = 22_653_487_066_193_225_602_i128;
+    // SHA gas is 60 + 12 * ceil(bytes / 32). The adjacent 4,960/4,961-byte
+    // inputs cross from the fixed floor to the unchanged structural slope.
+    for native_gas in [60, 84, 1_596, 1_920, 1_932, 393_276, 476_184, 476_196, 786_492] {
+        let gas = i128::from(native_gas);
+        assert_zk_gas_pricing_operation(
+            OperationPricingInput {
+                route: OperationRoute::Precompile(0x02),
+                interpreter_raw_gas: None,
+                native_gas: Some(native_gas),
+                model_input: OperationModelInput::None,
+                feature_error: false,
+            },
+            floor.max(accepted_slope * gas),
+            21 * FIXED_POINT_SCALE * gas,
+            42 * FIXED_POINT_SCALE * gas,
+            floor.max(42 * FIXED_POINT_SCALE * gas),
+        );
+    }
 }
 
 #[test]

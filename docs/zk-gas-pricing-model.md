@@ -3,11 +3,14 @@
 ## Status and scope
 
 This document describes the SP1 Prover Gas Unit (PGU) Shadow pricing export compiled into
-alethia-reth. The current runtime artifact is the SHA256 fixed-floor **candidate**
-`e8e574db50607857daadfd79f24e2cd6773177f6b46e4ee950f168379b4cab57`, derived from immutable parent
-`c0877d65a0b5fac178342645b5689001e0801718fe1dae0150c59c39ee1c15c1`.
-It changes only PC02's accepted fixed constant from20,000,000 to81,024 PGU. The
-[SHA256 floor section](#candidate-sha256-fixed-floor) records the finite count-contrast envelope.
+alethia-reth. The current runtime artifact is the ECMUL incremental-tariff **candidate**
+`80160649d7d29a85879cd9524b35c271a4b8638f64de94eef91d016e56121cf8`, derived from immutable parent
+`e8e574db50607857daadfd79f24e2cd6773177f6b46e4ee950f168379b4cab57`.
+It changes only PC07's incremental coefficient from 29,901 to 0 PGU/native-gas; the complete
+accepted constant/native slope and scalar structural slope are retained. The
+[ECMUL section](#candidate-ecmul-incremental-tariff) records the finite validation gates.
+The inherited [SHA256 floor section](#candidate-sha256-fixed-floor) records its earlier
+PC02 constant refinement from 20,000,000 to 81,024 PGU.
 The inherited [ordinary-tariff section](#candidate-ordinary-path-marginal-tariffs)
 records the sealed marginal evidence and retained constraints. All unrelated policies and the
 consensus Unzen schedule remain unchanged. Repricing and validation results belong to the model
@@ -50,7 +53,7 @@ Earlier model-specific sections retain their original checkpoint identities. All
 empirical results, not universal bounds or production SDK parity certification.
 
 The original calibration calls itself `accepted_runtime_export`; the current successor purpose is
-`block_local_empirical_sha256_floor_candidate`. These identify calibration and
+`block_local_empirical_ecmul_incremental_refinement`. These identify calibration and
 runtime integration artifacts, not a protocol specification, governance approval, admission rule, or consensus rule. The words
 `accepted_absolute` and `Composition::Accepted` below are evaluator identifiers, not additional
 approval claims.
@@ -112,7 +115,11 @@ This document is the human-readable guide. The checked-in sources divide authori
   those files can therefore affect consensus metering too.
 - [`generate.py`](../crates/evm/src/zk_gas/pricing/generate.py) verifies the artifact's address and
   exact successor replay, then generates the Rust route table.
-- [`sha256_floor_successor.py`](../crates/evm/src/zk_gas/pricing/sha256_floor_successor.py)
+- [`ecmul_incremental_successor.py`](../crates/evm/src/zk_gas/pricing/ecmul_incremental_successor.py)
+  authenticates immutable parent e8 and the [retained ECMUL evidence](../crates/evm/src/zk_gas/pricing/successors/ecmul-incremental-v1.json),
+  replays 33 whole-input actuals and 33 within-group contrasts, and changes only the PC07
+  incremental coefficient. It preserves full accepted/native and scalar structural models.
+- The historical [`sha256_floor_successor.py`](../crates/evm/src/zk_gas/pricing/sha256_floor_successor.py)
   authenticates immutable parentc087 and the [retained SHA256 evidence](../crates/evm/src/zk_gas/pricing/successors/sha256-floor-v1.json),
   recomputing every same-length/pattern count pair before changing only the accepted PC02 constant.
 - The historical [`ordinary_tariff_successor.py`](../crates/evm/src/zk_gas/pricing/ordinary_tariff_successor.py)
@@ -759,9 +766,53 @@ snapshots. Candidate sums remain unchanged. Dispatch is added after their route 
 structural floor cannot swallow it. All arithmetic uses fixed-point units; there is no per-event
 ceiling or second global discount.
 
+### Candidate ECMUL incremental tariff
+
+The current successor changes only `precompile:0x07.incremental_coefficient` to zero.
+For each event `j`, let `g_j` be the actual consumed native gas and `W_j` the existing reduced-scalar
+bit-length plus popcount selector. In PGU units, the route remains:
+
+```text
+A_j = max(20,000,000, 131.390224983920708487 * g_j)
+S_j = 572,936 * W_j
+PC07 = max(sum_j A_j, sum_j S_j)
+```
+
+The maximum is taken after summing across the block's route, including failures and reverted
+work. It is not the sum of per-event maxima. Successful calls consume `g = 6000` and retain 20M
+per-eventA. A failed off-curve call can burn its entire forwarded allowance: at `g = 200,000`,
+A is 26,278,044.9967841416974 PGU. The accepted native slope first exceeds20M at
+integer `g = 152,219`. Integer fixed-point arithmetic and final block/proposal ceilings are unchanged.
+
+The [immutable evidence](../crates/evm/src/zk_gas/pricing/successors/ecmul-incremental-v1.json)
+contains 33 opened current-program actuals: 18 successful calls at points G/2G with zero/two/dense
+scalars, 6 intermediate scalar-work observations at W254/W255, 3 mixed inputs with 14 zero scalars
+and one W507 scalar per repetition, and 6 caught off-curve failures at 6000/200,000 forwarded gas.
+Every group retains its own 0/1/8 repetition controls. The mixture directly exercises the
+route-aggregate crossover: at 15 calls, retained A = 300M and S = 290.478552M, rather than a sum of
+per-call maxima. Caught failures check status 0, empty returndata and unchanged poisoned output,
+while the parent transaction completes successfully.
+
+The generator authenticates the e8 parent/evidence and replays raw
+`floor(ExecutionReport.gas * 10 / 191)` endpoints. It removes the old route contribution in
+scaled units, substitutes the new aggregate maximum, then applies each complete quote ceiling.
+All 33 counterfactual full quotes cover actual, and all 33 within-group conditional increments
+are covered by both node and full increments. Literal node deficits remain visible because
+node quotes omit proposal-once startup. These contrasts include wrapper/scaffold work and
+are not isolated per-operation cost measurements. No uniform extra margin or universal bound
+is inferred. The former 179.406M floor for every successful call dominated small scalars even
+though the scalar selector already protects heavy work; this finite evidence supports removing
+that floor, not lowering the retained 572,936 structural coefficient.
+
+The source manifest, research b76 ELF and SDK 6.3 execute-only identities are recorded separately
+from the model's declared production ELF binding. These observations do not certify production
+SDK/ELF parity, GPU proving time or an admission limit. Four point-3 actuals were reserved before
+opening any fit actuals; they and fresh successor pressure/ordinary/natural requotes are external
+validation, not inputs to this generated candidate. Their outcomes must be reported separately.
+
 ### Candidate SHA256 fixed floor
 
-The current successor changes only `precompile:0x02.accepted_absolute_model.constant`.
+The inherited e8 successor changed only `precompile:0x02.accepted_absolute_model.constant`.
 The accepted linear coefficient remains22.653487066193225602 PGU/native-gas, the incremental
 coefficient remains21, and the structural coefficient remains42. Thus the effective PC02 quote
 is `max(81024, 42 * native_gas)` PGU per call. Every other numeric tariff, route, wrapper,
@@ -1317,14 +1368,14 @@ Verify the checked JSON address and generated Rust table with:
 
 ```bash
 env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B -m unittest discover -s crates/evm/src/zk_gas/pricing -p '*_test.py'
-env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/sha256_floor_successor.py --check
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/ecmul_incremental_successor.py --check
 env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py --check
 ```
 
 Regenerate the reviewed current successor and its Rust table with:
 
 ```bash
-env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/sha256_floor_successor.py
+env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/ecmul_incremental_successor.py
 env -u PYTHONOPTIMIZE ~/.venv/bin/python -S -B crates/evm/src/zk_gas/pricing/generate.py
 just fmt
 ```

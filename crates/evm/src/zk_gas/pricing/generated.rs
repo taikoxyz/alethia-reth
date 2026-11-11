@@ -12,7 +12,7 @@ use super::{
 
 /// SHA-256 content address of the canonical runtime specification.
 pub const RUNTIME_SPEC_SHA256: &str =
-    "e8e574db50607857daadfd79f24e2cd6773177f6b46e4ee950f168379b4cab57";
+    "80160649d7d29a85879cd9524b35c271a4b8638f64de94eef91d016e56121cf8";
 
 /// Common denominator for all generated fixed-point coefficients.
 pub const FIXED_POINT_SCALE: i128 = 1000000000000000000;
@@ -4699,7 +4699,7 @@ pub(crate) static ROUTES: &[RouteSpec] = &[
         return_raw_gas_coefficient: None,
         incremental: Some(LinearRule {
             selector: Selector::NativeGas,
-            coefficient: 29901000000000000000000,
+            coefficient: 0,
             constant: 0,
             minimum: 0,
         }),

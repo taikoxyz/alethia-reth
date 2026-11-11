@@ -2456,7 +2456,7 @@ const EXPECTED_SPAWN_OPCODES: [u8; 6] = [0xf0, 0xf1, 0xf2, 0xf4, 0xf5, 0xfa];
 fn zk_gas_model_pins_the_sealed_runtime_spec() {
     assert_eq!(
         RUNTIME_SPEC_SHA256,
-        "e8e574db50607857daadfd79f24e2cd6773177f6b46e4ee950f168379b4cab57"
+        "80160649d7d29a85879cd9524b35c271a4b8638f64de94eef91d016e56121cf8"
     );
     assert_eq!(FIXED_POINT_SCALE, 1_000_000_000_000_000_000);
     assert_eq!(ZkGasModel.route_count(), 174);
@@ -2804,9 +2804,9 @@ fn zk_gas_model_matches_python_operation_golden_vectors() {
             feature_error: false,
         },
         20_000_000_000_000_000_000_000_000,
-        179_406_000_000_000_000_000_000_000,
+        0,
         145_525_744_000_000_000_000_000_000,
-        179_406_000_000_000_000_000_000_000,
+        145_525_744_000_000_000_000_000_000,
     );
 }
 
@@ -5940,3 +5940,288 @@ fn account_journal_system_call_preserves_open_scope_and_restores_after_error() {
 
 #[path = "storage_transition_tests.rs"]
 mod storage_transition_tests;
+
+fn ecmul_i0_order() -> U256 {
+    U256::from_be_bytes(alloy_primitives::hex!(
+        "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001"
+    ))
+}
+
+fn ecmul_i0_input(x: U256, y: U256, scalar: U256) -> Vec<u8> {
+    [x.to_be_bytes::<32>(), y.to_be_bytes::<32>(), scalar.to_be_bytes::<32>()].concat()
+}
+
+fn ecmul_i0_expected_work(input: &[u8]) -> u64 {
+    // Use U256 remainder, independently from the runtime's bounded subtraction loop.
+    let mut encoded = [0_u8; 32];
+    let suffix = input.get(64..).unwrap_or_default();
+    let copied = suffix.len().min(32);
+    encoded[..copied].copy_from_slice(&suffix[..copied]);
+    let reduced = U256::from_be_bytes(encoded) % ecmul_i0_order();
+    reduced.bit_len() as u64 +
+        reduced.to_be_bytes::<32>().iter().map(|byte| u64::from(byte.count_ones())).sum::<u64>()
+}
+
+#[test]
+fn zk_gas_ecmul_i0_selector_padding_truncation_and_reduction() {
+    let order = ecmul_i0_order();
+    for scalar in [U256::ZERO, order, order + U256::from(1), order + U256::from(2), U256::MAX] {
+        let mut input = ecmul_i0_input(U256::from(1), U256::from(2), scalar);
+        input.extend_from_slice(&[0xff; 32]);
+        for length in [0, 1, 63, 64, 65, 95, 96, 97, 128] {
+            let bytes = &input[..length];
+            assert_eq!(
+                super::runtime::bn254_work_units(bytes),
+                ecmul_i0_expected_work(bytes),
+                "scalar={scalar}, length={length}"
+            );
+        }
+    }
+    for (scalar, expected) in [(order, 0), (order + U256::from(1), 2), (order + U256::from(2), 3)] {
+        assert_eq!(
+            super::runtime::bn254_work_units(&ecmul_i0_input(U256::from(1), U256::from(2), scalar)),
+            expected
+        );
+    }
+}
+
+fn ecmul_i0_call_bytecode(allowance: u64) -> Bytecode {
+    let mut code = vec![opcode::CALLDATASIZE, opcode::PUSH0, opcode::PUSH0, opcode::CALLDATACOPY];
+    for (offset, poison) in [(128, 0xa5), (160, 0x5a)] {
+        code.push(opcode::PUSH32);
+        code.extend_from_slice(&[poison; 32]);
+        code.extend(push_u64(offset));
+        code.push(opcode::MSTORE);
+    }
+    // Return output64, child status32 and RETURNDATASIZE32 to the test caller.
+    code.extend(push_u64(64));
+    code.extend(push_u64(128));
+    code.extend([opcode::CALLDATASIZE, opcode::PUSH0, opcode::PUSH1, 7]);
+    code.extend(push_u64(allowance));
+    code.push(opcode::STATICCALL);
+    code.extend(push_u64(192));
+    code.extend([opcode::MSTORE, opcode::RETURNDATASIZE]);
+    code.extend(push_u64(224));
+    code.push(opcode::MSTORE);
+    code.extend(push_u64(128));
+    code.extend(push_u64(128));
+    code.push(opcode::RETURN);
+    Bytecode::new_raw(Bytes::from(code))
+}
+
+fn ecmul_i0_execute(
+    input: &[u8],
+    allowance: u64,
+    inspected: bool,
+) -> (Vec<u8>, u64, super::pricing::ZkGasBlockSnapshot) {
+    let db = db_with_contract(ecmul_i0_call_bytecode(allowance));
+    // Exercise both collectors without the unrelated legacy Unzen admission limit.
+    let mut evm = if inspected {
+        TaikoEvmFactory.create_evm_with_inspector(db, evm_env(TaikoSpecId::SHASTA), NoOpInspector)
+    } else {
+        TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::SHASTA))
+    };
+    evm.set_zk_gas_pricing_enabled(true);
+    let mut tx = tx_env(1_000_000);
+    tx.data = Bytes::copy_from_slice(input);
+    let result = evm.transact(tx).expect("caught child result must execute");
+    assert!(result.result.is_success(), "parent must return even when the child fails");
+    let output = result.result.output().unwrap().to_vec();
+    let gas = result.result.tx_gas_used();
+    evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+        canonical_transaction_bytes: 100 + input.len() as u64,
+        nonempty_payload_transactions: u64::from(!input.is_empty()),
+    });
+    evm.commit_transaction_zk_gas_pricing().unwrap();
+    (output, gas, evm.zk_gas_pricing_snapshot().unwrap())
+}
+
+#[test]
+fn zk_gas_ecmul_i0_native_plain_and_inspected_capture_actual_inputs() {
+    let zero = [0_u8; 64].to_vec();
+    let generator = [U256::from(1).to_be_bytes::<32>(), U256::from(2).to_be_bytes::<32>()].concat();
+    let doubled = alloy_primitives::hex!(
+        "030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3"
+        "15ed738c0e0a7c92e7845f96b2ae9c0a68a6a449e3538fc7ff3ebf7a5a18a2c4"
+    )
+    .to_vec();
+    let input_two = ecmul_i0_input(U256::from(1), U256::from(2), U256::from(2));
+    let mut cases = Vec::new();
+    for length in [0, 1, 63, 64, 65, 95, 96, 97, 128] {
+        let mut input = input_two.clone();
+        input.extend_from_slice(&[0xff; 32]);
+        input.truncate(length);
+        let expected = match length {
+            63 => None,
+            96 | 97 | 128 => Some(doubled.clone()),
+            _ => Some(zero.clone()),
+        };
+        cases.push((input, expected));
+    }
+    let order = ecmul_i0_order();
+    for (scalar, output) in [
+        (order, zero.clone()),
+        (order + U256::from(1), generator),
+        (order + U256::from(2), doubled),
+    ] {
+        cases.push((ecmul_i0_input(U256::from(1), U256::from(2), scalar), Some(output)));
+    }
+    cases.push((ecmul_i0_input(U256::ZERO, U256::ZERO, U256::from(2)), Some(zero)));
+    cases.push((ecmul_i0_input(U256::from(1), U256::from(1), U256::ZERO), None));
+    let field = U256::from_be_bytes(alloy_primitives::hex!(
+        "30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47"
+    ));
+    cases.push((ecmul_i0_input(field, U256::from(2), U256::ZERO), None));
+    for (input, expected_output) in cases {
+        let mut receipt_gas = Vec::new();
+        for allowance in [6_000, 200_000] {
+            let plain = ecmul_i0_execute(&input, allowance, false);
+            let inspected = ecmul_i0_execute(&input, allowance, true);
+            assert_eq!(plain, inspected, "input={input:?}, allowance={allowance}");
+            let (output, gas, snapshot) = plain;
+            receipt_gas.push(gas);
+            assert_eq!(output.len(), 128);
+            let mut status = [0_u8; 32];
+            let mut return_size = [0_u8; 32];
+            let native_gas = if let Some(expected) = &expected_output {
+                assert_eq!(&output[..64], expected);
+                status[31] = 1;
+                return_size[31] = 64;
+                6_000
+            } else {
+                assert_eq!(&output[..32], &[0xa5; 32]);
+                assert_eq!(&output[32..64], &[0x5a; 32]);
+                allowance
+            };
+            assert_eq!(&output[64..96], &status);
+            assert_eq!(&output[96..128], &return_size);
+            assert!(snapshot.diagnostic.is_none());
+            let route = snapshot
+                .operation_routes
+                .iter()
+                .find(|row| row.route == OperationRoute::Precompile(7))
+                .unwrap();
+            let expected = ZkGasModel
+                .price_operation(&OperationPricingInput {
+                    route: OperationRoute::Precompile(7),
+                    interpreter_raw_gas: None,
+                    native_gas: Some(native_gas),
+                    model_input: OperationModelInput::WorkUnits {
+                        work_units: ecmul_i0_expected_work(&input),
+                    },
+                    feature_error: false,
+                })
+                .unwrap();
+            assert_eq!(route.accepted_absolute_scaled, expected.accepted_absolute_scaled);
+            assert_eq!(route.incremental_scaled, 0);
+            assert_eq!(route.structural_scaled, expected.structural_scaled);
+            assert_eq!(route.feature_error_scaled, 0);
+            assert_eq!(route.normal_dispatch_count, 0);
+        }
+        if expected_output.is_some() {
+            assert_eq!(receipt_gas[0], receipt_gas[1], "successful child refunds unused allowance");
+        } else {
+            assert_eq!(
+                receipt_gas[1] - receipt_gas[0],
+                194_000,
+                "failed child burns full allowance"
+            );
+        }
+    }
+    // Native shortage must spend5999, rather than charging the successful6000 base.
+    let plain = ecmul_i0_execute(&input_two, 5_999, false);
+    let inspected = ecmul_i0_execute(&input_two, 5_999, true);
+    assert_eq!(plain, inspected);
+    assert_eq!(ecmul_i0_execute(&input_two, 6_000, false).1, plain.1 + 1);
+    assert_eq!(&plain.0[64..128], &[0_u8; 64]);
+    let route = plain
+        .2
+        .operation_routes
+        .iter()
+        .find(|row| row.route == OperationRoute::Precompile(7))
+        .unwrap();
+    assert_eq!(route.accepted_absolute_scaled, 20_000_000 * FIXED_POINT_SCALE);
+    assert_eq!(route.incremental_scaled, 0);
+    assert_eq!(route.structural_scaled, 3 * 572_936 * FIXED_POINT_SCALE);
+}
+
+#[test]
+fn zk_gas_ecmul_i0_preserves_full_accepted_native_slope() {
+    for native_gas in [5_999_u64, 6_000, 152_218, 152_219, 200_000] {
+        for work_units in [0_u64, 3, 254, 255, 507] {
+            let priced = ZkGasModel
+                .price_operation(&OperationPricingInput {
+                    route: OperationRoute::Precompile(7),
+                    interpreter_raw_gas: None,
+                    native_gas: Some(native_gas),
+                    model_input: OperationModelInput::WorkUnits { work_units },
+                    feature_error: false,
+                })
+                .unwrap();
+            let accepted = (20_000_000 * FIXED_POINT_SCALE)
+                .max(i128::from(native_gas) * 131_390_224_983_920_708_487);
+            let structural = i128::from(work_units) * 572_936 * FIXED_POINT_SCALE;
+            assert_eq!(priced.accepted_absolute_scaled, accepted);
+            assert_eq!(priced.incremental_scaled, 0);
+            assert_eq!(priced.structural_scaled, structural);
+            assert_eq!(priced.total_scaled, accepted.max(structural));
+        }
+    }
+}
+
+#[test]
+fn zk_gas_ecmul_i0_mixed_route_candidates_combine_before_maximum() {
+    use super::pricing::{TransactionMetadata, ZkGasAccumulator};
+    let mut collector = ZkGasAccumulator::default();
+    for work in [vec![0_u64; 14], vec![507]] {
+        collector.begin_transaction(TransactionMetadata::default()).unwrap();
+        collector
+            .observe_transaction_payload(super::pricing::TransactionPayloadSelectors {
+                canonical_transaction_bytes: 100,
+                nonempty_payload_transactions: 0,
+            })
+            .unwrap();
+        for units in work {
+            collector.observe_precompile(7, 6_000, Some(units)).unwrap();
+        }
+        collector.complete_account_journal_population([]).unwrap();
+        collector.complete_storage_transition_population([]).unwrap();
+        collector.commit_transaction().unwrap();
+    }
+    let snapshot = collector.committed_snapshot();
+    assert!(snapshot.diagnostic.is_none());
+    let row = snapshot
+        .operation_routes
+        .iter()
+        .find(|row| row.route == OperationRoute::Precompile(7))
+        .unwrap();
+    assert_eq!(row.accepted_absolute_scaled, 300_000_000 * FIXED_POINT_SCALE);
+    assert_eq!(row.incremental_scaled, 0);
+    assert_eq!(row.structural_scaled, 290_478_552 * FIXED_POINT_SCALE);
+    let report = snapshot.shadow_report();
+    let ZkGasShadowStatus::Incomplete { known, .. } = report.status() else {
+        panic!("committed runtime snapshot keeps incomplete resource/MPT domains");
+    };
+    assert_eq!(known.operations_scaled(), 300_000_000 * FIXED_POINT_SCALE);
+    assert_ne!(known.operations_scaled(), (14 * 20_000_000 + 290_478_552) * FIXED_POINT_SCALE);
+}
+
+#[test]
+fn zk_gas_ecmul_i0_missing_work_and_native_gas_remain_errors() {
+    let input = OperationPricingInput {
+        route: OperationRoute::Precompile(7),
+        interpreter_raw_gas: None,
+        native_gas: Some(6_000),
+        model_input: OperationModelInput::None,
+        feature_error: false,
+    };
+    assert_eq!(ZkGasModel.price_operation(&input), Err(ZkGasError::MissingInput("work_units")));
+    assert_eq!(
+        ZkGasModel.price_operation(&OperationPricingInput {
+            native_gas: None,
+            model_input: OperationModelInput::WorkUnits { work_units: 0 },
+            ..input
+        }),
+        Err(ZkGasError::MissingInput("native_gas"))
+    );
+}

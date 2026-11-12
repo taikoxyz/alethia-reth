@@ -8,6 +8,7 @@
 use std::{
     any::Any,
     collections::BTreeMap,
+    ffi::OsString,
     fmt, fs,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
@@ -122,6 +123,49 @@ enum HarnessStatus {
     Halt,
     /// Metering exceeded the block zk gas limit and the tx aborted.
     ZkLimit,
+}
+
+/// What the corpus test does, from `ZK_GAS_VECTORS_WRITE`, `CI`, `ZK_GAS_VECTORS_DIR` and
+/// `ZK_GAS_VECTORS_REQUIRED`.
+#[derive(Debug, PartialEq, Eq)]
+enum CorpusMode {
+    /// No corpus configured.
+    Skip,
+    /// Compare every vector with its expected values.
+    Assert(PathBuf),
+    /// Write every vector's expected values.
+    Write(PathBuf),
+}
+
+/// Decides the corpus test mode. Write mode (`ZK_GAS_VECTORS_WRITE=1`) is refused when `CI` is
+/// set, and requires `ZK_GAS_VECTORS_DIR`; without write mode an unset directory skips, unless
+/// `ZK_GAS_VECTORS_REQUIRED=1` makes it an error.
+fn corpus_mode(
+    write: Option<OsString>,
+    ci: Option<OsString>,
+    dir: Option<OsString>,
+    required: Option<OsString>,
+) -> Result<CorpusMode, String> {
+    let write = write.is_some_and(|value| value == "1");
+    if write && ci.is_some() {
+        return Err("ZK_GAS_VECTORS_WRITE=1 is refused because CI is set: expected values are \
+                    generated locally, never in CI"
+            .to_owned());
+    }
+    let required = required.is_some_and(|value| value == "1");
+    match (dir, write) {
+        (None, false) if required => {
+            Err("ZK_GAS_VECTORS_REQUIRED=1 needs ZK_GAS_VECTORS_DIR, the absolute path of the \
+                 vector corpus"
+                .to_owned())
+        }
+        (None, false) => Ok(CorpusMode::Skip),
+        (None, true) => Err("ZK_GAS_VECTORS_WRITE=1 needs ZK_GAS_VECTORS_DIR, the absolute path \
+                             of the vector corpus"
+            .to_owned()),
+        (Some(dir), false) => Ok(CorpusMode::Assert(dir.into())),
+        (Some(dir), true) => Ok(CorpusMode::Write(dir.into())),
+    }
 }
 
 /// Loads every vector of `layer` from `<dir>/cases/*.json`, sorted by path.
@@ -661,21 +705,52 @@ fn write_expected_replaces_only_the_expected_key() {
 }
 
 #[test]
+fn corpus_mode_refuses_write_in_ci_and_without_a_dir() {
+    let os = |value: &str| Some(OsString::from(value));
+    let dir = PathBuf::from("/vectors");
+
+    assert_eq!(corpus_mode(None, None, None, None), Ok(CorpusMode::Skip));
+    assert_eq!(corpus_mode(None, None, None, os("0")), Ok(CorpusMode::Skip));
+    assert_eq!(
+        corpus_mode(None, os("true"), os("/vectors"), None),
+        Ok(CorpusMode::Assert(dir.clone()))
+    );
+    assert_eq!(
+        corpus_mode(os("0"), None, os("/vectors"), os("1")),
+        Ok(CorpusMode::Assert(dir.clone()))
+    );
+    assert_eq!(corpus_mode(os("1"), None, os("/vectors"), None), Ok(CorpusMode::Write(dir)));
+    assert!(
+        corpus_mode(os("1"), os("true"), os("/vectors"), None).is_err(),
+        "CI refuses write mode"
+    );
+    assert!(corpus_mode(os("1"), None, None, None).is_err(), "write mode needs ZK_GAS_VECTORS_DIR");
+    assert!(
+        corpus_mode(None, os("true"), None, os("1")).is_err(),
+        "ZK_GAS_VECTORS_REQUIRED=1 needs ZK_GAS_VECTORS_DIR"
+    );
+}
+
+#[test]
 fn harness_vectors_match_expected() {
-    let write = std::env::var_os("ZK_GAS_VECTORS_WRITE").is_some_and(|value| value == "1");
-    if write && std::env::var_os("CI").is_some() {
-        panic!(
-            "ZK_GAS_VECTORS_WRITE=1 is refused because CI is set: expected values are generated \
-             locally, never in CI"
-        );
-    }
-    let Some(dir) = std::env::var_os("ZK_GAS_VECTORS_DIR") else {
-        eprintln!("skip: ZK_GAS_VECTORS_DIR unset");
-        return;
+    let mode = corpus_mode(
+        std::env::var_os("ZK_GAS_VECTORS_WRITE"),
+        std::env::var_os("CI"),
+        std::env::var_os("ZK_GAS_VECTORS_DIR"),
+        std::env::var_os("ZK_GAS_VECTORS_REQUIRED"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let (dir, write) = match mode {
+        CorpusMode::Skip => {
+            eprintln!("skip: ZK_GAS_VECTORS_DIR unset");
+            return;
+        }
+        CorpusMode::Assert(dir) => (dir, false),
+        CorpusMode::Write(dir) => (dir, true),
     };
 
-    let vectors = load_vectors::<HarnessVector>(Path::new(&dir), "harness")
-        .unwrap_or_else(|err| panic!("{err}"));
+    let vectors =
+        load_vectors::<HarnessVector>(&dir, "harness").unwrap_or_else(|err| panic!("{err}"));
     let mut failures = Vec::new();
     for (path, vector) in &vectors {
         let actual = match catch_unwind(AssertUnwindSafe(|| run_harness(&vector.input))) {

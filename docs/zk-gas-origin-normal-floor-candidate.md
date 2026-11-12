@@ -85,10 +85,27 @@ replay. The candidate tool loads a private module instance and replaces only its
 with the strict, fixed ORIGIN-successor validator; no arbitrary spec or skip-validation option is
 provided. Normal `generate.py --check` continues to require accepted801.
 
-## Remaining gates
+## Reserved check and remaining gates
 
-The two synthetic n720 inputs were reserved and their actuals were not used in this candidate.
-Seal the candidate hash before opening them. Then evaluate the candidate against those observations,
-the fixed801 baseline comparison and relevant historical/normal-traffic requotes before deciding
-whether to accept any new price. A failed reserved point must be reported as such rather than silently
-retuning this candidate. CALL, caught normal REVERT and ECRECOVER are separate investigations.
+The two synthetic n720 actuals were not used to derive the candidate. Following independent review,
+candidate `25e73b729a4b4b2cbf324c351a3b066e2423c2f9e71d90a1d32a75228cfc9622` was sealed
+before both attempts. The target actual is 162,272,522 PGU and the retained CALLER scaffold actual
+is 162,267,713 PGU. The target increase from N0 is 1,239,591 PGU for 720 completed normal ORIGINs;
+the candidate body costs 1,566,720 PGU, about 26.4% above this whole-input increment. No scaffold
+credit or reserved-data refit is applied.
+
+Independent decoding of the bound anchor runtime, immutable PUSH-data patches and the third STOP
+contract establishes zero other ORIGIN instructions in this controlled input. Its 720-event price
+decrease is therefore exactly 3,598,433,280 PGU. Keeping all other original fixed-point terms and
+rounding boundaries produces an offline derived node quote of 11,313,578 and full quote of
+166,255,408 PGU (1.024544x actual). **No candidate-price executable was run.**
+
+The seal receipt SHA-256 is `c5d610cf0d3eae1f81c51997d3acc7fddd1f0eac79b6ad5ced136d16779b5c97`;
+the independent reserved audit SHA-256 is
+`5fc1ec82779b1f0071682ff4f7e24bc96e0fc9f02f92e087bb4ed0591272cd71`.
+Raw sources remain a separate retained data bundle, rather than fabricated new generator inputs.
+
+The fixed801 baseline comparison and relevant historical/normal-traffic candidate requotes remain
+adoption gates. All 50 retained historical quotes lack per-route normal ORIGIN counts; their candidate
+prices cannot be reconstructed from those aggregate fields alone. Accepted801 remains unchanged.
+CALL, caught normal REVERT and ECRECOVER are separate investigations.

@@ -6,7 +6,7 @@ use reth_revm::{
     Inspector,
     context::{
         TxEnv,
-        result::{ExecutionResult, HaltReason},
+        result::{ExecutionResult, HaltReason, ResultAndState},
     },
     db::InMemoryDB,
     inspector::NoOpInspector,
@@ -1929,23 +1929,198 @@ fn zk_gas_pricing_commit_without_local_transaction_is_a_retained_diagnostic() {
     );
 }
 
+struct ExceptionalOpcodeExecution {
+    execution: ResultAndState,
+    unzen: u64,
+    committed: Option<super::pricing::ZkGasBlockSnapshot>,
+    attempted: Option<super::pricing::ZkGasAttemptedBlockSnapshot>,
+}
+
+fn exceptional_opcode_execution(
+    byte: u8,
+    caught: bool,
+    shadow: bool,
+    inspected: bool,
+    committed: bool,
+) -> ExceptionalOpcodeExecution {
+    let child = Address::with_last_byte(0xcb);
+    let bytecode = Bytecode::new_raw(Bytes::from(if caught {
+        // The exceptional child must unwind a real write while its pricing survives.
+        vec![opcode::PUSH1, 42, opcode::PUSH0, opcode::SSTORE, byte]
+    } else {
+        vec![byte]
+    }));
+    let db = if caught {
+        let mut db = db_with_contract(call_into_bytecode(child, 50_000));
+        insert_contract(&mut db, child, bytecode);
+        db
+    } else {
+        db_with_contract(bytecode)
+    };
+    let mut evm = if inspected {
+        TaikoEvmFactory.create_evm_with_inspector(db, evm_env(TaikoSpecId::UNZEN), NoOpInspector)
+    } else {
+        TaikoEvmFactory.create_evm(db, evm_env(TaikoSpecId::UNZEN))
+    };
+    evm.set_zk_gas_pricing_enabled(shadow);
+    let execution = evm.transact(tx_env(100_000)).expect("exceptional EVM execution is valid");
+    let unzen = evm.meter().unwrap().tx_zk_gas_used();
+    if shadow {
+        evm.record_transaction_payload(super::pricing::TransactionPayloadSelectors {
+            canonical_transaction_bytes: 100,
+            nonempty_payload_transactions: 0,
+        });
+        if committed {
+            evm.commit_transaction_zk_gas_pricing().expect("included exceptional work commits");
+        } else {
+            evm.reset_transaction_zk_gas();
+        }
+    }
+    ExceptionalOpcodeExecution {
+        execution,
+        unzen,
+        committed: evm.zk_gas_pricing_snapshot(),
+        attempted: evm.zk_gas_attempted_pricing_snapshot(),
+    }
+}
+
 #[test]
-fn zk_gas_pricing_unknown_route_is_a_shadow_diagnostic_not_an_evm_error() {
-    let mut evm = TaikoEvmFactory.create_evm(
-        db_with_contract(Bytecode::new_raw(Bytes::from(vec![0x0c]))),
-        evm_env(TaikoSpecId::UNZEN),
-    );
-    evm.set_zk_gas_pricing_enabled(true);
-    let result =
-        evm.transact(tx_env(100_000)).expect("pricing diagnostic must not alter execution");
-    assert!(matches!(result.result, ExecutionResult::Halt { .. }));
-    evm.commit_transaction_zk_gas_pricing().expect("diagnostic transaction still commits");
+fn zk_gas_pricing_opcode_not_found_is_priced_once_without_changing_execution() {
+    for byte in [0x0c, 0xe4, 0xef, opcode::INVALID] {
+        let off = exceptional_opcode_execution(byte, false, false, false, true);
+        assert!(matches!(off.execution.result, ExecutionResult::Halt { .. }));
+        assert!(off.committed.is_none());
+        assert!(off.attempted.is_none());
+        for inspected in [false, true] {
+            let inspected_off = exceptional_opcode_execution(byte, false, false, inspected, true);
+            assert_eq!(inspected_off.execution, off.execution);
+            assert_eq!(inspected_off.unzen, off.unzen);
+            let on = exceptional_opcode_execution(byte, false, true, inspected, true);
+            assert_eq!(on.execution, off.execution, "byte {byte:#04x}, inspected={inspected}");
+            assert_eq!(on.unzen, off.unzen);
+            let snapshot = on.committed.unwrap();
+            assert_eq!(snapshot.diagnostic, None);
+            assert_eq!(snapshot.operation_routes.len(), 1);
+            let row = &snapshot.operation_routes[0];
+            assert_eq!(row.route, OperationRoute::Opcode(opcode::INVALID));
+            assert_eq!(row.feature_error_scaled, 5_000_000 * FIXED_POINT_SCALE);
+            assert_eq!(row.normal_dispatch_count, 0);
+            assert_eq!(row.accepted_absolute_scaled, 0);
+            assert_eq!(row.incremental_scaled, 0);
+            assert_eq!(row.structural_scaled, 0);
+            assert!(matches!(
+                snapshot.shadow_report().status(),
+                ZkGasShadowStatus::Incomplete { .. }
+            ));
+            assert_eq!(on.attempted.unwrap().block, snapshot);
+        }
+    }
+}
+
+#[test]
+fn zk_gas_pricing_every_undefined_byte_has_a_numeric_exception_price() {
+    let mut observed = 0;
+    for byte in 0..=u8::MAX {
+        if opcode::OpCode::new(byte).is_some() {
+            continue;
+        }
+        let on = exceptional_opcode_execution(byte, false, true, false, true);
+        assert!(matches!(
+            on.execution.result,
+            ExecutionResult::Halt { reason: HaltReason::OpcodeNotFound, .. }
+        ));
+        let snapshot = on.committed.unwrap();
+        assert_eq!(snapshot.diagnostic, None, "undefined byte {byte:#04x}");
+        assert_eq!(snapshot.operation_routes.len(), 1);
+        assert_eq!(snapshot.operation_routes[0].route, OperationRoute::Opcode(opcode::INVALID));
+        assert_eq!(
+            snapshot.operation_routes[0].feature_error_scaled,
+            5_000_000 * FIXED_POINT_SCALE
+        );
+        observed += 1;
+    }
+    assert_eq!(observed, 102, "re-audit the instruction metadata when the opcode set changes");
+}
+
+#[test]
+fn zk_gas_pricing_not_activated_instruction_has_a_numeric_exception_price() {
+    for byte in [0x4b, 0xe6, 0xe7, 0xe8] {
+        let off = exceptional_opcode_execution(byte, false, false, false, true);
+        assert!(matches!(
+            off.execution.result,
+            ExecutionResult::Halt { reason: HaltReason::NotActivated, .. }
+        ));
+        for inspected in [false, true] {
+            let on = exceptional_opcode_execution(byte, false, true, inspected, true);
+            assert_eq!(on.execution, off.execution);
+            assert_eq!(on.unzen, off.unzen);
+            let snapshot = on.committed.unwrap();
+            assert_eq!(snapshot.diagnostic, None, "unactivated byte {byte:#04x}");
+            assert_eq!(snapshot.operation_routes.len(), 1);
+            assert_eq!(snapshot.operation_routes[0].route, OperationRoute::Opcode(opcode::INVALID));
+            assert_eq!(
+                snapshot.operation_routes[0].feature_error_scaled,
+                5_000_000 * FIXED_POINT_SCALE
+            );
+        }
+    }
+}
+
+#[test]
+fn zk_gas_pricing_caught_opcode_not_found_retains_one_error_and_parent_wrapper() {
+    let off = exceptional_opcode_execution(0x0c, true, false, false, true);
+    assert!(off.execution.result.is_success());
     assert_eq!(
-        evm.zk_gas_pricing_snapshot().expect("snapshot").diagnostic,
-        Some(ZkGasAccumulatorError::Pricing(ZkGasError::UnknownRoute(OperationRoute::Opcode(
-            0x0c
-        ),)))
+        off.execution.state[&Address::with_last_byte(0xcb)].storage[&U256::ZERO].present_value,
+        U256::ZERO,
+        "caught exceptional child must revert its storage write"
     );
+    let mut expected = None;
+    for inspected in [false, true] {
+        let on = exceptional_opcode_execution(0x0c, true, true, inspected, true);
+        assert_eq!(on.execution, off.execution);
+        assert_eq!(on.unzen, off.unzen);
+        let snapshot = on.committed.unwrap();
+        assert_eq!(snapshot.diagnostic, None);
+        assert_eq!(on.attempted.unwrap().block, snapshot);
+        assert_eq!(
+            snapshot.operation_routes.iter().map(|row| row.feature_error_scaled).sum::<i128>(),
+            5_000_000 * FIXED_POINT_SCALE
+        );
+        assert_eq!(
+            snapshot
+                .operation_routes
+                .iter()
+                .filter(|row| row.route == OperationRoute::ConfirmedSpawn(opcode::CALL))
+                .count(),
+            1
+        );
+        if let Some(expected) = &expected {
+            assert_eq!(&snapshot, expected);
+        }
+        expected = Some(snapshot);
+    }
+}
+
+#[test]
+fn zk_gas_pricing_discarded_opcode_not_found_only_enters_attempted_prefix() {
+    for inspected in [false, true] {
+        let on = exceptional_opcode_execution(0x0c, false, true, inspected, false);
+        assert!(matches!(on.execution.result, ExecutionResult::Halt { .. }));
+        assert_eq!(on.committed.unwrap(), super::pricing::ZkGasBlockSnapshot::default());
+        let attempted = on.attempted.unwrap();
+        assert_eq!(attempted.transaction_count, 1);
+        assert_eq!(attempted.block.diagnostic, None);
+        assert_eq!(attempted.block.operation_routes.len(), 1);
+        assert_eq!(
+            attempted.block.operation_routes[0].route,
+            OperationRoute::Opcode(opcode::INVALID)
+        );
+        assert_eq!(
+            attempted.block.operation_routes[0].feature_error_scaled,
+            5_000_000 * FIXED_POINT_SCALE
+        );
+    }
 }
 
 #[test]

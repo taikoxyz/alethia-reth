@@ -308,8 +308,19 @@ impl PendingPricingStep {
             Ok(input) if !unexpected_halt && !revert_with_unmodeled_gas => (input, false),
             Ok(_) | Err(()) => (OperationModelInput::None, true),
         };
+        // Undefined and not-yet-activated instructions have well-defined exceptional halts.
+        // Only these actual results alias the existing INVALID feature-error price; an
+        // unrecognized successfully executed route still remains an explicit diagnostic.
+        let priced_opcode = if matches!(
+            instruction_result,
+            Some(InstructionResult::OpcodeNotFound | InstructionResult::NotActivated)
+        ) {
+            0xfe
+        } else {
+            self.opcode
+        };
         accumulator.observe_step(OperationPricingInput {
-            route: OperationRoute::Opcode(self.opcode),
+            route: OperationRoute::Opcode(priced_opcode),
             interpreter_raw_gas: Some(raw_gas),
             native_gas: None,
             model_input,

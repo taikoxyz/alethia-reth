@@ -245,6 +245,24 @@ instead of copying their current numbers into integrations.
 different JSON artifacts. The address does not cover the surrounding Rust semantics described in
 the source-of-truth section.
 
+### Exceptional-instruction collection correction (November 12)
+
+The collector now maps an actually observed `OpcodeNotFound` or `NotActivated` halt to the
+existing `opcode:0xfe` INVALID feature-error route. For the pinned UNZEN/OSAKA instruction set,
+the former covers 102 undefined byte values; the latter covers the four metadata-known but
+inactive instructions SLOTNUM, DUPN, SWAPN and EXCHANGE. A failed child remains priced when its
+caller catches the failure, and included or discarded outer scopes retain their existing
+committed/attempted ownership. This is one error event, with no normal candidates or normal
+dispatch reserve. It does not change EVM execution, legacy Unzen metering or the route tariffs.
+
+This is an extraction-semantic correction, not a new numerical model: the runtime JSON, trace
+schema and 174 sealed routes remain unchanged. Reproduction must bind the exact Reth source
+revision and quote executable identity in addition to model `80160649…`. Old diagnostic reports
+are retained as diagnostics; they must not be relabeled as new numeric quotes. Existing known-route
+quotes retain their prior numeric behavior. The correction neither supports a new fork nor prices
+an unrecognized instruction that executes successfully; such observations still require an
+explicitly supported route and otherwise remain diagnostic.
+
 ### Arithmetic and MCOPY block-cost refinement
 
 The [sealed evidence](../crates/evm/src/zk_gas/pricing/successors/block-cost-evidence-v1.json)
@@ -730,8 +748,8 @@ route accumulator has four candidate fields, but one event does not generally em
 - a supported opcode whose typed extraction fails, that halts exceptionally, or whose REVERT has
   nonzero raw gas emits `feature_error` instead of its normal candidates;
 - precompile routes can also emit `structural` floors and do not have `feature_error`; and
-- undefined opcode bytes have no route at all and turn the block report into a
-  `collector_unknown_route` diagnostic.
+- actual `OpcodeNotFound` and `NotActivated` halts emit the existing `opcode:0xfe` feature-error
+  price; other unknown routes retain a `collector_unknown_route` diagnostic.
 
 Candidates accumulate by route across the committed block, then use the route's composition. The
 same aggregation rules apply independently to the attempted prefix:
@@ -1058,8 +1076,10 @@ At runtime:
   whose REVERT has nonzero raw gas uses its route's authenticated `feature_error` model, currently
   `max(5,000,000 PGU, coefficient * interpreter_raw_gas)` per event, not a sum of the floor and
   raw-gas term; a plain zero-raw-gas REVERT uses its normal route;
-- unknown routes, including undefined opcode bytes, produce a collector diagnostic rather than a
-  feature-error price;
+- an actual `OpcodeNotFound` or `NotActivated` halt uses INVALID's authenticated feature-error
+  price once, including failures in caught child frames;
+- other unknown routes produce a collector diagnostic rather than silently gaining a fallback
+  price; no successful future instruction is supported by exceptional-halt normalization;
 - missing, contradictory, or out-of-range selectors are typed errors;
 - arithmetic overflow and negative composed components are errors; and
 - every `Diagnostic`, every mismatched model ID, and every unexpected incompleteness marker causes

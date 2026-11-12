@@ -274,7 +274,8 @@ struct BuildOutcome {
     state_root: B256,
 }
 
-/// What the corpus test does, from `ZK_GAS_VECTORS_WRITE`, `CI` and `ZK_GAS_VECTORS_DIR`.
+/// What the corpus test does, from `ZK_GAS_VECTORS_WRITE`, `CI`, `ZK_GAS_VECTORS_DIR` and
+/// `ZK_GAS_VECTORS_REQUIRED`.
 #[derive(Debug, PartialEq, Eq)]
 enum CorpusMode {
     /// No corpus configured.
@@ -286,11 +287,13 @@ enum CorpusMode {
 }
 
 /// Decides the corpus test mode. Write mode (`ZK_GAS_VECTORS_WRITE=1`) is refused when `CI` is
-/// set, and requires `ZK_GAS_VECTORS_DIR`; without write mode an unset directory skips.
+/// set, and requires `ZK_GAS_VECTORS_DIR`; without write mode an unset directory skips, unless
+/// `ZK_GAS_VECTORS_REQUIRED=1` makes it an error.
 fn corpus_mode(
     write: Option<OsString>,
     ci: Option<OsString>,
     dir: Option<OsString>,
+    required: Option<OsString>,
 ) -> Result<CorpusMode, String> {
     let write = write.is_some_and(|value| value == "1");
     if write && ci.is_some() {
@@ -298,7 +301,13 @@ fn corpus_mode(
                     generated locally, never in CI"
             .to_owned());
     }
+    let required = required.is_some_and(|value| value == "1");
     match (dir, write) {
+        (None, false) if required => {
+            Err("ZK_GAS_VECTORS_REQUIRED=1 needs ZK_GAS_VECTORS_DIR, the absolute path of the \
+                 vector corpus"
+                .to_owned())
+        }
         (None, false) => Ok(CorpusMode::Skip),
         (None, true) => Err("ZK_GAS_VECTORS_WRITE=1 needs ZK_GAS_VECTORS_DIR, the absolute path \
                              of the vector corpus"
@@ -475,10 +484,19 @@ fn build(input: &BlockInput, txs: &[Recovered<EthTransactionSigned>]) -> BuildOu
         builder.finish(&provider, None).unwrap_or_else(|err| panic!("build: finish failed: {err}"));
     let block = block.into_sealed_block();
 
+    assert!(
+        outcomes.len() <= txs.len(),
+        "build: {} tx outcomes recorded for {} input txs",
+        outcomes.len(),
+        txs.len()
+    );
     let mut included = Vec::new();
     let mut cumulative_zk_gas = Vec::new();
     let mut truncated_at = None;
     for (index, outcome) in outcomes.into_iter().enumerate() {
+        if let Some(at) = truncated_at {
+            panic!("build: tx {index} executed after tx {at} exceeded the block zk gas limit");
+        }
         match outcome {
             TxOutcome::Committed { block_zk_gas } => {
                 included.push(index);
@@ -1535,12 +1553,26 @@ fn corpus_mode_refuses_write_in_ci_and_without_a_dir() {
     let os = |value: &str| Some(OsString::from(value));
     let dir = PathBuf::from("/vectors");
 
-    assert_eq!(corpus_mode(None, None, None), Ok(CorpusMode::Skip));
-    assert_eq!(corpus_mode(None, os("true"), os("/vectors")), Ok(CorpusMode::Assert(dir.clone())));
-    assert_eq!(corpus_mode(os("0"), None, os("/vectors")), Ok(CorpusMode::Assert(dir.clone())));
-    assert_eq!(corpus_mode(os("1"), None, os("/vectors")), Ok(CorpusMode::Write(dir)));
-    assert!(corpus_mode(os("1"), os("true"), os("/vectors")).is_err(), "CI refuses write mode");
-    assert!(corpus_mode(os("1"), None, None).is_err(), "write mode needs ZK_GAS_VECTORS_DIR");
+    assert_eq!(corpus_mode(None, None, None, None), Ok(CorpusMode::Skip));
+    assert_eq!(corpus_mode(None, None, None, os("0")), Ok(CorpusMode::Skip));
+    assert_eq!(
+        corpus_mode(None, os("true"), os("/vectors"), None),
+        Ok(CorpusMode::Assert(dir.clone()))
+    );
+    assert_eq!(
+        corpus_mode(os("0"), None, os("/vectors"), os("1")),
+        Ok(CorpusMode::Assert(dir.clone()))
+    );
+    assert_eq!(corpus_mode(os("1"), None, os("/vectors"), None), Ok(CorpusMode::Write(dir)));
+    assert!(
+        corpus_mode(os("1"), os("true"), os("/vectors"), None).is_err(),
+        "CI refuses write mode"
+    );
+    assert!(corpus_mode(os("1"), None, None, None).is_err(), "write mode needs ZK_GAS_VECTORS_DIR");
+    assert!(
+        corpus_mode(None, os("true"), None, os("1")).is_err(),
+        "ZK_GAS_VECTORS_REQUIRED=1 needs ZK_GAS_VECTORS_DIR"
+    );
 }
 
 #[test]
@@ -1687,6 +1719,7 @@ fn block_vectors_match_expected() {
         std::env::var_os("ZK_GAS_VECTORS_WRITE"),
         std::env::var_os("CI"),
         std::env::var_os("ZK_GAS_VECTORS_DIR"),
+        std::env::var_os("ZK_GAS_VECTORS_REQUIRED"),
     )
     .unwrap_or_else(|err| panic!("{err}"));
     let (dir, write) = match mode {

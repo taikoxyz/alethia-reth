@@ -1,0 +1,82 @@
+name: ZK Gas Vectors
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "crates/evm/**"
+      - "crates/block/**"
+      - "crates/payload/**"
+      - "Cargo.lock"
+      - "zk-gas-vectors.ref"
+      - ".github/workflows/zk-gas-vectors.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/evm/**"
+      - "crates/block/**"
+      - "crates/payload/**"
+      - "Cargo.lock"
+      - "zk-gas-vectors.ref"
+      - ".github/workflows/zk-gas-vectors.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zk-gas-vectors-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  vectors:
+    name: zk-gas-vectors
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # zk-gas-vectors.ref pins the taiko-mono commit whose corpus this repository is checked against.
+      - name: Read the pinned taiko-mono commit
+        id: corpus
+        run: |
+          ref="$(tr -d '[:space:]' < zk-gas-vectors.ref)"
+          if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error file=zk-gas-vectors.ref::expected one 40-hex taiko-mono commit, got '$ref'"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the taiko-mono zk gas vectors
+        uses: actions/checkout@v5
+        with:
+          repository: taikoxyz/taiko-mono
+          ref: ${{ steps.corpus.outputs.ref }}
+          path: taiko-mono
+          sparse-checkout: testdata/zk_gas_vectors
+          persist-credentials: false
+
+      - name: Point the runners at the corpus
+        run: |
+          dir="$GITHUB_WORKSPACE/taiko-mono/testdata/zk_gas_vectors"
+          test -d "$dir/cases"
+          echo "ZK_GAS_VECTORS_DIR=$dir" >> "$GITHUB_ENV"
+
+      - uses: rui314/setup-mold@v1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Assert mode only: ZK_GAS_VECTORS_WRITE is never set here, and the runners refuse it under CI.
+      - name: Run the harness vectors
+        run: cargo +1.99.0 test --locked -p alethia-reth-evm harness_vectors_match_expected
+
+      - name: Run the block vectors
+        run: cargo +1.99.0 test --locked -p alethia-reth-payload block_vectors_match_expected

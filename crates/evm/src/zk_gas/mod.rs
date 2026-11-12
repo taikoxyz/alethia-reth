@@ -13,3 +13,5 @@ pub mod unzen;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vectors;

@@ -207,6 +207,7 @@ dependencies = [
  "reth-revm",
  "revm-database-interface",
  "serde",
+ "serde_json",
  "tracing",
 ]
 

@@ -5,7 +5,7 @@ use super::{
     live::LiveTrieCollector,
     opt_block,
     storage_init::{
-        DelayedProofHistoryStart, PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS,
+        DelayedProofHistoryStart, PROOF_HISTORY_BACKFILL_CHUNK_BLOCKS, ProofHistoryBackfill,
         backfill_proof_history_window, delayed_proof_history_start, finalized_block_number,
         initialize_proof_history_storage, proof_history_storage_needs_initialization,
         proof_history_sync_target, request_proof_history_rebuild,
@@ -345,7 +345,8 @@ where
     /// reaches reth's head; this covers fresh initialization, a restart mid-backfill, a raised
     /// window and an `UnwindToEarliest` reconciliation, and is a no-op once the window is full.
     /// When the backfill fails because the earliest block was reorged out, the storage is marked
-    /// for a rebuild on the next start.
+    /// for a rebuild on the next start. While reth's persisted head is below the stored earliest
+    /// block the backfill cannot start yet, so this returns `None` and is retried.
     async fn try_start(&self) -> eyre::Result<Option<Arc<Notify>>> {
         if !self.reconcile_or_wait().await? {
             return Ok(None);
@@ -364,15 +365,29 @@ where
             });
             let backfilled =
                 blocking_join_result(backfill_task.await, "proof-history backfill worker")?;
-            if let Err(error) = backfilled {
-                // A reorg that replaced the initialization anchor makes every prepend fail. Any
-                // other outcome, including a failed re-check, keeps the backfill error.
-                if let Ok(ProofHistoryStartupAction::RebuildRequired { earliest }) =
-                    self.startup_action()
-                {
-                    return Err(self.request_rebuild(earliest));
+            match backfilled {
+                Ok(ProofHistoryBackfill::Complete) => {}
+                Ok(ProofHistoryBackfill::WaitForPersistedEarliest { earliest, on_disk_best }) => {
+                    // Retried on the next canonical notification or retry tick, once reth persists
+                    // past the earliest block again.
+                    warn!(
+                        target: "reth::taiko::proof_history",
+                        earliest,
+                        on_disk_best,
+                        "reth's persisted head is below the proof-history earliest block; waiting for persistence before backfilling"
+                    );
+                    return Ok(None);
                 }
-                return Err(error);
+                Err(error) => {
+                    // A reorg that replaced the initialization anchor makes every prepend fail.
+                    // Any other outcome, including a failed re-check, keeps the backfill error.
+                    if let Ok(ProofHistoryStartupAction::RebuildRequired { earliest }) =
+                        self.startup_action()
+                    {
+                        return Err(self.request_rebuild(earliest));
+                    }
+                    return Err(error);
+                }
             }
         }
         // Storage bounds are now validated against canonical hashes: allow the RPC layer to

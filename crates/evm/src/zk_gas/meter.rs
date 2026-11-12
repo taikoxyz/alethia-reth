@@ -102,6 +102,16 @@ impl<'a> ZkGasMeter<'a> {
         }
     }
 
+    /// Returns `true` when the block budget left after finalized usage can still pay one more
+    /// transaction's intrinsic zk gas (see [`Self::charge_tx_intrinsic`]).
+    ///
+    /// In-flight usage is ignored: the check is meant for the point between transactions, after
+    /// the previous transaction's zk gas was committed or discarded.
+    pub const fn can_fit_tx_intrinsic(&self) -> bool {
+        self.schedule.block_limit.saturating_sub(self.block_zk_gas_used) >=
+            self.schedule.tx_intrinsic_zk_gas
+    }
+
     /// Returns the finalized zk gas from fully committed transactions.
     pub const fn block_zk_gas_used(&self) -> u64 {
         self.block_zk_gas_used

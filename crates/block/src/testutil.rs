@@ -34,6 +34,10 @@ pub const BENCH_LIMIT_TARGET: Address = Address::with_last_byte(0x22);
 /// tx-pool budget after reserving zk gas for the anchor transaction.
 pub const BENCH_NEAR_LIMIT_TARGET: Address = Address::with_last_byte(0x23);
 
+/// Target address for the switch contract from [`switch_keccak_bytecode`]: a call with calldata
+/// sets its switch, and a call without calldata exceeds the zk gas limit until the switch is set.
+pub const BENCH_SWITCH_TARGET: Address = Address::with_last_byte(0x24);
+
 /// Returns a [`TaikoChainSpec`] with Unzen activated at timestamp 0.
 pub fn unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
@@ -67,15 +71,27 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
     }
 }
 
-/// Builds a recovered legacy transaction targeting `to` from `caller`, defaulting to the
-/// Devnet chain id (`167`).
+/// Builds a recovered legacy transaction targeting `to` from `caller` with empty calldata,
+/// defaulting to the Devnet chain id (`167`).
 pub fn recovered_tx(
     caller: Address,
     to: Address,
     nonce: u64,
     gas_price: u64,
 ) -> Recovered<TransactionSigned> {
-    recovered_tx_with_chain_id(caller, to, nonce, gas_price, 167)
+    recovered_tx_with_input(caller, to, nonce, gas_price, Bytes::default())
+}
+
+/// Builds a recovered legacy transaction targeting `to` from `caller` with the given calldata,
+/// defaulting to the Devnet chain id (`167`).
+pub fn recovered_tx_with_input(
+    caller: Address,
+    to: Address,
+    nonce: u64,
+    gas_price: u64,
+    input: Bytes,
+) -> Recovered<TransactionSigned> {
+    legacy_recovered_tx(caller, to, nonce, gas_price, 167, input)
 }
 
 /// Builds a recovered legacy transaction targeting `to` from `caller` with an explicit chain id,
@@ -87,6 +103,21 @@ pub fn recovered_tx_with_chain_id(
     gas_price: u64,
     chain_id: u64,
 ) -> Recovered<TransactionSigned> {
+    legacy_recovered_tx(caller, to, nonce, gas_price, chain_id, Bytes::default())
+}
+
+/// Builds a recovered legacy transaction with a 5M gas limit and a placeholder signature.
+///
+/// The transaction hash is a placeholder too: the caller's last address byte, with the nonce in
+/// the first eight bytes, so one caller's transactions at different nonces have distinct hashes.
+fn legacy_recovered_tx(
+    caller: Address,
+    to: Address,
+    nonce: u64,
+    gas_price: u64,
+    chain_id: u64,
+    input: Bytes,
+) -> Recovered<TransactionSigned> {
     let tx = TxLegacy {
         chain_id: Some(ChainId::from(chain_id)),
         nonce,
@@ -94,13 +125,12 @@ pub fn recovered_tx_with_chain_id(
         gas_limit: 5_000_000,
         to: TxKind::Call(to),
         value: U256::ZERO,
-        input: Bytes::default(),
+        input,
     };
     let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
-    Recovered::new_unchecked(
-        Signed::new_unchecked(tx, signature, B256::with_last_byte(caller.as_slice()[19])).into(),
-        caller,
-    )
+    let mut hash = B256::with_last_byte(caller.as_slice()[19]);
+    hash[..8].copy_from_slice(&nonce.to_be_bytes());
+    Recovered::new_unchecked(Signed::new_unchecked(tx, signature, hash).into(), caller)
 }
 
 /// Creates an in-memory database preloaded with the standard test contracts and caller accounts.
@@ -109,6 +139,7 @@ pub fn db_with_contracts(accounts: &[(Address, u64)]) -> InMemoryDB {
     insert_contract(&mut db, BENCH_SUCCESS_TARGET, arithmetic_bytecode());
     insert_contract(&mut db, BENCH_LIMIT_TARGET, limit_exceeding_keccak_bytecode());
     insert_contract(&mut db, BENCH_NEAR_LIMIT_TARGET, near_limit_keccak_bytecode());
+    insert_contract(&mut db, BENCH_SWITCH_TARGET, switch_keccak_bytecode());
     for &(address, nonce) in accounts {
         db.insert_account_info(
             address,
@@ -182,6 +213,48 @@ pub fn near_limit_keccak_bytecode() -> Bytecode {
         0x00, // memory offset 0x135a00
         opcode::KECCAK256,
         opcode::STOP,
+    ]))
+}
+
+/// Switch contract whose zk gas use depends on storage slot 0.
+///
+/// With calldata it sets slot 0 to 1 and stops. Without calldata it stops if slot 0 is set, and
+/// otherwise runs the 64 KiB KECCAK256 loop of [`limit_exceeding_keccak_bytecode`], which exceeds
+/// the zk gas limit. A transaction that overflows before the switch is set therefore fits after.
+pub fn switch_keccak_bytecode() -> Bytecode {
+    Bytecode::new_raw(Bytes::from(vec![
+        opcode::CALLDATASIZE,
+        opcode::ISZERO,
+        opcode::PUSH1,
+        0x0b, // jump to the no-calldata branch
+        opcode::JUMPI,
+        opcode::PUSH1,
+        0x01,
+        opcode::PUSH1,
+        0x00,
+        opcode::SSTORE, // slot 0 = 1
+        opcode::STOP,
+        opcode::JUMPDEST, // no-calldata branch at offset 0x0b
+        opcode::PUSH1,
+        0x00,
+        opcode::SLOAD,
+        opcode::ISZERO,
+        opcode::PUSH1,
+        0x14, // jump to the loop while slot 0 is unset
+        opcode::JUMPI,
+        opcode::STOP,
+        opcode::JUMPDEST, // loop entry at offset 0x14
+        opcode::PUSH3,
+        0x01,
+        0x00,
+        0x00, // len 0x010000 (64 KiB)
+        opcode::PUSH1,
+        0x00, // memory offset 0
+        opcode::KECCAK256,
+        opcode::POP, // discard the digest
+        opcode::PUSH1,
+        0x14,         // jump destination 0x14
+        opcode::JUMP, // loop
     ]))
 }
 

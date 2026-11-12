@@ -299,6 +299,7 @@ dependencies = [
  "reth-storage-api",
  "reth-transaction-pool",
  "reth-trie-common",
+ "tokio",
  "tracing",
 ]
 

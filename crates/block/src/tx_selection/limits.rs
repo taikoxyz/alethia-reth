@@ -270,6 +270,7 @@ mod tests {
             max_lists: 1,
             min_tip: 0,
             locals: vec![],
+            state_seed: B256::ZERO,
         };
 
         assert!(actual > config.max_da_bytes_per_list);
@@ -289,6 +290,7 @@ mod tests {
             max_lists: 1,
             min_tip: 0,
             locals: vec![],
+            state_seed: B256::ZERO,
         };
 
         assert!(!should_check_zlib_da_size(&config, 899));

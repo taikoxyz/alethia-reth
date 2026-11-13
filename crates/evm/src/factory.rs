@@ -15,7 +15,7 @@ use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
     evm::TaikoEvm,
     spec::TaikoSpecId,
-    zk_gas::{adapter::ZkGasInspector, schedule::schedule_for},
+    zk_gas::{adapter::ZkGasInspector, operands, schedule::schedule_for},
 };
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
@@ -49,7 +49,7 @@ impl EvmFactory for TaikoEvmFactory {
     ) -> Self::Evm<DB, NoOpInspector> {
         let spec_id = input.cfg_env.spec;
         let schedule = schedule_for(spec_id);
-        let evm = Context::mainnet()
+        let mut evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
@@ -57,6 +57,8 @@ impl EvmFactory for TaikoEvmFactory {
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
+
+        operands::install(evm.instruction.instruction_table_mut(), schedule.is_some());
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false)
     }
@@ -70,7 +72,7 @@ impl EvmFactory for TaikoEvmFactory {
     ) -> Self::Evm<DB, I> {
         let spec_id = input.cfg_env.spec;
         let schedule = schedule_for(spec_id);
-        let evm = Context::mainnet()
+        let mut evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
@@ -78,6 +80,8 @@ impl EvmFactory for TaikoEvmFactory {
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
+
+        operands::install(evm.instruction.instruction_table_mut(), schedule.is_some());
 
         TaikoEvmWrapper::new(TaikoEvm::new(evm), true)
     }

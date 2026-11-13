@@ -15,6 +15,8 @@ pub mod trace;
 pub mod unzen;
 
 #[cfg(test)]
+mod meter_vectors;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod vectors;

@@ -85,12 +85,18 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
 
-      # Assert mode only: ZK_GAS_VECTORS_WRITE is never set here, and the runners refuse it under CI.
+      # Assert mode only: CI never sets ZK_GAS_VECTORS_WRITE. Harness/block runners refuse it
+      # under CI, and the Lean meter runner always asserts without writing expectations.
       # Each step selects exactly one test and fails when the filter matches none.
       - name: Run the harness vectors
         run: >-
           cargo +1.99.0 nextest run --locked -p alethia-reth-evm --no-tests=fail
           -E 'test(=zk_gas::vectors::harness_vectors_match_expected)'
+
+      - name: Run the Lean meter vectors
+        run: >-
+          cargo +1.99.0 nextest run --locked -p alethia-reth-evm --no-tests=fail
+          -E 'test(=zk_gas::meter_vectors::meter_vectors_match_lean)'
 
       - name: Run the block vectors
         run: >-

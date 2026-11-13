@@ -24,28 +24,28 @@ license = "MIT"
 [workspace.dependencies]
 # alloy
 alloy-chains = { version = "0.2.33", default-features = false }
-alloy-consensus = { version = "2.4.2", default-features = false }
-alloy-eips = { version = "2.4.2", default-features = false }
+alloy-consensus = { version = "2.5.0", default-features = false }
+alloy-eips = { version = "2.5.0", default-features = false }
 alloy-evm = { version = "0.39.0", default-features = false }
-alloy-genesis = { version = "2.4.2", default-features = false }
-alloy-hardforks = "0.4.8"
-alloy-json-rpc = { version = "2.4.2", default-features = false }
-alloy-network = { version = "2.4.2", default-features = false }
+alloy-genesis = { version = "2.5.0", default-features = false }
+alloy-hardforks = "0.4.9"
+alloy-json-rpc = { version = "2.5.0", default-features = false }
+alloy-network = { version = "2.5.0", default-features = false }
 alloy-primitives = { version = "1.6.1", default-features = false, features = [
     "map-foldhash",
 ] }
 alloy-rlp = { version = "0.3.16", default-features = false, features = [
     "core-net",
 ] }
-alloy-rpc-client = { version = "2.4.2", default-features = false }
-alloy-rpc-types-debug = { version = "2.4.2", default-features = false }
-alloy-rpc-types-engine = { version = "2.4.2", default-features = false }
-alloy-rpc-types-eth = { version = "2.4.2", default-features = false }
-alloy-rpc-types-trace = { version = "2.4.2", default-features = false }
-alloy-rpc-types-txpool = { version = "2.4.2", default-features = false }
-alloy-serde = { version = "2.4.2", default-features = false }
-alloy-signer = { version = "2.4.2", default-features = false }
-alloy-signer-local = { version = "2.4.2", default-features = false }
+alloy-rpc-client = { version = "2.5.0", default-features = false }
+alloy-rpc-types-debug = { version = "2.5.0", default-features = false }
+alloy-rpc-types-engine = { version = "2.5.0", default-features = false }
+alloy-rpc-types-eth = { version = "2.5.0", default-features = false }
+alloy-rpc-types-trace = { version = "2.5.0", default-features = false }
+alloy-rpc-types-txpool = { version = "2.5.0", default-features = false }
+alloy-serde = { version = "2.5.0", default-features = false }
+alloy-signer = { version = "2.5.0", default-features = false }
+alloy-signer-local = { version = "2.5.0", default-features = false }
 alloy-sol-types = { version = "1.6.1", default-features = false }
 
 # general utilities
@@ -79,7 +79,7 @@ parity-scale-codec = "3.2.1"
 # by default, which drags the LLVM toolchain into every build. Alethia does not ship the JIT,
 # so the default set is spelled out without it. `reth-revm/portable` (a default) is applied
 # via this workspace's reth-revm dependency below.
-reth = { git = "https://github.com/ethereum-optimism/reth", package = "reth", tag = "op-v2.6.0-2", default-features = false, features = [
+reth = { git = "https://github.com/ethereum-optimism/reth", package = "reth", tag = "op-v2.7.0-1", default-features = false, features = [
     "jemalloc",
     "otlp",
     "otlp-logs",
@@ -89,76 +89,77 @@ reth = { git = "https://github.com/ethereum-optimism/reth", package = "reth", ta
     "gmp",
     "min-trace-logs",
 ] }
-reth-basic-payload-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-chain-state = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-chainspec = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-cli = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-cli-commands = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-cli-runner = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-cli-util = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-codecs = { version = "0.7.0", default-features = false }
-reth-consensus = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-consensus-common = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-db = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-db-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-db-common = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-engine-local = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-engine-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-engine-tree = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-errors = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-ethereum = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-ethereum-consensus = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-ethereum-engine-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-ethereum-forks = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-ethereum-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-evm = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-evm-ethereum = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-execution-cache = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-execution-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-network-peers = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-node-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-node-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-node-core = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-node-ethereum = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-payload-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-payload-builder-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-payload-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-payload-validator = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-primitives = { git = "https://github.com/ethereum-optimism/reth", package = "reth-ethereum-primitives", tag = "op-v2.6.0-2", default-features = false }
-reth-primitives-traits = { version = "0.7.1", default-features = false }
-reth-provider = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-revm = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false, features = [
+reth-basic-payload-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-chain-state = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-chainspec = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-cli = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-cli-commands = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-cli-runner = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-cli-util = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-codecs = { version = "0.8.1", default-features = false }
+reth-consensus = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-consensus-common = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-db = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-db-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-db-common = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-engine-local = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-engine-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-engine-tree = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-errors = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-ethereum = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-ethereum-consensus = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-ethereum-engine-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-ethereum-forks = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-ethereum-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-evm = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-evm-ethereum = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-execution-cache = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-execution-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-network-peers = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-node-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-node-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-node-core = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-node-ethereum = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-payload-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-payload-builder-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-payload-primitives = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-payload-validator = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-primitives = { git = "https://github.com/ethereum-optimism/reth", package = "reth-ethereum-primitives", tag = "op-v2.7.0-1", default-features = false }
+reth-primitives-traits = { version = "0.8.1", default-features = false }
+reth-provider = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-revm = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false, features = [
     "portable",
 ] }
-reth-rpc = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-convert = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-engine-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-eth-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-eth-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-rpc-server-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-storage-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-storage-errors = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-storage-overlay = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-tasks = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-tracing = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-transaction-pool = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2" }
-reth-trie = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
-reth-trie-common = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.6.0-2", default-features = false }
+reth-rpc = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-builder = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-convert = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-engine-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-eth-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-eth-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-rpc-server-types = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-storage-api = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-storage-errors = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-storage-overlay = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-tasks = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-tracing = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-transaction-pool = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1" }
+reth-trie = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
+reth-trie-common = { git = "https://github.com/ethereum-optimism/reth", tag = "op-v2.7.0-1", default-features = false }
 
-# Consumed from the Optimism monorepo (path rust/op-reth/crates/trie). The rev is the
-# op-reth/v2.8.1 release (ethereum-optimism/optimism#23924), whose workspace pins OP's reth
-# fork at tag op-v2.6.0-2 (3c5f2f1).
+# Consumed from the Optimism monorepo (path rust/op-reth/crates/trie). The rev is a `develop`
+# commit, not a release: no op-reth release carries the proofs-history unwind fix
+# (ethereum-optimism/optimism#23334, see #265) yet. Its workspace pins OP's reth fork at tag
+# op-v2.7.0-1 (ed91041). Move back to an op-reth release tag once one includes #23334.
 # The reth dependencies above must use the same git URL and tag (spelled identically) or the
 # graph gets two incompatible reth copies; .github/scripts/check_reth_pin.sh enforces this.
 # Future reth bumps are OP-first — match the source they pin rather than picking our own.
 # The Taiko live collector the crate used to carry for us lives in
 # crates/node/src/proof_history/live.rs.
-reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", rev = "722072949ce583f361424a160082186ee14cac71", default-features = false, features = ["serde-bincode-compat"] }
+reth-optimism-trie = { git = "https://github.com/ethereum-optimism/optimism", rev = "b636ba6fee382843e7ce988608a8615ae6bece3a", default-features = false, features = ["serde-bincode-compat"] }
 
 # revm
-revm-database-interface = { version = "43.0.0", default-features = false }
+revm-database-interface = { version = "43.0.1", default-features = false }
 
 # serialization
 serde = { version = "1.0", default-features = false }

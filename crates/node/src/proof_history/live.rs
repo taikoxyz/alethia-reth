@@ -15,8 +15,8 @@ use reth_optimism_trie::{
 };
 use reth_primitives_traits::{AlloyBlockHeader, BlockTy, RecoveredBlock};
 use reth_provider::{
-    DatabaseProviderFactory, HashedPostStateProvider, StateProviderFactory, StateReader,
-    StateRootProvider,
+    DatabaseProviderFactory, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    StateReader, StateRootProvider,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
@@ -110,7 +110,7 @@ where
             parent_block_number,
         );
 
-        let db = StateProviderDatabase::new(&state_provider);
+        let db = StateProviderDatabase::new((&state_provider).into_evm_state_provider());
         let block_executor = self.evm_config.batch_executor(db);
 
         let execution_result = block_executor.execute(&(*block).clone())?;

@@ -21,7 +21,8 @@ use reth_evm::{
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_node_api::{Block, NodePrimitives};
 use reth_provider::{
-    BlockReaderIdExt, ChainSpecProvider, DBProvider, DatabaseProviderFactory, StateProviderFactory,
+    BlockReaderIdExt, ChainSpecProvider, DBProvider, DatabaseProviderFactory, StateProvider,
+    StateProviderFactory,
 };
 use reth_revm::{State, database::StateProviderDatabase};
 use reth_rpc_eth_api::{RpcConvert, RpcTransaction};
@@ -354,7 +355,7 @@ where
             EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
         })?;
         let mut db = State::builder()
-            .with_database(StateProviderDatabase::new(&state_provider))
+            .with_database(StateProviderDatabase::new((&state_provider).into_evm_state_provider()))
             .with_bundle_update()
             .build();
 

@@ -5,7 +5,8 @@ use alloy_eips::eip4844::BYTES_PER_BLOB;
 use alloy_primitives::B256;
 use reth::{
     providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{cancelled::CancelOnDrop, primitives::U256},
+    revm::primitives::U256,
+    tasks::CancelOnDrop,
 };
 use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};

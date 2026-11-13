@@ -26,7 +26,7 @@ use reth_evm::{
 };
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::HeaderProvider;
+use reth_provider::{HeaderProvider, StateProvider};
 use reth_revm::{
     State, database::StateProviderDatabase, db::states::bundle_state::BundleRetention,
     witness::ExecutionWitnessRecord,
@@ -202,7 +202,7 @@ where
             let state_provider = factory
                 .state_provider_at(canonical_state, parent_number)
                 .map_err(EthApiError::from)?;
-            let db = StateProviderDatabase::new(&*state_provider);
+            let db = StateProviderDatabase::new((&*state_provider).into_evm_state_provider());
             let block_executor = evm_config.executor(db);
             // The record borrows the post-execution `State`, so the witness is assembled inside
             // the closure while that state is still alive.
@@ -269,7 +269,7 @@ where
             let state_provider = factory
                 .state_provider_at(canonical_state, parent_number)
                 .map_err(EthApiError::from)?;
-            let db = StateProviderDatabase::new(&*state_provider);
+            let db = StateProviderDatabase::new((&*state_provider).into_evm_state_provider());
             let mut state = State::builder().with_database(db).with_bundle_update().build();
 
             {

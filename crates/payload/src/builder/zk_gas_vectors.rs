@@ -2,13 +2,18 @@
 //!
 //! The vectors live in taiko-mono's `testdata/zk_gas_vectors`, found through
 //! `ZK_GAS_VECTORS_DIR`. alethia-reth is the reference client: with `ZK_GAS_VECTORS_WRITE=1`
-//! this runner writes each block vector's `expected` values, otherwise it asserts them.
+//! this runner writes each block vector's `expected` values and its zk gas trace
+//! (`traces/<id>.jsonl`), otherwise it asserts them.
 //!
 //! A vector's txs are signed and built into block 1 on top of a genesis parent through the
 //! production legacy-mode path ([`execute_provided_transactions`]). The runner then checks that
 //! the built block imports, that the built block plus the truncated tx (if any) and the built
 //! block with its difficulty raised by one both fail import, and that prover-mode execution of the
 //! full tx list commits the same txs with the same zk gas.
+//!
+//! The trace takes its charges from the build, whose meter reports every event. The state each
+//! step starts from comes from a replay of the same txs on the same parent state through an
+//! inspector EVM with [`TraceFactsInspector`]; the replay must charge exactly like the build.
 
 use std::{
     any::Any,
@@ -37,8 +42,8 @@ use reth::{
 };
 use reth_ethereum::{Block, EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_evm::{
-    ConfigureEvm,
-    block::{BlockExecutionError, BlockExecutor, CommitChanges, GasOutput},
+    ConfigureEvm, EvmFactory,
+    block::{BlockExecutionError, BlockExecutor, BlockExecutorFactory, CommitChanges, GasOutput},
     eth::receipt_builder::ReceiptBuilder,
     execute::{BlockBuilder, BlockBuilderOutcome, ExecutorTx},
 };
@@ -71,13 +76,22 @@ use alethia_reth_block::{
     config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
     derived_block::execute_derived_block,
     executor::{TaikoBlockExecutor, is_zk_gas_difficulty_mismatch, is_zk_gas_limit_exceeded},
-    testutil::unzen_chain_spec,
+    testutil::{ExecutorBackedBuilder, unzen_chain_spec},
 };
 use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_DEVNET_CHAIN_ID};
 use alethia_reth_consensus::validation::{
     ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR, TaikoBeaconConsensus, TaikoBlockReader,
 };
-use alethia_reth_evm::{handler::get_treasury_address, zk_gas::unzen::TX_INTRINSIC_ZK_GAS};
+use alethia_reth_evm::{
+    handler::get_treasury_address,
+    zk_gas::{
+        trace::{
+            TraceFactsInspector, TraceLog, TraceRecord, TxEndStatus, block_tx_lines, render,
+            sync_trace_file,
+        },
+        unzen::TX_INTRINSIC_ZK_GAS,
+    },
+};
 use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 
 use super::execution::{
@@ -272,6 +286,10 @@ struct BuildOutcome {
     block: SealedBlock<Block>,
     /// The built block's state root.
     state_root: B256,
+    /// What the builder did with each tx it executed, in input order.
+    outcomes: Vec<TxOutcome>,
+    /// The zk gas events the build's meter reported during each executed tx.
+    tx_records: Vec<Vec<TraceRecord>>,
 }
 
 /// What the corpus test does, from `ZK_GAS_VECTORS_WRITE`, `CI`, `ZK_GAS_VECTORS_DIR` and
@@ -353,13 +371,20 @@ fn load_vectors<T: DeserializeOwned>(dir: &Path, layer: &str) -> Result<Vec<(Pat
     Ok(vectors)
 }
 
-/// Builds the block of `input`, imports it and its two invalid variants, and runs prover-mode
-/// execution, then returns the expected values of the vector.
+/// Returns the expected values of the vector `input`; see [`run_block_traced`].
+fn run_block(input: &BlockInput) -> BlockExpected {
+    run_block_traced(input).0
+}
+
+/// Builds the block of `input`, imports it and its two invalid variants, runs prover-mode
+/// execution and replays the txs for the trace, then returns the expected values of the vector and
+/// its trace file text.
 ///
 /// Panics, naming the failed check, when the built block does not import, when an invalid variant
-/// imports or fails for a reason other than zk gas, when build and prover disagree, and when the
-/// vector is malformed (wrong environment, the anchor not included).
-fn run_block(input: &BlockInput) -> BlockExpected {
+/// imports or fails for a reason other than zk gas, when build and prover disagree, when build and
+/// the inspector replay disagree ("reth plain/inspector trace divergence"), and when the vector is
+/// malformed (wrong environment, the anchor not included).
+fn run_block_traced(input: &BlockInput) -> (BlockExpected, String) {
     check_env(&input.env);
     let txs = sign_txs(input);
     let built = build(input, &txs);
@@ -403,7 +428,28 @@ fn run_block(input: &BlockInput) -> BlockExpected {
         );
     }
 
-    BlockExpected {
+    let (replay_outcomes, replay_records) = replay(input, &txs);
+    if replay_outcomes != built.outcomes {
+        panic!(
+            "reth plain/inspector trace divergence: the build's tx outcomes {:?}, the inspector \
+             replay's {replay_outcomes:?}",
+            built.outcomes
+        );
+    }
+    let mut lines = Vec::new();
+    for (index, outcome) in built.outcomes.iter().enumerate() {
+        let status = match outcome {
+            TxOutcome::Committed { .. } => TxEndStatus::Committed,
+            TxOutcome::Skipped(_) => TxEndStatus::Skipped,
+            TxOutcome::ZkGasLimit => TxEndStatus::Aborted,
+        };
+        let tx_lines =
+            block_tx_lines(index, status, &built.tx_records[index], &replay_records[index])
+                .unwrap_or_else(|err| panic!("tx {index}: {err}"));
+        lines.extend(tx_lines);
+    }
+
+    let expected = BlockExpected {
         raw_txs: txs.iter().map(|tx| tx.encoded_2718().into()).collect(),
         included: built.included,
         truncated_at: built.truncated_at,
@@ -413,7 +459,8 @@ fn run_block(input: &BlockInput) -> BlockExpected {
         import_built: ACCEPT.to_owned(),
         import_extended,
         import_wrong_difficulty: REJECT.to_owned(),
-    }
+    };
+    (expected, render(&lines))
 }
 
 /// Panics unless `env` is the fixed block vector environment: chain [`VECTOR_CHAIN_ID`], block 1.
@@ -468,7 +515,13 @@ fn build(input: &BlockInput, txs: &[Recovered<EthTransactionSigned>]) -> BuildOu
     let builder = evm_config
         .builder_for_next_block(&mut db, &parent, next_block_attributes(&input.env))
         .unwrap_or_else(|err| panic!("next block builder: {err}"));
-    let mut builder = RecordingBuilder { inner: builder, outcomes: Vec::new() };
+    let log = TraceLog::default();
+    let mut builder = RecordingBuilder::new(builder, log.clone());
+    builder
+        .evm_mut()
+        .meter_mut()
+        .expect("Unzen installs a zk gas meter")
+        .set_trace_sink(Some(Box::new(log)));
 
     builder
         .apply_pre_execution_changes()
@@ -480,6 +533,7 @@ fn build(input: &BlockInput, txs: &[Recovered<EthTransactionSigned>]) -> BuildOu
         Err(err) => panic!("build: tx execution failed: {err}"),
     }
     let outcomes = std::mem::take(&mut builder.outcomes);
+    let tx_records = std::mem::take(&mut builder.tx_records);
     let BlockBuilderOutcome { block, .. } =
         builder.finish(&provider, None).unwrap_or_else(|err| panic!("build: finish failed: {err}"));
     let block = block.into_sealed_block();
@@ -493,14 +547,14 @@ fn build(input: &BlockInput, txs: &[Recovered<EthTransactionSigned>]) -> BuildOu
     let mut included = Vec::new();
     let mut cumulative_zk_gas = Vec::new();
     let mut truncated_at = None;
-    for (index, outcome) in outcomes.into_iter().enumerate() {
+    for (index, outcome) in outcomes.iter().enumerate() {
         if let Some(at) = truncated_at {
             panic!("build: tx {index} executed after tx {at} exceeded the block zk gas limit");
         }
         match outcome {
             TxOutcome::Committed { block_zk_gas } => {
                 included.push(index);
-                cumulative_zk_gas.push(block_zk_gas);
+                cumulative_zk_gas.push(*block_zk_gas);
             }
             TxOutcome::Skipped(reason) if index == 0 => {
                 panic!("build: the anchor (tx 0) was skipped: {reason}")
@@ -518,7 +572,57 @@ fn build(input: &BlockInput, txs: &[Recovered<EthTransactionSigned>]) -> BuildOu
     );
 
     let state_root = block.header().state_root;
-    BuildOutcome { included, truncated_at, cumulative_zk_gas, block, state_root }
+    BuildOutcome {
+        included,
+        truncated_at,
+        cumulative_zk_gas,
+        block,
+        state_root,
+        outcomes,
+        tx_records,
+    }
+}
+
+/// Replays `txs` like [`build`] on the same parent state, through an inspector EVM whose inner
+/// inspector is [`TraceFactsInspector`], and returns what the executor did with each tx and the
+/// trace records (facts and zk gas events) of each.
+fn replay(
+    input: &BlockInput,
+    txs: &[Recovered<EthTransactionSigned>],
+) -> (Vec<TxOutcome>, Vec<Vec<TraceRecord>>) {
+    let evm_config = vector_evm_config();
+    let parent = parent_header(input);
+    let attributes = next_block_attributes(&input.env);
+    let mut db =
+        State::builder().with_database(vector_db(input, &parent)).with_bundle_update().build();
+    let env = evm_config
+        .next_evm_env(parent.header(), &attributes)
+        .unwrap_or_else(|err| panic!("replay: next block env: {err}"));
+    let ctx = evm_config
+        .context_for_next_block(&parent, attributes)
+        .unwrap_or_else(|err| panic!("replay: next block context: {err}"));
+    let log = TraceLog::default();
+    let mut evm = evm_config.evm_factory().create_evm_with_inspector(
+        &mut db,
+        env,
+        TraceFactsInspector::new(log.clone()),
+    );
+    evm.meter_mut()
+        .expect("Unzen installs a zk gas meter")
+        .set_trace_sink(Some(Box::new(log.clone())));
+    let executor = evm_config.block_executor_factory().create_executor(evm, ctx);
+    let mut builder = RecordingBuilder::new(ExecutorBackedBuilder { executor }, log);
+
+    builder
+        .apply_pre_execution_changes()
+        .unwrap_or_else(|err| panic!("replay: pre-execution changes failed: {err}"));
+    let base_fee = builder.evm_mut().block.basefee;
+    match execute_provided_transactions(&mut builder, txs, base_fee, &CancelOnDrop::default()) {
+        Ok(ExecutionOutcome::Completed(_)) => {}
+        Ok(ExecutionOutcome::Cancelled) => panic!("replay: cancelled"),
+        Err(err) => panic!("replay: tx execution failed: {err}"),
+    }
+    (builder.outcomes, builder.tx_records)
 }
 
 /// Imports `block` on top of the vector's genesis parent and pre-state, like a node does: header
@@ -735,7 +839,7 @@ impl TaikoBlockReader for GenesisReader {
 }
 
 /// What the builder did with one tx it was handed.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum TxOutcome {
     /// Committed; the finalized block zk gas right after the commit.
     Committed {
@@ -760,12 +864,24 @@ impl<E, Spec, R: ReceiptBuilder> FinalizedZkGas for TaikoBlockExecutor<'_, E, Sp
     }
 }
 
-/// Block builder that records the outcome of every tx it executes, in call order.
+/// Block builder that records the outcome and the trace records of every tx it executes, in call
+/// order.
 struct RecordingBuilder<B> {
     /// The production block builder.
     inner: B,
     /// One entry per executed tx.
     outcomes: Vec<TxOutcome>,
+    /// The log the EVM's meter (and facts inspector, if any) reports to.
+    log: TraceLog,
+    /// The records `log` received during each executed tx.
+    tx_records: Vec<Vec<TraceRecord>>,
+}
+
+impl<B> RecordingBuilder<B> {
+    /// Wraps `inner`, whose EVM reports to `log`.
+    const fn new(inner: B, log: TraceLog) -> Self {
+        Self { inner, outcomes: Vec::new(), log, tx_records: Vec::new() }
+    }
 }
 
 impl<B> BlockBuilder for RecordingBuilder<B>
@@ -777,7 +893,10 @@ where
     type Executor = B::Executor;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()
+        let result = self.inner.apply_pre_execution_changes();
+        // The system calls before the first tx are not part of any tx's trace.
+        self.log.take();
+        result
     }
 
     fn execute_transaction_with_commit_condition(
@@ -794,6 +913,7 @@ where
             Err(err) if is_zk_gas_limit_exceeded(err) => TxOutcome::ZkGasLimit,
             Err(err) => TxOutcome::Skipped(err.to_string()),
         });
+        self.tx_records.push(self.log.take());
         result
     }
 
@@ -1310,6 +1430,32 @@ fn inline_truncation_input() -> BlockInput {
     }
 }
 
+/// The anchor; tx 1 asks for more gas than the block has, so the executor rejects it before
+/// charging its intrinsic zk gas; tx 2 is a transfer.
+fn inline_oversized_gas_input() -> BlockInput {
+    let mut input = inline_transfer_input();
+    let ether = U256::from(1_000_000_000_000_000_000_u64);
+    input.alloc.insert(signer_address(2), account(ether, &[]));
+    let gas_limit: u64 = input.env.gas_limit.to();
+    let beef = address!("0x000000000000000000000000000000000000beef");
+    input.txs.insert(1, user_tx(2, beef, gas_limit + 1, 0, &[]));
+    input
+}
+
+/// The event name of each trace line, with the status of `tx_end` lines.
+fn trace_shape(trace: &str) -> Vec<String> {
+    trace
+        .lines()
+        .map(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("trace line is JSON");
+            match event["e"].as_str().expect("trace line has an event name") {
+                "tx_end" => format!("tx_end {}", event["status"].as_str().expect("tx_end status")),
+                name => name.to_owned(),
+            }
+        })
+        .collect()
+}
+
 /// A change to block expectations that [`compare_block`] must detect.
 type Mutation = fn(&mut BlockExpected);
 
@@ -1764,6 +1910,105 @@ fn block_vectors_match_expected() {
     assert!(
         failures.is_empty(),
         "{} of {} block vectors failed:\n{}",
+        failures.len(),
+        vectors.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn block_trace_of_transfer_charges_only_the_intrinsic() {
+    // The anchor runs its STOP stub; the transfer runs no code.
+    let (_, trace) = run_block_traced(&inline_transfer_input());
+    assert_eq!(
+        trace_shape(&trace),
+        ["intrinsic", "step", "tx_end committed", "intrinsic", "tx_end committed"]
+    );
+    let lines: Vec<&str> = trace.lines().collect();
+    assert_eq!(lines[0], r#"{"e":"intrinsic","zk":"0x3b538","ok":true}"#);
+    assert!(lines[1].starts_with(r#"{"e":"step","d":1,"pc":0,"op":0,"#), "{}", lines[1]);
+    assert_eq!(lines[2], r#"{"e":"tx_end","index":0,"status":"committed","tx_zk":"0x3b538"}"#);
+    assert_eq!(lines[4], r#"{"e":"tx_end","index":1,"status":"committed","tx_zk":"0x3b538"}"#);
+    assert!(trace.ends_with('\n'));
+}
+
+#[test]
+fn block_trace_records_a_tx_skipped_before_its_intrinsic_charge_alone() {
+    let (expected, trace) = run_block_traced(&inline_oversized_gas_input());
+    assert_eq!(expected.included, vec![0, 2]);
+    assert_eq!(
+        trace_shape(&trace),
+        [
+            "intrinsic",
+            "step",
+            "tx_end committed",
+            "tx_end skipped",
+            "intrinsic",
+            "tx_end committed"
+        ]
+    );
+    assert!(trace.contains(r#"{"e":"tx_end","index":1,"status":"skipped","tx_zk":null}"#));
+}
+
+#[test]
+fn block_trace_ends_at_the_aborted_tx() {
+    let (expected, trace) = run_block_traced(&inline_truncation_input());
+    assert_eq!(expected.truncated_at, Some(1));
+    let shape = trace_shape(&trace);
+    assert_eq!(&shape[..3], ["intrinsic", "step", "tx_end committed"]);
+    // The second point evaluation call exceeds the limit; the sentinel tx never runs.
+    assert_eq!(shape.last().map(String::as_str), Some("tx_end aborted"));
+    assert_eq!(shape.iter().filter(|kind| *kind == "precompile").count(), 2);
+    let lines: Vec<&str> = trace.lines().collect();
+    let rejected = lines[lines.len() - 2];
+    assert!(
+        rejected.starts_with(
+            r#"{"e":"precompile","addr":"0x000000000000000000000000000000000000000a","#
+        )
+    );
+    assert!(rejected.ends_with(r#""ok":false}"#), "{rejected}");
+    assert_eq!(
+        lines[lines.len() - 1],
+        r#"{"e":"tx_end","index":1,"status":"aborted","tx_zk":null}"#
+    );
+}
+
+#[test]
+fn block_trace_matches_committed() {
+    let mode = corpus_mode(
+        std::env::var_os("ZK_GAS_VECTORS_WRITE"),
+        std::env::var_os("CI"),
+        std::env::var_os("ZK_GAS_VECTORS_DIR"),
+        std::env::var_os("ZK_GAS_VECTORS_REQUIRED"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let (dir, write) = match mode {
+        CorpusMode::Skip => {
+            eprintln!("skip: ZK_GAS_VECTORS_DIR unset");
+            return;
+        }
+        CorpusMode::Assert(dir) => (dir, false),
+        CorpusMode::Write(dir) => (dir, true),
+    };
+
+    let vectors = load_vectors::<BlockVector>(&dir, "block").unwrap_or_else(|err| panic!("{err}"));
+    let mut failures = Vec::new();
+    for (_, vector) in &vectors {
+        let trace = match catch_unwind(AssertUnwindSafe(|| run_block_traced(&vector.input))) {
+            Ok((_, trace)) => trace,
+            Err(payload) => {
+                failures.push(format!("{}: {}", vector.id, panic_message(payload.as_ref())));
+                continue;
+            }
+        };
+        if let Err(err) = sync_trace_file(&dir, &vector.id, &trace, write) {
+            failures.push(format!("{}: {err}", vector.id));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} block traces failed:\n{}",
         failures.len(),
         vectors.len(),
         failures.join("\n")

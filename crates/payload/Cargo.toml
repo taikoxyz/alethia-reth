@@ -49,6 +49,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 alethia-reth-block = { path = "../block", features = ["prover", "test-utils"] }
+alethia-reth-evm = { path = "../evm", features = ["zk-gas-trace"] }
 alloy-genesis = { workspace = true }
 reth-provider = { workspace = true, features = ["test-utils"] }
 reth-storage-api = { workspace = true }

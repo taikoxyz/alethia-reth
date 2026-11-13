@@ -3,6 +3,8 @@
 use alloy_primitives::Address;
 
 use super::schedule::ZkGasSchedule;
+#[cfg(any(test, feature = "zk-gas-trace"))]
+use super::trace::{ZkGasTraceEvent, ZkGasTraceSink};
 
 /// Outcome used when zk gas charging exceeds the active block budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +23,9 @@ pub struct ZkGasMeter<'a> {
     tx_zk_gas_used: u64,
     /// Remaining block zk gas budget after finalized and in-flight transaction charges.
     remaining_zk_gas: u64,
+    /// Test-only receiver of every zk gas event; see [`super::trace`].
+    #[cfg(any(test, feature = "zk-gas-trace"))]
+    trace: Option<Box<dyn ZkGasTraceSink>>,
 }
 
 impl<'a> ZkGasMeter<'a> {
@@ -31,6 +36,8 @@ impl<'a> ZkGasMeter<'a> {
             block_zk_gas_used: 0,
             tx_zk_gas_used: 0,
             remaining_zk_gas: schedule.block_limit,
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            trace: None,
         }
     }
 
@@ -54,6 +61,7 @@ impl<'a> ZkGasMeter<'a> {
                 .block_limit
                 .saturating_sub(block_zk_gas_used)
                 .saturating_sub(tx_zk_gas_used),
+            trace: None,
         }
     }
 
@@ -61,6 +69,8 @@ impl<'a> ZkGasMeter<'a> {
     pub fn reset_transaction(&mut self) {
         self.tx_zk_gas_used = 0;
         self.remaining_zk_gas = self.schedule.block_limit.saturating_sub(self.block_zk_gas_used);
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        self.trace_event(ZkGasTraceEvent::TxReset);
     }
 
     /// Promotes the current transaction's zk gas into the finalized block total.
@@ -72,6 +82,8 @@ impl<'a> ZkGasMeter<'a> {
         if next_block > self.schedule.block_limit {
             return Err(ZkGasOutcome::LimitExceeded);
         }
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        self.trace_event(ZkGasTraceEvent::TxCommit { tx_zk: self.tx_zk_gas_used });
         self.block_zk_gas_used = next_block;
         self.tx_zk_gas_used = 0;
         Ok(())
@@ -159,7 +171,16 @@ impl<'a> ZkGasMeter<'a> {
     /// in-flight transaction total and is only promoted into the block total when the transaction
     /// commits. A schedule value of `0` makes this a no-op.
     pub fn charge_tx_intrinsic(&mut self) -> Result<(), ZkGasOutcome> {
-        self.charge_amount(self.schedule.tx_intrinsic_zk_gas)
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        let zk_before = self.tx_zk_gas_used;
+        let charge = self.charge_amount(self.schedule.tx_intrinsic_zk_gas);
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        {
+            let zk_charge =
+                self.traced_charge(zk_before, charge, self.schedule.tx_intrinsic_zk_gas);
+            self.trace_event(ZkGasTraceEvent::TxIntrinsic { zk_charge, ok: charge.is_ok() });
+        }
+        charge
     }
 
     /// Applies a checked zk gas charge against the current transaction and block budget.
@@ -172,6 +193,100 @@ impl<'a> ZkGasMeter<'a> {
             self.tx_zk_gas_used.checked_add(charge).ok_or(ZkGasOutcome::LimitExceeded)?;
         self.remaining_zk_gas -= charge;
         Ok(())
+    }
+}
+
+/// Test-only trace hooks; see [`super::trace`].
+#[cfg(any(test, feature = "zk-gas-trace"))]
+impl ZkGasMeter<'_> {
+    /// Installs (or, with `None`, removes) the receiver of every zk gas event of this meter: the
+    /// intrinsic charge, commit and reset it performs itself, and the step and precompile charges
+    /// its call sites report.
+    pub fn set_trace_sink(&mut self, sink: Option<Box<dyn ZkGasTraceSink>>) {
+        self.trace = sink;
+    }
+
+    /// Returns `true` when a trace sink is installed.
+    pub(crate) fn is_tracing(&self) -> bool {
+        self.trace.is_some()
+    }
+
+    /// Hands `event` to the trace sink, if one is installed.
+    pub(crate) fn trace_event(&mut self, event: ZkGasTraceEvent) {
+        if let Some(sink) = &mut self.trace {
+            sink.on_event(event);
+        }
+    }
+
+    /// The zk gas of a charge that ran when the in-flight total was `zk_before`: what it added
+    /// to the total when it succeeded, else `attempted`, the amount it tried to charge.
+    fn traced_charge(
+        &self,
+        zk_before: u64,
+        charge: Result<(), ZkGasOutcome>,
+        attempted: u64,
+    ) -> u64 {
+        match charge {
+            Ok(()) => self.tx_zk_gas_used - zk_before,
+            Err(ZkGasOutcome::LimitExceeded) => attempted,
+        }
+    }
+
+    /// Reports an opcode step charged by [`Self::charge_opcode`] or, when `spawned`,
+    /// [`Self::charge_spawn_opcode`]; `zk_before` is the in-flight total before the charge.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn trace_step(
+        &mut self,
+        depth: usize,
+        pc: usize,
+        opcode: u8,
+        gas_before: u64,
+        gas_after: u64,
+        spawned: bool,
+        zk_before: u64,
+        charge: Result<(), ZkGasOutcome>,
+    ) {
+        let multiplier = u64::from(self.schedule.opcode_multipliers[usize::from(opcode)]);
+        let raw_gas = if spawned {
+            spawn_estimate(self.schedule, opcode)
+        } else {
+            gas_before.saturating_sub(gas_after)
+        };
+        let zk_charge = self.traced_charge(zk_before, charge, raw_gas.saturating_mul(multiplier));
+        self.trace_event(ZkGasTraceEvent::Step {
+            depth,
+            pc,
+            opcode,
+            gas_before,
+            gas_after,
+            spawned,
+            zk_charge,
+            ok: charge.is_ok(),
+        });
+    }
+
+    /// Reports a precompile run charged by [`Self::charge_precompile`]: it was given `supplied`
+    /// gas and had `left`; `zk_before` is the in-flight total before the charge.
+    pub(crate) fn trace_precompile(
+        &mut self,
+        address: Address,
+        supplied: u64,
+        left: u64,
+        success: bool,
+        zk_before: u64,
+        charge: Result<(), ZkGasOutcome>,
+    ) {
+        let multiplier = u64::from(self.schedule.precompile_multiplier(&address));
+        let attempted = supplied.saturating_sub(left).saturating_mul(multiplier);
+        let zk_charge = self.traced_charge(zk_before, charge, attempted);
+        self.trace_event(ZkGasTraceEvent::Precompile {
+            address,
+            supplied,
+            left,
+            success,
+            zk_charge,
+            ok: charge.is_ok(),
+        });
     }
 }
 

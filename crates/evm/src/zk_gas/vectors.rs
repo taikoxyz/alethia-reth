@@ -2,8 +2,10 @@
 //!
 //! The vectors live in taiko-mono's `testdata/zk_gas_vectors`, found through
 //! `ZK_GAS_VECTORS_DIR`. alethia-reth is the reference client: with `ZK_GAS_VECTORS_WRITE=1`
-//! this runner writes each harness vector's `expected` values, otherwise it asserts them. Every
-//! vector runs on both the plain (production) and the inspector metered path, which must agree.
+//! this runner writes each harness vector's `expected` values and its zk gas trace
+//! (`traces/<id>.jsonl`), otherwise it asserts them. Every vector runs on both the plain
+//! (production) and the inspector metered path, which must agree; the trace takes its charges from
+//! the plain path and the state each step starts from from the inspector path.
 
 use std::{
     any::Any,
@@ -19,13 +21,18 @@ use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, Bytes, U64, U256, address};
 use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
-    Context, MainBuilder, MainContext,
+    Context, Inspector, MainBuilder, MainContext,
     context::{
-        BlockEnv, CfgEnv, TxEnv,
+        BlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv,
         result::{EVMError, ExecutionResult},
     },
     db::InMemoryDB,
     inspector::NoOpInspector,
+    interpreter::{
+        Interpreter,
+        interpreter::EthInterpreter,
+        interpreter_types::{InputsTr, Jumps},
+    },
     precompile::{PrecompileSpecId, Precompiles},
     primitives::TxKind,
     state::{AccountInfo, Bytecode, bytecode::opcode},
@@ -35,11 +42,20 @@ use serde::{
     de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor},
 };
 
-use crate::{alloy::TaikoEvmWrapper, evm::TaikoEvm, factory::TaikoEvmFactory, spec::TaikoSpecId};
+use crate::{
+    alloy::{TaikoEvmContext, TaikoEvmWrapper},
+    evm::TaikoEvm,
+    factory::TaikoEvmFactory,
+    spec::TaikoSpecId,
+};
 
 use super::{
     adapter::{ZK_GAS_LIMIT_ERR, ZkGasInspector},
     schedule::ZkGasSchedule,
+    trace::{
+        TraceFactsInspector, TraceLog, TraceRecord, ZkGasTraceEvent, harness_lines, render,
+        sync_trace_file,
+    },
     unzen::{BLOCK_ZK_GAS_LIMIT, UNZEN_ZK_GAS_SCHEDULE},
 };
 
@@ -123,6 +139,18 @@ enum HarnessStatus {
     Halt,
     /// Metering exceeded the block zk gas limit and the tx aborted.
     ZkLimit,
+}
+
+impl HarnessStatus {
+    /// The status as a vector file and a trace's `frame_end` spell it.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Revert => "revert",
+            Self::Halt => "halt",
+            Self::ZkLimit => "zk_limit",
+        }
+    }
 }
 
 /// What the corpus test does, from `ZK_GAS_VECTORS_WRITE`, `CI`, `ZK_GAS_VECTORS_DIR` and
@@ -209,12 +237,9 @@ fn load_vectors<T: DeserializeOwned>(dir: &Path, layer: &str) -> Result<Vec<(Pat
 /// Panics with "reth plain/inspector divergence" when the two paths disagree, and when the tx
 /// fails validation (a malformed vector).
 fn run_harness(input: &HarnessInput) -> HarnessExpected {
-    let schedule: &'static ZkGasSchedule = Box::leak(Box::new(ZkGasSchedule {
-        block_limit: input.zk_block_limit.to(),
-        ..UNZEN_ZK_GAS_SCHEDULE
-    }));
-    let plain = run_metered_path(input, schedule, false);
-    let inspected = run_metered_path(input, schedule, true);
+    let schedule = harness_schedule(input);
+    let plain = run_metered_path(input, schedule, false, NoOpInspector {}, None);
+    let inspected = run_metered_path(input, schedule, true, NoOpInspector {}, None);
     if plain != inspected {
         panic!(
             "reth plain/inspector divergence: plain {}, inspector {}",
@@ -225,14 +250,70 @@ fn run_harness(input: &HarnessInput) -> HarnessExpected {
     plain
 }
 
-/// Runs `input` on one metered path: the production plain loop, or the inspector adapter.
-fn run_metered_path(
+/// The Unzen schedule with the vector's block zk gas limit.
+fn harness_schedule(input: &HarnessInput) -> &'static ZkGasSchedule {
+    Box::leak(Box::new(ZkGasSchedule {
+        block_limit: input.zk_block_limit.to(),
+        ..UNZEN_ZK_GAS_SCHEDULE
+    }))
+}
+
+/// Runs `input` with tracing and returns its expected values and its trace file text.
+///
+/// The plain path reports its charges and the inspector path, with [`TraceFactsInspector`] as
+/// the inner inspector, reports its charges and the state each step starts from. Panics with
+/// "reth plain/inspector trace divergence" when the two paths charge differently, and with "reth
+/// trace side effect" when a traced run's result differs from the untraced [`run_harness`].
+fn trace_harness(input: &HarnessInput) -> (HarnessExpected, String) {
+    let untraced = run_harness(input);
+    let schedule = harness_schedule(input);
+    let plain_log = TraceLog::default();
+    let plain = run_metered_path(input, schedule, false, NoOpInspector {}, Some(&plain_log));
+    let replay_log = TraceLog::default();
+    let inspected = run_metered_path(
+        input,
+        schedule,
+        true,
+        TraceFactsInspector::new(replay_log.clone()),
+        Some(&replay_log),
+    );
+    if plain != untraced || inspected != untraced {
+        panic!(
+            "reth trace side effect: untraced {}, traced plain {}, traced inspector {}",
+            to_json(&untraced),
+            to_json(&plain),
+            to_json(&inspected)
+        );
+    }
+    let lines = harness_lines(
+        &plain_log.take(),
+        &replay_log.take(),
+        untraced.status.name(),
+        untraced.frame_zk_gas,
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    (untraced, render(&lines))
+}
+
+/// Runs `input` on one metered path: the production plain loop, or the inspector adapter with
+/// `inner` as its inner inspector. With `trace`, the path's meter reports every event to it.
+fn run_metered_path<I>(
     input: &HarnessInput,
     schedule: &'static ZkGasSchedule,
     inspect: bool,
-) -> HarnessExpected {
+    inner: I,
+    trace: Option<&TraceLog>,
+) -> HarnessExpected
+where
+    I: Inspector<TaikoEvmContext<InMemoryDB>>,
+{
     let path = if inspect { "inspector" } else { "plain" };
-    let mut evm = harness_evm(input, schedule, inspect);
+    let mut evm = harness_evm(input, schedule, inspect, inner);
+    if let Some(log) = trace {
+        evm.meter_mut()
+            .unwrap_or_else(|| panic!("{path} path installed no zk gas meter"))
+            .set_trace_sink(Some(Box::new(log.clone())));
+    }
     let outcome = evm.transact(harness_tx(input));
     let status = match outcome {
         Ok(result) => match result.result {
@@ -250,22 +331,21 @@ fn run_metered_path(
 }
 
 /// Builds the EVM for one path, wired like [`TaikoEvmFactory`] but with `schedule` (whose block
-/// limit comes from the vector) in place of the fork's static schedule.
-fn harness_evm(
+/// limit comes from the vector) in place of the fork's static schedule. `inner` is the inner
+/// inspector of the inspector path; the plain path never calls it.
+fn harness_evm<I>(
     input: &HarnessInput,
     schedule: &'static ZkGasSchedule,
     inspect: bool,
-) -> TaikoEvmWrapper<InMemoryDB, NoOpInspector, PrecompilesMap> {
+    inner: I,
+) -> TaikoEvmWrapper<InMemoryDB, I, PrecompilesMap> {
     let env = harness_env(input);
     let spec_id = env.cfg_env.spec;
     let evm = Context::mainnet()
         .with_cfg(env.cfg_env)
         .with_block(env.block_env)
         .with_db(harness_db(&input.alloc))
-        .build_mainnet_with_inspector(ZkGasInspector::new(
-            NoOpInspector {},
-            inspect.then_some(schedule),
-        ))
+        .build_mainnet_with_inspector(ZkGasInspector::new(inner, inspect.then_some(schedule)))
         .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
             PrecompileSpecId::from_spec_id(spec_id.into()),
         )));
@@ -502,6 +582,69 @@ fn inline_add_input() -> HarnessInput {
         number: U256::from(1),
         timestamp: U256::from(12),
         coinbase: address!("0x0000000000000000000000000000000000c0ffee"),
+    }
+}
+
+/// `PUSH1 0, SLOAD, POP, PUSH1 0, SLOAD, STOP` at a contract whose slot 0 holds 7: a cold, then
+/// a warm load of the same slot.
+fn inline_sload_twice_input() -> HarnessInput {
+    let mut input = inline_add_input();
+    let code = [
+        opcode::PUSH1,
+        0x00,
+        opcode::SLOAD,
+        opcode::POP,
+        opcode::PUSH1,
+        0x00,
+        opcode::SLOAD,
+        opcode::STOP,
+    ];
+    let target = input.alloc.get_mut(&input.to).expect("target in alloc");
+    target.code = Bytes::copy_from_slice(&code);
+    target.storage = BTreeMap::from([(U256::ZERO, U256::from(7))]);
+    input
+}
+
+/// The trace of the inline ADD vector (`smoke.harness.add`): `PUSH1 1, PUSH1 2, ADD, STOP`.
+const ADD_TRACE: &str = concat!(
+    r#"{"e":"step","d":1,"pc":0,"op":96,"gas":"0x186a0","static":false,"sl":0,"stack":[],"mem":"0x0","facts":{},"gas_after":"0x1869d","spawn":false,"zk":"0x1b","ok":true,"charged":true}"#,
+    "\n",
+    r#"{"e":"step","d":1,"pc":2,"op":96,"gas":"0x1869d","static":false,"sl":1,"stack":[],"mem":"0x0","facts":{},"gas_after":"0x1869a","spawn":false,"zk":"0x1b","ok":true,"charged":true}"#,
+    "\n",
+    r#"{"e":"step","d":1,"pc":4,"op":1,"gas":"0x1869a","static":false,"sl":2,"stack":["0x2","0x1"],"mem":"0x0","facts":{},"gas_after":"0x18697","spawn":false,"zk":"0x39","ok":true,"charged":true}"#,
+    "\n",
+    r#"{"e":"step","d":1,"pc":5,"op":0,"gas":"0x18697","static":false,"sl":1,"stack":[],"mem":"0x0","facts":{},"gas_after":"0x18697","spawn":false,"zk":"0x0","ok":true,"charged":true}"#,
+    "\n",
+    r#"{"e":"frame_end","status":"success","frame_zk":"0x6f"}"#,
+    "\n",
+);
+
+/// The charge events of `records`, without the facts.
+fn charge_events(records: Vec<TraceRecord>) -> Vec<ZkGasTraceEvent> {
+    records
+        .into_iter()
+        .filter_map(|record| match record {
+            TraceRecord::Event(event) => Some(event),
+            TraceRecord::Pre(_) => None,
+        })
+        .collect()
+}
+
+/// A deliberately wrong facts reader: it loads every SLOAD slot through the journal before the
+/// step runs, which warms it.
+struct SlotWarmingInspector;
+
+impl Inspector<TaikoEvmContext<InMemoryDB>, EthInterpreter> for SlotWarmingInspector {
+    fn step(
+        &mut self,
+        interp: &mut Interpreter<EthInterpreter>,
+        context: &mut TaikoEvmContext<InMemoryDB>,
+    ) {
+        if interp.bytecode.opcode() == opcode::SLOAD {
+            let key = *interp.stack.data().last().expect("SLOAD has its key");
+            let target = interp.input.target_address();
+            context.journal_mut().sload(target, key).expect("in-memory sload");
+        }
     }
 }
 
@@ -784,6 +927,133 @@ fn harness_vectors_match_expected() {
     assert!(
         failures.is_empty(),
         "{} of {} harness vectors failed:\n{}",
+        failures.len(),
+        vectors.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn trace_events_match_between_plain_and_inspector_paths() {
+    let input = inline_add_input();
+    let schedule = harness_schedule(&input);
+    let plain_log = TraceLog::default();
+    run_metered_path(&input, schedule, false, NoOpInspector {}, Some(&plain_log));
+    let replay_log = TraceLog::default();
+    run_metered_path(
+        &input,
+        schedule,
+        true,
+        TraceFactsInspector::new(replay_log.clone()),
+        Some(&replay_log),
+    );
+
+    let multiplier = |op: u8| u64::from(schedule.opcode_multipliers[usize::from(op)]);
+    let step = |pc: usize, opcode: u8, gas_before: u64, gas_after: u64| ZkGasTraceEvent::Step {
+        depth: 1,
+        pc,
+        opcode,
+        gas_before,
+        gas_after,
+        spawned: false,
+        zk_charge: (gas_before - gas_after) * multiplier(opcode),
+        ok: true,
+    };
+    let plain = charge_events(plain_log.take());
+    assert_eq!(
+        plain,
+        vec![
+            // The wrapper discards in-flight zk gas before every transact.
+            ZkGasTraceEvent::TxReset,
+            step(0, opcode::PUSH1, 100_000, 99_997),
+            step(2, opcode::PUSH1, 99_997, 99_994),
+            step(4, opcode::ADD, 99_994, 99_991),
+            step(5, opcode::STOP, 99_991, 99_991),
+        ]
+    );
+    assert_eq!(charge_events(replay_log.take()), plain);
+
+    let (expected, trace) = trace_harness(&input);
+    assert_eq!(expected.frame_zk_gas, Some(U256::from(0x6f)));
+    assert_eq!(trace, ADD_TRACE);
+}
+
+#[test]
+fn trace_pre_facts_have_no_side_effects() {
+    let input = inline_sload_twice_input();
+    let untraced = run_harness(&input);
+    assert_eq!(untraced.status, HarnessStatus::Success);
+
+    let (traced, trace) = trace_harness(&input);
+    assert_eq!(traced, untraced, "tracing must not change the frame zk gas or status");
+    // The facts are read before each step: the first load is cold, the second warm.
+    let slot_facts: Vec<&str> = trace
+        .lines()
+        .filter(|line| line.contains(r#""op":84,"#))
+        .map(|line| if line.contains(r#""slot_warm":true"#) { "warm" } else { "cold" })
+        .collect();
+    assert_eq!(slot_facts, ["cold", "warm"]);
+
+    // A facts reader that warms the slot it reads changes the charge, so the comparison above
+    // would catch it.
+    let schedule = harness_schedule(&input);
+    let warmed = run_metered_path(&input, schedule, true, SlotWarmingInspector, None);
+    assert_eq!(warmed.status, HarnessStatus::Success);
+    assert_ne!(warmed.frame_zk_gas, untraced.frame_zk_gas);
+}
+
+#[test]
+fn trace_of_a_call_to_empty_code_is_the_frame_end_alone() {
+    // revm runs no interpreter for a target without code, so nothing is charged.
+    let mut input = inline_add_input();
+    input.alloc.get_mut(&input.to).expect("target in alloc").code = Bytes::new();
+    input.alloc.get_mut(&input.to).expect("target in alloc").balance = U256::from(1);
+
+    let (expected, trace) = trace_harness(&input);
+    assert_eq!(
+        expected,
+        HarnessExpected { frame_zk_gas: Some(U256::ZERO), status: HarnessStatus::Success }
+    );
+    assert_eq!(trace, "{\"e\":\"frame_end\",\"status\":\"success\",\"frame_zk\":\"0x0\"}\n");
+}
+
+#[test]
+fn harness_trace_matches_committed() {
+    let mode = corpus_mode(
+        std::env::var_os("ZK_GAS_VECTORS_WRITE"),
+        std::env::var_os("CI"),
+        std::env::var_os("ZK_GAS_VECTORS_DIR"),
+        std::env::var_os("ZK_GAS_VECTORS_REQUIRED"),
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    let (dir, write) = match mode {
+        CorpusMode::Skip => {
+            eprintln!("skip: ZK_GAS_VECTORS_DIR unset");
+            return;
+        }
+        CorpusMode::Assert(dir) => (dir, false),
+        CorpusMode::Write(dir) => (dir, true),
+    };
+
+    let vectors =
+        load_vectors::<HarnessVector>(&dir, "harness").unwrap_or_else(|err| panic!("{err}"));
+    let mut failures = Vec::new();
+    for (_, vector) in &vectors {
+        let trace = match catch_unwind(AssertUnwindSafe(|| trace_harness(&vector.input))) {
+            Ok((_, trace)) => trace,
+            Err(payload) => {
+                failures.push(format!("{}: {}", vector.id, panic_message(payload.as_ref())));
+                continue;
+            }
+        };
+        if let Err(err) = sync_trace_file(&dir, &vector.id, &trace, write) {
+            failures.push(format!("{}: {err}", vector.id));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} harness traces failed:\n{}",
         failures.len(),
         vectors.len(),
         failures.join("\n")

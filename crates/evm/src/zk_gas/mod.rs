@@ -8,6 +8,9 @@ pub mod meter;
 pub mod runtime;
 /// Shared schedule types and fork selection helpers.
 pub mod schedule;
+/// Test-only zk gas trace export for the shared vector corpus.
+#[cfg(any(test, feature = "zk-gas-trace"))]
+pub mod trace;
 /// Unzen-specific fixed zk gas schedule data.
 pub mod unzen;
 

@@ -96,3 +96,16 @@ jobs:
         run: >-
           cargo +1.99.0 nextest run --locked -p alethia-reth-payload --no-tests=fail
           -E 'test(=builder::zk_gas_vectors::block_vectors_match_expected)'
+
+      # Drift checks: regenerate every trace and compare it with the committed traces/<id>.jsonl.
+      # The block runner's trace exporter is enabled by alethia-reth-payload's dev-dependency on
+      # alethia-reth-evm with the zk-gas-trace feature; the harness runner's by cfg(test).
+      - name: Check the harness traces
+        run: >-
+          cargo +1.99.0 nextest run --locked -p alethia-reth-evm --no-tests=fail
+          -E 'test(=zk_gas::vectors::harness_trace_matches_committed)'
+
+      - name: Check the block traces
+        run: >-
+          cargo +1.99.0 nextest run --locked -p alethia-reth-payload --no-tests=fail
+          -E 'test(=builder::zk_gas_vectors::block_trace_matches_committed)'

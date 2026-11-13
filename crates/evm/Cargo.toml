@@ -11,6 +11,8 @@ path = "src/lib.rs"
 [features]
 default = ["std"]
 serde = ["dep:serde"]
+# Test-only: zk gas trace export for the shared vector corpus (see `zk_gas::trace`).
+zk-gas-trace = []
 std = [
     "alethia-reth-chainspec/std",
     "alethia-reth-primitives/std",

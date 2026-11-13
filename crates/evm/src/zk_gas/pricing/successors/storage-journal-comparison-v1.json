@@ -1,0 +1,89 @@
+{
+  "coefficient_isolated_memcmp_measurement": false,
+  "coefficient_pgu_per_work_unit": 384,
+  "coefficient_policy": "ceil_to_64(5/4 * max positive((whole_input_actual_pgu-old_literal_node_pgu)/(C*(A+N+J))))",
+  "coefficient_scaled": 384000000000000000000,
+  "dispersed_long_prefix_control": {
+    "actual_pgu": 207144495,
+    "hypothetical_candidate_pgu": 6904452516,
+    "node_pgu": 159815076,
+    "synthetic_overquote_accepted": true,
+    "work_units": 17564160
+  },
+  "elf_sha256": "b76baf2e0f3fa3fe6f8a20fe53dbf82f58601ed14b370dfc0f8d31db2069e034",
+  "fixed_point_scale": 1000000000000000000,
+  "global_upper_bound_claimed": false,
+  "input_kind": "controlled synthetic Taiko post-Unzen GuestInput",
+  "negative_observation": "Prior256 candidate underquotes short-prefix by101266793PGU",
+  "new_actual_count": 1,
+  "normalization": "ExecutionReport.gas*10//191",
+  "parent_model_id": "c8936124c1b074b57abf36873e1c37e01f9bc49fa6c9bb161a92542f1e6551ef",
+  "production_sdk_parity_established": false,
+  "prospective_holdout_used": false,
+  "purpose": "conservative block-local journal comparison tariff evidence",
+  "raw_actual_count": 3,
+  "remaining_validation": [
+    "capacity/growth and mixed rollback retained cases",
+    "normal historical reprice through authoritative model",
+    "profile-dependent comparison layout",
+    "30M-gas packing severity is separate from old single-sample high_priority flag"
+  ],
+  "samples": [
+    {
+      "A": 513,
+      "C": 512,
+      "J": 512,
+      "M": 512,
+      "N": 512,
+      "actual_input_sha256": "cd4cf24a53af2e6fcc80096a5609f42be12f70485c0641a2c32e7e351ffa8a89",
+      "actual_pgu": 195194698,
+      "comparison_work_units": 786944,
+      "old_node_pgu": 20832507,
+      "required_coefficient": {
+        "denominator": 786944,
+        "numerator": 174362191
+      },
+      "sample_id": "concentrated-zero",
+      "verified_report_sha256": "ed460baf42332fcefc2b94c65396cb91f7fded495f32e5dca0c32880826341b2"
+    },
+    {
+      "A": 33281,
+      "C": 512,
+      "J": 512,
+      "M": 512,
+      "N": 512,
+      "actual_input_sha256": "3c8ccba435477d7262dae316ec97baa48868887f6a09f431ee8e17530eb4370e",
+      "actual_pgu": 3378306245,
+      "comparison_work_units": 17564160,
+      "old_node_pgu": 159815076,
+      "required_coefficient": {
+        "denominator": 17564160,
+        "numerator": 3218491169
+      },
+      "sample_id": "concentrated-long-prefix",
+      "verified_report_sha256": "bfab53805094458173ee933bcc5777c47416174671473389a83bcafa8e31ae4f"
+    },
+    {
+      "A": 33281,
+      "C": 65,
+      "J": 512,
+      "M": 1,
+      "N": 512,
+      "actual_input_sha256": "ca717a0190d83bb42e094f68a590cecbb3e2a0bdf23e35bb3a690c81a5d021d6",
+      "actual_pgu": 831917069,
+      "comparison_work_units": 2229825,
+      "old_node_pgu": 159815076,
+      "required_coefficient": {
+        "denominator": 2229825,
+        "numerator": 672101993
+      },
+      "sample_id": "concentrated-short-prefix",
+      "verified_report_sha256": "2fe65999cae1a7ebd242286444f95ff91585bd4b9a6352d16dfa7519ba81202a"
+    }
+  ],
+  "schema_version": 1,
+  "sdk": "6.3.0",
+  "startup_and_other_work_not_causally_decomposed": true,
+  "status": "candidate_calibration_not_integrated",
+  "unit": "normalized_sp1_pgu"
+}

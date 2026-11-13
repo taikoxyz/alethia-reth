@@ -27,6 +27,10 @@ use crate::{
     zk_gas::{
         adapter::ZkGasInspector,
         meter::{ZkGasMeter, ZkGasOutcome},
+        pricing::{
+            StateAccess, TransactionMetadata, TransactionPayloadSelectors, ZkGasAccumulator,
+            ZkGasAccumulatorError, ZkGasAttemptedBlockSnapshot, ZkGasBlockSnapshot,
+        },
     },
 };
 
@@ -57,12 +61,25 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
+    /// Runtime collection switch. Disabled by default;
+    /// [`ZkGasMode`](crate::zk_gas::pricing::ZkGasMode) owns explicit activation.
+    collect_zk_gas_pricing: bool,
+    /// Temporary guard used by pre-block system calls, which are outside the block transaction
+    /// workload calibrated by schema 9.
+    suspend_zk_gas_pricing: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
+        Self {
+            inner: evm,
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+            collect_zk_gas_pricing: false,
+            suspend_zk_gas_pricing: false,
+        }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -108,6 +125,24 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
             self.base_evm_mut().zk_gas_meter_mut()
         } else {
             self.base_evm_mut().inner.inspector.meter_mut()
+        }
+    }
+
+    /// Returns the pricing collector used by the active execution path.
+    pub fn zk_gas_pricing(&self) -> Option<&ZkGasAccumulator> {
+        if self.inspect {
+            self.base_evm().inner.inspector.pricing()
+        } else {
+            self.base_evm().zk_gas_pricing()
+        }
+    }
+
+    /// Returns the mutable pricing collector used by the active execution path.
+    pub fn zk_gas_pricing_mut(&mut self) -> Option<&mut ZkGasAccumulator> {
+        if self.inspect {
+            self.base_evm_mut().inner.inspector.pricing_mut()
+        } else {
+            self.base_evm_mut().zk_gas_pricing_mut()
         }
     }
 
@@ -187,7 +222,10 @@ pub trait TaikoZkGasEvm {
     /// reset would corrupt by wiping the intrinsic charged before execution.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool);
 
-    /// Discards any in-flight zk gas recorded for the current transaction.
+    /// Clears in-flight metered zk gas for the current transaction.
+    ///
+    /// When Shadow pricing is enabled, the selector scope is retained in the attempted prefix
+    /// before it is cleared; the committed prefix remains unchanged.
     fn reset_transaction_zk_gas(&mut self);
 
     /// Commits the current transaction's zk gas into the block total and returns the new total.
@@ -215,6 +253,27 @@ pub trait TaikoZkGasEvm {
     ///
     /// Returns `Ok(())` when the EVM has no meter installed (pre-Unzen specs).
     fn charge_tx_intrinsic_zk_gas(&mut self) -> Result<(), ZkGasOutcome>;
+
+    /// Enables or disables schema-9 selector collection.
+    fn set_zk_gas_pricing_enabled(&mut self, enabled: bool);
+
+    /// Attaches canonical signed-envelope metadata to the current pricing scope.
+    ///
+    /// The block executor must provide this after transact and before commit/reset. Raw RPC
+    /// TxEnv callers lack the signed envelope and retain an explicit missing-payload diagnostic.
+    fn record_transaction_payload(&mut self, payload: TransactionPayloadSelectors);
+
+    /// Commits the active pricing transaction selector scope.
+    fn commit_transaction_zk_gas_pricing(&mut self) -> Result<(), ZkGasAccumulatorError>;
+
+    /// Returns the committed block-local pricing selector snapshot, when collection is enabled.
+    fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot>;
+
+    /// Returns pricing selectors from every transaction whose scope began before revm validation.
+    ///
+    /// Revm validation failures and their declared access lists are included. Executor prechecks
+    /// for remaining native block gas and intrinsic zk gas run before this scope and are excluded.
+    fn zk_gas_attempted_pricing_snapshot(&self) -> Option<ZkGasAttemptedBlockSnapshot>;
 }
 
 impl<DB, I, P> TaikoZkGasEvm for TaikoEvmWrapper<DB, I, P>
@@ -228,7 +287,7 @@ where
         self.reset_zk_gas_per_transact = enabled;
     }
 
-    /// Discards any in-flight zk gas recorded for the current transaction.
+    /// Clears in-flight metered zk gas and retains an installed Shadow scope as attempted.
     ///
     /// Covers both metering homes — the production meter on the base EVM and the inspector's
     /// meter plus its step bookkeeping (only one of the two is ever installed) — so nothing an
@@ -238,6 +297,9 @@ where
             meter.reset_transaction();
         }
         self.base_evm_mut().inner.inspector.reset_transaction();
+        if let Some(accumulator) = self.base_evm_mut().zk_gas_pricing_mut() {
+            accumulator.reset_transaction();
+        }
     }
 
     /// Commits the current transaction's zk gas into the block total and returns the new total.
@@ -279,6 +341,54 @@ where
             return Ok(());
         };
         meter.charge_tx_intrinsic()
+    }
+
+    /// Moves the block-local pricing collector onto the active plain or inspected execution path.
+    fn set_zk_gas_pricing_enabled(&mut self, enabled: bool) {
+        self.collect_zk_gas_pricing = enabled;
+        let plain = self.base_evm_mut().take_zk_gas_pricing();
+        let inspected = self.base_evm_mut().inner.inspector.take_pricing();
+        debug_assert!(
+            plain.is_none() || inspected.is_none(),
+            "only one pricing collector may be active"
+        );
+        if !enabled {
+            return;
+        }
+        let accumulator = if self.inspect { inspected.or(plain) } else { plain.or(inspected) }
+            .unwrap_or_default();
+        if self.inspect {
+            self.base_evm_mut().inner.inspector.install_pricing(accumulator);
+            self.base_evm_mut().use_inspector_zk_gas_pricing();
+        } else {
+            self.base_evm_mut().install_zk_gas_pricing(accumulator);
+        }
+    }
+
+    /// Records signed-envelope selectors without changing execution or legacy metering.
+    fn record_transaction_payload(&mut self, payload: TransactionPayloadSelectors) {
+        if let Some(accumulator) = self.zk_gas_pricing_mut() {
+            let result = accumulator.observe_transaction_payload(payload);
+            accumulator.retain_diagnostic(result.err());
+        }
+    }
+
+    /// Commits the active transaction selector scope when Shadow collection is installed.
+    fn commit_transaction_zk_gas_pricing(&mut self) -> Result<(), ZkGasAccumulatorError> {
+        if let Some(accumulator) = self.zk_gas_pricing_mut() {
+            accumulator.commit_transaction()?;
+        }
+        Ok(())
+    }
+
+    /// Returns an owned snapshot of selectors committed by the active Shadow collector.
+    fn zk_gas_pricing_snapshot(&self) -> Option<ZkGasBlockSnapshot> {
+        Some(self.zk_gas_pricing()?.committed_snapshot())
+    }
+
+    /// Returns an owned snapshot of all transaction scopes observed by the Shadow collector.
+    fn zk_gas_attempted_pricing_snapshot(&self) -> Option<ZkGasAttemptedBlockSnapshot> {
+        Some(self.zk_gas_pricing()?.attempted_snapshot())
     }
 }
 
@@ -374,6 +484,15 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Instantiate exactly one collector for the selected execution path. The system-call
+        // wrapper temporarily suspends this bracket, so pre-block/anchor marker work is not
+        // collected even though ordinary system calls reuse `transact` internally.
+        if self.collect_zk_gas_pricing &&
+            !self.suspend_zk_gas_pricing &&
+            self.zk_gas_pricing().is_none()
+        {
+            self.set_zk_gas_pricing_enabled(true);
+        }
         // RPC callers that reuse one EVM (`eth_estimateGas`'s repeated runs of one transaction,
         // `eth_callBundle`'s and the intra-block replay helpers' transaction sequences) never
         // commit the meter, so without a reset the in-flight zk gas of previous runs
@@ -384,6 +503,98 @@ where
             self.reset_transaction_zk_gas();
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
+        let collect_pricing = !self.suspend_zk_gas_pricing && self.zk_gas_pricing().is_some();
+        let native_value_transfer_candidate = if collect_pricing {
+            let treasury = get_treasury_address(self.chain_id());
+            let is_anchor = self.base_evm().extra_execution_ctx.as_ref().is_some_and(|context| {
+                context.anchor_caller_address() == tx.caller &&
+                    context.anchor_caller_nonce() == tx.nonce &&
+                    tx.kind.to() == Some(&treasury)
+            });
+            // Count the raw list, never the applied/unique/recovered-valid subset: conversion
+            // eagerly recovers every signed entry before this hook on both execution paths.
+            let authorization_count = if !is_anchor && tx.tx_type == 4 {
+                u64::try_from(tx.authorization_list.len())
+            } else {
+                Ok(0)
+            };
+            // REVM warms all raw address items on every non-legacy transaction. Anchor
+            // entries are included; duplicate items remain work even after set deduplication.
+            let access_list_count =
+                if tx.tx_type != 0 { u64::try_from(tx.access_list.0.len()) } else { Ok(0) };
+            let metadata = TransactionMetadata {
+                is_anchor,
+                native_value_transfer: false,
+                authorization_validations: authorization_count.unwrap_or(u64::MAX),
+                access_list_items: access_list_count.unwrap_or(u64::MAX),
+            };
+            let beneficiary = self.ctx().block.beneficiary;
+            // A reused EVM can start with physically cached slots. Seed those exactly once
+            // for this transaction, before a later clear/revert can discard them. This reads
+            // existing journal data only; declared access-list or witness keys are not slots.
+            let initial_storage_slots: Vec<_> = self
+                .ctx()
+                .journaled_state
+                .inner
+                .state
+                .iter()
+                .flat_map(|(owner, account)| account.storage.keys().map(move |key| (*owner, *key)))
+                .collect();
+            // Normal REVM commit/discard/finalize clears transient storage. The public EVM
+            // context can nevertheless be preseeded; observe its physically present keys once
+            // instead of silently quoting C0. This observing-only path performs no database read.
+            let initial_transient_slots: Vec<_> = self
+                .ctx()
+                .journaled_state
+                .inner
+                .transient_storage
+                .iter()
+                .flat_map(|(owner, slots)| slots.keys().map(move |key| (*owner, *key)))
+                .collect();
+            let accumulator = self.zk_gas_pricing_mut().expect("collector presence checked above");
+            if let Err(error) = accumulator.begin_transaction(metadata) {
+                accumulator.retain_diagnostic(Some(error));
+            } else {
+                // The warm set is reconstructed for every non-legacy transaction. Capture the
+                // complete raw list once, independently of physical storage or resource dedup.
+                let item_count = if tx.tx_type == 0 { 0 } else { tx.access_list.0.len() };
+                let _ = accumulator.observe_access_list_construction(
+                    tx.access_list.0.iter().take(item_count).map(|item| {
+                        (
+                            item.address,
+                            item.storage_keys
+                                .iter()
+                                .map(|slot| U256::from_be_slice(slot.as_slice())),
+                        )
+                    }),
+                );
+                for (owner, key) in initial_storage_slots {
+                    accumulator.observe_storage_materialization(owner, key);
+                }
+                for (owner, key) in initial_transient_slots {
+                    accumulator.observe_transient_storage_materialization(owner, key);
+                }
+            }
+            let _ = accumulator.observe_state_access(StateAccess::Account(tx.caller));
+            if let Some(target) = tx.kind.to() {
+                let _ = accumulator.observe_state_access(StateAccess::Account(*target));
+            }
+            for item in &tx.access_list.0 {
+                let _ = accumulator.observe_state_access(StateAccess::Account(item.address));
+                for slot in &item.storage_keys {
+                    let _ = accumulator.observe_state_access(StateAccess::StorageRead {
+                        address: item.address,
+                        slot: U256::from_be_slice(slot.as_slice()),
+                    });
+                }
+            }
+            for address in [beneficiary, treasury] {
+                let _ = accumulator.observe_state_access(StateAccess::Account(address));
+            }
+            !is_anchor && !tx.value.is_zero() && matches!(tx.kind, TxKind::Call(_))
+        } else {
+            false
+        };
         self.ctx_mut().set_tx(tx);
         // Run [`TaikoEvmHandler`] against the inner EVM directly so Taiko's anchor and
         // fee-share semantics apply on both the plain and the inspected path.
@@ -399,7 +610,46 @@ where
         // building and derived-block execution skip invalid transactions and keep executing on
         // this EVM, and an errored run must not leave the journal for the next transaction.
         let state = self.ctx_mut().journal_mut().finalize();
-        Ok(ResultAndState::new(result?, state))
+        if !self.suspend_zk_gas_pricing &&
+            let Some(accumulator) = self.zk_gas_pricing_mut()
+        {
+            // This physical-key receipt also advances each pricing prefix's virtual block-cache
+            // population. It is collected only while pricing is active, including handler errors.
+            let _ = accumulator.complete_account_journal_population(state.keys().copied());
+            // Only the observing path retains a final physical-key/changed receipt. No extra
+            // state walk or DB lookup is introduced; empty transactions still supply a receipt.
+            let mut storage_transition = Vec::new();
+            for (address, account) in &state {
+                let _ = accumulator.observe_state_access(StateAccess::Account(*address));
+                if let Some(code) = &account.info.code {
+                    let _ = accumulator.observe_state_access(StateAccess::Code {
+                        hash: account.info.code_hash,
+                        byte_length: code.len() as u64,
+                    });
+                }
+                for (slot, value) in &account.storage {
+                    let changed = value.is_changed();
+                    storage_transition.push((*address, *slot, changed));
+                    let access = if changed {
+                        StateAccess::StorageWrite { address: *address, slot: *slot }
+                    } else {
+                        StateAccess::StorageRead { address: *address, slot: *slot }
+                    };
+                    let _ = accumulator.observe_state_access(access);
+                }
+            }
+            let _ = accumulator.complete_storage_transition_population(storage_transition);
+        }
+        let result = result?;
+        if !self.suspend_zk_gas_pricing &&
+            let Some(accumulator) = self.zk_gas_pricing_mut() &&
+            let Err(error) = accumulator.finalize_native_value_transfer(
+                native_value_transfer_candidate && result.is_success(),
+            )
+        {
+            accumulator.retain_diagnostic(Some(error));
+        }
+        Ok(ResultAndState::new(result, state))
     }
 
     /// Executes a system call.
@@ -496,7 +746,26 @@ where
         // disable the nonce check
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
 
+        // Suspend the actual collectors, not only the outer transaction bracket: plain
+        // interpreter hooks and inspected frame/opcode hooks otherwise still observe work.
+        // Taking the plain collector also clears its execution hooks and inspector accessor.
+        // Preserve each original location, including an open finalized-but-uncommitted scope.
+        let plain_pricing = self.base_evm_mut().take_zk_gas_pricing();
+        let inspected_pricing = self.base_evm_mut().inner.inspector.take_pricing();
+        let previous_suspension = self.suspend_zk_gas_pricing;
+        self.suspend_zk_gas_pricing = true;
         let mut res = self.transact(tx);
+        // Restore on both Ok and Err, before returning or applying result-only state cleanup.
+        // Nested suspension sees no collector and restores that empty inner bracket; the
+        // outer bracket still owns and reinstalls the original accumulator without cloning.
+        self.suspend_zk_gas_pricing = previous_suspension;
+        if let Some(pricing) = plain_pricing {
+            self.base_evm_mut().install_zk_gas_pricing(pricing);
+        }
+        if let Some(pricing) = inspected_pricing {
+            self.base_evm_mut().inner.inspector.install_pricing(pricing);
+            self.base_evm_mut().use_inspector_zk_gas_pricing();
+        }
 
         // swap back to the previous gas limit
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
@@ -544,7 +813,13 @@ where
         if enabled && self.base_evm().zk_gas_meter().is_some() {
             return;
         }
+        if self.inspect == enabled {
+            return;
+        }
         self.inspect = enabled;
+        if self.collect_zk_gas_pricing {
+            self.set_zk_gas_pricing_enabled(true);
+        }
     }
 
     /// Getter of precompiles.

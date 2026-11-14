@@ -36,10 +36,7 @@ use alloy_primitives::{
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use reth::{
-    consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
-    revm::cancelled::CancelOnDrop,
-};
+use reth::consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_ethereum::{Block, EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_evm::{
     ConfigureEvm, EvmFactory,
@@ -53,6 +50,7 @@ use reth_primitives_traits::{
 use reth_provider::ProviderResult;
 use reth_revm::{
     State,
+    cancelled::CancelOnDrop,
     db::{BundleState, InMemoryDB, states::bundle_state::BundleRetention},
     state::{AccountInfo, Bytecode as RevmBytecode, bytecode::opcode},
 };

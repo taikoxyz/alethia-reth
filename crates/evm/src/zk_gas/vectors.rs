@@ -1059,3 +1059,43 @@ fn harness_trace_matches_committed() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn trace_cold_self_delegate_preserves_initial_warmth_and_alias() {
+    let mut input = inline_add_input();
+    let target = Address::with_last_byte(0x42);
+    let mut delegation = vec![0xef, 0x01, 0x00];
+    delegation.extend_from_slice(target.as_slice());
+    input.alloc.insert(
+        target,
+        AllocAccount {
+            balance: U256::from(1),
+            code: delegation.into(),
+            nonce: U64::ZERO,
+            storage: BTreeMap::new(),
+        },
+    );
+    // Five PUSH0s and PUSH1 cost 13 gas, leaving 3,000 at STATICCALL.
+    input.alloc.get_mut(&input.to).unwrap().code =
+        Bytes::from_static(&[0x5f, 0x5f, 0x5f, 0x5f, 0x60, 0x42, 0x5f, 0xfa, 0x00]);
+    input.frame_gas = U64::from(3_013);
+    let (expected, trace) = trace_harness(&input);
+    assert_eq!(expected, run_harness(&input), "fact reads must not warm the target");
+    assert_eq!(expected.status, HarnessStatus::Success);
+    assert_eq!(expected.frame_zk_gas, Some(U256::from(80_657)));
+    let step: serde_json::Value = trace
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|event| event["e"] == "step" && event["op"] == 0xfa)
+        .unwrap();
+    assert_eq!(
+        step["facts"],
+        serde_json::json!({
+            "account_warm": false, "account_empty": false,
+            "delegate_warm": false, "delegate_is_target": true
+        })
+    );
+    assert_eq!(step["spawn"], true);
+    assert_eq!(step["gas_after"], "0x12c");
+    assert_eq!(step["zk"], "0x13a74");
+}

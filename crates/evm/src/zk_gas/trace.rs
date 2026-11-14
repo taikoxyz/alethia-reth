@@ -158,6 +158,9 @@ pub enum StepFacts {
         account_empty: bool,
         /// Whether the target's EIP-7702 delegate is warm; `None` without a delegation.
         delegate_warm: Option<bool>,
+        /// Whether the delegate address equals the target; its load becomes warm after target
+        /// loading.
+        delegate_is_target: bool,
     },
     /// SELFDESTRUCT.
     SelfDestruct {
@@ -301,12 +304,13 @@ fn read_facts<DB: DatabaseRef>(
         opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
             let target = word_address(stack[1]);
             let (info, account_empty) = state.account(target);
-            let delegate_warm =
-                state.code(&info).eip7702_address().map(|delegate| state.account_warm(delegate));
+            let delegate = state.code(&info).eip7702_address();
+            let delegate_warm = delegate.map(|delegate| state.account_warm(delegate));
             StepFacts::Call {
                 account_warm: state.account_warm(target),
                 account_empty,
                 delegate_warm,
+                delegate_is_target: delegate == Some(target),
             }
         }
         opcode::SELFDESTRUCT => {
@@ -560,10 +564,13 @@ fn facts_json(facts: &StepFacts) -> String {
             r#"{{"slot_warm":{slot_warm},"original":"{original:#x}","current":"{current:#x}"}}"#
         ),
         StepFacts::Account { account_warm } => format!(r#"{{"account_warm":{account_warm}}}"#),
-        StepFacts::Call { account_warm, account_empty, delegate_warm } => format!(
-            r#"{{"account_warm":{account_warm},"account_empty":{account_empty},"delegate_warm":{}}}"#,
-            delegate_warm.map_or_else(|| "null".to_owned(), |warm| warm.to_string()),
-        ),
+        StepFacts::Call { account_warm, account_empty, delegate_warm, delegate_is_target } => {
+            format!(
+                r#"{{"account_warm":{account_warm},"account_empty":{account_empty},"delegate_warm":{}{}}}"#,
+                delegate_warm.map_or_else(|| "null".to_owned(), |warm| warm.to_string()),
+                if *delegate_is_target { r#","delegate_is_target":true"# } else { "" },
+            )
+        }
         StepFacts::SelfDestruct { account_warm, account_empty, self_balance } => format!(
             r#"{{"account_warm":{account_warm},"account_empty":{account_empty},"self_balance":"{self_balance:#x}"}}"#
         ),
@@ -851,8 +858,12 @@ mod tests {
             precompile.to_json(),
             r#"{"e":"precompile","addr":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","supplied":"0x64","left":"0x0","success":false,"zk":"0x14f8c","ok":true}"#
         );
-        let call =
-            StepFacts::Call { account_warm: true, account_empty: false, delegate_warm: None };
+        let call = StepFacts::Call {
+            account_warm: true,
+            account_empty: false,
+            delegate_warm: None,
+            delegate_is_target: false,
+        };
         assert_eq!(
             facts_json(&call),
             r#"{"account_warm":true,"account_empty":false,"delegate_warm":null}"#

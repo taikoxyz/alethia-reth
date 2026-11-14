@@ -48,10 +48,13 @@ reth-transaction-pool = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-alethia-reth-block = { path = "../block", features = ["test-utils"] }
+alethia-reth-block = { path = "../block", features = ["prover", "test-utils"] }
+alethia-reth-evm = { path = "../evm", features = ["zk-gas-trace"] }
 alloy-genesis = { workspace = true }
 reth-provider = { workspace = true, features = ["test-utils"] }
 reth-storage-api = { workspace = true }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-trie-common = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt"] }

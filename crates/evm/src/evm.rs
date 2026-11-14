@@ -40,6 +40,18 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
+        #[cfg(target_pointer_width = "32")]
+        let inner = {
+            use reth_revm::{context::Cfg, primitives::hardfork::SpecId};
+
+            let mut inner = inner;
+            let spec: SpecId = inner.ctx.cfg().spec().into();
+            if spec == SpecId::OSAKA {
+                crate::zk_gas::length_operands::install(&mut inner.instruction);
+            }
+            inner
+        };
+
         Self { inner, extra_execution_ctx: None, zk_gas_meter: None }
     }
 

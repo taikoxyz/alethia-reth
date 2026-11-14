@@ -4,6 +4,8 @@
 pub mod adapter;
 /// Checked zk gas accounting for a single Unzen block execution.
 pub mod meter;
+/// Native operand conversion adapters shared by both execution paths.
+pub(crate) mod operands;
 /// Production interpreter-side zk gas metering.
 pub mod runtime;
 /// Shared schedule types and fork selection helpers.

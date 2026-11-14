@@ -1520,3 +1520,55 @@ fn unzen_schedule_meters_clz() {
         "default Unzen schedule must meter clz at 14"
     );
 }
+
+#[test]
+fn metered_paths_agree_on_wide_memory_length_charges() {
+    let cases: &[(u8, usize, u64)] = &[
+        (0x20, 1, 30),
+        (0x37, 2, 3),
+        (0x39, 2, 3),
+        (0x3c, 3, 100),
+        (0x5e, 2, 3),
+        (0xa0, 1, 375),
+        (0xa1, 1, 375),
+        (0xa2, 1, 375),
+        (0xa3, 1, 375),
+        (0xa4, 1, 375),
+    ];
+    let lengths: &[(&[u8], bool)] = &[
+        (&[0xff; 4], true),
+        (&[1, 0, 0, 0, 0], true),
+        (&[0xff; 8], true),
+        (&[1, 0, 0, 0, 0, 0, 0, 0, 0], false),
+    ];
+    for &(op, zero_args, static_gas) in cases {
+        for &(length, spends_all) in lengths {
+            let mut code = vec![opcode::PUSH1 + length.len() as u8 - 1];
+            code.extend_from_slice(length);
+            code.extend(std::iter::repeat_n(opcode::PUSH0, zero_args));
+            code.push(op);
+            let bytecode = Bytecode::new_raw(Bytes::from(code));
+            let mut plain = TaikoEvmFactory
+                .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
+            let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(bytecode),
+                evm_env(TaikoSpecId::UNZEN),
+                StepGasProbeInspector::default(),
+            );
+            let plain_result = plain.transact(tx_env(100_000)).unwrap();
+            let inspected_result = inspected.transact(tx_env(100_000)).unwrap();
+            assert_eq!(plain_result, inspected_result, "opcode {op:#x}, length {length:?}");
+            let step = inspected.inspector().steps.last().unwrap();
+            assert_eq!(step.opcode, op);
+            // The tx starts with 79,000 execution gas; PUSHn costs 3 and each PUSH0 costs 2.
+            let expected_raw =
+                if spends_all { 79_000 - 3 - 2 * zero_args as u64 } else { static_gas };
+            assert_eq!(step.raw_gas, expected_raw, "opcode {op:#x}, length {length:?}");
+            assert_eq!(
+                plain.meter().unwrap().tx_zk_gas_used(),
+                inspected.meter().unwrap().tx_zk_gas_used(),
+                "opcode {op:#x}, length {length:?}",
+            );
+        }
+    }
+}

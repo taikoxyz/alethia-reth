@@ -2,11 +2,10 @@
 
 /// Inspector-side Unzen opcode metering and shared error definitions.
 pub mod adapter;
-/// Canonical length-operand halts for Unzen execution on narrow-pointer targets.
-#[cfg(target_pointer_width = "32")]
-pub(crate) mod length_operands;
 /// Checked zk gas accounting for a single Unzen block execution.
 pub mod meter;
+/// Native operand conversion adapters shared by both execution paths.
+pub(crate) mod operands;
 /// Production interpreter-side zk gas metering.
 pub mod runtime;
 /// Shared schedule types and fork selection helpers.

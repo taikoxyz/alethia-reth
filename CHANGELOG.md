@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.1](https://github.com/taikoxyz/alethia-reth/compare/v1.5.0...v1.5.1) (2026-11-14)
+
+
+### Chores
+
+* **deps:** bump OP Reth to op-v2.7.0-1 for the proof-history unwind fix ([#267](https://github.com/taikoxyz/alethia-reth/issues/267)) ([58cddc9](https://github.com/taikoxyz/alethia-reth/commit/58cddc993a488ddf168d0d74218a715d13c3449e))
+* **evm:** align wide operand accounting ([#269](https://github.com/taikoxyz/alethia-reth/issues/269)) ([f2bee4b](https://github.com/taikoxyz/alethia-reth/commit/f2bee4b8f20d9c54846f922f5e086295732d16c0))
+
+
+### Tests
+
+* **evm:** cover length operands on i686 ([#270](https://github.com/taikoxyz/alethia-reth/issues/270)) ([a18536f](https://github.com/taikoxyz/alethia-reth/commit/a18536fcc59964a15754d8a25f7cd2aa1b8b2b5d))
+
 ## [1.5.0](https://github.com/taikoxyz/alethia-reth/compare/v1.4.1...v1.5.0) (2026-11-06)
 
 

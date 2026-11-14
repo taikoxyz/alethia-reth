@@ -36,6 +36,28 @@ jobs:
       - name: Run tests
         run: just test
 
+  evm-i686:
+    name: evm-i686
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          targets: i686-unknown-linux-gnu
+          components: clippy
+      - name: Install multilib support
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: evm-i686
+      - name: Test EVM
+        run: cargo test --locked -p alethia-reth-evm --lib --target i686-unknown-linux-gnu
+      - name: Lint EVM
+        run: cargo clippy --locked -p alethia-reth-evm --lib --target i686-unknown-linux-gnu --no-deps -- -D warnings -D missing_docs -D clippy::missing_docs_in_private_items
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest

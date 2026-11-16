@@ -37,10 +37,7 @@ use reth_revm::{
     primitives::TxKind,
     state::{AccountInfo, Bytecode, bytecode::opcode},
 };
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor},
-};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
@@ -434,122 +431,18 @@ fn to_json(expected: &HarnessExpected) -> String {
     serde_json::to_string(expected).expect("harness expectations serialize")
 }
 
-/// Replaces the top-level `expected` key of the vector file at `path` (appending it when absent),
-/// keeping every other key, its value and its position. Writes 2-space-indented JSON with a
-/// trailing newline.
-fn write_expected(path: &Path, expected: &serde_json::Value) -> Result<(), String> {
+/// Replaces the top-level `expected` value in place, appending it when absent.
+/// The dev-dependency's `preserve_order` feature retains every other key's position.
+fn write_expected(path: &Path, expected: &impl Serialize) -> Result<(), String> {
     let error = |err: &dyn fmt::Display| format!("{}: {err}", path.display());
     let text = fs::read_to_string(path).map_err(|err| error(&err))?;
-    let OrderedJson::Object(mut entries) =
-        serde_json::from_str::<OrderedJson>(&text).map_err(|err| error(&err))?
-    else {
-        return Err(error(&"top level is not a JSON object"));
-    };
-    let expected =
-        serde_json::from_value::<OrderedJson>(expected.clone()).map_err(|err| error(&err))?;
-    match entries.iter_mut().find(|(key, _)| key == "expected") {
-        Some((_, value)) => *value = expected,
-        None => entries.push(("expected".to_owned(), expected)),
-    }
-    let mut out =
-        serde_json::to_string_pretty(&OrderedJson::Object(entries)).map_err(|err| error(&err))?;
+    let mut vector: serde_json::Value = serde_json::from_str(&text).map_err(|err| error(&err))?;
+    let entries = vector.as_object_mut().ok_or_else(|| error(&"top level is not a JSON object"))?;
+    let expected = serde_json::to_value(expected).map_err(|err| error(&err))?;
+    entries.insert("expected".to_owned(), expected);
+    let mut out = serde_json::to_string_pretty(&vector).map_err(|err| error(&err))?;
     out.push('\n');
     fs::write(path, out).map_err(|err| error(&err))
-}
-
-/// A JSON value that keeps object keys in file order.
-///
-/// `serde_json::Map` sorts its keys unless serde_json's `preserve_order` feature is enabled, so
-/// [`write_expected`] round-trips vector files through this type instead.
-enum OrderedJson {
-    /// `null`.
-    Null,
-    /// `true` or `false`.
-    Bool(bool),
-    /// A number.
-    Number(serde_json::Number),
-    /// A string.
-    String(String),
-    /// An array.
-    Array(Vec<OrderedJson>),
-    /// An object, in file order.
-    Object(Vec<(String, OrderedJson)>),
-}
-
-impl Serialize for OrderedJson {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Null => serializer.serialize_unit(),
-            Self::Bool(value) => serializer.serialize_bool(*value),
-            Self::Number(value) => value.serialize(serializer),
-            Self::String(value) => serializer.serialize_str(value),
-            Self::Array(items) => serializer.collect_seq(items),
-            Self::Object(entries) => serializer.collect_map(entries.iter().map(|(k, v)| (k, v))),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for OrderedJson {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(OrderedJsonVisitor)
-    }
-}
-
-/// Builds an [`OrderedJson`] from any self-describing input.
-struct OrderedJsonVisitor;
-
-impl<'de> Visitor<'de> for OrderedJsonVisitor {
-    type Value = OrderedJson;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON value")
-    }
-
-    fn visit_unit<E: de::Error>(self) -> Result<OrderedJson, E> {
-        Ok(OrderedJson::Null)
-    }
-
-    fn visit_bool<E: de::Error>(self, value: bool) -> Result<OrderedJson, E> {
-        Ok(OrderedJson::Bool(value))
-    }
-
-    fn visit_u64<E: de::Error>(self, value: u64) -> Result<OrderedJson, E> {
-        Ok(OrderedJson::Number(value.into()))
-    }
-
-    fn visit_i64<E: de::Error>(self, value: i64) -> Result<OrderedJson, E> {
-        Ok(OrderedJson::Number(value.into()))
-    }
-
-    fn visit_f64<E: de::Error>(self, value: f64) -> Result<OrderedJson, E> {
-        serde_json::Number::from_f64(value)
-            .map(OrderedJson::Number)
-            .ok_or_else(|| E::custom("non-finite number"))
-    }
-
-    fn visit_str<E: de::Error>(self, value: &str) -> Result<OrderedJson, E> {
-        Ok(OrderedJson::String(value.to_owned()))
-    }
-
-    fn visit_string<E: de::Error>(self, value: String) -> Result<OrderedJson, E> {
-        Ok(OrderedJson::String(value))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<OrderedJson, A::Error> {
-        let mut items = Vec::new();
-        while let Some(item) = seq.next_element()? {
-            items.push(item);
-        }
-        Ok(OrderedJson::Array(items))
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<OrderedJson, A::Error> {
-        let mut entries = Vec::new();
-        while let Some(entry) = map.next_entry()? {
-            entries.push(entry);
-        }
-        Ok(OrderedJson::Object(entries))
-    }
 }
 
 /// Extracts the message of a caught panic.

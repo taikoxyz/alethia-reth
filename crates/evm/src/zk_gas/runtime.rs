@@ -14,6 +14,8 @@ use super::{
     adapter::ZK_GAS_LIMIT_ERR,
     meter::{ZkGasMeter, ZkGasOutcome, is_spawn_opcode},
 };
+#[cfg(any(test, feature = "zk-gas-trace"))]
+use reth_revm::context::JournalTr;
 
 /// Runs the interpreter loop while charging zk gas directly in the production path.
 ///
@@ -37,6 +39,11 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
     loop {
         let opcode = interpreter.bytecode.opcode();
         let gas_before = interpreter.gas.remaining();
+        // Test-only trace hook: the step's depth, pc and the in-flight zk gas before its charge.
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        let trace_pre = meter.is_tracing().then(|| {
+            (context.journal_ref().depth(), interpreter.bytecode.pc(), meter.tx_zk_gas_used())
+        });
 
         let step_result = interpreter.step(instruction_table, gas_table, context);
 
@@ -55,6 +62,23 @@ pub(crate) fn run_metered_plain<CTX: ContextTr>(
         } else {
             meter.charge_opcode(opcode, gas_before.saturating_sub(interpreter.gas.remaining()))
         };
+
+        // Test-only trace hook, before a refused charge replaces the step's action.
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        if let Some((depth, pc, zk_before)) = trace_pre {
+            let spawned = is_spawn_opcode(opcode) &&
+                matches!(interpreter.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
+            meter.trace_step(
+                depth,
+                pc,
+                opcode,
+                gas_before,
+                interpreter.gas.remaining(),
+                spawned,
+                zk_before,
+                charge,
+            );
+        }
 
         if let Err(ZkGasOutcome::LimitExceeded) = charge {
             halt_for_zk_gas_limit(context, interpreter);

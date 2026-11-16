@@ -40,6 +40,9 @@ use self::execution::{
 
 /// Transaction-phase execution helpers for legacy/new-mode payload construction.
 mod execution;
+/// Runner for the shared Unzen zk gas block vectors.
+#[cfg(test)]
+mod zk_gas_vectors;
 
 /// Taiko payload builder.
 #[derive(Debug, Clone)]

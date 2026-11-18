@@ -297,3 +297,88 @@ fn etna_pool_refuses_and_drops_transactions_no_etna_block_can_carry() -> eyre::R
         Ok(())
     })
 }
+
+/// Governance recovery from a checkpoint c whose EL already persisted blocks above c: the new
+/// generation's first block is a sibling of the old c + 1, reached by an ordinary forkchoice
+/// update, since the driver keeps `--engine.allow-unwind-canonical-header` disabled. The old
+/// blocks must leave the disk and the new chain must keep growing (SPEC RECOV-8.4-8).
+#[test]
+fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Result<()> {
+    run_live_test(async {
+        use alloy_eips::eip4788::BEACON_ROOTS_ADDRESS;
+        use alloy_primitives::U256;
+        use reth_node_api::TreeConfig;
+        use reth_provider::{BlockHashReader, BlockNumReader, DatabaseProviderFactory};
+        use reth_storage_api::{StateProvider, StateProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        // Persist every canonical block at once instead of keeping the last 50 in memory only.
+        let tree =
+            TreeConfig::default().with_persistence_threshold(0).with_memory_block_buffer_target(0);
+        let node = launch_test_node_with(spec.clone(), tree).await?;
+        let client = node.auth_server_handle().http_client();
+        fcu(&client, genesis, genesis, None).await?;
+        let provider = &node.provider;
+        let on_disk = move |expected_tip: u64, expected_at_2: B256| async move {
+            let reached = || -> eyre::Result<bool> {
+                let db = provider.database_provider_ro()?;
+                Ok(db.last_block_number()? == expected_tip &&
+                    db.block_hash(2)? == Some(expected_at_2))
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                while !reached()? {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok::<_, eyre::Report>(())
+            })
+            .await?
+        };
+        // EIP-4788 storage a block at `timestamp` writes: its timestamp, in ring slot `timestamp`.
+        let beacon_slot = |timestamp: u64| -> eyre::Result<U256> {
+            let state = provider.latest()?;
+            Ok(state
+                .storage(BEACON_ROOTS_ADDRESS, B256::from(U256::from(timestamp)))?
+                .unwrap_or_default())
+        };
+
+        // The old generation: c is block 1, with blocks 2..4 above it, all on disk.
+        let mut old = vec![spec.genesis_header().clone()];
+        for timestamp in [100, 101, 102, 103] {
+            let parent = old.last().unwrap();
+            let grandparent = old.iter().rev().nth(1).map_or(0, |header| header.timestamp);
+            let built =
+                build_on(&client, spec.clone(), parent, grandparent, fixture_attributes(timestamp))
+                    .await?;
+            canonicalize(&client, genesis, &built).await?;
+            old.push(built.block.header().clone());
+        }
+        on_disk(4, old[2].hash_slow()).await?;
+        assert_eq!(beacon_slot(103)?, U256::from(103));
+
+        // The new generation's first two blocks, on c.
+        let c = &old[1];
+        let first =
+            build_on(&client, spec.clone(), c, old[0].timestamp, fixture_attributes(110)).await?;
+        assert_eq!(first.block.parent_hash, c.hash_slow());
+        canonicalize(&client, genesis, &first).await?;
+        let second = build_on(
+            &client,
+            spec.clone(),
+            first.block.header(),
+            c.timestamp,
+            fixture_attributes(111),
+        )
+        .await?;
+        canonicalize(&client, genesis, &second).await?;
+
+        // The disk now holds the new chain in place of blocks 2..4, and their state is gone.
+        on_disk(3, first.block.hash()).await?;
+        assert_eq!(node.provider.block_hash(4)?, None);
+        assert_eq!(node.provider.block_hash(3)?, Some(second.block.hash()));
+        for timestamp in [101, 102, 103] {
+            assert_eq!(beacon_slot(timestamp)?, U256::ZERO, "slot {timestamp}");
+        }
+        assert_eq!(beacon_slot(111)?, U256::from(111));
+        Ok(())
+    })
+}

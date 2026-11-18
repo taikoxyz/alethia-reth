@@ -110,6 +110,14 @@ impl TableSet for TaikoTables {
 }
 
 pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<TestNode> {
+    launch_test_node_with(chain_spec, TreeConfig::default()).await
+}
+
+/// Launches a test node whose engine tree runs with `tree`.
+pub async fn launch_test_node_with(
+    chain_spec: Arc<TaikoChainSpec>,
+    tree: TreeConfig,
+) -> eyre::Result<TestNode> {
     let runtime = Runtime::test();
     TEST_RUNTIMES.lock().unwrap().push(runtime.clone());
     let path = tempdir_path();
@@ -163,7 +171,7 @@ pub async fn launch_test_node(chain_spec: Arc<TaikoChainSpec>) -> eyre::Result<T
             let launcher = EngineNodeLauncher::new(
                 builder.task_executor().clone(),
                 builder.config().datadir(),
-                TreeConfig::default().with_cross_block_cache_size(1024 * 1024),
+                tree.with_cross_block_cache_size(1024 * 1024),
             );
             builder.launch_with(launcher)
         }),
@@ -306,17 +314,27 @@ pub async fn build(
     client: &impl ClientT,
     spec: Arc<TaikoChainSpec>,
     parent: &alloy_consensus::Header,
+    attrs: TaikoPayloadAttributes,
+) -> eyre::Result<Built> {
+    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
+    build_on(client, spec, parent, 0, attrs).await
+}
+
+/// Builds on `parent`, whose own parent has `grandparent_timestamp`.
+pub async fn build_on(
+    client: &impl ClientT,
+    spec: Arc<TaikoChainSpec>,
+    parent: &alloy_consensus::Header,
+    grandparent_timestamp: u64,
     mut attrs: TaikoPayloadAttributes,
 ) -> eyre::Result<Built> {
     use alethia_reth_consensus::eip4396::{MIN_BASE_FEE, calculate_next_block_eip4396_base_fee};
     use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
     use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
-    assert!(parent.number <= 1, "build() assumes the grandparent is genesis at timestamp 0");
-    // Fixture chains are at most two blocks deep, so the grandparent is genesis at timestamp 0.
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
-        parent.timestamp,
+        parent.timestamp - grandparent_timestamp,
         parent.base_fee_per_gas.unwrap(),
         MIN_BASE_FEE,
     ));

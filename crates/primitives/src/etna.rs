@@ -13,6 +13,12 @@ use reth_ethereum_primitives::TransactionSigned;
 /// the header, so it is rejected as an invalid parameter before any job starts.
 pub const ETNA_MIN_MAX_BLOCK_BYTES: u64 = 1_024;
 
+/// Consensus bound on an Etna executionBlock's length, in bytes (SPEC CONS-3.4-13).
+///
+/// The driver passes it to every Etna job as `maxBlockBytes`; the transaction pool uses it to
+/// refuse transactions no Etna block can carry.
+pub const ETNA_MAX_BLOCK_BYTES: u64 = 124_000;
+
 /// JSON-RPC error code an `engine_forkchoiceUpdatedV3` with Etna build attributes returns when its
 /// build failed and a read of the parent's state then reports that state pruned.
 ///
@@ -146,8 +152,13 @@ pub fn max_txs_payload_len(header_rlp_len: usize, max_block_bytes: u64) -> Optio
 /// list as well, which the block-body form leaves out. An EIP-2718 encoding is never a single byte,
 /// so the string always has a header.
 pub fn etna_tx_length(tx: &TransactionSigned) -> usize {
-    alloy_rlp::Header { list: false, payload_length: tx.eip2718_encoded_length() }
-        .length_with_payload()
+    etna_tx_length_of_encoding(tx.eip2718_encoded_length())
+}
+
+/// Returns [`etna_tx_length`] for a transaction whose EIP-2718 encoding is `eip2718_len` bytes
+/// long.
+pub fn etna_tx_length_of_encoding(eip2718_len: usize) -> usize {
+    alloy_rlp::Header { list: false, payload_length: eip2718_len }.length_with_payload()
 }
 
 /// Returns the exact length of the executionBlock `rlp([header, [tx…]])` for `header` and

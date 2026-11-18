@@ -2,6 +2,7 @@
 #![cfg_attr(test, allow(missing_docs, clippy::missing_docs_in_private_items))]
 //! Taiko node composition and addon wiring built on top of `reth`.
 pub mod components;
+pub mod pool;
 pub mod proof_history;
 
 pub use alethia_reth_block as block;
@@ -16,6 +17,7 @@ pub use alethia_reth_rpc as rpc;
 use chainspec::spec::TaikoChainSpec;
 use components::{TaikoConsensusBuilder, TaikoExecutorBuilder, TaikoNetworkBuilder};
 use payload::TaikoPayloadBuilderBuilder;
+use pool::TaikoPoolBuilder;
 use primitives::engine::TaikoEngineTypes;
 use reth::{
     api::{FullNodeComponents, FullNodeTypes, NodeTypes},
@@ -29,7 +31,6 @@ use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum::EthPrimitives;
 use reth_node_api::{PayloadAttributesBuilder, PayloadTypes};
 use reth_node_builder::{NodeAdapter, rpc::RpcAddOns};
-use reth_node_ethereum::node::EthereumPoolBuilder;
 use rpc::{
     engine::{builder::TaikoEngineApiBuilder, validator::TaikoEngineValidatorBuilder},
     eth::builder::TaikoEthApiBuilder,
@@ -67,7 +68,7 @@ where
     /// The type that builds the node's components.
     type ComponentsBuilder = ComponentsBuilder<
         N,
-        EthereumPoolBuilder,
+        TaikoPoolBuilder,
         BasicPayloadServiceBuilder<TaikoPayloadBuilderBuilder>,
         TaikoNetworkBuilder,
         TaikoExecutorBuilder,
@@ -81,7 +82,7 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         ComponentsBuilder::default()
             .node_types()
-            .pool(EthereumPoolBuilder::default())
+            .pool(TaikoPoolBuilder)
             .executor(TaikoExecutorBuilder)
             .payload(BasicPayloadServiceBuilder::new(TaikoPayloadBuilderBuilder))
             .network(TaikoNetworkBuilder)

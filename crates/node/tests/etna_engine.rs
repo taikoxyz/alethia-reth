@@ -244,3 +244,56 @@ fn etna_given_list_preserves_driver_order_and_obeys_the_byte_limit() -> eyre::Re
         Ok(())
     })
 }
+
+#[test]
+fn etna_pool_refuses_and_drops_transactions_no_etna_block_can_carry() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_block::assembler::etna_max_tx_length;
+        use alloy_consensus::transaction::SignerRecoverable;
+        use alloy_primitives::{Address, Bytes};
+        use reth::transaction_pool::{
+            EthPooledTransaction, PoolTransaction, TransactionOrigin, TransactionPool,
+        };
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let max = etna_max_tx_length();
+        let oversized = sized_tx(GOLDEN_TOUCH_KEY, 0, max + 1);
+        let fitting = sized_tx(POOL_SENDER_KEY, 0, max);
+        let small =
+            signed_tx_with_key(POOL_SENDER_KEY, 1, Address::with_last_byte(0x21), Bytes::new());
+
+        // Before Etna the transaction is below reth's 128 KiB input bound and enters the pool.
+        assert_eq!(send_raw(&http, &oversized).await?, *oversized.tx_hash());
+        // The first Etna head removes it.
+        let etna =
+            build(&client, spec.clone(), spec.genesis_header(), fixture_attributes(100)).await?;
+        canonicalize(&client, genesis, &etna).await?;
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while node.pool.contains(oversized.tx_hash()) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+
+        // From then on the pool refuses it, by itself and inside a batch, and admits the rest.
+        let refused = send_raw(&http, &oversized).await.unwrap_err().to_string();
+        assert!(refused.contains("oversized data"), "{refused}");
+        let batch = [&fitting, &oversized, &small]
+            .map(|tx| {
+                EthPooledTransaction::try_from_consensus(tx.clone().try_into_recovered().unwrap())
+                    .unwrap()
+            })
+            .to_vec();
+        let results = node.pool.add_transactions(TransactionOrigin::External, batch).await;
+        assert_eq!(results[0].as_ref().unwrap().hash, *fitting.tx_hash());
+        let refused = results[1].as_ref().unwrap_err().to_string();
+        assert!(refused.contains("oversized data"), "{refused}");
+        assert_eq!(results[2].as_ref().unwrap().hash, *small.tx_hash());
+        assert!(!node.pool.contains(oversized.tx_hash()));
+        Ok(())
+    })
+}

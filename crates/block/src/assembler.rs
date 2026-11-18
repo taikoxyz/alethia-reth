@@ -1,9 +1,13 @@
 //! Block assembler implementation for Taiko headers and block bodies.
+use alethia_reth_primitives::{
+    etna::{ETNA_MAX_BLOCK_BYTES, max_txs_payload_len},
+    extra_data::ETNA_EXTRA_DATA_LEN,
+};
 use alloy_consensus::{
     BlockBody, EMPTY_OMMER_ROOT_HASH, Header, TxReceipt, constants::EMPTY_WITHDRAWALS, proofs,
 };
 use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
-use alloy_primitives::{B256, Bloom, U256};
+use alloy_primitives::{B256, Bloom, Bytes, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::Withdrawals;
 use reth_ethereum_primitives::{Block, Receipt, TransactionSigned};
@@ -138,6 +142,31 @@ pub fn etna_header_length_bound(
         slot_number: None,
     }
     .length()
+}
+
+/// Returns the largest [`etna_tx_length`] every Etna build with `maxBlockBytes` =
+/// [`ETNA_MAX_BLOCK_BYTES`] can include on its own: the transaction byte budget left by the longest
+/// header [`etna_header_length_bound`] returns for any parent and attributes, with every
+/// variable-length number at `u64::MAX`.
+///
+/// A real build reserves a shorter header, so its budget is a few bytes larger: this bound is
+/// slightly stricter than what fits, never looser.
+///
+/// [`etna_tx_length`]: alethia_reth_primitives::etna::etna_tx_length
+pub fn etna_max_tx_length() -> u64 {
+    let parent =
+        SealedHeader::new(Header { number: u64::MAX - 1, ..Default::default() }, B256::ZERO);
+    let attributes = TaikoNextBlockEnvAttributes {
+        timestamp: u64::MAX,
+        suggested_fee_recipient: Default::default(),
+        prev_randao: B256::ZERO,
+        gas_limit: u64::MAX,
+        extra_data: Bytes::from_static(&[0; ETNA_EXTRA_DATA_LEN]),
+        base_fee_per_gas: u64::MAX,
+        parent_beacon_block_root: Some(B256::ZERO),
+    };
+    max_txs_payload_len(etna_header_length_bound(&parent, &attributes), ETNA_MAX_BLOCK_BYTES)
+        .expect("an Etna header is far shorter than ETNA_MAX_BLOCK_BYTES")
 }
 
 #[cfg(test)]

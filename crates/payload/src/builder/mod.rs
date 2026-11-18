@@ -550,6 +550,16 @@ mod tests {
     }
 
     #[test]
+    fn etna_max_tx_length_fits_a_real_build_budget_by_a_few_bytes() {
+        let (parent, attrs) = etna_job();
+        let reserve = etna_header_length_bound(&parent, &next_block_env_attributes(&attrs));
+        let budget = max_txs_payload_len(reserve, 124_000).unwrap();
+        let max = alethia_reth_block::assembler::etna_max_tx_length();
+        // Every transaction the pool admits fits this build, and the pool refuses little more.
+        assert!(max <= budget && budget - max < 40, "{max} {budget}");
+    }
+
+    #[test]
     fn ensure_within_max_block_bytes_is_exact() {
         let (parent, attrs) = etna_job();
         let block =

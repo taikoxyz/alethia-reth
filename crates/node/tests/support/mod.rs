@@ -196,18 +196,19 @@ pub async fn fcu(
 }
 
 /// The golden-touch key; `signed_tx` signs with it.
-const GOLDEN_TOUCH_KEY: &str = "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
+pub const GOLDEN_TOUCH_KEY: &str =
+    "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
 
 /// Key of `0x70997970c51812dc3a010c7d01b50e0d17dc79c8`, funded in the fixture genesis.
 pub const POOL_SENDER_KEY: &str =
     "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
-/// An EIP-1559 transaction on the fixture chain with a 1,000,000 gas limit and a 1 gwei fee cap,
-/// signed by `key`.
+/// An EIP-1559 transaction on the fixture chain with a 1 gwei fee cap, signed by `key`.
 fn sign_eip1559(
     key: &str,
     nonce: u64,
     tip: u128,
+    gas_limit: u64,
     target: Address,
     input: Bytes,
 ) -> reth_ethereum_primitives::TransactionSigned {
@@ -217,7 +218,7 @@ fn sign_eip1559(
     let tx = TxEip1559 {
         chain_id: 167001,
         nonce,
-        gas_limit: 1_000_000,
+        gas_limit,
         max_fee_per_gas: 1_000_000_000,
         max_priority_fee_per_gas: tip,
         to: target.into(),
@@ -235,7 +236,7 @@ pub fn signed_tx(
     target: Address,
     input: Bytes,
 ) -> reth_ethereum_primitives::TransactionSigned {
-    sign_eip1559(GOLDEN_TOUCH_KEY, nonce, if anchor { 0 } else { 7 }, target, input)
+    sign_eip1559(GOLDEN_TOUCH_KEY, nonce, if anchor { 0 } else { 7 }, 1_000_000, target, input)
 }
 
 /// An EIP-1559 transaction with tip 7 signed by `key`.
@@ -245,7 +246,25 @@ pub fn signed_tx_with_key(
     target: Address,
     input: Bytes,
 ) -> reth_ethereum_primitives::TransactionSigned {
-    sign_eip1559(key, nonce, 7, target, input)
+    sign_eip1559(key, nonce, 7, 1_000_000, target, input)
+}
+
+/// An EIP-1559 transaction with tip 7 signed by `key`, whose zero-byte calldata makes its
+/// `etna_tx_length` exactly `etna_len`.
+pub fn sized_tx(
+    key: &str,
+    nonce: u64,
+    etna_len: u64,
+) -> reth_ethereum_primitives::TransactionSigned {
+    use alethia_reth_primitives::etna::etna_tx_length;
+    let sign = |input_len: u64| {
+        let input = Bytes::from(vec![0; input_len as usize]);
+        sign_eip1559(key, nonce, 7, 2_000_000, Address::with_last_byte(0x77), input)
+    };
+    let probe = etna_tx_length(&sign(etna_len)) as u64;
+    let tx = sign(etna_len - (probe - etna_len));
+    assert_eq!(etna_tx_length(&tx) as u64, etna_len);
+    tx
 }
 
 /// Submits `tx` to the node's pool through `eth_sendRawTransaction`.

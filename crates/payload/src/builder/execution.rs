@@ -69,13 +69,17 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) tx_bytes_budget: Option<u64>,
 }
 
-/// Executes the provided transaction list in legacy mode.
+/// Executes the provided transaction list.
 ///
-/// Preserves legacy mode: validation errors are skipped, fatal errors abort
-/// the build, and cancellation short-circuits the loop. A transaction whose [`etna_tx_length`]
-/// exceeds the remaining `tx_bytes_budget` is skipped; `None` disables the byte bound.
+/// Validation errors are skipped, fatal errors abort the build, and cancellation short-circuits
+/// the loop. A transaction whose [`etna_tx_length`] exceeds the remaining `tx_bytes_budget` is
+/// skipped; `None` disables the byte bound.
+///
+/// Before Etna (`tx_bytes_budget` is `None`) the first zk gas overflow ends the list, as Unzen
+/// derivation and proving do. An Etna list is the proposer's choice and validators judge only the
+/// sealed block, so there an overflowing transaction is left out and the rest still run.
 pub(super) fn execute_provided_transactions(
-    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
+    builder: &mut impl BlockBuilder<Primitives = EthPrimitives, Executor: TxSelectionExecutor>,
     transactions: &[Recovered<EthTransactionSigned>],
     base_fee: u64,
     tx_bytes_budget: Option<u64>,
@@ -104,12 +108,18 @@ pub(super) fn execute_provided_transactions(
         let gas_used = match builder.execute_transaction(recovered_tx) {
             Ok(gas_output) => gas_output.tx_gas_used(),
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
-                debug!(
-                    target: "payload_builder",
-                    ?tx,
-                    "stopping legacy-mode payload after zk gas exhaustion"
-                );
-                break;
+                if tx_bytes_budget.is_none() {
+                    debug!(
+                        target: "payload_builder",
+                        ?tx,
+                        "stopping legacy-mode payload after zk gas exhaustion"
+                    );
+                    break;
+                }
+                // Clear the exhaustion this transaction left so the next one can run.
+                builder.executor_mut().clear_zk_gas_exhaustion();
+                trace!(target: "payload_builder", ?tx, "leaving out a transaction that overflowed the Etna zk gas budget");
+                continue;
             }
             Err(BlockExecutionError::Validation(
                 BlockValidationError::InvalidTx { .. } |
@@ -418,6 +428,35 @@ pub(super) mod tests {
             ExecutionOutcome::Cancelled => panic!("selection should not cancel"),
         }
         assert_eq!(builder.executor.receipts().len(), 1);
+    }
+
+    #[test]
+    fn etna_given_list_leaves_out_a_zk_gas_overflow_and_runs_the_rest() {
+        let mut builder = etna_builder(&[
+            (BENCH_SUCCESS_CALLER, 0),
+            (BENCH_LIMIT_CALLER, 0),
+            (BENCH_LATE_CALLER, 0),
+        ]);
+        let transactions = [
+            recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
+            recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 1),
+            recovered_tx(BENCH_LATE_CALLER, BENCH_SUCCESS_TARGET, 0, 1),
+        ];
+
+        let outcome = execute_provided_transactions(
+            &mut builder,
+            &transactions,
+            0,
+            Some(100_000),
+            &CancelOnDrop::default(),
+        )
+        .expect("an Etna zk gas overflow should be left out, not fail the build");
+
+        assert!(matches!(outcome, ExecutionOutcome::Completed(fees) if fees > U256::ZERO));
+        // Unlike the pre-Etna list above, the transaction after the overflow still executes.
+        assert_eq!(builder.executor.receipts().len(), 2);
+        assert_eq!(nonce_of(&mut builder, BENCH_LIMIT_CALLER), 0);
+        assert_eq!(nonce_of(&mut builder, BENCH_LATE_CALLER), 1);
     }
 
     #[test]

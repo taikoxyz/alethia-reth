@@ -116,6 +116,11 @@ where
                 interp.bytecode.opcode(),
                 interp.gas.remaining(),
             );
+            // Test-only trace hook: the step's program counter.
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            {
+                metering.pending_steps[context.journal().depth()].pc = interp.bytecode.pc();
+            }
         }
         self.inner.step(interp, context);
     }
@@ -137,9 +142,30 @@ where
         step.spawned = is_spawn_opcode(step.opcode) &&
             matches!(interp.bytecode.action(), Some(InterpreterAction::NewFrame(_)));
 
+        // Test-only trace hook: the pending step and the in-flight zk gas before its charge.
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        let trace_pre = metering
+            .meter
+            .is_tracing()
+            .then(|| (metering.pending_steps[depth], metering.meter.tx_zk_gas_used()));
+
         // NewFrame has been selected but not dispatched yet, so a failed wrapper charge can still
         // replace the action before any child contract or precompile executes.
-        if metering.charge_finished_step(step).is_err() {
+        let charge = metering.charge_finished_step(step);
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        if let Some((pending, zk_before)) = trace_pre {
+            metering.meter.trace_step(
+                depth,
+                pending.pc,
+                step.opcode,
+                pending.gas_remaining,
+                interp.gas.remaining(),
+                step.spawned,
+                zk_before,
+                charge,
+            );
+        }
+        if charge.is_err() {
             halt_for_zk_gas_limit(context, interp);
         }
     }
@@ -189,16 +215,32 @@ where
         let precompile_gas_used = outcome
             .was_precompile_called
             .then(|| inputs.gas_limit.saturating_sub(outcome.result.gas.remaining()));
+        // Test-only trace hook: the gas left and whether the precompile returned without halting.
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        let precompile_end = (outcome.result.gas.remaining(), !outcome.result.result.is_halt());
         self.inner.call_end(context, inputs, outcome);
 
         if let Some(metering) = &mut self.metering &&
             let Some(gas_used) = precompile_gas_used
         {
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            let zk_before = metering.meter.tx_zk_gas_used();
             // Precompile usage is charged separately from the CALL opcode itself, keyed by the
             // full precompile address.
-            if let Err(ZkGasOutcome::LimitExceeded) =
-                metering.meter.charge_precompile(&inputs.bytecode_address, gas_used)
-            {
+            let charge = metering.meter.charge_precompile(&inputs.bytecode_address, gas_used);
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            if metering.meter.is_tracing() {
+                let (left, success) = precompile_end;
+                metering.meter.trace_precompile(
+                    inputs.bytecode_address,
+                    inputs.gas_limit,
+                    left,
+                    success,
+                    zk_before,
+                    charge,
+                );
+            }
+            if let Err(ZkGasOutcome::LimitExceeded) = charge {
                 set_custom_error(context);
             }
         }
@@ -276,7 +318,13 @@ impl ZkGasMeteringState {
     #[inline(always)]
     fn begin_step(&mut self, depth: usize, opcode: u8, gas_remaining: u64) {
         // Any previous pending step at this depth must already have been consumed by `step_end`.
-        self.pending_steps[depth] = PendingStep { opcode, gas_remaining };
+        self.pending_steps[depth] = PendingStep {
+            opcode,
+            gas_remaining,
+            // Set by the trace hook in `step`.
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            pc: 0,
+        };
         if depth > self.max_active_depth {
             self.max_active_depth = depth;
         }
@@ -319,11 +367,19 @@ struct PendingStep {
     opcode: u8,
     /// Remaining EVM gas observed before the opcode executed.
     gas_remaining: u64,
+    /// Test-only: program counter of the opcode, for the zk gas trace.
+    #[cfg(any(test, feature = "zk-gas-trace"))]
+    pc: usize,
 }
 
 impl PendingStep {
     /// Empty placeholder overwritten by `begin_step` before `finish_step` reads a depth.
-    const EMPTY: Self = Self { opcode: 0, gas_remaining: 0 };
+    const EMPTY: Self = Self {
+        opcode: 0,
+        gas_remaining: 0,
+        #[cfg(any(test, feature = "zk-gas-trace"))]
+        pc: 0,
+    };
 }
 
 /// Completed metering record for a single opcode step.

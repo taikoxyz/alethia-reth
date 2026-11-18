@@ -342,7 +342,9 @@ pub async fn canonicalize(client: &impl ClientT, genesis: B256, built: &Built) -
 pub async fn assert_execution_parity(node: &TestNode, built: &Built) -> eyre::Result<()> {
     use alethia_reth_block::derived_block::{assemble_filtered_block, execute_derived_block};
     use reth_revm::database::StateProviderDatabase;
-    use reth_storage_api::{HeaderProvider, StateProviderFactory, StateRootProvider};
+    use reth_storage_api::{
+        HeaderProvider, StateProvider, StateProviderFactory, StateRootProvider,
+    };
     let parent = node.provider.sealed_header_by_hash(built.block.parent_hash)?.unwrap();
     let state = node.provider.history_by_block_hash(parent.hash())?;
     let recovered = built.block.clone().try_recover()?;
@@ -350,7 +352,7 @@ pub async fn assert_execution_parity(node: &TestNode, built: &Built) -> eyre::Re
         &node.evm_config,
         &parent,
         &recovered,
-        StateProviderDatabase::new(&*state),
+        StateProviderDatabase::new((&state).into_evm_state_provider()),
     )?;
     assert_eq!(U256::from(derived.finalized_block_zk_gas), built.block.difficulty);
     let root = state.state_root(derived.hashed_state)?;

@@ -16,7 +16,7 @@ use crate::{
     env::TaikoBlockEnv,
     evm::TaikoEvm,
     spec::TaikoSpecId,
-    zk_gas::{adapter::ZkGasInspector, schedule::schedule_for},
+    zk_gas::{adapter::ZkGasInspector, operands, schedule::schedule_for},
 };
 
 /// A factory type for creating instances of the Taiko EVM given a certain input.
@@ -51,7 +51,7 @@ impl EvmFactory for TaikoEvmFactory {
         let spec_id = input.cfg_env.spec;
         let base_fee_share_pctg = input.block_env.base_fee_share_pctg;
         let schedule = schedule_for(spec_id);
-        let evm = Context::mainnet()
+        let mut evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
@@ -59,6 +59,8 @@ impl EvmFactory for TaikoEvmFactory {
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
+
+        operands::install(evm.instruction.instruction_table_mut(), schedule.is_some());
 
         let mut evm =
             TaikoEvmWrapper::new(TaikoEvm::new(evm).with_zk_gas_schedule(schedule), false);
@@ -80,7 +82,7 @@ impl EvmFactory for TaikoEvmFactory {
         let spec_id = input.cfg_env.spec;
         let base_fee_share_pctg = input.block_env.base_fee_share_pctg;
         let schedule = schedule_for(spec_id);
-        let evm = Context::mainnet()
+        let mut evm = Context::mainnet()
             .with_cfg(input.cfg_env)
             .with_block(input.block_env)
             .with_db(db)
@@ -88,6 +90,8 @@ impl EvmFactory for TaikoEvmFactory {
             .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
                 PrecompileSpecId::from_spec_id(spec_id.into()),
             )));
+
+        operands::install(evm.instruction.instruction_table_mut(), schedule.is_some());
 
         let mut evm = TaikoEvmWrapper::new(TaikoEvm::new(evm), true);
         let allow_legacy_anchor = !spec_id.is_enabled_in(TaikoSpecId::ETNA);

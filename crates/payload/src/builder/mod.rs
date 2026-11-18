@@ -15,7 +15,9 @@ use reth_execution_cache::{CachedStateMetrics, CachedStateMetricsSource, CachedS
 use reth_payload_builder::EthBuiltPayload;
 use reth_payload_builder_primitives::PayloadBuilderError;
 use reth_primitives_traits::SealedBlock;
-use reth_provider::{BlockReader, ChainSpecProvider, StateProviderFactory};
+use reth_provider::{
+    BlockReader, ChainSpecProvider, EvmStateProvider, StateProvider, StateProviderFactory,
+};
 use reth_revm::{database::StateProviderDatabase, db::State};
 use tracing::{debug, warn};
 
@@ -40,6 +42,9 @@ use self::execution::{
 
 /// Transaction-phase execution helpers for legacy/new-mode payload construction.
 mod execution;
+/// Runner for the shared Unzen zk gas block vectors.
+#[cfg(test)]
+mod zk_gas_vectors;
 
 /// Taiko payload builder.
 #[derive(Debug, Clone)]
@@ -268,15 +273,23 @@ where
             .expect("an Etna header bound (under 700 bytes) fits the 1,024-byte floor")
     });
 
-    let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
-    if let Some(execution_cache) = execution_cache {
-        state_provider = Box::new(CachedStateProvider::new(
-            state_provider,
+    // Execution reads go through the execution cache when one is supplied; `finish` roots the block
+    // through the uncached provider, since the cache only serves EVM reads.
+    let state_provider = client.state_by_block_hash(parent_header.hash())?;
+    let evm_state_provider = (&state_provider).into_evm_state_provider();
+    let cached_state_provider = execution_cache.map(|execution_cache| {
+        CachedStateProvider::new(
+            &evm_state_provider,
             execution_cache.cache().clone(),
             Some(CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder)),
-        ));
-    }
-    let state = StateProviderDatabase::new(state_provider.as_ref());
+        )
+    });
+    let state = StateProviderDatabase::new(
+        cached_state_provider
+            .as_ref()
+            .map(|provider| provider as &dyn EvmStateProvider)
+            .unwrap_or(&evm_state_provider),
+    );
     let mut db =
         State::builder().with_database(cached_reads.as_db_mut(state)).with_bundle_update().build();
 

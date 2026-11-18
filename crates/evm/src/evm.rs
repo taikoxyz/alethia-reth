@@ -163,9 +163,22 @@ where
             let Some(meter) = self.zk_gas_meter.as_mut()
         {
             let gas_used = gas_limit.saturating_sub(outcome.result.gas.remaining());
-            if let Err(ZkGasOutcome::LimitExceeded) =
-                meter.charge_precompile(&bytecode_address, gas_used)
-            {
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            let zk_before = meter.tx_zk_gas_used();
+            let charge = meter.charge_precompile(&bytecode_address, gas_used);
+            // Test-only trace hook.
+            #[cfg(any(test, feature = "zk-gas-trace"))]
+            if meter.is_tracing() {
+                meter.trace_precompile(
+                    bytecode_address,
+                    gas_limit,
+                    outcome.result.gas.remaining(),
+                    !outcome.result.result.is_halt(),
+                    zk_before,
+                    charge,
+                );
+            }
+            if let Err(ZkGasOutcome::LimitExceeded) = charge {
                 set_custom_error(&mut self.inner.ctx);
             }
         }

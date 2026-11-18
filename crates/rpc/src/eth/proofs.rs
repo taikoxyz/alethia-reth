@@ -12,6 +12,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_optimism_trie::{OpProofsStorage, OpProofsStore};
 use reth_rpc_eth_api::helpers::FullEthApi;
 use reth_rpc_eth_types::EthApiError;
+use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -20,6 +21,21 @@ use tokio::sync::Semaphore;
 /// Each request walks proof-history tries on the blocking pool; the cap keeps a proof storm from
 /// starving the pool (stock reth similarly gates `eth_getProof` behind a shared permit).
 const MAX_CONCURRENT_PROOF_REQUESTS: usize = 32;
+
+/// Rejects a proof request for more storage keys than [`DEFAULT_MAX_PROOF_SLOTS`].
+///
+/// Copies the key-count check that opens reth's `EthState::get_proof` (paradigmxyz/reth#27716),
+/// which this override replaces on proof-history nodes; upstream writes it inline, so there is no
+/// function to call. The limit, the `InvalidParams` variant and the message match upstream's, and
+/// the test below pins the message. Re-check upstream's early rejections on every reth bump.
+fn ensure_proof_key_count(key_count: usize) -> Result<(), EthApiError> {
+    if key_count > DEFAULT_MAX_PROOF_SLOTS {
+        return Err(EthApiError::InvalidParams(format!(
+            "storage key count {key_count} exceeds limit {DEFAULT_MAX_PROOF_SLOTS}",
+        )));
+    }
+    Ok(())
+}
 
 /// RPC server trait for Taiko proof-history backed `eth_getProof`.
 #[cfg_attr(not(test), rpc(server, namespace = "eth"))]
@@ -71,12 +87,16 @@ where
     Storage: OpProofsStore + Clone + 'static,
 {
     /// Handles `eth_getProof` with proof-history backed state.
+    ///
+    /// Rejects requests over reth's storage-key cap before taking a permit, as upstream does.
     async fn get_proof(
         &self,
         address: Address,
         keys: Vec<JsonStorageKey>,
         block_id: Option<BlockId>,
     ) -> RpcResult<EIP1186AccountProofResponse> {
+        ensure_proof_key_count(keys.len())?;
+
         // Acquire an owned permit and move it into the blocking closure: a permit held only by
         // this (cancellable) future would be released on client disconnect while the
         // non-abortable blocking work keeps running, letting cancelled requests bypass the cap.
@@ -107,5 +127,25 @@ where
         let proof = flatten_blocking_task(proof_task)?;
 
         Ok(proof.into_eip1186_response(keys))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proof_key_count_is_capped() {
+        assert!(ensure_proof_key_count(DEFAULT_MAX_PROOF_SLOTS).is_ok());
+
+        let err = ensure_proof_key_count(DEFAULT_MAX_PROOF_SLOTS + 1).unwrap_err();
+        let expected = format!(
+            "storage key count {} exceeds limit {DEFAULT_MAX_PROOF_SLOTS}",
+            DEFAULT_MAX_PROOF_SLOTS + 1
+        );
+        assert!(
+            matches!(&err, EthApiError::InvalidParams(msg) if *msg == expected),
+            "unexpected error: {err:?}"
+        );
     }
 }

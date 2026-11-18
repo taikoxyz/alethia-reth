@@ -5,7 +5,8 @@ use alloy_eips::eip4844::BYTES_PER_BLOB;
 use alloy_primitives::B256;
 use reth::{
     providers::{ChainSpecProvider, StateProviderFactory},
-    revm::{cancelled::CancelOnDrop, primitives::U256},
+    revm::primitives::U256,
+    tasks::CancelOnDrop,
 };
 use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
@@ -237,7 +238,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
 
     use super::*;
@@ -283,7 +284,7 @@ mod tests {
     const BENCH_SUCCESS_CALLER: Address = Address::with_last_byte(0x30);
     const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x31);
     const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x32);
-    const GOLDEN_TOUCH_PRIVATE_KEY: &str =
+    pub(in crate::builder) const GOLDEN_TOUCH_PRIVATE_KEY: &str =
         "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
 
     fn test_anchor_transaction(to: Address) -> Recovered<EthTransactionSigned> {

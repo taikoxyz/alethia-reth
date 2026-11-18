@@ -7,7 +7,7 @@ use reth_revm::{
     Inspector,
     context::{
         TxEnv,
-        result::{ExecutionResult, HaltReason},
+        result::{ExecutionResult, HaltReason, OutOfGasError},
     },
     db::InMemoryDB,
     inspector::NoOpInspector,
@@ -434,6 +434,151 @@ fn production_metered_path_matches_inspector_path_for_ordinary_opcodes() {
         inspector_evm.meter().expect("inspector path should install a meter").tx_zk_gas_used();
 
     assert_eq!(production_zk_gas, inspector_zk_gas);
+}
+
+#[test]
+fn metered_paths_handle_length_operands_consistently() {
+    // Opcode, length stack index, topic count, multiplier, static gas, successful step gas.
+    // The last column covers length 0 and 33, including memory. Address zero is warm coinbase.
+    let cases = [
+        (opcode::KECCAK256, 1, 0, 31, 30, [30, 48]),
+        (opcode::CALLDATACOPY, 2, 0, 13, 3, [3, 15]),
+        (opcode::CODECOPY, 2, 0, 12, 3, [3, 15]),
+        (opcode::EXTCODECOPY, 3, 0, 4, 100, [100, 112]),
+        (opcode::MCOPY, 2, 0, 4, 3, [3, 15]),
+        (opcode::LOG0, 1, 0, 3, 375, [375, 645]),
+        (opcode::LOG1, 1, 1, 3, 375, [750, 1_020]),
+        (opcode::LOG2, 1, 2, 2, 375, [1_125, 1_395]),
+        (opcode::LOG3, 1, 3, 2, 375, [1_500, 1_770]),
+        (opcode::LOG4, 1, 4, 2, 375, [1_875, 2_145]),
+    ];
+
+    for (op, length_index, topics, multiplier, static_gas, success_gas) in cases {
+        for length in [0u128, 33, (1 << 32) - 1, 1 << 32, (1 << 32) + 1, (1 << 64) - 1, 1 << 64] {
+            let mut code = vec![opcode::PUSH0; topics];
+            code.push(opcode::PUSH32);
+            code.extend_from_slice(&[0; 16]);
+            code.extend_from_slice(&length.to_be_bytes());
+            code.extend(std::iter::repeat_n(opcode::PUSH0, length_index));
+            code.extend([op, opcode::STOP]);
+            let bytecode = Bytecode::new_raw(Bytes::from(code));
+
+            // PUSH32 costs 3 gas / 57 zk gas; every PUSH0 costs 2 gas / 26 zk gas.
+            let prefix_gas = 3 + 2 * (length_index + topics) as u64;
+            let prefix_zk_gas = 57 + 26 * (length_index + topics) as u64;
+            let step_gas = match length {
+                0 => success_gas[0],
+                33 => success_gas[1],
+                0x1_0000_0000_0000_0000 => static_gas,
+                _ => 79_000 - prefix_gas,
+            };
+            let expected_zk_gas = prefix_zk_gas + step_gas * multiplier;
+
+            for inspected in [false, true] {
+                let db = db_with_contract(bytecode.clone());
+                let env = evm_env(TaikoSpecId::UNZEN);
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(db, env, NoOpInspector {})
+                } else {
+                    TaikoEvmFactory.create_evm(db, env)
+                };
+                let result = evm.transact(tx_env(100_000)).expect("length operand tx executes");
+                let expected_halt = if length >= 1 << 64 {
+                    Some(HaltReason::OutOfGas(OutOfGasError::InvalidOperand))
+                } else if length >= (1 << 32) - 1 {
+                    Some(HaltReason::OutOfGas(OutOfGasError::Basic))
+                } else {
+                    None
+                };
+                let label = format!("opcode {op:#x}, length {length}, inspected {inspected}");
+                if let Some(expected) = expected_halt {
+                    assert!(
+                        matches!(&result.result, ExecutionResult::Halt { reason, .. } if *reason == expected),
+                        "{label}: {:?}",
+                        result.result,
+                    );
+                } else {
+                    assert!(result.result.is_success(), "{label}: {:?}", result.result);
+                }
+                assert_eq!(
+                    evm.meter().expect("Unzen meter").tx_zk_gas_used(),
+                    expected_zk_gas,
+                    "{label}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn length_operand_failures_preserve_validation_order() {
+    // With only one operand, stack validation wins over length conversion.
+    for (op, static_zk_gas) in [
+        (opcode::KECCAK256, 930),
+        (opcode::CALLDATACOPY, 39),
+        (opcode::CODECOPY, 36),
+        (opcode::EXTCODECOPY, 400),
+        (opcode::MCOPY, 12),
+        (opcode::LOG0, 1_125),
+        (opcode::LOG4, 750),
+    ] {
+        let code = Bytecode::new_raw(Bytes::from(vec![opcode::PUSH5, 1, 0, 0, 0, 0, op]));
+        let expected = 27 + static_zk_gas;
+        assert_eq!(
+            metered_paths_zk_gas_for_halting_tx(code, 100_000, |reason| {
+                matches!(reason, HaltReason::StackUnderflow)
+            }),
+            (expected, expected),
+            "opcode {op:#x}",
+        );
+    }
+
+    // LOG4 checks its length before popping topics, so missing topics do not mask dynamic OOG.
+    let log = Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH5,
+        1,
+        0,
+        0,
+        0,
+        0,
+        opcode::PUSH0,
+        opcode::LOG4,
+    ]));
+    assert_eq!(
+        metered_paths_zk_gas_for_halting_tx(log.clone(), 100_000, |reason| {
+            matches!(reason, HaltReason::OutOfGas(OutOfGasError::Basic))
+        }),
+        (158_043, 158_043), // 27 + 26 + (79_000 - 5) * 2
+    );
+
+    // In a static child the same LOG4 must fail before converting its length or reading topics.
+    let child = Address::with_last_byte(0xBB);
+    let parent = Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH0,
+        opcode::PUSH0,
+        opcode::PUSH0,
+        opcode::PUSH0,
+        opcode::PUSH1,
+        0xBB,
+        opcode::PUSH2,
+        0xFF,
+        0xFF,
+        opcode::STATICCALL,
+        opcode::STOP,
+    ]));
+    for inspected in [false, true] {
+        let mut db = db_with_contract(parent.clone());
+        insert_contract(&mut db, child, log.clone());
+        let env = evm_env(TaikoSpecId::UNZEN);
+        let mut evm = if inspected {
+            TaikoEvmFactory.create_evm_with_inspector(db, env, NoOpInspector {})
+        } else {
+            TaikoEvmFactory.create_evm(db, env)
+        };
+        assert!(evm.transact(tx_env(100_000)).expect("static call executes").result.is_success());
+        // Parent pushes: 155; STATICCALL: 3_500 * 23; child pushes: 53; static LOG4: 375 * 2.
+        assert_eq!(evm.meter().unwrap().tx_zk_gas_used(), 81_458);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1475,4 +1620,56 @@ fn unzen_schedule_meters_clz() {
         UNZEN_ZK_GAS_SCHEDULE.opcode_multipliers[0x1e], 14,
         "default Unzen schedule must meter clz at 14"
     );
+}
+
+#[test]
+fn metered_paths_agree_on_wide_memory_length_charges() {
+    let cases: &[(u8, usize, u64)] = &[
+        (0x20, 1, 30),
+        (0x37, 2, 3),
+        (0x39, 2, 3),
+        (0x3c, 3, 100),
+        (0x5e, 2, 3),
+        (0xa0, 1, 375),
+        (0xa1, 1, 375),
+        (0xa2, 1, 375),
+        (0xa3, 1, 375),
+        (0xa4, 1, 375),
+    ];
+    let lengths: &[(&[u8], bool)] = &[
+        (&[0xff; 4], true),
+        (&[1, 0, 0, 0, 0], true),
+        (&[0xff; 8], true),
+        (&[1, 0, 0, 0, 0, 0, 0, 0, 0], false),
+    ];
+    for &(op, zero_args, static_gas) in cases {
+        for &(length, spends_all) in lengths {
+            let mut code = vec![opcode::PUSH1 + length.len() as u8 - 1];
+            code.extend_from_slice(length);
+            code.extend(std::iter::repeat_n(opcode::PUSH0, zero_args));
+            code.push(op);
+            let bytecode = Bytecode::new_raw(Bytes::from(code));
+            let mut plain = TaikoEvmFactory
+                .create_evm(db_with_contract(bytecode.clone()), evm_env(TaikoSpecId::UNZEN));
+            let mut inspected = TaikoEvmFactory.create_evm_with_inspector(
+                db_with_contract(bytecode),
+                evm_env(TaikoSpecId::UNZEN),
+                StepGasProbeInspector::default(),
+            );
+            let plain_result = plain.transact(tx_env(100_000)).unwrap();
+            let inspected_result = inspected.transact(tx_env(100_000)).unwrap();
+            assert_eq!(plain_result, inspected_result, "opcode {op:#x}, length {length:?}");
+            let step = inspected.inspector().steps.last().unwrap();
+            assert_eq!(step.opcode, op);
+            // The tx starts with 79,000 execution gas; PUSHn costs 3 and each PUSH0 costs 2.
+            let expected_raw =
+                if spends_all { 79_000 - 3 - 2 * zero_args as u64 } else { static_gas };
+            assert_eq!(step.raw_gas, expected_raw, "opcode {op:#x}, length {length:?}");
+            assert_eq!(
+                plain.meter().unwrap().tx_zk_gas_used(),
+                inspected.meter().unwrap().tx_zk_gas_used(),
+                "opcode {op:#x}, length {length:?}",
+            );
+        }
+    }
 }

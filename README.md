@@ -91,15 +91,16 @@ configuration, see the [Etna Engine API guide](docs/engine-api-etna.md).
 
 No built-in genesis predeploys the EIP-4788 (`0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`) or
 EIP-2935 (`0x0000F90827F1C53a10cb7A02335B175320002935`) system contracts, and canonical devnet's
-`alloc` still holds the pre-Etna `Anchor`. Do not only add the two system contracts to that alloc:
-with Etna active, the old `anchorV4` stays callable with the public golden-touch key, so anyone
-could save a forged L1 checkpoint. Build the genesis with `build_etna_genesis.py` from the draft
+`alloc` still holds the pre-Etna L2 `SignalService`, whose checkpoint store stays open. Do not only
+add the two system contracts to that alloc: with Etna active, `anchorV4` stays callable with the
+public golden-touch key, so anyone could save a forged L1 checkpoint. Build the genesis with
+`build_etna_genesis.py` from the draft
 [taikoxyz/taiko-mono#22286](https://github.com/taikoxyz/taiko-mono/pull/22286), which is not on
-taiko-mono `main` yet. In a checkout of that branch, set `chainId` to `167001`, `etnaTimestamp` to
-`"0x0"` and `remoteSignalService` to a deployed L1 SignalService in
-`packages/protocol/test/genesis/data/genesis_config.js`. Then run, from `packages/protocol` (pnpm
-and Foundry required), with `ALETHIA_RETH` set to this repository and `L1_SIGNAL_SERVICE` to that
-address:
+taiko-mono `main` yet. In a checkout of that branch, set `chainId` to `167001`, `beaconRootsFrom`
+to `"0x1"` (max(1, t) for the canonical devnet genesis timestamp t = 0) and `remoteSignalService`
+to a deployed L1 SignalService in `packages/protocol/test/genesis/data/genesis_config.js`. Then
+run, from `packages/protocol` (pnpm and Foundry required), with `ALETHIA_RETH` set to this
+repository and `L1_SIGNAL_SERVICE` to that address:
 
 ```sh
 pnpm install && pnpm genesis:gen
@@ -111,10 +112,13 @@ python3 script/layer2/build_etna_genesis.py \
   --output "$ALETHIA_RETH/etna-devnet.json"
 ```
 
-The script overlays the generated L2 predeploys (including the Etna `Anchor` and `SignalServiceL2`)
-and both system contracts onto `alloc`, drops the derived `stateRoot`, and refuses an `Anchor` whose
-`etnaTimestamp` is not 0. From this repository, start a fresh node with the
-[Etna override](docs/engine-api-etna.md#devnet-activation-override) at that same timestamp, `0`:
+The script overlays the generated L2 predeploys (including the `Anchor` and the L2 `SignalService`)
+and both system contracts onto `alloc` and drops the derived `stateRoot`. It refuses a
+`SignalService` whose `beaconRootsFrom` is not max(1, t), checked in the emitted bytecode as well
+as in the configuration: from that timestamp on the SignalService accepts no checkpoint, so
+`anchorV4` cannot save a forged one, and proofs resolve L1 roots through EIP-4788. From this
+repository, start a fresh node with the
+[Etna override](docs/engine-api-etna.md#devnet-activation-override) at the genesis timestamp, `0`:
 
 ```sh
 ./target/release/alethia-reth node --chain ./etna-devnet.json \

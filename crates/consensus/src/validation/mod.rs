@@ -20,7 +20,7 @@ use reth_primitives_traits::{
 };
 
 use crate::eip4396::{
-    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
+    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE, block_time_target,
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
@@ -245,6 +245,10 @@ where
                 });
             }
             let min_base_fee_to_clamp = min_base_fee_to_clamp(self.chain_spec.as_ref());
+            // The target follows this header's fork, so the first Etna block already uses 4 s
+            // although its parent and grandparent are Unzen blocks (SPEC ENC-A-10a).
+            let block_time_target =
+                block_time_target(self.chain_spec.is_etna_active(header.timestamp()));
 
             // Calculate the expected base fee using EIP-4396 rules. For the first post-genesis
             // block there is no grandparent timestamp, so reuse the default Shasta base fee.
@@ -258,6 +262,7 @@ where
                         calculate_next_block_eip4396_base_fee(
                             parent.header(),
                             block_time,
+                            block_time_target,
                             parent_base_fee,
                             min_base_fee_to_clamp,
                         )

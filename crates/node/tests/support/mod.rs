@@ -328,13 +328,17 @@ pub async fn build_on(
     grandparent_timestamp: u64,
     mut attrs: TaikoPayloadAttributes,
 ) -> eyre::Result<Built> {
-    use alethia_reth_consensus::eip4396::{MIN_BASE_FEE, calculate_next_block_eip4396_base_fee};
+    use alethia_reth_chainspec::hardfork::TaikoHardforks;
+    use alethia_reth_consensus::eip4396::{
+        MIN_BASE_FEE, block_time_target, calculate_next_block_eip4396_base_fee,
+    };
     use alethia_reth_primitives::engine::{TaikoEngineTypes, osaka::TaikoExecutionPayloadV3};
     use reth_chainspec::EthChainSpec;
     use reth_node_api::PayloadValidator;
     attrs.base_fee_per_gas = U256::from(calculate_next_block_eip4396_base_fee(
         parent,
         parent.timestamp - grandparent_timestamp,
+        block_time_target(spec.is_etna_active(attrs.payload_attributes.timestamp)),
         parent.base_fee_per_gas.unwrap(),
         MIN_BASE_FEE,
     ));

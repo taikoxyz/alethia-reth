@@ -381,3 +381,60 @@ fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Res
         Ok(())
     })
 }
+
+/// The first Etna block takes EIP-4396's 4 s target although its parent and grandparent are Unzen
+/// blocks, while the last Unzen block keeps 2 s, and `engine_newPayloadV4` rejects the other
+/// target's result for each (SPEC ENC-A-10a; CONS-3.2-8 vectors 8.g, 8.i).
+#[test]
+fn first_etna_block_base_fee_uses_the_etna_target_at_import() -> eyre::Result<()> {
+    run_live_test(async {
+        use alloy_primitives::Bytes;
+        use alloy_rpc_types_engine::PayloadStatus;
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        fcu(&client, genesis, genesis, None).await?;
+        // Blocks 1..3 at 97..99 are Unzen and block 4 at 100 is the first Etna block. All are
+        // empty. Block 1 is fixed at 0.025 gwei, and block 2's 97 s interval caps `adjusted` at
+        // 95% of the gas limit under either target; blocks 3 and 4 come 1 s after their parents,
+        // so the two targets disagree there. (timestamp, base fee, the other target's base fee)
+        let expected = [
+            (97, 25_000_000, None),
+            (98, 19_062_500, None),
+            (99, 17_871_094, Some(18_466_797)),
+            (100, 17_312_623, Some(16_754_151)),
+        ];
+        let mut chain = vec![spec.genesis_header().clone()];
+        for (timestamp, base_fee, other_target) in expected {
+            let parent = chain.last().unwrap();
+            let grandparent = chain.iter().rev().nth(1).map_or(0, |header| header.timestamp);
+            let built =
+                build_on(&client, spec.clone(), parent, grandparent, fixture_attributes(timestamp))
+                    .await?;
+            assert_eq!(built.block.base_fee_per_gas, Some(base_fee), "block at {timestamp}");
+            if let Some(other) = other_target {
+                let mut header = built.block.header().clone();
+                header.base_fee_per_gas = Some(other);
+                let mut payload = built.payload.clone();
+                payload["baseFeePerGas"] = format!("{other:#x}").into();
+                payload["blockHash"] = serde_json::to_value(header.hash_slow())?;
+                let status: PayloadStatus = client
+                    .request(
+                        "engine_newPayloadV4",
+                        rpc_params![payload, Vec::<B256>::new(), built.root, Vec::<Bytes>::new()],
+                    )
+                    .await?;
+                assert!(status.status.is_invalid(), "block at {timestamp}: {status:?}");
+                assert!(
+                    format!("{status:?}").contains(&format!("got {other}, expected {base_fee}")),
+                    "block at {timestamp}: {status:?}"
+                );
+            }
+            canonicalize(&client, genesis, &built).await?;
+            chain.push(built.block.header().clone());
+        }
+        Ok(())
+    })
+}

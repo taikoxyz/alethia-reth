@@ -7,16 +7,21 @@ The Engine API method change is not gated on Etna: it applies to Unzen traffic a
 runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
 Etna block production and validation follow taiko-mono's
-[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/2e6763e21bc236cfcda6011d164b32040f9e0c8d/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks)
-and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/2e6763e21bc236cfcda6011d164b32040f9e0c8d/packages/protocol/docs/etna/ANCHORLESS.md).
+[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/994960561490b882558da7847a21a41a271350c5/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks),
+its [appendix A](https://github.com/taikoxyz/taiko-mono/blob/994960561490b882558da7847a21a41a271350c5/packages/protocol/docs/etna/SPEC.md#appendix-a-encodings)
+and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/994960561490b882558da7847a21a41a271350c5/packages/protocol/docs/etna/ANCHORLESS.md),
+as of `994960561`, the head of docs PR
+[taikoxyz/taiko-mono#22422](https://github.com/taikoxyz/taiko-mono/pull/22422), which is not merged
+yet.
 The older proposal-based `Derivation.md` describes the pre-Etna flow. Activation
 prerequisites and open work are listed in the description of
 [taikoxyz/alethia-reth#248](https://github.com/taikoxyz/alethia-reth/pull/248).
 
 ## Block rules
 
-Etna keeps Osaka execution, the Unzen zk-gas schedule, fee sharing, EIP-4396 base fees, and strict
-post-Shasta timestamp ordering. It removes the anchor transaction:
+Etna keeps Osaka execution, the Unzen zk-gas schedule, fee sharing, EIP-4396 base fees (with a
+4-second block-time target), and strict post-Shasta timestamp ordering. It removes the anchor
+transaction:
 
 - No transaction position is reserved, nothing is prepended, and no synthetic transaction or
   receipt is inserted. A block may be empty.
@@ -60,14 +65,20 @@ For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` 
 1,000,000 gas anchor reserve, and the builder uses the complete supplied limit for ordinary
 transactions. EIP-4396 always uses the raw parent header's `gasLimit` and `gasUsed`, including at
 the boundary, where the parent still contains the anchor. SPEC.md section 3.2 fixes the block gas
-limit to the chain constant; the EL builds with `blockMetadata.gasLimit` and does not check it
-against that constant. The EIP-4396 parameters are listed under
+limit to the chain constant `L2_BLOCK_GAS_LIMIT` (45,000,000, PARAM-11-10a); the EL builds with
+`blockMetadata.gasLimit` and does not check it against that constant.
+
+The EL builds with the attributes' `baseFeePerGas` as given and checks the EIP-4396 value when it
+imports the block. The block-time target is that of the block itself, not of its parent: 4 seconds
+for every Etna block, including the first, whose parent and grandparent are Unzen blocks, and
+2 seconds for Shasta and Unzen blocks. The EIP-4396 parameters are listed under
 [pinned parameters](#pinned-parameters).
 
 ### Pinned parameters
 
-SPEC.md CONS-3.1-11 and CONS-3.1-12 leave these values to the pinned execution layer. Etna uses
-them unchanged from Unzen.
+SPEC.md CONS-3.1-11 and CONS-3.1-12 leave the zk-gas values to the pinned execution layer, and
+Etna uses them unchanged from Unzen. SPEC.md appendix A (ENC-A-10a) writes out the EIP-4396 formula
+and values; of these, Etna changes only the block-time target, from 2 to 4 seconds.
 
 | Parameter | Value |
 | --- | --- |
@@ -75,7 +86,7 @@ them unchanged from Unzen.
 | Block zk-gas limit | 100,000,000 (the spec's placeholder) |
 | Intrinsic zk gas per transaction | 243,000 |
 | Per-transaction gas cap | 16,777,216 (EIP-7825, active from Unzen) |
-| EIP-4396 block time target | 2 seconds |
+| EIP-4396 block-time target | 4 seconds for Etna blocks, the first included; 2 seconds before Etna |
 | EIP-4396 elasticity multiplier | 2 |
 | EIP-4396 base-fee max change denominator | 8 |
 | EIP-4396 maximum adjusted gas target | 95% of the gas limit |

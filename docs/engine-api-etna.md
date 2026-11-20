@@ -7,8 +7,8 @@ The Engine API method change is not gated on Etna: it applies to Unzen traffic a
 runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
 Etna block production and validation follow taiko-mono's
-[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/49df560256c3f20f0868f6c6e555443c2b1fd669/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks)
-and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/49df560256c3f20f0868f6c6e555443c2b1fd669/packages/protocol/docs/etna/ANCHORLESS.md).
+[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/2e6763e21bc236cfcda6011d164b32040f9e0c8d/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks)
+and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/2e6763e21bc236cfcda6011d164b32040f9e0c8d/packages/protocol/docs/etna/ANCHORLESS.md).
 The older proposal-based `Derivation.md` describes the pre-Etna flow. Activation
 prerequisites and open work are listed in the description of
 [taikoxyz/alethia-reth#248](https://github.com/taikoxyz/alethia-reth/pull/248).
@@ -60,7 +60,33 @@ For Etna targets, `blockMetadata.gasLimit` and `taikoAuth`'s `blockMaxGasLimit` 
 1,000,000 gas anchor reserve, and the builder uses the complete supplied limit for ordinary
 transactions. EIP-4396 always uses the raw parent header's `gasLimit` and `gasUsed`, including at
 the boundary, where the parent still contains the anchor. SPEC.md section 3.2 fixes the block gas
-limit to the chain constant and defines the EIP-4396 base fee.
+limit to the chain constant; the EL builds with `blockMetadata.gasLimit` and does not check it
+against that constant. The EIP-4396 parameters are listed under
+[pinned parameters](#pinned-parameters).
+
+### Pinned parameters
+
+SPEC.md CONS-3.1-11 and CONS-3.1-12 leave these values to the pinned execution layer. Etna uses
+them unchanged from Unzen.
+
+| Parameter | Value |
+| --- | --- |
+| zk gas rules | taiko-mono [`zk_gas_spec.md` at `f47f1f3bd`](https://github.com/taikoxyz/taiko-mono/blob/f47f1f3bd692a462dd623ff2781a277637975b1a/packages/protocol/docs/zk_gas_spec.md), checked in CI against that revision's shared vectors ([`zk-gas-vectors.ref`](../zk-gas-vectors.ref)) |
+| Block zk-gas limit | 100,000,000 (the spec's placeholder) |
+| Intrinsic zk gas per transaction | 243,000 |
+| Per-transaction gas cap | 16,777,216 (EIP-7825, active from Unzen) |
+| EIP-4396 block time target | 2 seconds |
+| EIP-4396 elasticity multiplier | 2 |
+| EIP-4396 base-fee max change denominator | 8 |
+| EIP-4396 maximum adjusted gas target | 95% of the gas limit |
+| Base fee of block 1 | 25,000,000 wei |
+| Base-fee bounds | 5,000,000 wei (10,000,000 wei on mainnet) to 1,000,000,000 wei |
+
+The opcode and precompile multipliers, spawn estimates, intrinsic charge and block limit at
+`f47f1f3bd` equal those of the revision SPEC.md CONS-3.1-12 pins, `ce31a49`. The later text also
+settles that a spawn opcode that hands its call or create to frame dispatch is charged its spawn
+estimate even when the dispatch then fails (call depth, balance, nonce or address collision);
+alethia-reth meters it that way.
 
 Standalone Etna simulations (`eth_call`, `eth_estimateGas`, `debug_traceCall` and similar calls, and
 the replays behind transaction and block traces) charge each transaction's intrinsic zk gas, and
@@ -250,6 +276,6 @@ also enforce `maxBlockBytes` ([byte limit](#byte-limit)), which preselection doe
 that timestamp on canonical Taiko devnet or on a custom Genesis JSON whose fields outside `alloc`
 match canonical devnet; on any other chain the flag fails startup. `0` activates Etna at genesis; a
 genesis built with the [recipe](../README.md#custom-devnet-genesis-with-etna) works only with `0`.
-On canonical devnet itself, the pre-Etna `Anchor` stays callable and EIP-4788 and EIP-2935 have no
-code. Offline commands such as `stage run` and `re-execute` cannot reproduce an overridden schedule.
+On canonical devnet itself, the pre-Etna L2 `SignalService` keeps its checkpoint store open, so a
+golden-touch `anchorV4` can save forged checkpoints, and EIP-4788 and EIP-2935 have no code. Offline commands such as `stage run` and `re-execute` cannot reproduce an overridden schedule.
 See the [custom genesis recipe](../README.md#custom-devnet-genesis-with-etna).

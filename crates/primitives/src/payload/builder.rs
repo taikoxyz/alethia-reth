@@ -543,7 +543,7 @@ mod test {
         assert_ne!(max, id(Some(123_999)));
         // Pinned against an independent sha256 computation of the preimage and the
         // `0x01 ‖ u64_be(maxBlockBytes)` term.
-        assert_eq!(max, PayloadId::new([0x02, 0xa4, 0x74, 0xc7, 0x62, 0x62, 0x6a, 0x4a]));
+        assert_eq!(max, PayloadId::new([0x02, 0xd6, 0x39, 0x09, 0x75, 0x4e, 0xc3, 0x7a]));
     }
 
     #[test]

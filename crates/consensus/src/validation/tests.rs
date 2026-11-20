@@ -406,7 +406,7 @@ fn shasta_extra_data() -> Bytes {
 }
 
 fn etna_extra_data() -> Bytes {
-    Bytes::from_static(&[75, 0, 0, 0, 0, 0x4c, 0x81, 0, 0, 0, 0, 0x12, 0x34])
+    Bytes::from_static(&[100, 0, 0, 0, 0, 0x4c, 0x81, 0, 0, 0, 0, 0x12, 0x34])
 }
 
 fn devnet_chain_spec() -> TaikoChainSpec {
@@ -524,6 +524,21 @@ fn etna_header_requires_thirteen_byte_extra_data() {
         .validate_header(&SealedHeader::seal_slow(header))
         .expect_err("a non-13-byte Etna extraData must be rejected");
     assert!(err.to_string().contains("extraData"), "{err}");
+}
+
+#[test]
+fn etna_header_requires_full_base_fee_share() {
+    let consensus = test_consensus(etna_chain_spec());
+    // A share above 100 would credit the beneficiary more base fee than the sender paid.
+    for pctg in [99, 101] {
+        let mut extra_data = etna_extra_data().to_vec();
+        extra_data[0] = pctg;
+        let header = Header { extra_data: extra_data.into(), ..etna_header() };
+        let err = consensus
+            .validate_header(&SealedHeader::seal_slow(header))
+            .expect_err("an Etna basefeeSharingPctg other than 100 must be rejected");
+        assert!(err.to_string().contains("basefeeSharingPctg"), "{pctg}: {err}");
+    }
 }
 
 #[test]

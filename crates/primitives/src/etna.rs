@@ -1,6 +1,6 @@
 //! Invariants introduced by the opt-in Etna hardfork.
 
-use crate::extra_data::ETNA_EXTRA_DATA_LEN;
+use crate::extra_data::{ETNA_BASEFEE_SHARING_PCTG, ETNA_EXTRA_DATA_LEN};
 use alloy_consensus::Header;
 use alloy_primitives::B256;
 use alloy_rlp::{Encodable, length_of_length};
@@ -58,37 +58,65 @@ pub fn validate_etna_root(
     Ok(())
 }
 
-/// Error returned when an activated non-genesis block lacks the 13-byte Etna extra data layout.
+/// Error returned when an activated non-genesis block breaks the Etna extra data layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidEtnaExtraData {
-    /// Height of the block whose extra data has the wrong length.
-    pub block_number: u64,
-    /// Actual extra data length in bytes.
-    pub len: usize,
+pub enum InvalidEtnaExtraData {
+    /// The extra data is not the 13-byte `[basefeeSharingPctg | generation | anchorBlockNumber]`
+    /// layout.
+    Length {
+        /// Height of the block whose extra data has the wrong length.
+        block_number: u64,
+        /// Actual extra data length in bytes.
+        len: usize,
+    },
+    /// Byte 0, the base-fee sharing percentage, is not [`ETNA_BASEFEE_SHARING_PCTG`].
+    BasefeeSharingPctg {
+        /// Height of the block whose base-fee sharing percentage is wrong.
+        block_number: u64,
+        /// Base-fee sharing percentage the block carries.
+        pctg: u8,
+    },
 }
 
 impl fmt::Display for InvalidEtnaExtraData {
-    /// Describes the required Etna layout and the observed length.
+    /// Describes the required Etna layout and the observed violation.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Etna block {} requires {ETNA_EXTRA_DATA_LEN}-byte extraData \
-             [basefeeSharingPctg | generation | anchorBlockNumber], got {} bytes",
-            self.block_number, self.len
-        )
+        match self {
+            Self::Length { block_number, len } => write!(
+                f,
+                "Etna block {block_number} requires {ETNA_EXTRA_DATA_LEN}-byte extraData \
+                 [basefeeSharingPctg | generation | anchorBlockNumber], got {len} bytes"
+            ),
+            Self::BasefeeSharingPctg { block_number, pctg } => write!(
+                f,
+                "Etna block {block_number} requires extraData basefeeSharingPctg \
+                 {ETNA_BASEFEE_SHARING_PCTG}, got {pctg}"
+            ),
+        }
     }
 }
 
 impl core::error::Error for InvalidEtnaExtraData {}
 
-/// Requires the 13-byte Etna extra data layout after Etna, except for the genesis block.
+/// Requires the 13-byte Etna extra data layout with a base-fee sharing percentage of
+/// [`ETNA_BASEFEE_SHARING_PCTG`] after Etna, except for the genesis block (SPEC CONS-3.2-5).
+///
+/// The execution layer is the only component that applies the percentage, and one above 100 would
+/// credit the beneficiary more base fee than the sender paid.
 pub fn validate_etna_extra_data(
     is_etna_active: bool,
     block_number: u64,
     extra_data: &[u8],
 ) -> Result<(), InvalidEtnaExtraData> {
-    if is_etna_active && block_number != 0 && extra_data.len() != ETNA_EXTRA_DATA_LEN {
-        return Err(InvalidEtnaExtraData { block_number, len: extra_data.len() });
+    if !is_etna_active || block_number == 0 {
+        return Ok(());
+    }
+    if extra_data.len() != ETNA_EXTRA_DATA_LEN {
+        return Err(InvalidEtnaExtraData::Length { block_number, len: extra_data.len() });
+    }
+    let pctg = extra_data[0];
+    if pctg != ETNA_BASEFEE_SHARING_PCTG {
+        return Err(InvalidEtnaExtraData::BasefeeSharingPctg { block_number, pctg });
     }
     Ok(())
 }
@@ -365,11 +393,20 @@ mod tests {
     fn extra_data_requirement_applies_only_to_non_genesis_etna_blocks() {
         assert!(validate_etna_extra_data(false, 1, &[0; 7]).is_ok());
         assert!(validate_etna_extra_data(true, 0, &[]).is_ok());
-        assert!(validate_etna_extra_data(true, 1, &[0; 13]).is_ok());
+        let mut extra_data = [0; 13];
+        extra_data[0] = 100;
+        assert!(validate_etna_extra_data(true, 1, &extra_data).is_ok());
         for len in [0, 7, 12, 14, 32] {
             assert_eq!(
-                validate_etna_extra_data(true, 1, &vec![0; len]),
-                Err(InvalidEtnaExtraData { block_number: 1, len })
+                validate_etna_extra_data(true, 1, &vec![100; len]),
+                Err(InvalidEtnaExtraData::Length { block_number: 1, len })
+            );
+        }
+        for pctg in [0, 99, 101, 255] {
+            extra_data[0] = pctg;
+            assert_eq!(
+                validate_etna_extra_data(true, 1, &extra_data),
+                Err(InvalidEtnaExtraData::BasefeeSharingPctg { block_number: 1, pctg })
             );
         }
     }

@@ -14,7 +14,8 @@ use std::fmt::Debug;
 use tracing::debug;
 
 use crate::{
-    etna::ETNA_MIN_MAX_BLOCK_BYTES, extra_data::ETNA_EXTRA_DATA_LEN,
+    etna::ETNA_MIN_MAX_BLOCK_BYTES,
+    extra_data::{ETNA_BASEFEE_SHARING_PCTG, ETNA_EXTRA_DATA_LEN},
     payload::attributes::TaikoPayloadAttributes,
 };
 
@@ -114,9 +115,10 @@ impl TaikoPayloadBuilderAttributes {
     /// Normalizes payload attributes under the rules active at the target timestamp.
     ///
     /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp. Etna jobs
-    /// also require a non-zero beacon root, 13-byte extraData, empty withdrawals, no anchor
-    /// transaction and a `maxBlockBytes` of at least [`ETNA_MIN_MAX_BLOCK_BYTES`]; pre-Etna jobs
-    /// reject `maxBlockBytes` and a non-zero root.
+    /// also require a non-zero beacon root, 13-byte extraData with a base-fee share of
+    /// [`ETNA_BASEFEE_SHARING_PCTG`], empty withdrawals, no anchor transaction and a
+    /// `maxBlockBytes` of at least [`ETNA_MIN_MAX_BLOCK_BYTES`]; pre-Etna jobs reject
+    /// `maxBlockBytes` and a non-zero root.
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,
@@ -153,6 +155,11 @@ impl TaikoPayloadBuilderAttributes {
             if attributes.block_metadata.extra_data.len() != ETNA_EXTRA_DATA_LEN {
                 return Err(alloy_rlp::Error::Custom(
                     "Etna payload extra_data must contain exactly 13 bytes",
+                ));
+            }
+            if attributes.block_metadata.extra_data[0] != ETNA_BASEFEE_SHARING_PCTG {
+                return Err(alloy_rlp::Error::Custom(
+                    "Etna payload extra_data[0] (basefeeSharingPctg) must be 100",
                 ));
             }
             let max_block_bytes = attributes
@@ -430,7 +437,7 @@ mod test {
         let mut attributes = create_payload_attrs(1000, None, 1);
         attributes.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
         attributes.block_metadata.extra_data =
-            Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+            Bytes::from_static(&[100, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
         attributes.max_block_bytes = max_block_bytes;
         attributes
     }
@@ -475,6 +482,14 @@ mod test {
         let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, withdrawals, true)
             .expect_err("Etna withdrawals must be rejected");
         assert!(err.to_string().contains("withdrawals"), "{err}");
+
+        // Etna extraData[0] is the base-fee sharing percentage, fixed at 100 (SPEC CONS-3.2-5).
+        let mut share = etna_attrs(Some(124_000));
+        share.block_metadata.extra_data =
+            Bytes::from_static(&[99, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+        let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, share, true)
+            .expect_err("an Etna basefeeSharingPctg other than 100 must be rejected");
+        assert!(err.to_string().contains("basefeeSharingPctg"), "{err}");
     }
 
     #[test]

@@ -738,11 +738,12 @@ mod test {
     #[test]
     fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
         let root = B256::with_last_byte(7);
-        let cases: [(Option<B256>, Option<Bytes>, &str); 4] = [
+        let cases: [(Option<B256>, Option<Bytes>, &str); 5] = [
             (None, None, "beacon"),
             (Some(B256::ZERO), None, "beacon"),
             (Some(root), Some(Bytes::new()), "extraData"),
             (Some(root), Some(Bytes::from(vec![0; 7])), "extraData"),
+            (Some(root), Some(Bytes::from(vec![25; 13])), "basefeeSharingPctg"),
         ];
         for (parent_beacon_block_root, extra_data, expected) in cases {
             let mut state = State::builder().with_database(db_with_contracts(&[])).build();
@@ -766,7 +767,8 @@ mod test {
     #[test]
     fn etna_pre_execution_shares_fees_without_anchor_exemption() {
         // At Etna, pre-execution installs the header fee share and never the legacy anchor marker,
-        // so a golden-touch call to the treasury pays and shares fees like any other transaction.
+        // so a golden-touch call to the treasury pays fees like any other transaction. The header
+        // share (100) differs from the environment's (0), so the beneficiary's credit pins it.
         let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let treasury = get_treasury_address(167);
         let mut state = State::builder().with_database(db_with_contracts(&[(golden, 0)])).build();
@@ -774,8 +776,7 @@ mod test {
         env.block_env.basefee = 10;
         env.block_env.beneficiary = Address::with_last_byte(0xBB);
         let evm = TaikoEvmFactory.create_evm(&mut state, env);
-        let mut ctx = etna_execution_ctx(B256::with_last_byte(7));
-        ctx.extra_data = vec![25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into();
+        let ctx = etna_execution_ctx(B256::with_last_byte(7));
         let mut executor = TaikoBlockExecutor::new(
             evm,
             ctx,
@@ -791,10 +792,10 @@ mod test {
             result.result.state[&golden].info.balance,
             U256::from(10_000_000_000u64 - 210_000)
         );
-        assert_eq!(result.result.state[&treasury].info.balance, U256::from(157_500));
+        assert_eq!(result.result.state[&treasury].info.balance, U256::ZERO);
         assert_eq!(
             result.result.state[&Address::with_last_byte(0xBB)].info.balance,
-            U256::from(52_500)
+            U256::from(210_000)
         );
     }
 

@@ -71,9 +71,9 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             timestamp: U256::from(timestamp),
             mix_hash: B256::ZERO,
             tx_list: Some(Bytes::from_static(&[0xc0])),
-            // Etna targets carry generation 0 and L1 anchor block number 1.
+            // Etna targets carry the full base-fee share, generation 0 and L1 anchor block 1.
             extra_data: if timestamp >= 100 {
-                Bytes::from_static(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                Bytes::from_static(&[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
             } else {
                 Bytes::from_static(&[0; 7])
             },

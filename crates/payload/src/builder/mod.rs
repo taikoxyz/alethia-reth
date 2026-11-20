@@ -439,7 +439,7 @@ mod tests {
                 timestamp: U256::from(100),
                 mix_hash: B256::repeat_byte(0x55),
                 tx_list,
-                extra_data: Bytes::from_static(b"1234567890123"),
+                extra_data: Bytes::from_static(&[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
             },
             l1_origin: RpcL1Origin {
                 block_id: U256::ZERO,

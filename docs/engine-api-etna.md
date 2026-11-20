@@ -39,15 +39,16 @@ post-Shasta timestamp ordering. It removes the anchor transaction:
 
 For the two anchor fields, the execution layer checks only that the root is nonzero and that
 `extraData` has 13 bytes. It does not fetch L1 data, decode the anchor number, compare anchors with
-the parent's, or enforce the first byte's value or the generation. The Etna client (the
+the parent's, or check the generation. The Etna client (the
 taiko-client-rs ABCI application) derives and checks those fields under SPEC.md sections 3.2–3.4,
 and prover guests authenticate the anchor against L1 headers. The root is the L1 anchor's execution
 state root, not its block hash. `l1Origin` is driver bookkeeping; the Etna client records the
 anchor's number and hash there.
 
 Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0, `generation` bytes 1..6, and
-`anchorBlockNumber` bytes 7..12. SPEC.md CONS-3.2-5 fixes byte 0 at 100; the EL applies byte 0 as
-the base-fee share but does not enforce its value. Both `uint48` fields are big-endian and must fit
+`anchorBlockNumber` bytes 7..12. SPEC.md CONS-3.2-5 fixes byte 0 at 100, so the beneficiary
+receives every base fee; the EL applies byte 0 as the base-fee share and rejects any other value in
+non-genesis Etna headers and in Etna FCUv3 attributes. Both `uint48` fields are big-endian and must fit
 without truncation, and `anchorBlockNumber` is the final value after validation and inheritance.
 Shasta and Unzen headers keep the 7-byte `[basefeeSharingPctg | proposalId]` layout. The L2 genesis
 header keeps a zero root, is exempt from the `extraData` and body rules, and performs no EIP-4788
@@ -153,12 +154,12 @@ internal payload ranking still uses actual fees.
 | Malformed V4 arguments or unsupported payload properties | JSON-RPC `-32602` |
 | A nonzero root before Etna | JSON-RPC `-32602` |
 | FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp` | JSON-RPC `-32602` |
-| Invalid Etna FCUv3 attributes, such as a zero root or a non-13-byte `extraData` | JSON-RPC `-32602` (current) |
+| Invalid Etna FCUv3 attributes, such as a zero root, a non-13-byte `extraData`, or an `extraData[0]` other than 100 | JSON-RPC `-32602` (current) |
 | Etna FCUv3 attributes without `maxBlockBytes` or with `maxBlockBytes` below 1,024 | JSON-RPC `-32602` |
 | FCUv3 attributes with `maxBlockBytes` before Etna | JSON-RPC `-32602` |
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
 | An Unzen payload with withdrawals, blob gas, or nonempty side arrays | Payload status `INVALID` |
-| Wrong Etna `extraData` length on import | Payload status `INVALID` |
+| Wrong Etna `extraData` length, or an `extraData[0]` other than 100, on import | Payload status `INVALID` |
 | Block-hash mismatch | Payload status `INVALID` |
 | Etna zk-gas exhaustion or zk-gas/difficulty mismatch | Payload status `INVALID` |
 | Unzen zk-gas exhaustion or zk-gas/difficulty mismatch | JSON-RPC `-32603` (historical internal-error mapping) |

@@ -384,7 +384,7 @@ fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Res
 
 /// The first Etna block takes EIP-4396's 4 s target although its parent and grandparent are Unzen
 /// blocks, while the last Unzen block keeps 2 s, and `engine_newPayloadV4` rejects the other
-/// target's result for each (SPEC ENC-A-10a; CONS-3.2-8 vectors 8.g, 8.i).
+/// target's result for each (SPEC ENC-A-10a vector 10a.m; CONS-3.2-8 vector 8.g).
 #[test]
 fn first_etna_block_base_fee_uses_the_etna_target_at_import() -> eyre::Result<()> {
     run_live_test(async {

@@ -116,9 +116,10 @@ impl TaikoPayloadBuilderAttributes {
     ///
     /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp. Etna jobs
     /// also require a non-zero beacon root, 13-byte extraData with a base-fee share of
-    /// [`ETNA_BASEFEE_SHARING_PCTG`], empty withdrawals, no anchor transaction and a
-    /// `maxBlockBytes` of at least [`ETNA_MIN_MAX_BLOCK_BYTES`]; pre-Etna jobs reject
-    /// `maxBlockBytes` and a non-zero root.
+    /// [`ETNA_BASEFEE_SHARING_PCTG`], empty withdrawals, no anchor transaction, a `maxBlockBytes`
+    /// of at least [`ETNA_MIN_MAX_BLOCK_BYTES`] and a given `txList`, if any, that decodes;
+    /// pre-Etna jobs reject `maxBlockBytes` and a non-zero root, and build an empty block from a
+    /// `txList` that does not decode.
     pub fn try_new_for_fork(
         parent: B256,
         attributes: TaikoPayloadAttributes,
@@ -201,16 +202,28 @@ impl TaikoPayloadBuilderAttributes {
                 None
             }
             Some(tx_list_bytes) => {
-                // Legacy mode: decode and recover the provided transactions, skipping any that
-                // fail signer recovery. If the list itself cannot be decoded, mine an empty block.
-                let txs = decode_recovered_transactions(tx_list_bytes).unwrap_or_else(|e| {
-                    debug!(
-                        target: "payload_builder",
-                        "Failed to decode transactions: {e}, bytes: {:?}, mining empty block",
-                        tx_list_bytes
-                    );
-                    Vec::new()
-                });
+                // Given-list mode: decode and recover the provided transactions, skipping any that
+                // fail signer recovery. Before Etna a list that cannot be decoded mines an empty
+                // block, as Unzen derivation requires. An Etna list comes straight from the
+                // consensus app, and an empty Etna build is the evidence that lets a
+                // forced-inclusion transaction be skipped (SPEC FI-7.2-8), so a list that cannot
+                // be decoded is an invalid parameter there instead.
+                let txs = match decode_recovered_transactions(tx_list_bytes) {
+                    Ok(txs) => txs,
+                    Err(_) if is_etna_active => {
+                        return Err(alloy_rlp::Error::Custom(
+                            "Etna payload txList must be an RLP list of block-body transactions",
+                        ));
+                    }
+                    Err(e) => {
+                        debug!(
+                            target: "payload_builder",
+                            "Failed to decode transactions: {e}, bytes: {:?}, mining empty block",
+                            tx_list_bytes
+                        );
+                        Vec::new()
+                    }
+                };
                 Some(txs)
             }
         };
@@ -474,6 +487,20 @@ mod test {
         let attrs = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, given, true)
             .expect("a given-list Etna build with maxBlockBytes must normalize");
         assert_eq!(attrs.max_block_bytes, Some(124_000));
+        assert_eq!(attrs.transactions.as_deref(), Some([].as_slice()));
+
+        // A given list that does not decode is an invalid parameter at Etna, never an empty
+        // build, while the same bytes still build an empty block before Etna.
+        let undecodable = Bytes::from_static(&[0xc1, 0x05]);
+        let mut malformed = etna_attrs(Some(124_000));
+        malformed.block_metadata.tx_list = Some(undecodable.clone());
+        let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, malformed, true)
+            .expect_err("an undecodable Etna txList must be rejected");
+        assert!(err.to_string().contains("txList"), "{err}");
+        let mut legacy = create_payload_attrs(1000, None, 1);
+        legacy.block_metadata.tx_list = Some(undecodable);
+        let attrs = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, legacy, false)
+            .expect("an undecodable pre-Etna txList still normalizes");
         assert_eq!(attrs.transactions.as_deref(), Some([].as_slice()));
 
         // Etna withdrawals must be empty.

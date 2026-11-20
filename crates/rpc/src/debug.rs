@@ -340,6 +340,11 @@ where
 /// Replays a candidate tx list into `state` and merges its transitions, leaving exactly the
 /// committed state used to generate its witness. Difficulty skipping applies only after execution;
 /// configuration and pre-execution remain strict.
+///
+/// The replay stops at the first zk gas overflow on every fork. An Etna given-list build instead
+/// leaves that transaction out and runs the rest, so the two agree for a forced-inclusion singleton
+/// and for an Etna block's committed transactions, which never overflow; pass those, not the
+/// proposer's original list, to witness an Etna block.
 fn record_tx_list_witness<E, DB>(
     evm_config: &E,
     state: &mut State<DB>,

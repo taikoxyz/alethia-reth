@@ -154,7 +154,7 @@ internal payload ranking still uses actual fees.
 | Malformed V4 arguments or unsupported payload properties | JSON-RPC `-32602` |
 | A nonzero root before Etna | JSON-RPC `-32602` |
 | FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp` | JSON-RPC `-32602` |
-| Invalid Etna FCUv3 attributes, such as a zero root, a non-13-byte `extraData`, or an `extraData[0]` other than 100 | JSON-RPC `-32602` (current) |
+| Invalid Etna FCUv3 attributes, such as a zero root, a non-13-byte `extraData`, an `extraData[0]` other than 100, or a `txList` that does not decode | JSON-RPC `-32602` (current) |
 | Etna FCUv3 attributes without `maxBlockBytes` or with `maxBlockBytes` below 1,024 | JSON-RPC `-32602` |
 | FCUv3 attributes with `maxBlockBytes` before Etna | JSON-RPC `-32602` |
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays | JSON-RPC `-32602` (current) |
@@ -167,7 +167,7 @@ internal payload ranking still uses actual fees.
 | Any other failed build, from the FCUv3 that started it | JSON-RPC `-32603` (`missing payload`) |
 | `getPayloadV5` for a payload whose build failed | JSON-RPC `-38001` (the FCUv3 already resolved the job) |
 | An FCUv3 whose head is a canonical ancestor, including one below the finalized block | `VALID`; the head stays; with attributes, also a build on that ancestor (never `-38006`) |
-| A payload transaction that cannot be decoded, has an unsupported type, or whose signer cannot be recovered | Payload status `INVALID` (a given-list build drops such a transaction instead) |
+| A payload transaction that cannot be decoded, has an unsupported type, or whose signer cannot be recovered | Payload status `INVALID` (a given-list build drops a blob transaction or one whose signer cannot be recovered, and rejects an Etna `txList` that does not decode with `-32602`) |
 
 Rows marked "current" are not the intended final contract; they are expected to change before
 activation.
@@ -192,7 +192,11 @@ Etna attributes carry one additional top-level member next to `anchorTransaction
 | `maxBlockBytes` | JSON number, like `blockMetadata.gasLimit` | Required on every Etna build, given-list builds included, and at least 1,024. Drivers send 124,000. Bounds the built block's length ([byte limit](#byte-limit)). Rejected before Etna. |
 
 The existing `blockMetadata.txList` selects the build mode: present (including an empty list)
-means a given-list build; absent means a pool build.
+means a given-list build; absent means a pool build. A given list uses Ethereum's block-body
+encoding: an RLP list whose items are a legacy transaction's bare RLP list or a typed transaction's
+EIP-2718 bytes as an RLP byte string. This differs from the byte-string form the
+[byte limit](#byte-limit) counts. An Etna `txList` that does not decode answers `-32602`; before
+Etna it builds an empty block.
 
 ### Build modes
 
@@ -204,10 +208,12 @@ receipt, or fee behind. An ordinary EVM revert or out-of-gas is included and cha
 - **Given list.** The list runs in order. A transaction is left out for a transaction-level reason,
   such as an unsupported type, a size above the remaining byte budget, a nonce, balance, base-fee,
   or intrinsic-gas failure against the current state, or a gas limit above the block's remaining
-  gas. The first transaction that exceeds the zk-gas limit is discarded and ends the list. A
-  given-list build of `[tx]` therefore returns either a block holding `tx` or an empty block, never
-  an error for a transaction-level reason; only failures unrelated to the transactions, such as a
-  state read error, fail the build.
+  gas. A transaction that exceeds the zk-gas limit or overflows its metering is discarded the same
+  way and the rest of the list still runs; before Etna the first such transaction ends the list.
+  A given-list build of `[tx]` therefore returns either a block holding `tx` or an empty block,
+  never an error for a transaction-level reason; only failures unrelated to the transactions, such
+  as a state read error, fail the build. The prover's candidate helper (`execute_derived_block`)
+  applies the same rules.
 - **Pool.** The builder selects from its own transaction pool by effective tip, within the gas,
   zk-gas, and byte budgets left. As build policy, not a consensus rule, a pool transaction that
   exceeds the zk-gas limit is discarded together with its sender's later nonces and selection

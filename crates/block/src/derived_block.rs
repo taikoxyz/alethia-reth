@@ -63,9 +63,11 @@ fn attributes_from_derived_block(
 
 /// Executes a candidate derived block in prover mode.
 ///
-/// Invalid non-anchor transactions are dropped and zk gas exhaustion stops the list. At Etna this
-/// suits candidate lists such as a forced-inclusion singleton build, but it does not validate a
-/// committed Etna block (SPEC PROOF-6.2-22/23): use reth's `Executor::execute` for that.
+/// Invalid non-anchor transactions are dropped. Before Etna zk gas exhaustion stops the list; at
+/// Etna the overflowing transaction is left out and the rest still runs, as in the payload
+/// builder's given-list mode. At Etna this suits candidate lists such as a forced-inclusion
+/// singleton build, but it does not validate a committed Etna block (SPEC PROOF-6.2-22/23): use
+/// reth's `Executor::execute` for that.
 pub fn execute_derived_block<DB>(
     evm_config: &TaikoEvmConfig,
     parent_header: &SealedHeader,
@@ -322,12 +324,14 @@ mod tests {
                 assert!(matched, "{path} {name}: {error}");
             }
         };
-        for (name, first, truncates, error_text) in [
-            ("duplicate", valid.clone(), false, "nonce"),
-            ("nonce", invalid_nonce, false, "nonce"),
-            ("signature", invalid_signature, false, "no recoverable signer"),
-            ("type", blob.clone(), false, "blob transaction"),
-            ("zk", exhausted, true, "zk"),
+        // Every failing first transaction is left out and the valid one still runs: at Etna a zk
+        // gas overflow does not end a candidate list, as in the payload builder's given-list mode.
+        for (name, first, error_text) in [
+            ("duplicate", valid.clone(), "nonce"),
+            ("nonce", invalid_nonce, "nonce"),
+            ("signature", invalid_signature, "no recoverable signer"),
+            ("type", blob.clone(), "blob transaction"),
+            ("zk", exhausted, "zk"),
         ] {
             let block = etna_block(&[first, valid.clone()]);
             let outcome = execute_derived_block(
@@ -337,7 +341,7 @@ mod tests {
                 db_with_contracts(&[(TEST_CALLER, 0)]),
             )
             .unwrap_or_else(|e| panic!("{name}: {e}"));
-            let expected = if truncates { vec![] } else { vec![valid.clone()] };
+            let expected = vec![valid.clone()];
             assert_eq!(outcome.committed_transactions, expected, "{name}");
             assert_eq!(outcome.execution_result.receipts.len(), expected.len(), "{name}");
             let filtered = assemble_filtered_block(

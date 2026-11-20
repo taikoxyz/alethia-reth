@@ -268,16 +268,17 @@ where
     }
 }
 
-/// Executor hooks that let transaction selection keep filling a block after one candidate
-/// overflows the zk gas budget.
+/// Executor hooks that let a build keep filling a block after one candidate overflows the zk gas
+/// budget.
 ///
-/// Block import, sealing and prover execution never use these hooks, so they keep stopping at the
-/// first zk gas overflow.
+/// Pool selection, Etna given-list builds and Etna prover candidate lists use them. Block import,
+/// sealing, committed-block execution and pre-Etna candidate lists never do, so they keep stopping
+/// at the first zk gas overflow.
 pub trait TxSelectionExecutor {
     /// Clears the zk gas exhaustion an overflowed transaction left, so the next candidate can run.
-    /// Only transaction selection may call this; block execution must keep stopping at the first
-    /// overflow. Call it only between transactions, after an overflow error: it discards the
-    /// in-flight zk gas.
+    /// Only a build that leaves the overflowing transaction out may call this; committed-block
+    /// execution must keep stopping at the first overflow. Call it only between transactions,
+    /// after an overflow error: it discards the in-flight zk gas.
     fn clear_zk_gas_exhaustion(&mut self);
 
     /// Returns whether the block zk gas budget can still pay another transaction's intrinsic
@@ -318,10 +319,13 @@ where
 {
     /// Executes a prover candidate block and returns the transactions that were actually committed.
     ///
-    /// Invalid non-anchor transactions are skipped and zk gas exhaustion stops the list, as in a
-    /// given-list build. At Etna this serves candidate lists such as a forced-inclusion singleton
-    /// build. It does not validate a committed Etna block, since it drops what fails instead of
-    /// failing; [`BlockExecutor::execute_block`] and reth's `Executor::execute` do not filter.
+    /// Invalid non-anchor transactions are skipped, as in a given-list build. Before Etna, zk gas
+    /// exhaustion stops the list, as Unzen derivation requires. At Etna a transaction that
+    /// overflows the zk gas budget is left out and the rest of the list still runs, matching the
+    /// payload builder's given-list mode; this serves candidate lists such as a forced-inclusion
+    /// singleton build. It does not validate a committed Etna block, since it drops what fails
+    /// instead of failing; [`BlockExecutor::execute_block`] and reth's `Executor::execute` do not
+    /// filter.
     pub fn execute_block_with_committed_transactions<'tx>(
         mut self,
         transactions: impl IntoIterator<Item = Recovered<&'tx R::Transaction>>,
@@ -347,7 +351,10 @@ where
                 committed_transactions.push(committed_tx);
             }
             if self.zk_gas_exhausted {
-                break;
+                if requires_legacy_anchor {
+                    break;
+                }
+                self.clear_zk_gas_exhaustion();
             }
         }
 

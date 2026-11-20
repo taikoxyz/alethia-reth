@@ -118,11 +118,10 @@ fn cross_fork_lifecycle_checks_inputs_traces_and_reorgs() -> eyre::Result<()> {
         };
         let sender = Address::from(alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS);
         let beneficiary = activation.block.beneficiary;
-        assert_eq!(
-            balance("pre", sender) - balance("post", sender),
-            gas * U256::from(activation.block.base_fee_per_gas.unwrap() + 7)
-        );
-        assert_eq!(balance("post", beneficiary) - balance("pre", beneficiary), gas * U256::from(7));
+        let fee = gas * U256::from(activation.block.base_fee_per_gas.unwrap() + 7);
+        assert_eq!(balance("pre", sender) - balance("post", sender), fee);
+        // Etna extraData[0] is 100, so the beneficiary also receives the whole base fee.
+        assert_eq!(balance("post", beneficiary) - balance("pre", beneficiary), fee);
         // A builds the alternative legacy branch, and both nodes reorg to it.
         fcu(&ca, genesis, genesis, None).await?;
         let alternative =

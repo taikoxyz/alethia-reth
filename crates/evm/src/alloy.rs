@@ -8,7 +8,7 @@ pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextSetters, ContextTr, JournalTr, TxEnv,
+        CfgEnv, ContextSetters, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
@@ -21,11 +21,12 @@ use reth_revm::{
 use tracing::debug;
 
 use crate::{
+    env::TaikoBlockEnv,
     evm::{TaikoEvm, TaikoEvmExtraExecutionCtx},
     handler::{TaikoEvmHandler, get_treasury_address},
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::ZkGasInspector,
+        adapter::{ZK_GAS_LIMIT_ERR, ZkGasInspector},
         meter::{ZkGasMeter, ZkGasOutcome},
     },
 };
@@ -44,8 +45,8 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     inspect: bool,
     /// Whether [`Self::maybe_derive_anchor_execution_ctx`] may install a derived anchor
     /// context for replay-style execution. Enabled by default; the block executor turns it off
-    /// because it installs the authoritative context through the anchor system call, and a
-    /// missing pre-execution initialization must keep failing loudly there.
+    /// because it installs authoritative block context. Etna factories also disable derivation
+    /// so golden-touch calls follow ordinary transaction rules.
     derive_anchor_ctx: bool,
     /// Whether [`Evm::transact_raw`] discards in-flight zk gas before executing. Enabled by
     /// default so RPC-style consumers that reuse one EVM never accumulate zk gas across
@@ -57,12 +58,22 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
+    /// Whether standalone Etna execution charges transaction intrinsic zk gas after resetting
+    /// the meter. System calls temporarily disable this because they are not block transactions.
+    /// The block executor disables the entry reset and owns its intrinsic charge separately.
+    charge_intrinsic_per_transact: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
+        Self {
+            inner: evm,
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+            charge_intrinsic_per_transact: true,
+        }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -115,7 +126,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// authoritative context is present and the incoming transaction is anchor-shaped
     /// (golden touch calling the network treasury).
     ///
-    /// Block execution installs the context through the anchor system call before any
+    /// Before Etna, block execution installs context through the anchor system call before any
     /// transaction runs, so this only fires on replay-style paths (`debug_trace*`, `trace_*`
     /// and the `eth_call` family) that execute block transactions without the block executor.
     /// Without a context those paths fail the anchor's balance check, which is what made every
@@ -157,7 +168,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     }
 }
 
-/// EVM extension trait controlling the replay-only anchor context derivation.
+/// EVM extension trait for block fee authority and legacy replay anchor derivation.
 pub trait TaikoAnchorEvm {
     /// Enables or disables on-the-fly anchor context derivation for replay-style execution.
     ///
@@ -166,12 +177,22 @@ pub trait TaikoAnchorEvm {
     /// initialization must keep failing loudly rather than silently falling back to derived
     /// replay semantics.
     fn set_anchor_ctx_derivation_enabled(&mut self, enabled: bool);
+
+    /// Installs an authoritative block fee percentage and disables legacy anchor derivation.
+    fn set_block_fee_context(&mut self, base_fee_share_pctg: u64);
 }
 
 impl<DB: Database, I, P> TaikoAnchorEvm for TaikoEvmWrapper<DB, I, P> {
     /// Enables or disables on-the-fly anchor context derivation for replay-style execution.
     fn set_anchor_ctx_derivation_enabled(&mut self, enabled: bool) {
         self.derive_anchor_ctx = enabled;
+    }
+
+    /// Sets fee sharing without granting anchor exemptions, including for a zero percentage.
+    fn set_block_fee_context(&mut self, base_fee_share_pctg: u64) {
+        self.base_evm_mut().extra_execution_ctx =
+            Some(TaikoEvmExtraExecutionCtx::for_anchorless_block(base_fee_share_pctg));
+        self.derive_anchor_ctx = false;
     }
 }
 
@@ -299,7 +320,7 @@ impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
 }
 
 /// Canonical Taiko EVM context type used by the Alloy adapter.
-pub type TaikoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
+pub type TaikoEvmContext<DB> = Context<TaikoBlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
 
 /// An instance of an ethereum virtual machine.
 ///
@@ -328,14 +349,14 @@ where
     /// which features are enabled.
     type Spec = TaikoSpecId;
     /// Block environment used by the EVM.
-    type BlockEnv = BlockEnv;
+    type BlockEnv = TaikoBlockEnv;
     /// Precompiles used by the EVM.
     type Precompiles = P;
     /// Evm inspector.
     type Inspector = I;
 
-    /// Reference to [`BlockEnv`].
-    fn block(&self) -> &BlockEnv {
+    /// Reference to the block fields and authoritative Taiko fee context.
+    fn block(&self) -> &TaikoBlockEnv {
         &self.block
     }
 
@@ -382,6 +403,14 @@ where
         // reach the meter through the block executor.
         if self.reset_zk_gas_per_transact {
             self.reset_transaction_zk_gas();
+            // Etna standalone simulations use the same transaction charge as block execution.
+            // Keep pre-Etna RPC accounting unchanged and let the block executor charge its own.
+            if self.charge_intrinsic_per_transact &&
+                self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
+                let Err(ZkGasOutcome::LimitExceeded) = self.charge_tx_intrinsic_zk_gas()
+            {
+                return Err(EVMError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
+            }
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
         self.ctx_mut().set_tx(tx);
@@ -418,8 +447,9 @@ where
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
-        // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+        // in this block. Etna EVMs ignore the marker, so it cannot restore anchor privileges.
+        if !self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
+            caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
             contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
@@ -488,6 +518,7 @@ where
         let mut gas_limit = tx.gas_limit;
         let mut basefee = 0;
         let mut disable_nonce_check = true;
+        let mut charge_intrinsic = false;
 
         // ensure the block gas limit is >= the tx
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
@@ -495,6 +526,7 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // disable the nonce check
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         let mut res = self.transact(tx);
 
@@ -504,6 +536,7 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // swap back to the previous nonce check flag
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         // NOTE: We assume that only the contract storage is modified. Revm currently marks the
         // caller and block beneficiary accounts as "touched" when we do the above transact calls,
@@ -590,7 +623,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+    use crate::{env::TaikoEvmEnv, factory::TaikoEvmFactory, spec::TaikoSpecId};
 
     fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {
         let mut bytes = Vec::with_capacity(16);
@@ -615,7 +648,7 @@ mod tests {
             AccountInfo { nonce: 0, balance: U256::ZERO, ..Default::default() },
         );
 
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut env: TaikoEvmEnv = EvmEnv::default();
         env.cfg_env.chain_id = chain_id;
         let mut evm = TaikoEvmFactory.create_evm(db, env);
 
@@ -659,7 +692,7 @@ mod tests {
         // finalized as a successful one — revm's `ExecuteEvm::transact` finalizes
         // unconditionally for exactly this reason.
         let broke_caller = Address::with_last_byte(0xBC);
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut env: TaikoEvmEnv = EvmEnv::default();
         env.cfg_env.chain_id = 167_000;
         let mut evm = TaikoEvmFactory.create_evm(InMemoryDB::default(), env);
 
@@ -691,8 +724,8 @@ mod tests {
 
     /// Builds an [`EvmEnv`] the way RPC replay paths do: block context only, no anchor
     /// system call ever happens on the resulting EVM.
-    fn replay_env(chain_id: u64) -> EvmEnv<TaikoSpecId> {
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    fn replay_env(chain_id: u64) -> TaikoEvmEnv {
+        let mut env: TaikoEvmEnv = EvmEnv::default();
         env.cfg_env.chain_id = chain_id;
         env.block_env.basefee = REPLAY_BASEFEE;
         env.block_env.gas_limit = 30_000_000;
@@ -743,29 +776,126 @@ mod tests {
     }
 
     #[test]
+    fn etna_golden_touch_requires_funds_in_both_factories() {
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        for inspected in [false, true] {
+            let mut env = replay_env(chain_id);
+            env.cfg_env.spec = TaikoSpecId::ETNA;
+            let mut evm = if inspected {
+                TaikoEvmFactory.create_evm_with_inspector(
+                    replay_db(7, treasury),
+                    env,
+                    reth_revm::inspector::NoOpInspector {},
+                )
+            } else {
+                TaikoEvmFactory.create_evm(replay_db(7, treasury), env)
+            };
+            // The legacy marker call cannot restore the anchor exemption either.
+            evm.transact_system_call(golden, treasury, encode_anchor_system_call_data(25, 7))
+                .unwrap();
+            assert!(evm.base_evm().extra_execution_ctx.is_none());
+            let err =
+                evm.transact(anchor_tx(treasury, 7)).expect_err("Etna has no anchor exemption");
+            assert!(matches!(
+                err,
+                EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn etna_funded_golden_touch_pays_gas_and_receives_normal_refund() {
+        let chain_id = 167_000;
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_id);
+        let beneficiary = Address::with_last_byte(0xBB);
+        let balance = U256::from(100_000_000_000_000u64);
+        // An explicit zero share stays authoritative: the treasury receives the whole base fee.
+        for (percentage, treasury_fee, beneficiary_fee) in
+            [(25, 157_500_000_000u64, 52_500_000_000u64), (0, 210_000_000_000, 0)]
+        {
+            let mut outcomes = Vec::new();
+            for inspected in [false, true] {
+                let mut env = replay_env(chain_id);
+                env.cfg_env.spec = TaikoSpecId::ETNA;
+                env.block_env.beneficiary = beneficiary;
+                env.block_env = env.block_env.with_base_fee_share_pctg(percentage);
+                let mut db = replay_db(7, treasury);
+                db.insert_account_info(
+                    golden,
+                    AccountInfo { balance, nonce: 7, ..Default::default() },
+                );
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(
+                        db,
+                        env,
+                        reth_revm::inspector::NoOpInspector {},
+                    )
+                } else {
+                    TaikoEvmFactory.create_evm(db, env)
+                };
+                let result = evm.transact(anchor_tx(treasury, 7)).expect("funded ordinary call");
+                assert!(result.result.is_success());
+                assert_eq!(result.result.tx_gas_used(), 21_000);
+                // Upfront debit is 1e13 wei; 979,000 unused gas must be reimbursed.
+                assert_eq!(
+                    result.state[&golden].info.balance,
+                    balance - U256::from(210_000_000_000u64)
+                );
+                assert_eq!(result.state[&treasury].info.balance, U256::from(treasury_fee));
+                assert_eq!(
+                    result.state.get(&beneficiary).map_or(U256::ZERO, |a| a.info.balance),
+                    U256::from(beneficiary_fee)
+                );
+                outcomes.push(result);
+            }
+            for outcome in &outcomes[1..] {
+                assert_eq!(&outcomes[0], outcome);
+            }
+        }
+    }
+
+    #[test]
     fn replayed_anchor_transaction_executes_without_prior_system_call() {
         // RPC trace/replay paths (`debug_trace*`, `trace_*`) create the EVM straight from the
-        // factory and never issue the anchor system call, so the anchor exemption must be
-        // derivable from the transaction itself plus database state.
+        // factory, through the inspector variant for traces, and never issue the anchor system
+        // call, so the anchor exemption must be derivable from the transaction itself plus
+        // database state on every pre-Etna fork.
         let chain_id = 167_000;
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let treasury = get_treasury_address(chain_id);
 
-        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
+        for spec in [TaikoSpecId::PACAYA, TaikoSpecId::SHASTA, TaikoSpecId::UNZEN] {
+            for inspected in [false, true] {
+                let mut env = replay_env(chain_id);
+                env.cfg_env.spec = spec;
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(
+                        replay_db(7, treasury),
+                        env,
+                        reth_revm::inspector::NoOpInspector {},
+                    )
+                } else {
+                    TaikoEvmFactory.create_evm(replay_db(7, treasury), env)
+                };
 
-        let result = evm
-            .transact(anchor_tx(treasury, 7))
-            .expect("anchor must execute during replay without a prior anchor system call");
-        assert!(result.result.is_success(), "anchor replay must succeed: {:?}", result.result);
+                let result = evm.transact(anchor_tx(treasury, 7)).unwrap_or_else(|err| {
+                    panic!("{spec:?} inspected={inspected}: anchor replay must execute: {err:?}")
+                });
+                assert!(result.result.is_success(), "{spec:?}: {:?}", result.result);
 
-        let golden_touch_state =
-            result.state.get(&golden_touch).expect("golden touch must appear in the state");
-        assert_eq!(
-            golden_touch_state.info.balance,
-            U256::from(GOLDEN_TOUCH_DUST_BALANCE),
-            "anchor must not pay fees during replay"
-        );
-        assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the golden touch nonce");
+                let golden_touch_state =
+                    result.state.get(&golden_touch).expect("golden touch must appear in the state");
+                assert_eq!(
+                    golden_touch_state.info.balance,
+                    U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+                    "{spec:?}: anchor must not pay fees during replay"
+                );
+                assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the nonce");
+            }
+        }
     }
 
     #[test]

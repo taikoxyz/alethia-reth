@@ -20,17 +20,17 @@ use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
 /// Trait implemented by CLI extensions that can tweak Taiko-specific runtime options.
 pub trait TaikoNodeExtArgs {
-    /// Returns the configured devnet Unzen activation timestamp override.
-    fn devnet_unzen_timestamp(&self) -> u64;
+    /// Returns the optional devnet Etna activation timestamp override.
+    fn devnet_etna_timestamp(&self) -> Option<u64>;
 
     /// Returns the configured proof-history sidecar options.
     fn proof_history_config(&self) -> ProofHistoryConfig;
 }
 
 impl TaikoNodeExtArgs for NoArgs {
-    /// Returns the default devnet Unzen activation timestamp override.
-    fn devnet_unzen_timestamp(&self) -> u64 {
-        0
+    /// Leaves Etna disabled for commands without Taiko options.
+    fn devnet_etna_timestamp(&self) -> Option<u64> {
+        None
     }
 
     /// Returns a disabled proof-history configuration for commands without Taiko options.
@@ -40,9 +40,9 @@ impl TaikoNodeExtArgs for NoArgs {
 }
 
 impl TaikoNodeExtArgs for TaikoCliExtArgs {
-    /// Returns the configured devnet Unzen activation timestamp override.
-    fn devnet_unzen_timestamp(&self) -> u64 {
-        self.devnet_unzen_timestamp
+    /// Returns the optional devnet Etna activation timestamp override.
+    fn devnet_etna_timestamp(&self) -> Option<u64> {
+        self.devnet_etna_timestamp
     }
 
     /// Returns proof-history configuration derived from parsed Taiko CLI flags.
@@ -109,6 +109,25 @@ impl<C: ChainSpecParser, Ext: clap::Args + fmt::Debug> TaikoNodeCommand<C, Ext> 
     }
 }
 
+/// Applies `--devnet-etna-timestamp` to `chain`.
+///
+/// Canonical Taiko devnet and alloc-only variants accept the override. Any other chain fails
+/// startup, so a misconfigured node never runs with Etna silently off.
+fn apply_devnet_etna_override<S: TaikoDevnetConfigExt>(
+    chain: &mut Arc<S>,
+    timestamp: Option<u64>,
+) -> eyre::Result<()> {
+    let Some(timestamp) = timestamp else { return Ok(()) };
+    let overridden = chain.clone_with_devnet_etna_timestamp(timestamp).ok_or_else(|| {
+        eyre::eyre!(
+            "--devnet-etna-timestamp (ALETHIA_RETH_DEVNET_ETNA_TIMESTAMP) {timestamp} requires \
+             the canonical Taiko devnet genesis, or a variant that differs only in alloc"
+        )
+    })?;
+    *chain = Arc::new(overridden);
+    Ok(())
+}
+
 impl<C, Ext> TaikoNodeCommand<C, Ext>
 where
     C: ChainSpecParser,
@@ -172,14 +191,7 @@ where
             jit,
         };
 
-        // Apply Taiko-specific devnet Unzen timestamp override if specified.
-        if let Some(overridden_chain) = node_config
-            .chain
-            .as_ref()
-            .clone_with_devnet_unzen_timestamp(ext.devnet_unzen_timestamp())
-        {
-            node_config.chain = Arc::new(overridden_chain);
-        }
+        apply_devnet_etna_override(&mut node_config.chain, ext.devnet_etna_timestamp())?;
 
         let data_dir = node_config.datadir();
         let db_path = data_dir.db();
@@ -199,5 +211,32 @@ where
             .with_launch_context(ctx.task_executor);
 
         launcher.entrypoint(builder, ext).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use alethia_reth_node::chainspec::{
+        TAIKO_DEVNET, TAIKO_MAINNET, hardfork::TaikoHardfork, spec::TaikoExecutorSpec,
+    };
+    use alloy_hardforks::ForkCondition;
+
+    use super::apply_devnet_etna_override;
+
+    #[test]
+    fn devnet_etna_override_applies_only_to_the_canonical_devnet() {
+        let mut devnet = TAIKO_DEVNET.clone();
+        apply_devnet_etna_override(&mut devnet, Some(0)).unwrap();
+        assert_eq!(devnet.taiko_fork_activation(TaikoHardfork::Etna), ForkCondition::Timestamp(0));
+
+        // An omitted flag keeps the original spec; a non-devnet chain fails startup.
+        let mut devnet = TAIKO_DEVNET.clone();
+        apply_devnet_etna_override(&mut devnet, None).unwrap();
+        assert!(Arc::ptr_eq(&devnet, &TAIKO_DEVNET));
+        let mut mainnet = TAIKO_MAINNET.clone();
+        assert!(apply_devnet_etna_override(&mut mainnet, Some(0)).is_err());
+        assert!(Arc::ptr_eq(&mainnet, &TAIKO_MAINNET));
     }
 }

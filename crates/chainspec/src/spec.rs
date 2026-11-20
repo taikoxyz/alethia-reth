@@ -7,17 +7,12 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_hardforks::{EthereumHardfork, ForkCondition, ForkFilter, ForkId, Hardfork, Head};
 use alloy_primitives::{Address, B256, U256};
-use reth_chainspec::{
-    BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks, make_genesis_header,
-};
+use reth_chainspec::{BaseFeeParams, ChainSpec, DepositContract, EthChainSpec, Hardforks};
 use reth_ethereum_forks::EthereumHardforks;
 use reth_evm::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
-use reth_primitives_traits::SealedHeader;
 
-use crate::{
-    TAIKO_DEVNET_GENESIS_HASH, TAIKO_DEVNET_GENESIS_HASH_SHANGHAI, hardfork::TaikoHardfork,
-};
+use crate::{TAIKO_DEVNET, hardfork::TaikoHardfork};
 
 /// An Taiko chain specification.
 ///
@@ -169,50 +164,45 @@ impl TaikoExecutorSpec for TaikoChainSpec {
 
 /// Helper trait for applying Taiko devnet specific overrides.
 pub trait TaikoDevnetConfigExt {
-    /// Returns a cloned [`TaikoChainSpec`] with the Unzen hardfork activation timestamp updated
-    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks.
-    fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
+    /// Returns a devnet spec activating Etna at `timestamp`, preserving custom allocations.
+    ///
+    /// All Genesis fields outside `alloc` must match canonical devnet; otherwise returns `None`.
+    fn clone_with_devnet_etna_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized;
 }
 
 impl TaikoDevnetConfigExt for TaikoChainSpec {
-    /// Returns a cloned [`TaikoChainSpec`] with the Unzen hardfork activation timestamp updated
-    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks or when
-    /// `timestamp == 0` (the default devnet config already activates Unzen at genesis).
-    fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
+    /// Returns a devnet spec activating Etna at `timestamp`, preserving custom allocations.
+    ///
+    /// All Genesis fields outside `alloc` must match canonical devnet; otherwise returns `None`.
+    ///
+    /// Zero activates Etna at genesis. The canonical devnet activates Unzen at genesis, so every
+    /// timestamp keeps Etna at or after Unzen.
+    fn clone_with_devnet_etna_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized,
     {
-        if timestamp == 0 || self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH {
-            return None;
+        let genesis = self.genesis().clone();
+        let mut comparable_genesis = genesis.clone();
+        comparable_genesis.alloc = TAIKO_DEVNET.genesis().alloc.clone();
+        if comparable_genesis != *TAIKO_DEVNET.genesis() {
+            return None
         }
 
-        let mut cloned = self.clone();
-        cloned.inner.hardforks.insert(TaikoHardfork::Unzen, ForkCondition::Timestamp(timestamp));
-        cloned
-            .inner
-            .hardforks
-            .insert(EthereumHardfork::Cancun, ForkCondition::Timestamp(timestamp));
-        cloned
-            .inner
-            .hardforks
-            .insert(EthereumHardfork::Prague, ForkCondition::Timestamp(timestamp));
-        cloned.inner.hardforks.insert(EthereumHardfork::Osaka, ForkCondition::Timestamp(timestamp));
-
-        // Pushing Osaka past genesis changes the genesis header schema (no blob/requests fields),
-        // so the cached `genesis_header` must be regenerated from the updated hardforks.
-        cloned.inner.genesis_header = SealedHeader::seal_slow(make_genesis_header(
-            &cloned.inner.genesis,
-            &cloned.inner.hardforks,
-        ));
-        assert_eq!(
-            cloned.genesis_hash(),
-            TAIKO_DEVNET_GENESIS_HASH_SHANGHAI,
-            "unexpected Taiko devnet genesis hash after Unzen timestamp override",
-        );
-
-        Some(cloned)
+        // A genesis hash does not commit to chain config. Validate above even when the cached
+        // hash matches devnet, then restore the complete Taiko/Ethereum table in every case.
+        let mut hardforks = TAIKO_DEVNET.inner.hardforks.clone();
+        hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
+        // Generic Genesis parsing caches a header without devnet's Cancun/Prague fields.
+        // Rebuild from the final fork table so the header/hash also commit to the custom alloc.
+        let mut inner = ChainSpec::builder()
+            .chain(genesis.config.chain_id.into())
+            .genesis(genesis)
+            .with_forks(hardforks)
+            .build();
+        inner.paris_block_and_final_difficulty = Some((0, U256::ZERO));
+        Some(Self { inner })
     }
 }
 
@@ -249,6 +239,11 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
     /// Checks if the `Unzen` hardfork is active at the given timestamp.
     fn is_unzen_active(&self, timestamp: u64) -> bool {
         self.taiko_fork_activation(TaikoHardfork::Unzen).active_at_timestamp(timestamp)
+    }
+
+    /// Checks if the `Etna` hardfork is active at the given timestamp.
+    fn is_etna_active(&self, timestamp: u64) -> bool {
+        self.taiko_fork_activation(TaikoHardfork::Etna).active_at_timestamp(timestamp)
     }
 }
 
@@ -300,45 +295,123 @@ mod test {
     }
 
     #[test]
-    fn test_clone_with_devnet_unzen_timestamp() {
-        let devnet_spec = (*TAIKO_DEVNET).clone();
-        let overridden = devnet_spec
-            .as_ref()
-            .clone_with_devnet_unzen_timestamp(42)
-            .expect("devnet override should succeed");
+    fn test_clone_with_devnet_etna_timestamp() {
+        for timestamp in [0, 100] {
+            let overridden = TAIKO_DEVNET
+                .clone_with_devnet_etna_timestamp(timestamp)
+                .expect("the devnet override should return a clone");
+            assert_eq!(
+                overridden.taiko_fork_activation(TaikoHardfork::Etna),
+                ForkCondition::Timestamp(timestamp)
+            );
+            assert_eq!(overridden.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
+            let mut expected = TAIKO_DEVNET.as_ref().clone();
+            expected
+                .inner
+                .hardforks
+                .insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
+            assert_eq!(overridden, expected, "canonical preset metadata must stay unchanged");
+            let parsed = TaikoChainSpec::from(
+                serde_json::from_str::<Genesis>(include_str!("genesis/devnet.json")).unwrap(),
+            );
+            assert_eq!(parsed.clone_with_devnet_etna_timestamp(timestamp), Some(expected));
+        }
         assert_eq!(
-            overridden.taiko_fork_activation(TaikoHardfork::Unzen),
-            ForkCondition::Timestamp(42)
+            TAIKO_MAINNET.clone_with_devnet_etna_timestamp(0),
+            None,
+            "non-devnet chains ignore the devnet override"
         );
-        assert_eq!(
-            overridden.ethereum_fork_activation(EthereumHardfork::Cancun),
-            ForkCondition::Timestamp(42)
-        );
-        assert_eq!(
-            overridden.ethereum_fork_activation(EthereumHardfork::Prague),
-            ForkCondition::Timestamp(42)
-        );
-        assert_eq!(
-            overridden.ethereum_fork_activation(EthereumHardfork::Osaka),
-            ForkCondition::Timestamp(42)
-        );
-        assert_eq!(overridden.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH_SHANGHAI);
-        assert_eq!(
-            overridden.genesis_header().withdrawals_root,
-            Some(alloy_consensus::EMPTY_ROOT_HASH)
-        );
-        assert_eq!(overridden.genesis_header().blob_gas_used, None);
-        assert_eq!(overridden.genesis_header().requests_hash, None);
+    }
 
-        assert!(
-            devnet_spec.as_ref().clone_with_devnet_unzen_timestamp(0).is_none(),
-            "zero timestamp should skip the override"
+    fn alloc_only_devnet_genesis() -> Genesis {
+        let mut genesis: Genesis =
+            serde_json::from_str(include_str!("genesis/devnet.json")).unwrap();
+        let system_contracts: Genesis =
+            serde_json::from_str(include_str!("../../node/tests/fixtures/etna-genesis.json"))
+                .unwrap();
+        for address in [
+            alloy_primitives::address!("0000f90827f1c53a10cb7a02335b175320002935"),
+            alloy_primitives::address!("000f3df6d732807ef1319fb7b8bb8522d0beac02"),
+        ] {
+            genesis.alloc.insert(address, system_contracts.alloc[&address].clone());
+        }
+        genesis.alloc.insert(
+            alloy_primitives::address!("1670010000000000000000000000000000010001"),
+            alloy_genesis::GenesisAccount {
+                nonce: Some(1),
+                balance: U256::from(42),
+                code: Some(alloy_primitives::bytes!("60015f5500")),
+                storage: Some([(B256::ZERO, B256::with_last_byte(1))].into()),
+                ..Default::default()
+            },
         );
+        genesis
+    }
 
-        let mainnet_spec = (*TAIKO_MAINNET).clone();
-        assert!(
-            mainnet_spec.as_ref().clone_with_devnet_unzen_timestamp(1).is_none(),
-            "non-devnet overrides should be ignored"
-        );
+    #[test]
+    fn alloc_only_devnet_override_rebuilds_the_parsed_genesis_header() {
+        let genesis = alloc_only_devnet_genesis();
+        let parsed = TaikoChainSpec::from(genesis.clone());
+        // The JSON parser cached a pre-Cancun/Prague header. Replacing forks cannot fix it.
+        assert_eq!(parsed.genesis_header().parent_beacon_block_root, None);
+        assert_eq!(parsed.genesis_header().requests_hash, None);
+        assert_ne!(parsed.genesis_header().state_root, TAIKO_DEVNET.genesis_header().state_root);
+
+        for timestamp in [0, 100] {
+            let overridden = parsed
+                .clone_with_devnet_etna_timestamp(timestamp)
+                .expect("alloc-only devnet JSON must accept the explicit override");
+            assert_eq!(overridden.genesis(), &genesis);
+            let expected_header = Header {
+                state_root: parsed.genesis_header().state_root,
+                ..TAIKO_DEVNET.genesis_header().clone()
+            };
+            assert_eq!(overridden.genesis_header(), &expected_header);
+            assert_eq!(overridden.genesis_hash(), expected_header.hash_slow());
+            assert_eq!(overridden.inner.paris_block_and_final_difficulty, Some((0, U256::ZERO)));
+            assert_eq!(overridden.blob_params_at_timestamp(0), Some(BlobParams::osaka()));
+            let mut expected_forks = TAIKO_DEVNET.inner.hardforks.clone();
+            expected_forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(timestamp));
+            assert_eq!(overridden.inner.hardforks, expected_forks);
+        }
+        assert!(!parsed.is_etna_active(u64::MAX));
+    }
+
+    #[test]
+    fn devnet_override_rejects_non_alloc_genesis_changes() {
+        type Change = (&'static str, fn(&mut Genesis));
+        let changes: &[Change] = &[
+            ("chainId", |g| g.config.chain_id += 1),
+            ("extra field addition", |g| {
+                g.config.extra_fields.insert("etnaTime".into(), 0.into());
+            }),
+            ("extra field removal", |g| {
+                g.config.extra_fields.remove("ChainName");
+            }),
+            ("extraData", |g| g.extra_data = alloy_primitives::bytes!("01")),
+        ];
+        for (name, change) in changes {
+            let mut genesis = alloc_only_devnet_genesis();
+            change(&mut genesis);
+            assert!(
+                TaikoChainSpec::from(genesis).clone_with_devnet_etna_timestamp(0).is_none(),
+                "must reject changed {name}"
+            );
+            // The cached hash does not commit to the change, so it cannot bypass the check.
+            let mut spec = TAIKO_DEVNET.as_ref().clone();
+            change(&mut spec.inner.genesis);
+            assert_eq!(spec.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
+            assert!(spec.clone_with_devnet_etna_timestamp(0).is_none(), "{name}: cached hash");
+        }
+        assert!(crate::TAIKO_HOODI.clone_with_devnet_etna_timestamp(0).is_none());
+    }
+
+    #[test]
+    fn built_in_and_overridden_chains_have_a_latest_fork_id() {
+        // reth's `latest_fork_id` unwraps the last fork's ID, so a trailing `Never` row panics.
+        for spec in [&*TAIKO_MAINNET, &*crate::TAIKO_HOODI, &*TAIKO_DEVNET] {
+            spec.inner.latest_fork_id();
+        }
+        TAIKO_DEVNET.clone_with_devnet_etna_timestamp(0).unwrap().inner.latest_fork_id();
     }
 }

@@ -1,0 +1,440 @@
+mod support;
+use alloy_primitives::B256;
+use reth_chainspec::EthChainSpec;
+use support::*;
+
+#[test]
+fn cross_fork_lifecycle_checks_inputs_traces_and_reorgs() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::engine::TaikoEngineTypes;
+        use alloy_primitives::{Address, Bytes, U256};
+        use alloy_rpc_types_engine::PayloadStatus;
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        use reth_node_api::PayloadTypes;
+        use reth_storage_api::{ReceiptProvider, StateProvider, StateProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let a = launch_test_node(spec.clone()).await?;
+        let b = launch_test_node(spec.clone()).await?;
+        let ca = a.auth_server_handle().http_client();
+        let cb = b.auth_server_handle().http_client();
+        for client in [&ca, &cb] {
+            fcu(client, genesis, genesis, None).await?;
+        }
+        let anchor = signed_tx(
+            0,
+            true,
+            Address::with_last_byte(0x21),
+            Bytes::copy_from_slice(alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR),
+        );
+        let legacy = build(
+            &ca,
+            spec.clone(),
+            spec.genesis_header(),
+            with_txs(fixture_attributes(99), &[anchor]),
+        )
+        .await?;
+        canonicalize(&ca, genesis, &legacy).await?;
+        // B first sees `legacy` on the direct route: a rejected legacy Osaka sidecar must not
+        // poison the honest hash while reth converts and executes concurrently.
+        let data = TaikoEngineTypes::block_to_payload(legacy.block.clone(), None);
+        let mut tampered = data.clone();
+        tampered.taiko_sidecar.osaka.as_mut().unwrap().parent_beacon_block_root =
+            B256::with_last_byte(7);
+        let rejected: PayloadStatus =
+            cb.request("reth_newPayload", rpc_params![tampered, false, false]).await?;
+        assert!(rejected.status.is_invalid(), "{rejected:?}");
+        let recovered: PayloadStatus =
+            cb.request("reth_newPayload", rpc_params![&data, false, false]).await?;
+        assert!(recovered.status.is_valid(), "honest hash was poisoned: {recovered:?}");
+        canonicalize(&cb, genesis, &legacy).await?;
+        let http = a.rpc_server_handle().http_client().unwrap();
+        // A pending Etna child of the seven-byte legacy parent has no L1 root: null, not an error.
+        assert_eq!(
+            http.request::<serde_json::Value, _>(
+                "eth_getBlockByNumber",
+                rpc_params!["pending", true]
+            )
+            .await?,
+            serde_json::Value::Null
+        );
+        let activation = build(
+            &cb,
+            spec.clone(),
+            legacy.block.header(),
+            with_txs(
+                fixture_attributes(100),
+                &[signed_tx(1, false, Address::with_last_byte(0x21), Bytes::new())],
+            ),
+        )
+        .await?;
+        // The anchor bytes are copied from the FCU attributes; consensus checks only the length.
+        assert_eq!(activation.block.extra_data, activation.attrs.block_metadata.extra_data);
+        // A has not seen `activation`: forged commitments are INVALID statuses, not RPC errors.
+        let v4 = |payload: serde_json::Value| {
+            ca.request::<PayloadStatus, _>(
+                "engine_newPayloadV4",
+                rpc_params![payload, Vec::<B256>::new(), activation.root, Vec::<Bytes>::new()],
+            )
+        };
+        let mut wrong = activation.block.clone().into_block();
+        wrong.header.difficulty += U256::from(1);
+        let mut payload = activation.payload.clone();
+        payload["headerDifficulty"] = u64::try_from(wrong.header.difficulty)?.into();
+        payload["blockHash"] = serde_json::to_value(wrong.header.hash_slow())?;
+        let status = v4(payload).await?;
+        assert!(status.status.is_invalid(), "{status:?}");
+        assert!(format!("{status:?}").contains("zk gas header difficulty mismatch"), "{status:?}");
+        let mut short = activation.block.clone().into_block();
+        short.header.extra_data = Bytes::from_static(&[0; 7]);
+        let mut payload = activation.payload.clone();
+        payload["extraData"] = serde_json::to_value(&short.header.extra_data)?;
+        payload["blockHash"] = serde_json::to_value(short.header.hash_slow())?;
+        let status = v4(payload).await?;
+        assert!(status.status.is_invalid(), "{status:?}");
+        assert!(format!("{status:?}").contains("extraData"), "{status:?}");
+        for client in [&ca, &cb] {
+            canonicalize(client, genesis, &activation).await?;
+        }
+        assert_execution_parity(&b, &activation).await?;
+        // Replay tracing charges the index-0 golden-touch transaction ordinary fees.
+        let traces: serde_json::Value = http
+            .request(
+                "debug_traceBlockByHash",
+                rpc_params![
+                    activation.block.hash(),
+                    serde_json::json!({"tracer":"prestateTracer", "tracerConfig":{"diffMode":true}})
+                ],
+            )
+            .await?;
+        let receipts = a.provider.receipts_by_block(activation.block.hash().into())?.unwrap();
+        let gas = U256::from(receipts[0].cumulative_gas_used);
+        let result = &traces[0]["result"];
+        let balance = |section: &str, address: Address| -> U256 {
+            serde_json::from_value(
+                result[section][address.to_string().to_lowercase()]["balance"].clone(),
+            )
+            .unwrap_or_default()
+        };
+        let sender = Address::from(alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let beneficiary = activation.block.beneficiary;
+        let fee = gas * U256::from(activation.block.base_fee_per_gas.unwrap() + 7);
+        assert_eq!(balance("pre", sender) - balance("post", sender), fee);
+        // Etna extraData[0] is 100, so the beneficiary also receives the whole base fee.
+        assert_eq!(balance("post", beneficiary) - balance("pre", beneficiary), fee);
+        // A builds the alternative legacy branch, and both nodes reorg to it.
+        fcu(&ca, genesis, genesis, None).await?;
+        let alternative =
+            build(&ca, spec.clone(), spec.genesis_header(), fixture_attributes(98)).await?;
+        for client in [&ca, &cb] {
+            canonicalize(client, genesis, &alternative).await?;
+        }
+        let forward =
+            build(&ca, spec.clone(), alternative.block.header(), fixture_attributes(101)).await?;
+        for client in [&ca, &cb] {
+            canonicalize(client, genesis, &forward).await?;
+        }
+        // An empty Etna block runs EIP-2935/4788 without gas or zk gas.
+        assert_eq!((forward.block.gas_used, forward.block.difficulty), (0, U256::ZERO));
+        assert_eq!(forward.payload["headerDifficulty"], 0);
+        let state = b.provider.latest()?;
+        assert_eq!(
+            state
+                .storage(alloy_eips::eip2935::HISTORY_STORAGE_ADDRESS, B256::from(U256::from(1)))?,
+            Some(U256::from_be_bytes(alternative.block.hash().0))
+        );
+        assert_eq!(
+            state
+                .storage(alloy_eips::eip4788::BEACON_ROOTS_ADDRESS, B256::from(U256::from(8292)))?,
+            Some(U256::from(1))
+        );
+        assert_execution_parity(&b, &forward).await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn devnet_etna_genesis_serves_preselection_and_pending_simulation() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_chainspec::{TAIKO_DEVNET, spec::TaikoDevnetConfigExt};
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        use serde_json::{Value, json};
+        let spec = std::sync::Arc::new(TAIKO_DEVNET.clone_with_devnet_etna_timestamp(0).unwrap());
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let status = fcu(&client, spec.genesis_hash(), spec.genesis_hash(), None).await?;
+        assert!(status.payload_status.status.is_valid(), "{status:?}");
+        // Preselection over an Etna genesis needs no beacon root: it never runs system calls.
+        let lists: Value = client
+            .request(
+                "taikoAuth_txPoolContent",
+                rpc_params![
+                    alloy_primitives::Address::with_last_byte(0x42),
+                    1u64,
+                    30_000_000u64,
+                    120_000u64,
+                    Option::<Vec<alloy_primitives::Address>>::None,
+                    1u64
+                ],
+            )
+            .await?;
+        assert!(lists.is_array(), "{lists}");
+        let http = node.rpc_server_handle().http_client().unwrap();
+        let tx = json!({"to": "0x0000000000000000000000000000000000000021"});
+        assert_eq!(
+            http.request::<Value, _>("eth_call", rpc_params![&tx, "pending"]).await?,
+            json!("0x")
+        );
+        assert_eq!(
+            http.request::<Value, _>("eth_estimateGas", rpc_params![&tx, "pending"]).await?,
+            json!("0x5208")
+        );
+        // No authoritative L1 root exists for a local pending block, so it stays null.
+        assert_eq!(
+            http.request::<Value, _>("eth_getBlockByNumber", rpc_params!["pending", true]).await?,
+            Value::Null
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn etna_given_list_preserves_driver_order_and_obeys_the_byte_limit() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::etna::execution_block_length;
+        use alloy_primitives::{Address, Bytes};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let target = Address::with_last_byte(0x21);
+        let p = signed_tx_with_key(POOL_SENDER_KEY, 0, target, Bytes::from(vec![0; 2_000]));
+        assert_eq!(send_raw(&http, &p).await?, *p.tx_hash());
+        // The driver owns FI-first ordering and supplies it through the generic given list.
+        let fi = signed_tx(0, false, target, Bytes::new());
+        let (fi_hash, p_hash) = (*fi.tx_hash(), *p.tx_hash());
+        let attrs = fixture_attributes(100);
+        let build_on_genesis = |attrs| build(&client, spec.clone(), spec.genesis_header(), attrs);
+        let hashes = |built: &Built| {
+            built.block.body().transactions.iter().map(|tx| *tx.tx_hash()).collect::<Vec<_>>()
+        };
+        let listed = |txs: &[_], max_block_bytes: u64| {
+            let mut attrs = with_txs(attrs.clone(), txs);
+            attrs.max_block_bytes = Some(max_block_bytes);
+            attrs
+        };
+
+        let ordered = build_on_genesis(listed(&[fi.clone(), p.clone()], 124_000)).await?;
+        assert_eq!(hashes(&ordered), [fi_hash, p_hash]);
+        let length =
+            execution_block_length(ordered.block.header(), &ordered.block.body().transactions);
+        assert!(length <= 124_000, "{length}");
+        let length = u64::try_from(length)?;
+        let roomy = build_on_genesis(listed(&[fi.clone(), p.clone()], length + 16)).await?;
+        assert_eq!(roomy.block.hash(), ordered.block.hash());
+        let tight = build_on_genesis(listed(&[fi.clone(), p.clone()], length - 1)).await?;
+        assert_eq!(hashes(&tight), [fi_hash]);
+
+        let pool = build_on_genesis(pool_mode(attrs.clone(), 124_000)).await?;
+        assert_ne!(pool.id, ordered.id);
+        assert_eq!(hashes(&pool), [p_hash]);
+        Ok(())
+    })
+}
+
+#[test]
+fn etna_pool_refuses_and_drops_transactions_no_etna_block_can_carry() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_block::assembler::etna_max_tx_length;
+        use alloy_consensus::transaction::SignerRecoverable;
+        use alloy_primitives::{Address, Bytes};
+        use reth::transaction_pool::{
+            EthPooledTransaction, PoolTransaction, TransactionOrigin, TransactionPool,
+        };
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        let http = node.rpc_server_handle().http_client().unwrap();
+        fcu(&client, genesis, genesis, None).await?;
+        let max = etna_max_tx_length();
+        let oversized = sized_tx(GOLDEN_TOUCH_KEY, 0, max + 1);
+        let fitting = sized_tx(POOL_SENDER_KEY, 0, max);
+        let small =
+            signed_tx_with_key(POOL_SENDER_KEY, 1, Address::with_last_byte(0x21), Bytes::new());
+
+        // Before Etna the transaction is below reth's 128 KiB input bound and enters the pool.
+        assert_eq!(send_raw(&http, &oversized).await?, *oversized.tx_hash());
+        // The first Etna head removes it.
+        let etna =
+            build(&client, spec.clone(), spec.genesis_header(), fixture_attributes(100)).await?;
+        canonicalize(&client, genesis, &etna).await?;
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while node.pool.contains(oversized.tx_hash()) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+
+        // From then on the pool refuses it, by itself and inside a batch, and admits the rest.
+        let refused = send_raw(&http, &oversized).await.unwrap_err().to_string();
+        assert!(refused.contains("oversized data"), "{refused}");
+        let batch = [&fitting, &oversized, &small]
+            .map(|tx| {
+                EthPooledTransaction::try_from_consensus(tx.clone().try_into_recovered().unwrap())
+                    .unwrap()
+            })
+            .to_vec();
+        let results = node.pool.add_transactions(TransactionOrigin::External, batch).await;
+        assert_eq!(results[0].as_ref().unwrap().hash, *fitting.tx_hash());
+        let refused = results[1].as_ref().unwrap_err().to_string();
+        assert!(refused.contains("oversized data"), "{refused}");
+        assert_eq!(results[2].as_ref().unwrap().hash, *small.tx_hash());
+        assert!(!node.pool.contains(oversized.tx_hash()));
+        Ok(())
+    })
+}
+
+/// Governance recovery from a checkpoint c whose EL already persisted blocks above c: the new
+/// generation's first block is a sibling of the old c + 1, reached by an ordinary forkchoice
+/// update, since the driver keeps `--engine.allow-unwind-canonical-header` disabled. The old
+/// blocks must leave the disk and the new chain must keep growing (SPEC RECOV-8.4-8).
+#[test]
+fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Result<()> {
+    run_live_test(async {
+        use alloy_eips::eip4788::BEACON_ROOTS_ADDRESS;
+        use alloy_primitives::U256;
+        use reth_node_api::TreeConfig;
+        use reth_provider::{BlockHashReader, BlockNumReader, DatabaseProviderFactory};
+        use reth_storage_api::{StateProvider, StateProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        // Persist every canonical block at once instead of keeping the last 50 in memory only.
+        let tree =
+            TreeConfig::default().with_persistence_threshold(0).with_memory_block_buffer_target(0);
+        let node = launch_test_node_with(spec.clone(), tree).await?;
+        let client = node.auth_server_handle().http_client();
+        fcu(&client, genesis, genesis, None).await?;
+        let provider = &node.provider;
+        let on_disk = move |expected_tip: u64, expected_at_2: B256| async move {
+            let reached = || -> eyre::Result<bool> {
+                let db = provider.database_provider_ro()?;
+                Ok(db.last_block_number()? == expected_tip &&
+                    db.block_hash(2)? == Some(expected_at_2))
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                while !reached()? {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok::<_, eyre::Report>(())
+            })
+            .await?
+        };
+        // EIP-4788 storage a block at `timestamp` writes: its timestamp, in ring slot `timestamp`.
+        let beacon_slot = |timestamp: u64| -> eyre::Result<U256> {
+            let state = provider.latest()?;
+            Ok(state
+                .storage(BEACON_ROOTS_ADDRESS, B256::from(U256::from(timestamp)))?
+                .unwrap_or_default())
+        };
+
+        // The old generation: c is block 1, with blocks 2..4 above it, all on disk.
+        let mut old = vec![spec.genesis_header().clone()];
+        for timestamp in [100, 101, 102, 103] {
+            let parent = old.last().unwrap();
+            let grandparent = old.iter().rev().nth(1).map_or(0, |header| header.timestamp);
+            let built =
+                build_on(&client, spec.clone(), parent, grandparent, fixture_attributes(timestamp))
+                    .await?;
+            canonicalize(&client, genesis, &built).await?;
+            old.push(built.block.header().clone());
+        }
+        on_disk(4, old[2].hash_slow()).await?;
+        assert_eq!(beacon_slot(103)?, U256::from(103));
+
+        // The new generation's first two blocks, on c.
+        let c = &old[1];
+        let first =
+            build_on(&client, spec.clone(), c, old[0].timestamp, fixture_attributes(110)).await?;
+        assert_eq!(first.block.parent_hash, c.hash_slow());
+        canonicalize(&client, genesis, &first).await?;
+        let second = build_on(
+            &client,
+            spec.clone(),
+            first.block.header(),
+            c.timestamp,
+            fixture_attributes(111),
+        )
+        .await?;
+        canonicalize(&client, genesis, &second).await?;
+
+        // The disk now holds the new chain in place of blocks 2..4, and their state is gone.
+        on_disk(3, first.block.hash()).await?;
+        assert_eq!(node.provider.block_hash(4)?, None);
+        assert_eq!(node.provider.block_hash(3)?, Some(second.block.hash()));
+        for timestamp in [101, 102, 103] {
+            assert_eq!(beacon_slot(timestamp)?, U256::ZERO, "slot {timestamp}");
+        }
+        assert_eq!(beacon_slot(111)?, U256::from(111));
+        Ok(())
+    })
+}
+
+/// The first Etna block takes EIP-4396's 4 s target although its parent and grandparent are Unzen
+/// blocks, while the last Unzen block keeps 2 s, and `engine_newPayloadV4` rejects the other
+/// target's result for each (SPEC ENC-A-10a vector 10a.m; CONS-3.2-8 vector 8.g).
+#[test]
+fn first_etna_block_base_fee_uses_the_etna_target_at_import() -> eyre::Result<()> {
+    run_live_test(async {
+        use alloy_primitives::Bytes;
+        use alloy_rpc_types_engine::PayloadStatus;
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let node = launch_test_node(spec.clone()).await?;
+        let client = node.auth_server_handle().http_client();
+        fcu(&client, genesis, genesis, None).await?;
+        // Blocks 1..3 at 97..99 are Unzen and block 4 at 100 is the first Etna block. All are
+        // empty. Block 1 is fixed at 0.025 gwei, and block 2's 97 s interval caps `adjusted` at
+        // 95% of the gas limit under either target; blocks 3 and 4 come 1 s after their parents,
+        // so the two targets disagree there. (timestamp, base fee, the other target's base fee)
+        let expected = [
+            (97, 25_000_000, None),
+            (98, 19_062_500, None),
+            (99, 17_871_094, Some(18_466_797)),
+            (100, 17_312_623, Some(16_754_151)),
+        ];
+        let mut chain = vec![spec.genesis_header().clone()];
+        for (timestamp, base_fee, other_target) in expected {
+            let parent = chain.last().unwrap();
+            let grandparent = chain.iter().rev().nth(1).map_or(0, |header| header.timestamp);
+            let built =
+                build_on(&client, spec.clone(), parent, grandparent, fixture_attributes(timestamp))
+                    .await?;
+            assert_eq!(built.block.base_fee_per_gas, Some(base_fee), "block at {timestamp}");
+            if let Some(other) = other_target {
+                let mut header = built.block.header().clone();
+                header.base_fee_per_gas = Some(other);
+                let mut payload = built.payload.clone();
+                payload["baseFeePerGas"] = format!("{other:#x}").into();
+                payload["blockHash"] = serde_json::to_value(header.hash_slow())?;
+                let status: PayloadStatus = client
+                    .request(
+                        "engine_newPayloadV4",
+                        rpc_params![payload, Vec::<B256>::new(), built.root, Vec::<Bytes>::new()],
+                    )
+                    .await?;
+                assert!(status.status.is_invalid(), "block at {timestamp}: {status:?}");
+                assert!(
+                    format!("{status:?}").contains(&format!("got {other}, expected {base_fee}")),
+                    "block at {timestamp}: {status:?}"
+                );
+            }
+            canonicalize(&client, genesis, &built).await?;
+            chain.push(built.block.header().clone());
+        }
+        Ok(())
+    })
+}

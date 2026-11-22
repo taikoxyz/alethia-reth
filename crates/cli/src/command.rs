@@ -14,7 +14,10 @@ use reth_cli_commands::{NodeCommand, launcher::Launcher, node::NoArgs};
 use reth_db::mdbx::init_db_for;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 
-use alethia_reth_node::{chainspec::spec::TaikoDevnetConfigExt, proof_history::ProofHistoryConfig};
+use alethia_reth_node::{
+    chainspec::spec::{TaikoDevnetConfigExt, TaikoExecutorSpec, validate_etna_staking_address},
+    proof_history::ProofHistoryConfig,
+};
 
 use crate::{TaikoCliExtArgs, tables::TaikoTables};
 
@@ -128,10 +131,23 @@ fn apply_devnet_etna_override<S: TaikoDevnetConfigExt>(
     Ok(())
 }
 
+/// Prepares the chain spec for startup: applies `--devnet-etna-timestamp`, then refuses a chain
+/// that schedules Etna without a built-in `EtnaStaking` proxy address.
+///
+/// The check runs on the final spec, so an override that schedules Etna is checked too.
+fn prepare_chain_spec<S: TaikoDevnetConfigExt + TaikoExecutorSpec + EthChainSpec>(
+    chain: &mut Arc<S>,
+    devnet_etna_timestamp: Option<u64>,
+) -> eyre::Result<()> {
+    apply_devnet_etna_override(chain, devnet_etna_timestamp)?;
+    validate_etna_staking_address(chain.as_ref())?;
+    Ok(())
+}
+
 impl<C, Ext> TaikoNodeCommand<C, Ext>
 where
     C: ChainSpecParser,
-    C::ChainSpec: EthChainSpec + EthereumHardforks + TaikoDevnetConfigExt,
+    C::ChainSpec: EthChainSpec + EthereumHardforks + TaikoDevnetConfigExt + TaikoExecutorSpec,
     Ext: clap::Args + fmt::Debug + TaikoNodeExtArgs,
 {
     /// Launches the node
@@ -191,7 +207,7 @@ where
             jit,
         };
 
-        apply_devnet_etna_override(&mut node_config.chain, ext.devnet_etna_timestamp())?;
+        prepare_chain_spec(&mut node_config.chain, ext.devnet_etna_timestamp())?;
 
         let data_dir = node_config.datadir();
         let db_path = data_dir.db();
@@ -223,7 +239,7 @@ mod tests {
     };
     use alloy_hardforks::ForkCondition;
 
-    use super::apply_devnet_etna_override;
+    use super::{apply_devnet_etna_override, prepare_chain_spec};
 
     #[test]
     fn devnet_etna_override_applies_only_to_the_canonical_devnet() {
@@ -238,5 +254,19 @@ mod tests {
         let mut mainnet = TAIKO_MAINNET.clone();
         assert!(apply_devnet_etna_override(&mut mainnet, Some(0)).is_err());
         assert!(Arc::ptr_eq(&mainnet, &TAIKO_MAINNET));
+    }
+
+    #[test]
+    fn startup_refuses_etna_without_a_staking_address() {
+        let mut devnet = TAIKO_DEVNET.clone();
+        prepare_chain_spec(&mut devnet, Some(0)).unwrap();
+        let mut mainnet = TAIKO_MAINNET.clone();
+        prepare_chain_spec(&mut mainnet, None).unwrap();
+
+        let mut scheduled = TAIKO_MAINNET.as_ref().clone();
+        scheduled.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+        let mut scheduled = Arc::new(scheduled);
+        let err = prepare_chain_spec(&mut scheduled, None).unwrap_err();
+        assert!(err.to_string().contains("EtnaStaking"), "{err}");
     }
 }

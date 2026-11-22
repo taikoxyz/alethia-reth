@@ -160,6 +160,51 @@ impl TaikoExecutorSpec for TaikoChainSpec {
     fn taiko_fork_activation(&self, fork: TaikoHardfork) -> ForkCondition {
         self.inner.hardforks.fork(fork)
     }
+
+    /// Returns the `EtnaStaking` proxy address built in for this spec's chain id, so custom
+    /// chainspecs follow the same per-chain rule as the built-in networks.
+    fn etna_staking_address(&self) -> Option<Address> {
+        alethia_reth_primitives::addresses::etna_staking_address(self.inner.chain.id())
+    }
+}
+
+/// Error returned when Etna is scheduled on a chain without a built-in `EtnaStaking` proxy
+/// address.
+///
+/// Every Etna block starts with a call to that proxy, which the EL makes without reading L1, so
+/// such a chain must not start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingEtnaStakingAddress {
+    /// Chain id whose address lookup found no `EtnaStaking` proxy address.
+    pub chain_id: u64,
+}
+
+impl Display for MissingEtnaStakingAddress {
+    /// Names the chain that schedules Etna without an `EtnaStaking` proxy address.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Etna is scheduled on chain {}, which has no built-in EtnaStaking proxy address",
+            self.chain_id
+        )
+    }
+}
+
+impl std::error::Error for MissingEtnaStakingAddress {}
+
+/// Refuses a spec that schedules Etna without a built-in `EtnaStaking` proxy address.
+///
+/// Etna counts as scheduled at any condition other than [`ForkCondition::Never`]. The error
+/// carries `spec.chain().id()`, the chain id the address lookup used.
+pub fn validate_etna_staking_address<S: TaikoExecutorSpec + EthChainSpec>(
+    spec: &S,
+) -> Result<(), MissingEtnaStakingAddress> {
+    if spec.taiko_fork_activation(TaikoHardfork::Etna) != ForkCondition::Never &&
+        spec.etna_staking_address().is_none()
+    {
+        return Err(MissingEtnaStakingAddress { chain_id: spec.chain().id() });
+    }
+    Ok(())
 }
 
 /// Helper trait for applying Taiko devnet specific overrides.
@@ -245,6 +290,13 @@ pub trait TaikoExecutorSpec: EthExecutorSpec {
     fn is_etna_active(&self, timestamp: u64) -> bool {
         self.taiko_fork_activation(TaikoHardfork::Etna).active_at_timestamp(timestamp)
     }
+
+    /// Returns the `EtnaStaking` proxy address that every Etna block's start call targets, or
+    /// `None` when the chain has none.
+    ///
+    /// The method has no default, so every implementer chooses an address. A spec that schedules
+    /// Etna and returns `None` fails [`validate_etna_staking_address`] and must not start.
+    fn etna_staking_address(&self) -> Option<Address>;
 }
 
 #[cfg(test)]
@@ -404,6 +456,38 @@ mod test {
             assert!(spec.clone_with_devnet_etna_timestamp(0).is_none(), "{name}: cached hash");
         }
         assert!(crate::TAIKO_HOODI.clone_with_devnet_etna_timestamp(0).is_none());
+    }
+
+    #[test]
+    fn built_in_chains_build_in_the_etna_staking_address() {
+        assert_eq!(
+            TAIKO_DEVNET.etna_staking_address(),
+            Some(alloy_primitives::address!("1670010000000000000000000000000000010003"))
+        );
+        assert_eq!(TAIKO_MAINNET.etna_staking_address(), None);
+        assert_eq!(crate::TAIKO_HOODI.etna_staking_address(), None);
+        // A custom chain id gets the same per-chain rule.
+        assert_eq!(
+            TaikoChainSpec::default().etna_staking_address(),
+            Some(alloy_primitives::address!("1000000000000000000000000000000000010003"))
+        );
+    }
+
+    #[test]
+    fn etna_requires_a_built_in_staking_address() {
+        for spec in [&*TAIKO_MAINNET, &*crate::TAIKO_HOODI, &*TAIKO_DEVNET] {
+            assert_eq!(validate_etna_staking_address(spec.as_ref()), Ok(()));
+        }
+
+        let mut scheduled = TAIKO_MAINNET.as_ref().clone();
+        scheduled.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+        assert_eq!(
+            validate_etna_staking_address(&scheduled),
+            Err(MissingEtnaStakingAddress { chain_id: 167_000 })
+        );
+
+        let devnet = TAIKO_DEVNET.clone_with_devnet_etna_timestamp(0).unwrap();
+        assert_eq!(validate_etna_staking_address(&devnet), Ok(()));
     }
 
     #[test]

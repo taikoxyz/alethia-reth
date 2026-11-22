@@ -59,6 +59,17 @@ impl<CTX: ContextTr, INSP, P> TaikoEvm<CTX, INSP, P> {
         self.zk_gas_meter.as_mut()
     }
 
+    /// Removes the production-path zk gas meter, so execution runs unmetered until
+    /// [`Self::restore_zk_gas_meter`] puts it back.
+    pub(crate) fn take_zk_gas_meter(&mut self) -> Option<ZkGasMeter<'static>> {
+        self.zk_gas_meter.take()
+    }
+
+    /// Reinstalls the production-path zk gas meter that [`Self::take_zk_gas_meter`] removed.
+    pub(crate) fn restore_zk_gas_meter(&mut self, meter: Option<ZkGasMeter<'static>>) {
+        self.zk_gas_meter = meter;
+    }
+
     #[inline]
     /// Set extra execution context derived from the anchor system call.
     pub fn with_extra_execution_context(

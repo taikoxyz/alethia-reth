@@ -201,6 +201,7 @@ version = "1.5.0"
 dependencies = [
  "alethia-reth-chainspec",
  "alethia-reth-primitives",
+ "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
  "reth-evm",

@@ -181,11 +181,11 @@ where
 
         validate_header_extra_data(header, MAXIMUM_EXTRA_DATA_SIZE)?;
 
-        // Non-genesis Etna headers use the 13-byte [100 | generation(6) | anchorBlockNumber(6)]
-        // layout, and Shasta/Unzen headers the 7-byte [pctg | proposalId(6)] layout — the only
-        // shapes the drivers produce. Reject anything else at import so a misbehaving block
-        // producer fails loudly here instead of minting headers whose fields consumers cannot
-        // decode.
+        // Non-genesis Etna headers use the 29-byte
+        // [100 | generation(6) | anchorBlockNumber(6) | missBitmap(16)] layout, and Shasta/Unzen
+        // headers the 7-byte [pctg | proposalId(6)] layout — the only shapes the drivers produce.
+        // Reject anything else at import so a misbehaving block producer fails loudly here instead
+        // of minting headers whose fields consumers cannot decode.
         if is_etna_active {
             validate_etna_extra_data(true, header.number(), header.extra_data())
                 .map_err(ConsensusError::msg)?;

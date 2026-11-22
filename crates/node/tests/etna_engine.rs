@@ -85,14 +85,20 @@ fn cross_fork_lifecycle_checks_inputs_traces_and_reorgs() -> eyre::Result<()> {
         let status = v4(payload).await?;
         assert!(status.status.is_invalid(), "{status:?}");
         assert!(format!("{status:?}").contains("zk gas header difficulty mismatch"), "{status:?}");
-        let mut short = activation.block.clone().into_block();
-        short.header.extra_data = Bytes::from_static(&[0; 7]);
-        let mut payload = activation.payload.clone();
-        payload["extraData"] = serde_json::to_value(&short.header.extra_data)?;
-        payload["blockHash"] = serde_json::to_value(short.header.hash_slow())?;
-        let status = v4(payload).await?;
-        assert!(status.status.is_invalid(), "{status:?}");
-        assert!(format!("{status:?}").contains("extraData"), "{status:?}");
+        // A Shasta-shaped extraData and the old 13-byte layout without a miss bitmap are INVALID.
+        for extra_data in [
+            Bytes::from_static(&[0; 7]),
+            Bytes::from_static(&[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+        ] {
+            let mut short = activation.block.clone().into_block();
+            short.header.extra_data = extra_data;
+            let mut payload = activation.payload.clone();
+            payload["extraData"] = serde_json::to_value(&short.header.extra_data)?;
+            payload["blockHash"] = serde_json::to_value(short.header.hash_slow())?;
+            let status = v4(payload).await?;
+            assert!(status.status.is_invalid(), "{status:?}");
+            assert!(format!("{status:?}").contains("extraData"), "{status:?}");
+        }
         for client in [&ca, &cb] {
             canonicalize(client, genesis, &activation).await?;
         }

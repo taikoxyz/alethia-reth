@@ -409,7 +409,10 @@ fn shasta_extra_data() -> Bytes {
 }
 
 fn etna_extra_data() -> Bytes {
-    Bytes::from_static(&[100, 0, 0, 0, 0, 0x4c, 0x81, 0, 0, 0, 0, 0x12, 0x34])
+    Bytes::from_static(&[
+        100, 0, 0, 0, 0, 0x4c, 0x81, 0, 0, 0, 0, 0x12, 0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0x05,
+    ])
 }
 
 fn devnet_chain_spec() -> TaikoChainSpec {
@@ -519,14 +522,22 @@ fn etna_header_requires_empty_withdrawals_and_zero_blob_gas() {
 }
 
 #[test]
-fn etna_header_requires_thirteen_byte_extra_data() {
+fn etna_header_requires_the_29_byte_extra_data_layout() {
     let consensus = test_consensus(etna_chain_spec());
-    // `primitives::etna` covers every length; one legacy 7-byte header checks the wiring.
-    let header = Header { extra_data: Bytes::from(vec![0; 7]), ..etna_header() };
-    let err = consensus
-        .validate_header(&SealedHeader::seal_slow(header))
-        .expect_err("a non-13-byte Etna extraData must be rejected");
-    assert!(err.to_string().contains("extraData"), "{err}");
+    // `primitives::etna` covers every length; a Shasta-shaped 7-byte header, the old 13-byte layout
+    // without a miss bitmap and one byte too many check the wiring.
+    let mut too_long = etna_extra_data().to_vec();
+    too_long.push(0);
+    for extra_data in
+        [vec![0; 7], vec![100, 0, 0, 0, 0, 0x4c, 0x81, 0, 0, 0, 0, 0x12, 0x34], too_long]
+    {
+        let len = extra_data.len();
+        let header = Header { extra_data: extra_data.into(), ..etna_header() };
+        let err = consensus
+            .validate_header(&SealedHeader::seal_slow(header))
+            .expect_err("an Etna extraData that is not 29 bytes must be rejected");
+        assert!(err.to_string().contains("extraData"), "{len} bytes: {err}");
+    }
 }
 
 #[test]

@@ -5,9 +5,10 @@
 pub const SHASTA_EXTRA_DATA_LEN: usize = 7;
 
 /// Exact length of the non-genesis Etna extra data layout:
-/// `[basefeeSharingPctg | generation(6) | anchorBlockNumber(6)]`, both `uint48` big-endian.
-/// The execution layer checks the length and byte 0; derivation and provers own the anchor number.
-pub const ETNA_EXTRA_DATA_LEN: usize = 13;
+/// `[basefeeSharingPctg | generation(6) | anchorBlockNumber(6) | missBitmap(16)]`, with
+/// `generation` and `anchorBlockNumber` `uint48` and `missBitmap` `uint128`, all big-endian.
+/// The execution layer checks the length and byte 0; derivation and provers own the other fields.
+pub const ETNA_EXTRA_DATA_LEN: usize = 29;
 
 /// Base-fee sharing percentage every non-genesis Etna block carries in `extraData[0]`
 /// (SPEC CONS-3.2-5): the beneficiary receives all base fees and the treasury none.

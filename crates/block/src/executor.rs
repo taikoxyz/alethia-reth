@@ -745,12 +745,13 @@ mod test {
     #[test]
     fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {
         let root = B256::with_last_byte(7);
-        let cases: [(Option<B256>, Option<Bytes>, &str); 5] = [
+        let cases: [(Option<B256>, Option<Bytes>, &str); 6] = [
             (None, None, "beacon"),
             (Some(B256::ZERO), None, "beacon"),
             (Some(root), Some(Bytes::new()), "extraData"),
             (Some(root), Some(Bytes::from(vec![0; 7])), "extraData"),
-            (Some(root), Some(Bytes::from(vec![25; 13])), "basefeeSharingPctg"),
+            (Some(root), Some(Bytes::from(vec![100; 13])), "extraData"),
+            (Some(root), Some(Bytes::from(vec![25; 29])), "basefeeSharingPctg"),
         ];
         for (parent_beacon_block_root, extra_data, expected) in cases {
             let mut state = State::builder().with_database(db_with_contracts(&[])).build();

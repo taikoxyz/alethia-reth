@@ -397,7 +397,10 @@ mod tests {
     use super::*;
     use alethia_reth_block::testutil::etna_chain_spec;
     use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardfork};
-    use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
+    use alethia_reth_primitives::{
+        ETNA_EXTRA_DATA_LEN,
+        payload::attributes::{RpcL1Origin, TaikoBlockMetadata},
+    };
     use alloy_consensus::{Header, Signed, TxLegacy, TxType};
     use alloy_genesis::{ChainConfig, Genesis};
     use alloy_hardforks::ForkCondition;
@@ -439,7 +442,10 @@ mod tests {
                 timestamp: U256::from(100),
                 mix_hash: B256::repeat_byte(0x55),
                 tx_list,
-                extra_data: Bytes::from_static(&[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+                extra_data: Bytes::from_static(&[
+                    100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0,
+                ]),
             },
             l1_origin: RpcL1Origin {
                 block_id: U256::ZERO,
@@ -463,7 +469,7 @@ mod tests {
         spec
     }
 
-    /// Normalizes an Etna pool job with a 45M gas limit, a 1 gwei base fee, 13-byte extraData and
+    /// Normalizes an Etna pool job with a 45M gas limit, a 1 gwei base fee, 29-byte extraData and
     /// a non-zero beacon root, and returns its parent with it.
     fn etna_job() -> (SealedHeader, TaikoPayloadBuilderAttributes) {
         let mut config = test_payload_config(None);
@@ -472,7 +478,7 @@ mod tests {
         config.attributes.max_block_bytes = Some(124_000);
         let attributes = normalize_payload_config(&config, &etna_chain_spec())
             .expect("the Etna job should normalize");
-        assert_eq!(attributes.extra_data.len(), 13);
+        assert_eq!(attributes.extra_data.len(), ETNA_EXTRA_DATA_LEN);
         assert!(attributes.parent_beacon_block_root.is_some_and(|root| !root.is_zero()));
         (config.parent_header.as_ref().clone(), attributes)
     }

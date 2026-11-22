@@ -115,7 +115,7 @@ impl TaikoPayloadBuilderAttributes {
     /// Normalizes payload attributes under the rules active at the target timestamp.
     ///
     /// Every job requires `blockMetadata.timestamp` to equal the attributes' timestamp. Etna jobs
-    /// also require a non-zero beacon root, 13-byte extraData with a base-fee share of
+    /// also require a non-zero beacon root, 29-byte extraData with a base-fee share of
     /// [`ETNA_BASEFEE_SHARING_PCTG`], empty withdrawals, no anchor transaction, a `maxBlockBytes`
     /// of at least [`ETNA_MIN_MAX_BLOCK_BYTES`] and a given `txList`, if any, that decodes;
     /// pre-Etna jobs reject `maxBlockBytes` and a non-zero root, and build an empty block from a
@@ -155,7 +155,7 @@ impl TaikoPayloadBuilderAttributes {
             }
             if attributes.block_metadata.extra_data.len() != ETNA_EXTRA_DATA_LEN {
                 return Err(alloy_rlp::Error::Custom(
-                    "Etna payload extra_data must contain exactly 13 bytes",
+                    "Etna payload extra_data must contain exactly 29 bytes",
                 ));
             }
             if attributes.block_metadata.extra_data[0] != ETNA_BASEFEE_SHARING_PCTG {
@@ -449,8 +449,9 @@ mod test {
     fn etna_attrs(max_block_bytes: Option<u64>) -> TaikoPayloadAttributes {
         let mut attributes = create_payload_attrs(1000, None, 1);
         attributes.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
+        // Generation 1, anchor block 258 and a miss bitmap with seats 0 and 127 set.
         attributes.block_metadata.extra_data =
-            Bytes::from_static(&[100, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+            Bytes::from_static(&hex!("6400000000000100000000010280000000000000000000000000000001"));
         attributes.max_block_bytes = max_block_bytes;
         attributes
     }
@@ -510,13 +511,22 @@ mod test {
             .expect_err("Etna withdrawals must be rejected");
         assert!(err.to_string().contains("withdrawals"), "{err}");
 
-        // Etna extraData[0] is the base-fee sharing percentage, fixed at 100 (SPEC CONS-3.2-5).
+        // Etna extraData[0] is the base-fee sharing percentage, fixed at 100 so the beneficiary
+        // receives every base fee.
         let mut share = etna_attrs(Some(124_000));
         share.block_metadata.extra_data =
-            Bytes::from_static(&[99, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+            Bytes::from_static(&hex!("6300000000000100000000010280000000000000000000000000000001"));
         let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, share, true)
             .expect_err("an Etna basefeeSharingPctg other than 100 must be rejected");
         assert!(err.to_string().contains("basefeeSharingPctg"), "{err}");
+
+        // The 13-byte layout without a miss bitmap is no longer an Etna extraData.
+        let mut short = etna_attrs(Some(124_000));
+        short.block_metadata.extra_data =
+            Bytes::from_static(&[100, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+        let err = TaikoPayloadBuilderAttributes::try_new_for_fork(B256::ZERO, short, true)
+            .expect_err("a 13-byte Etna extraData must be rejected");
+        assert!(err.to_string().contains("exactly 29 bytes"), "{err}");
     }
 
     #[test]
@@ -543,7 +553,7 @@ mod test {
         assert_ne!(max, id(Some(123_999)));
         // Pinned against an independent sha256 computation of the preimage and the
         // `0x01 ‖ u64_be(maxBlockBytes)` term.
-        assert_eq!(max, PayloadId::new([0x02, 0xd6, 0x39, 0x09, 0x75, 0x4e, 0xc3, 0x7a]));
+        assert_eq!(max, PayloadId::new([0x02, 0x55, 0xec, 0x00, 0x30, 0x16, 0xd0, 0xe4]));
     }
 
     #[test]
@@ -607,10 +617,17 @@ mod test {
         assert_eq!(payload_id_taiko(&B256::ZERO, &attributes, PAYLOAD_ID_VERSION_V2), expected);
     }
 
+    /// Overwrites byte `index` of the attributes' extraData with `value`.
+    fn set_extra_data_byte(attributes: &mut TaikoPayloadAttributes, index: usize, value: u8) {
+        let mut extra_data = attributes.block_metadata.extra_data.to_vec();
+        extra_data[index] = value;
+        attributes.block_metadata.extra_data = extra_data.into();
+    }
+
     #[test]
     fn payload_id_pins_every_preimage_field() {
         // Every hashed field is nonzero, so dropping, reordering, or re-encoding any term changes
-        // the pinned ID. taiko-client-rs uses this ID as its `buildPayloadArgsId` fingerprint.
+        // the pinned ID.
         let parent = B256::repeat_byte(0xaa);
         let mut full = create_payload_attrs(1000, Some(Bytes::from_static(&[0xc1, 0x80])), 1);
         full.payload_attributes.prev_randao = B256::repeat_byte(0x11);
@@ -622,27 +639,27 @@ mod test {
             amount: 3,
         }]);
         full.payload_attributes.parent_beacon_block_root = Some(B256::repeat_byte(0x33));
-        full.block_metadata.extra_data =
-            Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9]);
+        // Generation 7, anchor block 9 and a miss bitmap with seats 0 and 127 set.
+        full.block_metadata.extra_data = Bytes::from_static(&[
+            50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 9, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x01,
+        ]);
         let id = |attributes: &TaikoPayloadAttributes| {
             reth_payload_primitives::PayloadAttributes::payload_id(attributes, &parent)
         };
         let base = id(&full);
-        assert_eq!(base, PayloadId::new([0x02, 0x34, 0xc1, 0x7f, 0x9e, 0xfa, 0x03, 0x8e]));
+        assert_eq!(base, PayloadId::new([0x02, 0xdb, 0x1f, 0x7a, 0x59, 0xa4, 0xdd, 0xd2]));
         assert_eq!(base, payload_id_taiko(&parent, &full, PAYLOAD_ID_VERSION_V2));
 
         let mutations: &[fn(&mut TaikoPayloadAttributes)] = &[
             // A zero root is the pre-Etna shape and must not alias an Etna job.
             |a| a.payload_attributes.parent_beacon_block_root = Some(B256::ZERO),
-            // generation is bytes 1..=6 and anchorBlockNumber bytes 7..=12.
-            |a| {
-                a.block_metadata.extra_data =
-                    Bytes::from_static(&[50, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 9])
-            },
-            |a| {
-                a.block_metadata.extra_data =
-                    Bytes::from_static(&[50, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 10])
-            },
+            // generation is bytes 1..=6, anchorBlockNumber bytes 7..=12 and missBitmap bytes
+            // 13..=28, with seat 0 the low bit of byte 28 and seat 127 the high bit of byte 13.
+            |a| set_extra_data_byte(a, 6, 8),
+            |a| set_extra_data_byte(a, 12, 10),
+            |a| set_extra_data_byte(a, 28, 0x00),
+            |a| set_extra_data_byte(a, 13, 0x00),
             // An absent list selects from the pool, an empty one is derived input.
             |a| a.block_metadata.tx_list = None,
             |a| a.block_metadata.tx_list = Some(Bytes::new()),

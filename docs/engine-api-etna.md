@@ -107,8 +107,11 @@ and [section 4](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6
   block executor's pre-execution step, which makes it once even when that step runs twice.
   Pre-Etna blocks and the L2 genesis make no call.
 
-The EL builds the proxy address in per chain id and reads it from neither L1 nor the genesis
-([SPEC.md section 11](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#11-parameters)):
+[SPEC.md section 11](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#11-parameters)
+requires the proxy address to be built in for the L2 chain id and to equal the `staking` address
+that the config hash commits. The EL reads it from neither L1 nor the genesis. The spec gives no
+formula: the `getConstantAddress` rule below is this version's, and follows the convention
+taiko-mono's genesis uses for its predeploy addresses.
 
 | Chain id                                         | `EtnaStaking` proxy address                                                                                                    |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -149,7 +152,8 @@ for every Etna block, including the first, whose parent and grandparent are Unze
 SPEC.md section 3.1 leaves the zk-gas values to the pinned execution layer, and Etna uses them
 unchanged from Unzen. SPEC.md appendix A writes out the EIP-4396 formula and values; of these, Etna
 changes only the block-time target, from 2 to 4 seconds. The block-start call's values come from
-SPEC.md section 3.2 and appendix A, and its address rule from section 11.
+SPEC.md section 3.2 and appendix A. Section 11 only requires a built-in address per chain id; the
+address rule is this version's ([address table](#block-start-staking-call)).
 
 | Parameter                                | Value                                                                                                                                                                                                                                                                          |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

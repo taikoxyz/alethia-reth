@@ -790,7 +790,8 @@ fn eip4396_formula_vectors_hold_at_header_validation() {
 }
 
 /// The `baseFeePerGas` header vectors in taiko-mono's `rules/vectors/3.2.md` at `178d7a7a6`
-/// (chain id 167000). Row 8.b is the formula vectors' accept rows above.
+/// (chain id 167000). Their row that accepts a later block whose base fee follows the EIP-4396
+/// adjustment within the chain's bounds is covered by the formula vectors' accept rows above.
 #[test]
 fn base_fee_field_vectors_hold_at_header_validation() {
     use crate::eip4396::{

@@ -2,7 +2,7 @@
 
 use crate::extra_data::{ETNA_BASEFEE_SHARING_PCTG, ETNA_EXTRA_DATA_LEN};
 use alloy_consensus::Header;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, address};
 use alloy_rlp::{Encodable, length_of_length};
 use core::fmt;
 use reth_ethereum_primitives::TransactionSigned;
@@ -29,6 +29,29 @@ pub const ENGINE_CANNOT_BUILD_ON_PARENT_CODE: i32 = -38_100;
 
 /// JSON-RPC error message paired with [`ENGINE_CANNOT_BUILD_ON_PARENT_CODE`].
 pub const ENGINE_CANNOT_BUILD_ON_PARENT_MESSAGE: &str = "cannot build on parent";
+
+/// Selector of `onBlockStart(uint48,uint128)`, `bytes4(keccak256("onBlockStart(uint48,uint128)"))`.
+///
+/// The execution layer calls this function on the `EtnaStaking` contract once at the start of every
+/// non-genesis Etna block, after the EIP-2935 and EIP-4788 system writes and before the first
+/// transaction.
+pub const ETNA_BLOCK_START_SELECTOR: [u8; 4] = [0xea, 0x98, 0x75, 0x92];
+
+/// Length in bytes of the block-start call's calldata: [`ETNA_BLOCK_START_SELECTOR`], then
+/// `generation` and `missBitmap` from the block's own `extraData`, each one 32-byte big-endian ABI
+/// word with zero high bits. No other bytes follow.
+pub const ETNA_BLOCK_START_CALLDATA_LEN: usize = 68;
+
+/// Gas available to the block-start call's frame.
+///
+/// No intrinsic gas is charged and no transaction gas cap applies, so the frame gets exactly this
+/// amount. The call pays no fee, and neither the block's gasUsed nor its zk gas counts it.
+pub const ETNA_BLOCK_START_CALL_GAS: u64 = 30_000_000;
+
+/// Caller of the block-start call, the system address the EIP-4788 and EIP-2935 writes also use.
+///
+/// The call never changes this account's nonce or balance.
+pub const ETNA_SYSTEM_CALLER: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
 
 /// Error returned when an activated non-genesis block omits its beacon root commitment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +138,19 @@ pub fn validate_etna_extra_data(
     if !is_etna_active || block_number == 0 {
         return Ok(());
     }
+    check_etna_extra_data_layout(block_number, extra_data)
+}
+
+/// Checks the two parts of the Etna extra data layout the execution layer validates: the length is
+/// [`ETNA_EXTRA_DATA_LEN`] (29) and byte 0 is [`ETNA_BASEFEE_SHARING_PCTG`] (100).
+///
+/// Nothing else is checked: `generation`, `anchorBlockNumber` and `missBitmap` may hold any value.
+/// `block_number` only labels the returned error. Header validation and
+/// [`crate::extra_data::EtnaExtraData::decode`] share this check, so they accept the same bytes.
+pub(crate) fn check_etna_extra_data_layout(
+    block_number: u64,
+    extra_data: &[u8],
+) -> Result<(), InvalidEtnaExtraData> {
     if extra_data.len() != ETNA_EXTRA_DATA_LEN {
         return Err(InvalidEtnaExtraData::Length { block_number, len: extra_data.len() });
     }

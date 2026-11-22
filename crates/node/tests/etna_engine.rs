@@ -1,4 +1,5 @@
 mod support;
+use alethia_reth_primitives::payload::attributes::TaikoPayloadAttributes;
 use alloy_primitives::B256;
 use reth_chainspec::EthChainSpec;
 use support::*;
@@ -384,6 +385,180 @@ fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Res
             assert_eq!(beacon_slot(timestamp)?, U256::ZERO, "slot {timestamp}");
         }
         assert_eq!(beacon_slot(111)?, U256::from(111));
+        Ok(())
+    })
+}
+
+/// Attributes of the first Etna block in the block-start call tests: one plain transaction,
+/// generation 1 and miss bitmap 5.
+fn first_staking_block_attributes() -> TaikoPayloadAttributes {
+    use alloy_primitives::{Address, Bytes};
+    let tx = signed_tx(0, false, Address::with_last_byte(0x21), Bytes::new());
+    with_extra(with_txs(fixture_attributes(100), &[tx]), 1, 5)
+}
+
+/// Every Etna block calls the staking mock with the generation and miss bitmap of its own
+/// `extraData`, and the mock records them and the block number on the builder and on the importer.
+/// The call stays out of the receipts, the logs bloom, gasUsed, zk gas and the block's call
+/// traces, leaves the system caller without nonce or balance, and the auth RPC names the address
+/// it targets.
+#[test]
+fn etna_block_start_call_takes_its_arguments_from_each_block() -> eyre::Result<()> {
+    run_live_test(async {
+        use alethia_reth_primitives::etna::ETNA_SYSTEM_CALLER;
+        use alloy_primitives::{Address, Bloom, U256, address};
+        use jsonrpsee::{core::client::ClientT, rpc_params};
+        use reth_storage_api::{AccountReader, ReceiptProvider, StateProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let a = launch_test_node(spec.clone()).await?;
+        let b = launch_test_node(spec.clone()).await?;
+        let ca = a.auth_server_handle().http_client();
+        let cb = b.auth_server_handle().http_client();
+        for client in [&ca, &cb] {
+            fcu(client, genesis, genesis, None).await?;
+        }
+        let served: Option<Address> =
+            ca.request("taikoAuth_etnaStakingAddress", rpc_params![]).await?;
+        assert_eq!(served, Some(address!("0x1670010000000000000000000000000000010003")));
+        // A chain without a built-in address serves JSON null.
+        let hoodi = launch_test_node(alethia_reth_chainspec::TAIKO_HOODI.clone()).await?;
+        let served: serde_json::Value = hoodi
+            .auth_server_handle()
+            .http_client()
+            .request("taikoAuth_etnaStakingAddress", rpc_params![])
+            .await?;
+        assert_eq!(served, serde_json::Value::Null);
+
+        let block1 =
+            build(&ca, spec.clone(), spec.genesis_header(), first_staking_block_attributes())
+                .await?;
+        for client in [&ca, &cb] {
+            canonicalize(client, genesis, &block1).await?;
+        }
+        let one = U256::from(1);
+        for node in [&a, &b] {
+            assert_eq!(staking_mock_record(node), (one, U256::from(5), one, one));
+            let caller = node.provider.latest()?.basic_account(&ETNA_SYSTEM_CALLER)?;
+            assert!(
+                caller.is_none_or(|caller| caller.nonce == 0 && caller.balance.is_zero()),
+                "{caller:?}"
+            );
+        }
+        // The mock's log reaches no receipt and no bloom.
+        let receipts = b.provider.receipts_by_block(block1.block.hash().into())?.unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(receipts.iter().all(|receipt| receipt.logs.is_empty()), "{receipts:?}");
+        assert_eq!(block1.block.logs_bloom, Bloom::ZERO);
+        assert_execution_parity(&b, &block1).await?;
+        // Tracing replays the call but traces only the transaction.
+        let http = a.rpc_server_handle().http_client().unwrap();
+        let traces: serde_json::Value = http
+            .request(
+                "debug_traceBlockByHash",
+                rpc_params![block1.block.hash(), serde_json::json!({"tracer":"callTracer"})],
+            )
+            .await?;
+        assert_eq!(traces.as_array().map(Vec::len), Some(1), "{traces}");
+
+        // An empty block still makes the call, with its own arguments and outside gas and zk gas.
+        let block2 = build_on(
+            &ca,
+            spec.clone(),
+            block1.block.header(),
+            0,
+            with_extra(fixture_attributes(101), 2, 6),
+        )
+        .await?;
+        for client in [&ca, &cb] {
+            canonicalize(client, genesis, &block2).await?;
+        }
+        assert_eq!((block2.block.gas_used, block2.block.difficulty), (0, U256::ZERO));
+        let two = U256::from(2);
+        for node in [&a, &b] {
+            assert_eq!(staking_mock_record(node), (two, U256::from(6), two, two));
+        }
+        Ok(())
+    })
+}
+
+/// A block-start call that reverts after all its writes leaves a valid block and none of its
+/// state, and the block's witness still holds what the failed call read, so a guest replays it.
+/// A given list whose only transaction is dropped still makes the call, and the call alone sets
+/// the block's state root.
+#[test]
+fn failed_and_singleton_block_start_calls_keep_blocks_valid() -> eyre::Result<()> {
+    run_live_test(async {
+        use alloy_primitives::{Address, Bytes, U256};
+        use reth_storage_api::{StateProvider, StateProviderFactory};
+        let spec = fixture_chain_spec();
+        let genesis = spec.genesis_hash();
+        let a = launch_test_node(spec.clone()).await?;
+        let b = launch_test_node(spec.clone()).await?;
+        let ca = a.auth_server_handle().http_client();
+        let cb = b.auth_server_handle().http_client();
+        for client in [&ca, &cb] {
+            fcu(client, genesis, genesis, None).await?;
+        }
+        let block1 =
+            build(&ca, spec.clone(), spec.genesis_header(), first_staking_block_attributes())
+                .await?;
+        for client in [&ca, &cb] {
+            canonicalize(client, genesis, &block1).await?;
+        }
+
+        // Generation 0xdead makes the mock revert after its writes and its call into the sink.
+        let block2 = build_on(
+            &ca,
+            spec.clone(),
+            block1.block.header(),
+            0,
+            with_extra(fixture_attributes(101), 0xdead, 6),
+        )
+        .await?;
+        // B imports the block VALID, and neither node keeps any of the call's writes.
+        for client in [&cb, &ca] {
+            canonicalize(client, genesis, &block2).await?;
+        }
+        let one = U256::from(1);
+        for node in [&a, &b] {
+            assert_eq!(staking_mock_record(node), (one, U256::from(5), one, one));
+        }
+        assert_execution_parity(&b, &block2).await?;
+        // Only the call reaches the sink, after the mock's writes, so the sink in the witness shows
+        // that the failed call ran past them.
+        let witness = execution_witness(&b, block2.block.hash()).await?;
+        let sink_code = b.provider.latest()?.account_code(&STAKING_SINK)?.unwrap();
+        assert!(witness.codes.contains(&sink_code.original_bytes()), "missing sink code");
+        assert!(
+            witness.keys.contains(&Bytes::copy_from_slice(STAKING_SINK.as_slice())),
+            "missing sink account key"
+        );
+
+        // The given list's only transaction reuses block 1's nonce, so the builder drops it and
+        // each block holds only the call, whose miss bitmap then decides the state root.
+        let spent = signed_tx(0, false, Address::with_last_byte(0x21), Bytes::new());
+        let singleton = |miss_bitmap| {
+            build_on(
+                &ca,
+                spec.clone(),
+                block2.block.header(),
+                block1.block.timestamp,
+                with_extra(
+                    with_txs(fixture_attributes(102), std::slice::from_ref(&spent)),
+                    3,
+                    miss_bitmap,
+                ),
+            )
+        };
+        let first = singleton(5).await?;
+        let second = singleton(6).await?;
+        for built in [&first, &second] {
+            assert!(built.block.body().transactions.is_empty(), "{:?}", built.block.body());
+        }
+        assert_ne!(first.block.state_root, second.block.state_root);
+        let status = import(&cb, &first).await?;
+        assert!(status.status.is_valid(), "{status:?}");
         Ok(())
     })
 }

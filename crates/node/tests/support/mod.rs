@@ -3,12 +3,15 @@ use alethia_reth_chainspec::{
     spec::TaikoChainSpec,
 };
 use alethia_reth_node::TaikoNode;
-use alethia_reth_primitives::payload::attributes::{
-    RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes,
+use alethia_reth_primitives::{
+    EtnaExtraData,
+    addresses::etna_staking_address,
+    etna::ETNA_SYSTEM_CALLER,
+    payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes},
 };
 use alethia_reth_rpc::eth::auth::{TaikoAuthExt, TaikoAuthExtApiServer};
 use alloy_eips::{eip2935, eip4788};
-use alloy_genesis::Genesis;
+use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_hardforks::ForkCondition;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rpc_types_engine::{
@@ -35,9 +38,137 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 type TestTypes = RethFullAdapter<Arc<TempDatabase<DatabaseEnv>>, TaikoNode>;
 pub type TestNode = FullNode<NodeAdapter<TestTypes>, <TaikoNode as Node<TestTypes>>::AddOns>;
 
+/// Where the fixture's staking mock forwards every call it accepts. The sink records the block
+/// number. No test transaction touches it, so a block's witness holds the sink's code only when
+/// the block's start call got past the mock's writes.
+pub const STAKING_SINK: Address = Address::with_last_byte(0x55);
+
+/// Chain id of `fixtures/etna-genesis.json`.
+const FIXTURE_CHAIN_ID: u64 = 167001;
+
+/// The fixture chain's built-in `EtnaStaking` proxy address, where the staking mock sits.
+fn fixture_staking_address() -> Address {
+    etna_staking_address(FIXTURE_CHAIN_ID).expect("the fixture chain has an EtnaStaking address")
+}
+
+/// Accounts that [`fixture_chain_spec`] adds to the fixture genesis for the Etna block-start call:
+/// a staking mock at the chain's `EtnaStaking` address and the [`STAKING_SINK`] it calls.
+///
+/// This is the fixture's one seam for the real `EtnaStaking` predeploys: integration replaces
+/// this body with them, and the mock-slot assertions ([`staking_mock_record`]) with checks of
+/// their storage.
+///
+/// The mock reverts unless its caller is the system caller. It then stores the call's first
+/// argument (the generation) in slot 0, its second (the miss bitmap) in slot 1 and the block
+/// number in slot 2, calls the sink with all its gas, and emits one log. It reverts when the
+/// generation is `0xdead` and stops otherwise. The sink stores the block number in its slot 0.
+pub fn fixture_staking_alloc() -> Vec<(Address, GenesisAccount)> {
+    use reth_revm::state::bytecode::opcode;
+    // Jump destinations: offsets of the two `JUMPDEST`s below.
+    const AUTHORIZED: u8 = 0x1f;
+    const REVERTS: u8 = 0x64;
+    let staking = [
+        &[
+            opcode::CALLER,
+            opcode::PUSH20, // the system caller
+        ][..],
+        ETNA_SYSTEM_CALLER.as_slice(),
+        &[
+            opcode::EQ,
+            opcode::PUSH1,
+            AUTHORIZED,
+            opcode::JUMPI, // the system caller skips the revert
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::REVERT,   // any other caller reverts
+            opcode::JUMPDEST, // AUTHORIZED
+            opcode::PUSH1,
+            4,
+            opcode::CALLDATALOAD, // the generation word
+            opcode::PUSH1,
+            0,
+            opcode::SSTORE, // slot 0 = generation
+            opcode::PUSH1,
+            36,
+            opcode::CALLDATALOAD, // the miss bitmap word
+            opcode::PUSH1,
+            1,
+            opcode::SSTORE, // slot 1 = miss bitmap
+            opcode::NUMBER,
+            opcode::PUSH1,
+            2,
+            opcode::SSTORE, // slot 2 = block number
+            opcode::PUSH1,
+            0, // return size
+            opcode::PUSH1,
+            0, // return offset
+            opcode::PUSH1,
+            0, // argument size
+            opcode::PUSH1,
+            0, // argument offset
+            opcode::PUSH1,
+            0,              // value
+            opcode::PUSH20, // the sink
+        ],
+        STAKING_SINK.as_slice(),
+        &[
+            opcode::GAS,
+            opcode::CALL,
+            opcode::POP, // discard the sink call's success flag
+            opcode::PUSH1,
+            1, // topic
+            opcode::PUSH1,
+            0, // data size
+            opcode::PUSH1,
+            0, // data offset
+            opcode::LOG1,
+            opcode::PUSH1,
+            4,
+            opcode::CALLDATALOAD, // the generation word
+            opcode::PUSH2,
+            0xde,
+            0xad,
+            opcode::EQ,
+            opcode::PUSH1,
+            REVERTS,
+            opcode::JUMPI, // generation 0xdead reverts
+            opcode::STOP,
+            opcode::JUMPDEST, // REVERTS
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::REVERT,
+        ],
+    ]
+    .concat();
+    assert_eq!(staking[usize::from(AUTHORIZED)], opcode::JUMPDEST);
+    assert_eq!(staking[usize::from(REVERTS)], opcode::JUMPDEST);
+    let sink = vec![
+        opcode::NUMBER,
+        opcode::PUSH1,
+        0,
+        opcode::SSTORE, // slot 0 = block number
+        opcode::STOP,
+    ];
+    [(fixture_staking_address(), staking), (STAKING_SINK, sink)]
+        .into_iter()
+        .map(|(address, code)| {
+            let account =
+                GenesisAccount { nonce: Some(1), code: Some(code.into()), ..Default::default() };
+            (address, account)
+        })
+        .collect()
+}
+
+/// The fixture chain: `fixtures/etna-genesis.json` plus [`fixture_staking_alloc`], with Etna from
+/// timestamp 100.
 pub fn fixture_chain_spec() -> Arc<TaikoChainSpec> {
-    let genesis: Genesis =
+    let mut genesis: Genesis =
         serde_json::from_str(include_str!("../fixtures/etna-genesis.json")).unwrap();
+    genesis.alloc.extend(fixture_staking_alloc());
     let mut forks = TAIKO_DEVNET_HARDFORKS.clone();
     forks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(100));
     let mut inner = ChainSpec::builder()
@@ -74,10 +205,7 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             // Etna targets carry the full base-fee share, generation 0, L1 anchor block 1 and an
             // empty miss bitmap.
             extra_data: if timestamp >= 100 {
-                Bytes::from_static(&[
-                    100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0,
-                ])
+                Bytes::copy_from_slice(&EtnaExtraData::new(0, 1, 0).unwrap().encode())
             } else {
                 Bytes::from_static(&[0; 7])
             },
@@ -95,6 +223,32 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
         // Every Etna target carries the driver's block-size bound.
         max_block_bytes: (timestamp >= 100).then_some(124_000),
     }
+}
+
+/// Returns `attrs` with Etna `extraData` carrying `generation`, L1 anchor block 1 and
+/// `miss_bitmap`, the block-start call's two arguments.
+pub fn with_extra(
+    mut attrs: TaikoPayloadAttributes,
+    generation: u64,
+    miss_bitmap: u128,
+) -> TaikoPayloadAttributes {
+    let extra_data =
+        EtnaExtraData::new(generation, 1, miss_bitmap).expect("generation fits 48 bits");
+    attrs.block_metadata.extra_data = Bytes::copy_from_slice(&extra_data.encode());
+    attrs
+}
+
+/// What the staking mock of [`fixture_staking_alloc`] has recorded at the node's latest block:
+/// its slots 0 (generation), 1 (miss bitmap) and 2 (block number), then the sink's slot 0 (block
+/// number). An unset slot reads as zero.
+pub fn staking_mock_record(node: &TestNode) -> (U256, U256, U256, U256) {
+    use reth_storage_api::{StateProvider, StateProviderFactory};
+    let state = node.provider.latest().unwrap();
+    let slot = |address, slot: u64| {
+        state.storage(address, B256::from(U256::from(slot))).unwrap().unwrap_or_default()
+    };
+    let staking = fixture_staking_address();
+    (slot(staking, 0), slot(staking, 1), slot(staking, 2), slot(STAKING_SINK, 0))
 }
 
 pub fn normalize_v5(envelope: ExecutionPayloadEnvelopeV5) -> Value {
@@ -384,12 +538,40 @@ pub async fn canonicalize(client: &impl ClientT, genesis: B256, built: &Built) -
     Ok(())
 }
 
+/// Returns the node's `debug_executionWitnessByBlockHash` witness of block `hash`, waiting while
+/// the proof history has not reached the block yet.
+pub async fn execution_witness(
+    node: &TestNode,
+    hash: B256,
+) -> eyre::Result<alloy_rpc_types_debug::ExecutionWitness> {
+    let http = node.rpc_server_handle().http_client().unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match http.request("debug_executionWitnessByBlockHash", rpc_params![hash]).await {
+                Ok(witness) => break Ok(witness),
+                Err(error) if error.to_string().contains("not ready") => {
+                    tokio::time::sleep(Duration::from_millis(20)).await
+                }
+                Err(error) => break Err(error.into()),
+            }
+        }
+    })
+    .await?
+}
+
+/// Re-executes `built` on `node` through the derived-block path and checks that it reproduces the
+/// block's zk gas, state root and header, and that the node's block and tx-list witnesses agree
+/// and hold every system contract the block start reads: the EIP-4788 and EIP-2935 contracts and,
+/// in an Etna block whose parent state has code there, the staking proxy.
 pub async fn assert_execution_parity(node: &TestNode, built: &Built) -> eyre::Result<()> {
     use alethia_reth_block::derived_block::{assemble_filtered_block, execute_derived_block};
+    use alethia_reth_chainspec::hardfork::TaikoHardforks;
+    use reth_chainspec::EthChainSpec;
     use reth_revm::database::StateProviderDatabase;
     use reth_storage_api::{
         HeaderProvider, StateProvider, StateProviderFactory, StateRootProvider,
     };
+    let spec = node.chain_spec();
     let parent = node.provider.sealed_header_by_hash(built.block.parent_hash)?.unwrap();
     let state = node.provider.history_by_block_hash(parent.hash())?;
     let recovered = built.block.clone().try_recover()?;
@@ -412,23 +594,8 @@ pub async fn assert_execution_parity(node: &TestNode, built: &Built) -> eyre::Re
         root,
     )?;
     assert_eq!(assembled.header(), built.block.header());
+    let witness = execution_witness(node, built.block.hash()).await?;
     let http = node.rpc_server_handle().http_client().unwrap();
-    let witness: alloy_rpc_types_debug::ExecutionWitness =
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                let result = http
-                    .request("debug_executionWitnessByBlockHash", rpc_params![built.block.hash()])
-                    .await;
-                match result {
-                    Ok(witness) => break Ok::<_, eyre::Report>(witness),
-                    Err(error) if error.to_string().contains("not ready") => {
-                        tokio::time::sleep(Duration::from_millis(20)).await
-                    }
-                    Err(error) => break Err(error.into()),
-                }
-            }
-        })
-        .await??;
     let replay: alloy_rpc_types_debug::ExecutionWitness = tokio::time::timeout(
         Duration::from_secs(30),
         http.request(
@@ -459,6 +626,18 @@ pub async fn assert_execution_parity(node: &TestNode, built: &Built) -> eyre::Re
         assert!(
             witness.keys.contains(&Bytes::copy_from_slice(address.as_slice())),
             "missing {address} account key"
+        );
+    }
+    // The block-start call loads the staking proxy even when it reverts, so a guest replays it.
+    if spec.is_etna_active(built.block.timestamp) &&
+        let Some(staking) = etna_staking_address(spec.chain().id()) &&
+        let Some(code) = state.account_code(&staking)? &&
+        !code.is_empty()
+    {
+        assert!(witness.codes.contains(&code.original_bytes()), "missing staking {staking} code");
+        assert!(
+            witness.keys.contains(&Bytes::copy_from_slice(staking.as_slice())),
+            "missing staking {staking} account key"
         );
     }
     for slot in [

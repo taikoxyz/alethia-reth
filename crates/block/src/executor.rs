@@ -9,6 +9,7 @@ use alloy_evm::{
     eth::{EthTxResult, receipt_builder::ReceiptBuilder},
 };
 use alloy_primitives::{Address, Bytes, Log, U256, Uint};
+use reth_chainspec::EthChainSpec;
 use reth_evm::{
     Evm,
     block::{
@@ -22,15 +23,17 @@ use reth_revm::context::{Block as _, result::ResultAndState};
 use revm_database_interface::{Database, DatabaseCommit};
 
 use crate::factory::TaikoBlockExecutionCtx;
-use alethia_reth_chainspec::spec::TaikoExecutorSpec;
+use alethia_reth_chainspec::spec::{MissingEtnaStakingAddress, TaikoExecutorSpec};
 use alethia_reth_evm::{
-    alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoAnchorEvm, TaikoZkGasEvm},
+    alloy::{TAIKO_GOLDEN_TOUCH_ADDRESS, TaikoAnchorEvm, TaikoSystemCallEvm, TaikoZkGasEvm},
     handler::get_treasury_address,
     zk_gas::{adapter::ZK_GAS_LIMIT_ERR, meter::ZkGasOutcome},
 };
 use alethia_reth_primitives::{
-    decode_shasta_basefee_sharing_pctg,
-    etna::{validate_etna_extra_data, validate_etna_root},
+    EtnaExtraData, decode_shasta_basefee_sharing_pctg,
+    etna::{
+        ETNA_BLOCK_START_CALL_GAS, ETNA_SYSTEM_CALLER, validate_etna_extra_data, validate_etna_root,
+    },
 };
 
 /// Block execution artifacts for transactions that were accepted by prover filtering.
@@ -136,8 +139,10 @@ pub struct TaikoBlockExecutor<'a, Evm, Spec, R: ReceiptBuilder> {
     gas_used: u64,
     /// Flag indicating that zk gas exhausted the block and later transactions must not run.
     zk_gas_exhausted: bool,
-    /// Whether pre-execution initialized authoritative fee sharing and any legacy anchor context.
-    evm_extra_execution_ctx_initialized: bool,
+    /// Whether pre-execution already applied the once-per-block start processing: the Etna
+    /// block-start staking call, the authoritative fee sharing and, before Etna, the legacy
+    /// anchor context. A repeated `apply_pre_execution_changes` skips all three.
+    block_start_applied: bool,
 }
 
 impl<'a, Evm, Spec, R> TaikoBlockExecutor<'a, Evm, Spec, R>
@@ -171,7 +176,7 @@ where
             system_caller: SystemCaller::new(spec.clone()),
             spec,
             receipt_builder,
-            evm_extra_execution_ctx_initialized: false,
+            block_start_applied: false,
         }
     }
 
@@ -309,8 +314,9 @@ where
             DB: StateDB + DatabaseCommit,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
         > + TaikoZkGasEvm
-        + TaikoAnchorEvm,
-    Spec: TaikoExecutorSpec + Clone,
+        + TaikoAnchorEvm
+        + TaikoSystemCallEvm,
+    Spec: TaikoExecutorSpec + EthChainSpec + Clone,
     R: ReceiptBuilder<
             Transaction: Transaction + Encodable2718 + Clone,
             Receipt: TxReceipt<Log = Log>,
@@ -376,8 +382,9 @@ where
             DB: StateDB + DatabaseCommit,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
         > + TaikoZkGasEvm
-        + TaikoAnchorEvm,
-    Spec: TaikoExecutorSpec + Clone,
+        + TaikoAnchorEvm
+        + TaikoSystemCallEvm,
+    Spec: TaikoExecutorSpec + EthChainSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
@@ -400,14 +407,86 @@ where
     }
 }
 
+impl<E, Spec, R> TaikoBlockExecutor<'_, E, Spec, R>
+where
+    E: Evm<
+            DB: StateDB + DatabaseCommit,
+            Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
+        > + TaikoZkGasEvm
+        + TaikoAnchorEvm
+        + TaikoSystemCallEvm,
+    Spec: TaikoExecutorSpec + EthChainSpec + Clone,
+    R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
+    <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
+{
+    /// Makes the Etna block-start call: `onBlockStart(generation, missBitmap)` on the spec's
+    /// `EtnaStaking` proxy, from [`ETNA_SYSTEM_CALLER`], with both arguments from this block's own
+    /// `extraData` and exactly [`ETNA_BLOCK_START_CALL_GAS`] gas for the call's frame.
+    ///
+    /// The call counts the missed signatures and stores the candidate snapshot. Like the EIP-2935
+    /// and EIP-4788 writes it is block-start system processing: it changes neither the block's
+    /// gas used, its receipts nor its zk gas, and its logs reach no receipt.
+    ///
+    /// Its state is committed only when it succeeds. A revert or an exceptional halt, running out
+    /// of gas included, drops the state and keeps the block valid. A call to an address without
+    /// code succeeds and changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`BlockExecutionError::Internal`], never a validation error, when the spec has no
+    /// `EtnaStaking` address ([`MissingEtnaStakingAddress`] names the spec's chain), when the EVM
+    /// reports a database or environment fault, or when `extraData` does not decode, which
+    /// pre-execution validation rules out before this call.
+    fn apply_etna_block_start_call(&mut self) -> Result<(), BlockExecutionError> {
+        let block_number: u64 = self.evm.block().number().to();
+        let Some(extra_data) = EtnaExtraData::decode(&self.ctx.extra_data) else {
+            return Err(BlockExecutionError::msg(format!(
+                "Etna block {block_number} reached the block-start call with undecodable extraData"
+            )));
+        };
+        // The spec whose lookup fails names its own chain, which can differ from the EVM's.
+        let staking = self.spec.etna_staking_address().ok_or_else(|| {
+            BlockExecutionError::other(MissingEtnaStakingAddress {
+                chain_id: self.spec.chain().id(),
+            })
+        })?;
+
+        let ResultAndState { result, state } = self
+            .evm
+            .transact_unmetered_system_call(
+                ETNA_SYSTEM_CALLER,
+                staking,
+                Bytes::copy_from_slice(&extra_data.on_block_start_calldata()),
+                ETNA_BLOCK_START_CALL_GAS,
+            )
+            .map_err(|e| {
+                BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
+            })?;
+
+        if result.is_success() {
+            self.evm.db_mut().commit(state);
+        } else {
+            tracing::warn!(
+                target: "taiko::executor",
+                block_number,
+                %staking,
+                ?result,
+                "Etna block-start staking call failed; its state is discarded and the block stays valid"
+            );
+        }
+        Ok(())
+    }
+}
+
 impl<E, Spec, R> BlockExecutor for TaikoBlockExecutor<'_, E, Spec, R>
 where
     E: Evm<
             DB: StateDB + DatabaseCommit,
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,
         > + TaikoZkGasEvm
-        + TaikoAnchorEvm,
-    Spec: TaikoExecutorSpec + Clone,
+        + TaikoAnchorEvm
+        + TaikoSystemCallEvm,
+    Spec: TaikoExecutorSpec + EthChainSpec + Clone,
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
@@ -420,8 +499,14 @@ where
     /// Result of transaction execution.
     type Result = EthTxResult<E::HaltReason, <R::Transaction as TransactionEnvelope>::TxType>;
 
-    /// Validates the root, runs standard system calls, and initializes block fee sharing.
-    /// Before Etna, the legacy marker also supplies the golden-touch nonce for anchor execution.
+    /// Validates the root and `extraData`, runs the EIP-2935 then EIP-4788 system writes, and
+    /// applies the once-per-block start processing.
+    ///
+    /// In a non-genesis Etna block that processing first makes the block-start staking call
+    /// ([`Self::apply_etna_block_start_call`]), then installs the header's fee sharing. Before
+    /// Etna, the legacy marker supplies the fee sharing and the golden-touch nonce for anchor
+    /// execution. A repeated call on the same executor repeats the system writes but never the
+    /// once-per-block processing. Every build, import, prover and witness path runs this method.
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         let is_etna_active = self.spec.is_etna_active(self.evm.block().timestamp().to());
         let block_number = self.evm.block().number().to();
@@ -433,8 +518,13 @@ where
         self.system_caller
             .apply_beacon_root_contract_call(self.ctx.parent_beacon_block_root, &mut self.evm)?;
 
-        // Initialize authoritative fee sharing once per block.
-        if !self.evm_extra_execution_ctx_initialized {
+        // Apply the block-start call and the authoritative fee sharing once per block. The genesis
+        // has no call: its empty extraData carries no arguments.
+        if !self.block_start_applied {
+            if is_etna_active && block_number != 0 {
+                self.apply_etna_block_start_call()?;
+            }
+
             // Decode the base fee share percentage from the block's extra data.
             let base_fee_share_pgtg =
                 if self.spec.is_shasta_active(self.evm.block().timestamp().to()) {
@@ -469,7 +559,7 @@ where
                     })?;
             }
 
-            self.evm_extra_execution_ctx_initialized = true;
+            self.block_start_applied = true;
         }
 
         Ok(())
@@ -710,21 +800,23 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_eips::{eip2935::HISTORY_STORAGE_ADDRESS, eip4788::BEACON_ROOTS_ADDRESS};
     use alloy_evm::EvmFactory;
     use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
-    use reth_ethereum_primitives::TransactionSigned;
+    use reth_ethereum_primitives::{Receipt, TransactionSigned};
     use reth_evm::{ConfigureEvm, block::BlockExecutor};
     use reth_evm_ethereum::RethReceiptBuilder;
     use reth_primitives_traits::SignedTransaction;
     use reth_revm::{
         State,
-        db::{CacheDB, EmptyDB, states::bundle_state::BundleRetention},
+        db::{CacheDB, EmptyDB, InMemoryDB, states::bundle_state::BundleRetention},
         state::{AccountInfo, Bytecode, bytecode::opcode},
     };
 
     use alethia_reth_evm::{
         alloy::decode_anchor_system_call_data,
+        env::TaikoEvmEnv,
         factory::TaikoEvmFactory,
         spec::TaikoSpecId,
         zk_gas::unzen::{BLOCK_ZK_GAS_LIMIT, TX_INTRINSIC_ZK_GAS},
@@ -734,13 +826,437 @@ mod test {
     use crate::{
         config::{TaikoEvmConfig, TaikoNextBlockEnvAttributes},
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, db_with_contracts, etna_chain_spec,
-            etna_evm_env, etna_execution_ctx, insert_contract, recovered_tx, unzen_chain_spec,
-            unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_SUCCESS_TARGET, FailingStorageDb, db_with_contracts,
+            etna_chain_spec, etna_evm_env, etna_execution_ctx, etna_test_staking_address,
+            insert_contract, insert_system_contracts, recovered_tx, slot_recorder_bytecode,
+            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     const BENCH_CALLER: Address = Address::with_last_byte(0x30);
+
+    /// Beacon root the block-start call tests commit to.
+    const BLOCK_START_ROOT: B256 = B256::repeat_byte(0x42);
+
+    /// `PUSH1 1 PUSH1 0 SSTORE STOP`: sets storage slot 0 to 1.
+    const SET_SLOT_ZERO: [u8; 6] =
+        [opcode::PUSH1, 1, opcode::PUSH1, 0, opcode::SSTORE, opcode::STOP];
+
+    /// Executes one Etna block over `db` under [`etna_chain_spec`] and [`etna_evm_env`]:
+    /// pre-execution, then each of `txs`, then `finish()`, each of which must succeed. Returns the
+    /// state, the block result and the block's finalized zk gas.
+    fn run_etna_block(
+        db: InMemoryDB,
+        ctx: TaikoBlockExecutionCtx<'_>,
+        txs: &[Recovered<TransactionSigned>],
+    ) -> (State<InMemoryDB>, BlockExecutionResult<Receipt>, u64) {
+        let mut state = State::builder().with_database(db).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let zk_gas = ctx.clone();
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            ctx,
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().expect("pre-execution must succeed");
+        for tx in txs {
+            executor.execute_transaction(tx.clone()).expect("the transaction must execute");
+        }
+        let (evm, result) = executor.finish().expect("the block must finish");
+        drop(evm);
+        (state, result, zk_gas.finalized_block_zk_gas())
+    }
+
+    /// Returns the code of a `CALL` to `target` whose 32-byte calldata is the word `word` pushes.
+    /// It leaves the call's success flag on the stack and the returned word at memory 32.
+    fn call_with_word(word: &[u8], target: Address) -> Vec<u8> {
+        let mut code = word.to_vec();
+        // memory[0..32] = word; CALL(gas, target, 0, 0, 32, 32, 32).
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            0,
+            opcode::MSTORE,
+            opcode::PUSH1,
+            32,
+            opcode::PUSH1,
+            32,
+            opcode::PUSH1,
+            32,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH20,
+        ]);
+        code.extend_from_slice(target.as_slice());
+        code.extend_from_slice(&[opcode::GAS, opcode::CALL]);
+        code
+    }
+
+    /// Returns `address` as a 32-byte word, the way `CALLER` and `ORIGIN` push it.
+    fn address_word(address: Address) -> U256 {
+        U256::from_be_slice(address.as_slice())
+    }
+
+    #[test]
+    fn etna_block_start_call_follows_both_system_writes_with_its_own_arguments() {
+        let staking = etna_test_staking_address();
+        let parent_hash = B256::repeat_byte(0x77);
+        let mut db = db_with_contracts(&[]);
+        insert_system_contracts(&mut db);
+        insert_contract(
+            &mut db,
+            staking,
+            slot_recorder_bytecode(&[
+                &[opcode::GAS],
+                &[opcode::CALLER],
+                &[opcode::ORIGIN],
+                &[opcode::CALLDATASIZE],
+                &[opcode::PUSH1, 0, opcode::CALLDATALOAD, opcode::PUSH1, 224, opcode::SHR],
+                &[opcode::PUSH1, 4, opcode::CALLDATALOAD],
+                &[opcode::PUSH1, 36, opcode::CALLDATALOAD],
+                &call_with_word(&[opcode::TIMESTAMP], BEACON_ROOTS_ADDRESS),
+                &[opcode::PUSH1, 32, opcode::MLOAD],
+                &call_with_word(
+                    &[opcode::PUSH1, 1, opcode::NUMBER, opcode::SUB],
+                    HISTORY_STORAGE_ADDRESS,
+                ),
+                &[opcode::PUSH1, 32, opcode::MLOAD],
+            ]),
+        );
+        let mut ctx = etna_execution_ctx(BLOCK_START_ROOT);
+        ctx.parent_hash = parent_hash;
+        ctx.extra_data =
+            Bytes::copy_from_slice(&EtnaExtraData::new(1, 258, 5).expect("fields fit").encode());
+
+        let (mut state, _, _) = run_etna_block(db, ctx, &[]);
+
+        // Slot 0 is the whole 30,000,000 less the first GAS opcode's own 2. Slots 7 and 9 are the
+        // success flags of reading back the beacon root and the parent hash this block's two
+        // system writes stored, so both writes ran before the call.
+        let recorded: Vec<U256> = (0..11u64)
+            .map(|slot| state.storage(staking, U256::from(slot)).expect("db read"))
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                U256::from(29_999_998u64),
+                address_word(ETNA_SYSTEM_CALLER),
+                address_word(ETNA_SYSTEM_CALLER),
+                U256::from(68u64),
+                U256::from(0xea98_7592u64),
+                U256::from(1u64),
+                U256::from(5u64),
+                U256::from(1u64),
+                U256::from_be_bytes(BLOCK_START_ROOT.0),
+                U256::from(1u64),
+                U256::from_be_bytes(parent_hash.0),
+            ]
+        );
+        assert_eq!(state.basic(ETNA_SYSTEM_CALLER).expect("db read"), None);
+    }
+
+    #[test]
+    fn etna_block_start_call_is_outside_gas_used_receipts_and_zk_gas() {
+        let staking = etna_test_staking_address();
+        let sink = Address::with_last_byte(0x55);
+        let caller = Address::with_last_byte(0x31);
+        // Sets slot 0, calls the sink, emits a log with topic 1, then hashes 64 KiB 300 times,
+        // which a transaction's zk gas meter would stop.
+        let mut code = vec![opcode::PUSH1, 1, opcode::PUSH1, 0, opcode::SSTORE];
+        code.extend_from_slice(&[
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH20,
+        ]);
+        code.extend_from_slice(sink.as_slice());
+        code.extend_from_slice(&[
+            opcode::GAS,
+            opcode::CALL,
+            opcode::POP,
+            opcode::PUSH1,
+            1,
+            opcode::PUSH1,
+            0,
+            opcode::PUSH1,
+            0,
+            opcode::LOG1,
+            opcode::PUSH2,
+            0x01,
+            0x2c, // 300 iterations
+        ]);
+        let loop_start = u8::try_from(code.len()).expect("the loop starts below offset 256");
+        code.extend_from_slice(&[
+            opcode::JUMPDEST,
+            opcode::PUSH3,
+            0x01,
+            0x00,
+            0x00,
+            opcode::PUSH1,
+            0,
+            opcode::KECCAK256,
+            opcode::POP,
+            opcode::PUSH1,
+            1,
+            opcode::SWAP1,
+            opcode::SUB,
+            opcode::DUP1,
+            opcode::PUSH1,
+            loop_start,
+            opcode::JUMPI,
+            opcode::POP,
+            opcode::STOP,
+        ]);
+        let mock = Bytecode::new_raw(code.into());
+        let db = || {
+            let mut db = db_with_contracts(&[(caller, 0)]);
+            insert_contract(&mut db, sink, Bytecode::new_raw(SET_SLOT_ZERO.into()));
+            db
+        };
+        let mut with_mock = db();
+        insert_contract(&mut with_mock, staking, mock.clone());
+        let tx = recovered_tx(caller, BENCH_SUCCESS_TARGET, 0, 1);
+
+        let (mut state_a, a, zk_gas_a) = run_etna_block(
+            with_mock,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            std::slice::from_ref(&tx),
+        );
+        let (_, b, zk_gas_b) = run_etna_block(db(), etna_execution_ctx(BLOCK_START_ROOT), &[tx]);
+
+        assert_eq!(a.gas_used, b.gas_used);
+        assert_eq!(a.receipts, b.receipts);
+        assert_eq!(a.receipts.len(), 1);
+        assert!(a.receipts.iter().all(|receipt| receipt.logs.is_empty()));
+        assert_eq!(zk_gas_a, zk_gas_b);
+        assert_eq!(state_a.storage(staking, U256::ZERO).expect("db read"), U256::from(1u64));
+        assert_eq!(state_a.storage(sink, U256::ZERO).expect("db read"), U256::from(1u64));
+
+        // The same code run as a transaction exceeds the block zk gas limit.
+        let target = Address::with_last_byte(0x56);
+        let mut db = db();
+        insert_contract(&mut db, target, mock);
+        let mut state = State::builder().with_database(db).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        let err = executor
+            .execute_transaction(recovered_tx(caller, target, 0, 1))
+            .expect_err("the mock is zk metered as a transaction");
+        assert!(is_zk_gas_limit_exceeded(&err), "{err:?}");
+    }
+
+    #[test]
+    fn failed_etna_block_start_call_leaves_the_state_and_the_block_valid() {
+        let staking = etna_test_staking_address();
+        let caller = Address::with_last_byte(0x31);
+        let tx = recovered_tx(caller, BENCH_SUCCESS_TARGET, 0, 1);
+        let failures: [(&str, &[u8]); 3] = [
+            ("revert", &[opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::REVERT]),
+            ("invalid opcode", &[opcode::INVALID]),
+            // Loops at offset 5 until the 30,000,000 gas run out.
+            ("out of gas", &[opcode::JUMPDEST, opcode::PUSH1, 5, opcode::JUMP]),
+        ];
+        for (name, failure) in failures {
+            let mut code = vec![opcode::PUSH1, 1, opcode::PUSH1, 0, opcode::SSTORE];
+            code.extend_from_slice(failure);
+            let mut db = db_with_contracts(&[(caller, 0)]);
+            insert_contract(&mut db, staking, Bytecode::new_raw(code.into()));
+
+            let (mut state, result, _) =
+                run_etna_block(db, etna_execution_ctx(BLOCK_START_ROOT), std::slice::from_ref(&tx));
+
+            assert_eq!(result.receipts.len(), 1, "{name}");
+            assert_eq!(state.storage(staking, U256::ZERO).expect("db read"), U256::ZERO, "{name}");
+        }
+
+        let (mut state, result, _) = run_etna_block(
+            db_with_contracts(&[(caller, 0)]),
+            etna_execution_ctx(BLOCK_START_ROOT),
+            &[tx],
+        );
+        assert_eq!(result.receipts.len(), 1);
+        assert_eq!(state.basic(staking).expect("db read"), None);
+    }
+
+    #[test]
+    fn etna_block_start_call_runs_once_and_only_in_non_genesis_etna_blocks() {
+        let staking = etna_test_staking_address();
+        // Increments storage slot 0.
+        let counter = Bytecode::new_raw(Bytes::from_static(&[
+            opcode::PUSH1,
+            0,
+            opcode::SLOAD,
+            opcode::PUSH1,
+            1,
+            opcode::ADD,
+            opcode::PUSH1,
+            0,
+            opcode::SSTORE,
+            opcode::STOP,
+        ]));
+        let db = || {
+            let mut db = db_with_contracts(&[]);
+            insert_contract(&mut db, staking, counter.clone());
+            db
+        };
+        let run = |spec: TaikoChainSpec,
+                   env: TaikoEvmEnv,
+                   ctx: TaikoBlockExecutionCtx<'_>,
+                   times: usize| {
+            let mut state = State::builder().with_database(db()).build();
+            let evm = TaikoEvmFactory.create_evm(&mut state, env);
+            let mut executor =
+                TaikoBlockExecutor::new(evm, ctx, Arc::new(spec), RethReceiptBuilder::default());
+            for _ in 0..times {
+                executor.apply_pre_execution_changes().expect("pre-execution must succeed");
+            }
+            let (evm, _) = executor.finish().expect("the block must finish");
+            drop(evm);
+            state.storage(staking, U256::ZERO).expect("db read")
+        };
+
+        let twice = run(etna_chain_spec(), etna_evm_env(), etna_execution_ctx(BLOCK_START_ROOT), 2);
+        assert_eq!(twice, U256::from(1u64));
+
+        let pre_etna = run(unzen_chain_spec(), unzen_evm_env(), unzen_execution_ctx(), 1);
+        assert_eq!(pre_etna, U256::ZERO);
+
+        let mut genesis_env = etna_evm_env();
+        genesis_env.block_env.number = U256::ZERO;
+        let mut genesis_ctx = etna_execution_ctx(B256::ZERO);
+        genesis_ctx.extra_data = Bytes::new();
+        let genesis = run(etna_chain_spec(), genesis_env, genesis_ctx, 1);
+        assert_eq!(genesis, U256::ZERO);
+    }
+
+    #[test]
+    fn etna_block_start_call_effects_survive_a_discarded_first_transaction() {
+        let staking = etna_test_staking_address();
+        let caller = Address::with_last_byte(0x31);
+        let mut db = db_with_contracts(&[(caller, 0)]);
+        insert_contract(&mut db, staking, Bytecode::new_raw(SET_SLOT_ZERO.into()));
+        let mut state = State::builder().with_database(db).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        executor.apply_pre_execution_changes().expect("pre-execution must succeed");
+
+        let err = executor
+            .execute_transaction(recovered_tx(caller, BENCH_LIMIT_TARGET, 0, 1))
+            .expect_err("the first transaction overflows the zk gas budget");
+        assert!(is_zk_gas_limit_exceeded(&err), "{err:?}");
+        executor.clear_zk_gas_exhaustion();
+        let (evm, result) = executor.finish().expect("the block must finish");
+        drop(evm);
+
+        assert!(result.receipts.is_empty());
+        assert_eq!(state.storage(staking, U256::ZERO).expect("db read"), U256::from(1u64));
+    }
+
+    #[test]
+    fn etna_block_start_call_leaves_the_first_transaction_cold() {
+        let staking = etna_test_staking_address();
+        let caller = Address::with_last_byte(0x31);
+        let probe = Address::with_last_byte(0xC0);
+        // Stores the gas difference around `PUSH20 staking BALANCE POP GAS`, which is the BALANCE
+        // cost plus 7: 107 for a warm address and 2,607 for a cold one.
+        let mut balance_cost = vec![opcode::GAS, opcode::PUSH20];
+        balance_cost.extend_from_slice(staking.as_slice());
+        balance_cost.extend_from_slice(&[
+            opcode::BALANCE,
+            opcode::POP,
+            opcode::GAS,
+            opcode::SWAP1,
+            opcode::SUB,
+        ]);
+        let mut db = db_with_contracts(&[(caller, 0)]);
+        insert_contract(&mut db, staking, Bytecode::new_raw(SET_SLOT_ZERO.into()));
+        insert_contract(&mut db, probe, slot_recorder_bytecode(&[&balance_cost]));
+
+        let (mut state, _, _) = run_etna_block(
+            db,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            &[recovered_tx(caller, probe, 0, 1)],
+        );
+
+        assert_eq!(state.storage(staking, U256::ZERO).expect("db read"), U256::from(1u64));
+        assert_eq!(state.storage(probe, U256::ZERO).expect("db read"), U256::from(2_607u64));
+    }
+
+    #[test]
+    fn etna_block_start_call_faults_are_internal_errors() {
+        let staking = etna_test_staking_address();
+        // Sets slot 1, then reads slot 0, the read the database fails.
+        let mut inner = db_with_contracts(&[]);
+        insert_contract(
+            &mut inner,
+            staking,
+            Bytecode::new_raw(Bytes::from_static(&[
+                opcode::PUSH1,
+                1,
+                opcode::PUSH1,
+                1,
+                opcode::SSTORE,
+                opcode::PUSH1,
+                0,
+                opcode::SLOAD,
+                opcode::STOP,
+            ])),
+        );
+        let mut state = State::builder()
+            .with_database(FailingStorageDb { inner, failing: (staking, U256::ZERO) })
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            Arc::new(etna_chain_spec()),
+            RethReceiptBuilder::default(),
+        );
+        let err = executor
+            .apply_pre_execution_changes()
+            .expect_err("a database fault must fail pre-execution");
+        assert!(matches!(err, BlockExecutionError::Internal(_)), "{err:?}");
+        drop(executor);
+        assert_eq!(state.storage(staking, U256::from(1u64)).expect("db read"), U256::ZERO);
+
+        // The address comes from the spec, so the error names the spec's chain, not the EVM
+        // environment's chain id 167.
+        let mut spec = etna_chain_spec();
+        spec.inner.chain = 167_000.into();
+        let mut state = State::builder().with_database(db_with_contracts(&[])).build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
+        let mut executor = TaikoBlockExecutor::new(
+            evm,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            Arc::new(spec),
+            RethReceiptBuilder::default(),
+        );
+        let err = executor
+            .apply_pre_execution_changes()
+            .expect_err("a missing staking address must fail pre-execution");
+        assert!(matches!(err, BlockExecutionError::Internal(_)), "{err:?}");
+        let text = err.to_string();
+        assert!(text.contains("EtnaStaking") && text.contains("chain 167000"), "{text}");
+    }
 
     #[test]
     fn etna_pre_execution_rejects_missing_root_and_malformed_extra_data() {

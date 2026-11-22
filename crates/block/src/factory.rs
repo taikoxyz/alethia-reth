@@ -14,6 +14,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{B256, Bytes, U256};
 use alloy_rpc_types_eth::Withdrawals;
+use reth_chainspec::EthChainSpec;
 use reth_evm_ethereum::RethReceiptBuilder;
 use reth_revm::Inspector;
 
@@ -102,7 +103,7 @@ impl<R, Spec, EvmFactory> TaikoBlockExecutorFactory<R, Spec, EvmFactory> {
 impl<Spec> BlockExecutorFactory
     for TaikoBlockExecutorFactory<RethReceiptBuilder, Spec, TaikoEvmFactory>
 where
-    Spec: TaikoExecutorSpec + Clone,
+    Spec: TaikoExecutorSpec + EthChainSpec + Clone,
     Self: 'static,
 {
     /// The EVM factory used by the executor.

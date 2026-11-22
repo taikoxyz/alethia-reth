@@ -157,6 +157,13 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
+
+    /// Returns the built-in `EtnaStaking` proxy address that every Etna block's start call
+    /// targets, or `null` on a chain without one.
+    ///
+    /// Drivers compare it with the staking address their config hash commits.
+    #[method(name = "etnaStakingAddress")]
+    async fn etna_staking_address(&self) -> RpcResult<Option<Address>>;
 }
 
 /// A concrete implementation of the `TaikoAuthExtApi` trait.
@@ -203,6 +210,27 @@ impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, 
     }
 }
 
+impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, Evm, Provider>
+where
+    Evm: reth_evm::ConfigureEvm<
+            BlockExecutorFactory = TaikoBlockExecutorFactory<
+                RethReceiptBuilder,
+                Arc<TaikoChainSpec>,
+                TaikoEvmFactory,
+            >,
+        >,
+{
+    /// Returns the `EtnaStaking` proxy address from the block executor's spec, the source the
+    /// block-start call itself reads, so the RPC and the call always agree. `None` when the
+    /// executor's chain has no built-in address.
+    pub(super) fn read_etna_staking_address(&self) -> Option<Address> {
+        let spec: &TaikoChainSpec = self.evm_config.block_executor_factory().spec();
+        // Called by path: importing `TaikoExecutorSpec` here would clash with the
+        // `TaikoHardforks::is_etna_active` call this module already makes.
+        alethia_reth_chainspec::spec::TaikoExecutorSpec::etna_staking_address(spec)
+    }
+}
+
 #[async_trait]
 impl<Pool, Eth, Evm, Provider> TaikoAuthExtApiServer<RpcTransaction<Eth::Network>>
     for TaikoAuthExt<Pool, Eth, Evm, Provider>
@@ -211,7 +239,7 @@ where
     Eth: RpcConvert<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
     Provider: DatabaseProviderFactory
         + BlockReaderIdExt<Header = alloy_consensus::Header>
-        + ChainSpecProvider
+        + ChainSpecProvider<ChainSpec: reth::chainspec::Hardforks>
         + StateProviderFactory
         + 'static,
     Evm: ConfigureEngineEvm<
@@ -450,5 +478,10 @@ where
             }
             Err(err) => Err(EthApiError::Internal(err.into()).into()),
         }
+    }
+
+    /// Returns the block executor spec's built-in `EtnaStaking` proxy address.
+    async fn etna_staking_address(&self) -> RpcResult<Option<Address>> {
+        Ok(self.read_etna_staking_address())
     }
 }

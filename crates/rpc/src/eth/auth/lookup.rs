@@ -4,7 +4,7 @@ use alloy_consensus::{BlockHeader as _, Transaction as _};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::U256;
 use jsonrpsee::core::RpcResult;
-use reth::chainspec::EthChainSpec;
+use reth::chainspec::{EthChainSpec, Hardforks};
 use reth_db_api::{DatabaseError, transaction::DbTx};
 use reth_node_api::Block;
 use reth_primitives_traits::BlockBody as _;
@@ -12,12 +12,12 @@ use reth_provider::{BlockReaderIdExt, ChainSpecProvider, DBProvider, DatabasePro
 use reth_rpc_eth_types::EthApiError;
 
 use crate::eth::error::{TaikoApiError, internal_eth_error};
-use alethia_reth_chainspec::{TAIKO_DEVNET_CHAIN_ID, TAIKO_HOODI_CHAIN_ID, TAIKO_MAINNET_CHAIN_ID};
+use alethia_reth_chainspec::{
+    TAIKO_DEVNET_CHAIN_ID, TAIKO_HOODI_CHAIN_ID, TAIKO_MAINNET_CHAIN_ID, hardfork::TaikoHardfork,
+};
 use alethia_reth_consensus::validation::ANCHOR_V4_SELECTOR;
 use alethia_reth_db::model::{BatchToLastBlock, StoredL1OriginTable};
-use alethia_reth_primitives::{
-    ETNA_EXTRA_DATA_LEN, decode_shasta_proposal_id, payload::attributes::RpcL1Origin,
-};
+use alethia_reth_primitives::{decode_shasta_proposal_id, payload::attributes::RpcL1Origin};
 
 use super::TaikoAuthExt;
 
@@ -59,7 +59,7 @@ pub(super) fn max_backward_scan_blocks() -> u64 {
 
 impl<Pool, Eth, Evm, Provider> TaikoAuthExt<Pool, Eth, Evm, Provider>
 where
-    Provider: DatabaseProviderFactory + BlockReaderIdExt + ChainSpecProvider,
+    Provider: DatabaseProviderFactory + BlockReaderIdExt + ChainSpecProvider<ChainSpec: Hardforks>,
 {
     /// Reads the cached last block number for a batch ID from the database mapping only.
     pub(super) fn read_cached_last_block_number_by_batch_id(
@@ -142,10 +142,16 @@ where
                 return Ok(LastBlockSearchResult::LookbackExceeded);
             }
             scanned_blocks += 1;
-            // Etna blocks, empty ones included, have no anchor transaction and carry the recovery
-            // generation in extraData bytes 1..6. Skip them so a lookup from an Etna head still
-            // reaches the proposal-indexed history below the fork.
-            if block.header().extra_data().len() == ETNA_EXTRA_DATA_LEN {
+            // Etna blocks, empty ones included, have no anchor transaction and their extraData
+            // carries no proposal ID. Skip them so a lookup from an Etna head still reaches the
+            // proposal-indexed history below the fork. The fork schedule, not the extraData
+            // length, says which blocks are Etna blocks.
+            if self
+                .provider
+                .chain_spec()
+                .fork(TaikoHardfork::Etna)
+                .active_at_timestamp(block.header().timestamp())
+            {
                 let Some(parent_number) = block.header().number().checked_sub(1) else {
                     break;
                 };

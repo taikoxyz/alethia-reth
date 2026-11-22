@@ -70,6 +70,7 @@ Alethia-reth uses reth-compatible CLI options plus Taiko chain presets.
 ### Chain Selection
 
 Use `--chain` with one of the supported presets:
+
 - `mainnet`
 - `taiko-hoodi`
 - `devnet`
@@ -96,9 +97,9 @@ add the two system contracts to that alloc: with Etna active, `anchorV4` stays c
 public golden-touch key, so anyone could save a forged L1 checkpoint. Build the genesis with
 `build_etna_genesis.py` from the draft
 [taikoxyz/taiko-mono#22286](https://github.com/taikoxyz/taiko-mono/pull/22286), which is not on
-taiko-mono `main` yet. In a checkout of that branch, set `chainId` to `167001`, `beaconRootsFrom`
-to `"0x1"` (max(1, t) for the canonical devnet genesis timestamp t = 0) and `remoteSignalService`
-to a deployed L1 SignalService in `packages/protocol/test/genesis/data/genesis_config.js`. Then
+taiko-mono `main` yet. In a checkout of that branch, set `chainId` to `167001`, `usesBeaconRoots`
+to `true` and `remoteSignalService` to a deployed L1 SignalService in
+`packages/protocol/test/genesis/data/genesis_config.js`. Then
 run, from `packages/protocol` (pnpm and Foundry required), with `ALETHIA_RETH` set to this
 repository and `L1_SIGNAL_SERVICE` to that address:
 
@@ -114,10 +115,14 @@ python3 script/layer2/build_etna_genesis.py \
 
 The script overlays the generated L2 predeploys (including the `Anchor` and the L2 `SignalService`)
 and both system contracts onto `alloc` and drops the derived `stateRoot`. It refuses a
-`SignalService` whose `beaconRootsFrom` is not max(1, t), checked in the emitted bytecode as well
-as in the configuration: from that timestamp on the SignalService accepts no checkpoint, so
-`anchorV4` cannot save a forged one, and proofs resolve L1 roots through EIP-4788. From this
-repository, start a fresh node with the
+`SignalService` whose `usesBeaconRoots` is not `true`, checked in the emitted bytecode as well as in
+the configuration. With it set, the SignalService accepts a checkpoint only in a block whose
+EIP-4788 root is zero, and every Etna block after the genesis carries a nonzero one, so `anchorV4`
+cannot save a forged checkpoint, and proofs resolve L1 roots through EIP-4788. The genesis must also
+predeploy the `EtnaStaking` proxy at the chain's built-in address
+(`0x1670010000000000000000000000000000010003` for chain id 167001; see the
+[address table](docs/engine-api-etna.md#block-start-staking-call)), or every block-start call finds
+no code and changes nothing. From this repository, start a fresh node with the
 [Etna override](docs/engine-api-etna.md#devnet-activation-override) at the genesis timestamp, `0`:
 
 ```sh

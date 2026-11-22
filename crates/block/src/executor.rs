@@ -19,7 +19,10 @@ use reth_evm::{
     eth::receipt_builder::ReceiptBuilderCtx,
 };
 use reth_execution_types::BlockExecutionResult;
-use reth_revm::context::{Block as _, result::ResultAndState};
+use reth_revm::context::{
+    Block as _,
+    result::{ExecutionResult, ResultAndState},
+};
 use revm_database_interface::{Database, DatabaseCommit};
 
 use crate::factory::TaikoBlockExecutionCtx;
@@ -463,16 +466,27 @@ where
                 BlockExecutionError::Internal(InternalBlockExecutionError::Other(e.into()))
             })?;
 
-        if result.is_success() {
-            self.evm.db_mut().commit(state);
-        } else {
-            tracing::warn!(
+        // The warning names the failure and sizes its data but never logs the data: a reverting
+        // frame can return megabytes, and the warning repeats on every node for every execution
+        // of every block while the call keeps failing.
+        match &result {
+            ExecutionResult::Success { .. } => self.evm.db_mut().commit(state),
+            ExecutionResult::Revert { gas, output, .. } => tracing::warn!(
                 target: "taiko::executor",
                 block_number,
                 %staking,
-                ?result,
-                "Etna block-start staking call failed; its state is discarded and the block stays valid"
-            );
+                gas_used = gas.tx_gas_used(),
+                output_len = output.len(),
+                "Etna block-start staking call reverted; its state is discarded and the block stays valid"
+            ),
+            ExecutionResult::Halt { reason, gas, .. } => tracing::warn!(
+                target: "taiko::executor",
+                block_number,
+                %staking,
+                ?reason,
+                gas_used = gas.tx_gas_used(),
+                "Etna block-start staking call halted; its state is discarded and the block stays valid"
+            ),
         }
         Ok(())
     }
@@ -899,6 +913,74 @@ mod test {
         U256::from_be_slice(address.as_slice())
     }
 
+    /// One recorded tracing event: each field's name and its `Debug` text, `message` included.
+    type RecordedEvent = Vec<(&'static str, String)>;
+
+    /// A tracing subscriber that records every event emitted while it is the thread's default.
+    #[derive(Clone, Default)]
+    struct EventRecorder(Arc<std::sync::Mutex<Vec<RecordedEvent>>>);
+
+    impl EventRecorder {
+        /// Removes every recorded event and returns those whose message contains `needle`.
+        fn take_matching(&self, needle: &str) -> Vec<RecordedEvent> {
+            let events = std::mem::take(&mut *self.0.lock().expect("recorder lock"));
+            events
+                .into_iter()
+                .filter(|event| {
+                    event_field(event, "message").is_some_and(|message| message.contains(needle))
+                })
+                .collect()
+        }
+    }
+
+    /// Returns the `Debug` text of `event`'s field `name`, if it has one.
+    fn event_field<'a>(event: &'a RecordedEvent, name: &str) -> Option<&'a str> {
+        event.iter().find(|(field, _)| *field == name).map(|(_, value)| value.as_str())
+    }
+
+    impl tracing::Subscriber for EventRecorder {
+        /// Records every event.
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        /// Spans are not recorded; every span gets the same id.
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        /// Spans are not recorded.
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        /// Spans are not recorded.
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        /// Records the event's fields.
+        fn event(&self, event: &tracing::Event<'_>) {
+            /// Collects each visited field's name and `Debug` text.
+            struct Fields(RecordedEvent);
+            impl tracing::field::Visit for Fields {
+                /// Records the field's `Debug` text.
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push((field.name(), format!("{value:?}")));
+                }
+            }
+            let mut fields = Fields(Vec::new());
+            event.record(&mut fields);
+            self.0.lock().expect("recorder lock").push(fields.0);
+        }
+
+        /// Spans are not recorded.
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        /// Spans are not recorded.
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
     #[test]
     fn etna_block_start_call_follows_both_system_writes_with_its_own_arguments() {
         let staking = etna_test_staking_address();
@@ -1059,37 +1141,68 @@ mod test {
         assert!(is_zk_gas_limit_exceeded(&err), "{err:?}");
     }
 
+    /// A failed call drops its state and keeps the block valid. Its one warning reports the failure
+    /// kind, the gas used and the length of the returned data, never the data itself.
     #[test]
     fn failed_etna_block_start_call_leaves_the_state_and_the_block_valid() {
         let staking = etna_test_staking_address();
         let caller = Address::with_last_byte(0x31);
         let tx = recovered_tx(caller, BENCH_SUCCESS_TARGET, 0, 1);
-        let failures: [(&str, &[u8]); 3] = [
-            ("revert", &[opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::REVERT]),
-            ("invalid opcode", &[opcode::INVALID]),
+        // (case, code after the store, the warning's verb, a field the warning reports, its value)
+        let failures: [(&str, &[u8], &str, &str, &str); 3] = [
+            // REVERT(0, 0x100000): reverts with 1 MiB of data, which the warning reports only by
+            // its length.
+            (
+                "revert",
+                &[opcode::PUSH3, 0x10, 0, 0, opcode::PUSH1, 0, opcode::REVERT],
+                "reverted",
+                "output_len",
+                "1048576",
+            ),
+            ("invalid opcode", &[opcode::INVALID], "halted", "reason", "InvalidFEOpcode"),
             // Loops at offset 5 until the 30,000,000 gas run out.
-            ("out of gas", &[opcode::JUMPDEST, opcode::PUSH1, 5, opcode::JUMP]),
+            (
+                "out of gas",
+                &[opcode::JUMPDEST, opcode::PUSH1, 5, opcode::JUMP],
+                "halted",
+                "gas_used",
+                "30000000",
+            ),
         ];
-        for (name, failure) in failures {
+        let recorder = EventRecorder::default();
+        for (name, failure, verb, field, value) in failures {
             let mut code = vec![opcode::PUSH1, 1, opcode::PUSH1, 0, opcode::SSTORE];
             code.extend_from_slice(failure);
             let mut db = db_with_contracts(&[(caller, 0)]);
             insert_contract(&mut db, staking, Bytecode::new_raw(code.into()));
 
-            let (mut state, result, _) =
-                run_etna_block(db, etna_execution_ctx(BLOCK_START_ROOT), std::slice::from_ref(&tx));
+            let run = || {
+                run_etna_block(db, etna_execution_ctx(BLOCK_START_ROOT), std::slice::from_ref(&tx))
+            };
+            let (mut state, result, _) = tracing::subscriber::with_default(recorder.clone(), run);
 
             assert_eq!(result.receipts.len(), 1, "{name}");
             assert_eq!(state.storage(staking, U256::ZERO).expect("db read"), U256::ZERO, "{name}");
+            let warnings = recorder.take_matching("block-start staking call");
+            assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");
+            let warning = &warnings[0];
+            assert!(event_field(warning, "message").is_some_and(|m| m.contains(verb)), "{name}");
+            assert!(event_field(warning, field).is_some_and(|v| v.contains(value)), "{warning:?}");
+            assert!(event_field(warning, "gas_used").is_some(), "{name}: {warning:?}");
+            let logged: usize = warning.iter().map(|(_, text)| text.len()).sum();
+            assert!(logged < 512, "{name}: the warning logs {logged} bytes");
         }
 
-        let (mut state, result, _) = run_etna_block(
-            db_with_contracts(&[(caller, 0)]),
-            etna_execution_ctx(BLOCK_START_ROOT),
-            &[tx],
-        );
+        let (mut state, result, _) = tracing::subscriber::with_default(recorder.clone(), || {
+            run_etna_block(
+                db_with_contracts(&[(caller, 0)]),
+                etna_execution_ctx(BLOCK_START_ROOT),
+                &[tx],
+            )
+        });
         assert_eq!(result.receipts.len(), 1);
         assert_eq!(state.basic(staking).expect("db read"), None);
+        assert!(recorder.take_matching("block-start staking call").is_empty());
     }
 
     #[test]

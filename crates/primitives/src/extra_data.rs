@@ -16,8 +16,8 @@ pub const SHASTA_EXTRA_DATA_LEN: usize = 7;
 /// them; derivation and provers check every field after byte 0.
 pub const ETNA_EXTRA_DATA_LEN: usize = 29;
 
-/// Base-fee sharing percentage every non-genesis Etna block carries in `extraData[0]`
-/// (SPEC CONS-3.2-5): the beneficiary receives all base fees and the treasury none.
+/// Base-fee sharing percentage every non-genesis Etna block carries in `extraData[0]`, fixed by
+/// the Etna header rules: the beneficiary receives all base fees and the treasury none.
 pub const ETNA_BASEFEE_SHARING_PCTG: u8 = 100;
 
 /// Fields of a non-genesis Etna block's 29-byte `extraData`.

@@ -13,7 +13,8 @@ use reth_ethereum_primitives::TransactionSigned;
 /// the header, so it is rejected as an invalid parameter before any job starts.
 pub const ETNA_MIN_MAX_BLOCK_BYTES: u64 = 1_024;
 
-/// Consensus bound on an Etna executionBlock's length, in bytes (SPEC CONS-3.4-13).
+/// Consensus bound on an Etna executionBlock's length, in bytes, which lets every block fit in
+/// one blob on its own.
 ///
 /// The driver passes it to every Etna job as `maxBlockBytes`; the transaction pool uses it to
 /// refuse transactions no Etna block can carry.

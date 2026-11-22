@@ -246,7 +246,7 @@ where
             }
             let min_base_fee_to_clamp = min_base_fee_to_clamp(self.chain_spec.as_ref());
             // The target follows this header's fork, so the first Etna block already uses 4 s
-            // although its parent and grandparent are Unzen blocks (SPEC ENC-A-10a).
+            // although its parent and grandparent are Unzen blocks.
             let block_time_target =
                 block_time_target(self.chain_spec.is_etna_active(header.timestamp()));
 

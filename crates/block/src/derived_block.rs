@@ -66,8 +66,8 @@ fn attributes_from_derived_block(
 /// Invalid non-anchor transactions are dropped. Before Etna zk gas exhaustion stops the list; at
 /// Etna the overflowing transaction is left out and the rest still runs, as in the payload
 /// builder's given-list mode. At Etna this suits candidate lists such as a forced-inclusion
-/// singleton build, but it does not validate a committed Etna block (SPEC PROOF-6.2-22/23): use
-/// reth's `Executor::execute` for that.
+/// singleton build, but it does not validate a committed Etna block, whose listed transactions
+/// all execute without filtering or truncation: use reth's `Executor::execute` for that.
 pub fn execute_derived_block<DB>(
     evm_config: &TaikoEvmConfig,
     parent_header: &SealedHeader,
@@ -298,8 +298,8 @@ mod tests {
             )
         };
         // A committed Etna block executes every listed transaction and must not filter or
-        // truncate (PROOF-6.2-22/23), through the trait executor and reth's `Executor::execute`
-        // alike. The zero address is funded so only the signer check rejects that case.
+        // truncate, through the trait executor and reth's `Executor::execute` alike. The zero
+        // address is funded so only the signer check rejects that case.
         let accounts = [(TEST_CALLER, 0), (Address::ZERO, 0)];
         let execute_committed = |block: &RecoveredBlock<Block>| {
             let mut state = State::builder().with_database(db_with_contracts(&accounts)).build();

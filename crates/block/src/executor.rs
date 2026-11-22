@@ -595,7 +595,7 @@ where
         let (tx_env, tx) = tx.into_parts();
 
         // Prover inputs encode an unrecoverable signer as the zero address. An Etna block is a
-        // committed list (SPEC PROOF-6.2-22/23), so such a transaction, like a blob transaction
+        // committed list that executes in full, so such a transaction, like a blob transaction
         // that consensus rejects on import, fails it on every entry point; candidate-list
         // derivation filters both before execution. Prover builds (including node tests) also
         // reject an Etna `eth_simulateV1` call without `from`, which reth fills with the zero
@@ -739,10 +739,10 @@ where
     /// Executes all transactions in a block, applying pre and post execution changes.
     ///
     /// Before Etna, prover builds keep the legacy filtering here: invalid non-anchor transactions
-    /// are skipped and zk gas exhaustion stops the block. An Etna block is a committed list (SPEC
-    /// PROOF-6.2-22/23), so every listed transaction executes as on node import and any failure
-    /// fails the block. Candidate-list derivation at Etna, such as a forced-inclusion singleton
-    /// build, uses [`Self::execute_block_with_committed_transactions`].
+    /// are skipped and zk gas exhaustion stops the block. An Etna block is a committed list, so
+    /// every listed transaction executes as on node import and any failure fails the block.
+    /// Candidate-list derivation at Etna, such as a forced-inclusion singleton build, uses
+    /// [`Self::execute_block_with_committed_transactions`].
     #[cfg(feature = "prover")]
     fn execute_block(
         mut self,

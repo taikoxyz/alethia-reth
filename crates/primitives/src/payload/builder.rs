@@ -206,8 +206,8 @@ impl TaikoPayloadBuilderAttributes {
                 // fail signer recovery. Before Etna a list that cannot be decoded mines an empty
                 // block, as Unzen derivation requires. An Etna list comes straight from the
                 // consensus app, and an empty Etna build is the evidence that lets a
-                // forced-inclusion transaction be skipped (SPEC FI-7.2-8), so a list that cannot
-                // be decoded is an invalid parameter there instead.
+                // forced-inclusion transaction be skipped, so a list that cannot be decoded is an
+                // invalid parameter there instead.
                 let txs = match decode_recovered_transactions(tx_list_bytes) {
                     Ok(txs) => txs,
                     Err(_) if is_etna_active => {

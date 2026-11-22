@@ -307,7 +307,7 @@ fn etna_pool_refuses_and_drops_transactions_no_etna_block_can_carry() -> eyre::R
 /// Governance recovery from a checkpoint c whose EL already persisted blocks above c: the new
 /// generation's first block is a sibling of the old c + 1, reached by an ordinary forkchoice
 /// update, since the driver keeps `--engine.allow-unwind-canonical-header` disabled. The old
-/// blocks must leave the disk and the new chain must keep growing (SPEC RECOV-8.4-8).
+/// blocks must leave the disk, so the EL state matches c, and the new chain must keep growing.
 #[test]
 fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Result<()> {
     run_live_test(async {
@@ -565,7 +565,7 @@ fn failed_and_singleton_block_start_calls_keep_blocks_valid() -> eyre::Result<()
 
 /// The first Etna block takes EIP-4396's 4 s target although its parent and grandparent are Unzen
 /// blocks, while the last Unzen block keeps 2 s, and `engine_newPayloadV4` rejects the other
-/// target's result for each (SPEC ENC-A-10a vector 10a.m; CONS-3.2-8 vector 8.g).
+/// target's result for each, as the spec's base-fee vectors for a switching chain require.
 #[test]
 fn first_etna_block_base_fee_uses_the_etna_target_at_import() -> eyre::Result<()> {
     run_live_test(async {

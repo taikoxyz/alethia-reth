@@ -692,10 +692,11 @@ fn assert_base_fee_is(
     }
 }
 
-/// `rules/vectors/A.md` ENC-A-10a at taiko-mono 994960561, through header validation of an Etna
-/// block: the parent's gasLimit is 30,000,000 and the chain id 167000 unless a row says otherwise.
+/// The EIP-4396 formula vectors in taiko-mono's `rules/vectors/A.md` at `178d7a7a6`, through
+/// header validation of an Etna block: the parent's gasLimit is 30,000,000 and the chain id 167000
+/// unless a row says otherwise.
 #[test]
-fn enc_a_10a_vectors_hold_at_header_validation() {
+fn eip4396_formula_vectors_hold_at_header_validation() {
     use crate::eip4396::{
         ETNA_BLOCK_TIME_TARGET, MAINNET_MIN_BASE_FEE, SHASTA_BLOCK_TIME_TARGET,
         calculate_next_block_eip4396_base_fee,
@@ -788,10 +789,10 @@ fn enc_a_10a_vectors_hold_at_header_validation() {
     );
 }
 
-/// `rules/vectors/3.2.md` CONS-3.2-8 at taiko-mono 994960561 (chain id 167000). 8.b is the
-/// ENC-A-10a accept rows above.
+/// The `baseFeePerGas` header vectors in taiko-mono's `rules/vectors/3.2.md` at `178d7a7a6`
+/// (chain id 167000). Row 8.b is the formula vectors' accept rows above.
 #[test]
-fn cons_3_2_8_vectors_hold_at_header_validation() {
+fn base_fee_field_vectors_hold_at_header_validation() {
     use crate::eip4396::{
         ETNA_BLOCK_TIME_TARGET, MAINNET_MIN_BASE_FEE, calculate_next_block_eip4396_base_fee,
     };
@@ -832,7 +833,7 @@ fn cons_3_2_8_vectors_hold_at_header_validation() {
 }
 
 /// The target follows the block being validated, not its parent: on the same Unzen parent, an
-/// Unzen child uses 2 s and the first Etna child 4 s (SPEC ENC-A-10a, CONS-3.2-8).
+/// Unzen child uses 2 s and the first Etna child 4 s.
 #[test]
 fn base_fee_target_switches_at_the_first_etna_block() {
     let switching = base_fee_spec(1_000, true);

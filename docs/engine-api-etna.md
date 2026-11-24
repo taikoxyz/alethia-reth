@@ -7,14 +7,14 @@ The Engine API method change is not gated on Etna: it applies to Unzen traffic a
 runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
 Etna block production and validation follow taiko-mono's
-[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks),
-its [section 4](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)
+[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks),
+its [section 4](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)
 on the staking contract that every Etna block calls, its
-[section 11](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#11-parameters)
+[section 11](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#11-parameters)
 on parameters, its
-[appendix A](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#appendix-a-encodings)
-and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/ANCHORLESS.md),
-as of `e62941a242747923b3257d00200245e4213f9b25`, the head of docs PR
+[appendix A](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#appendix-a-encodings)
+and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/ANCHORLESS.md),
+as of `178d7a7a66b14305c2f6467ae77163f93dd677cf`, the head of docs PR
 [taikoxyz/taiko-mono#22425](https://github.com/taikoxyz/taiko-mono/pull/22425), which is not merged
 yet.
 The older proposal-based `Derivation.md` describes the pre-Etna flow. Activation
@@ -33,7 +33,7 @@ transaction and adds one block-start call:
 - EIP-2935 and EIP-4788 run in every block, including empty ones, and their writes enter the state
   root and the execution witness.
 - After those two writes and before its first transaction, every non-genesis Etna block calls the
-  chain's `EtnaStaking` proxy once, with the generation from the block's own `extraData`
+  chain's `EtnaStaking` proxy once, with arguments from the block's own `extraData`
   ([block-start staking call](#block-start-staking-call)). A failed call leaves no state behind and
   never makes the block invalid.
 - Canonical imports execute the complete committed body. Derivation filtering never allows an
@@ -41,46 +41,49 @@ transaction and adds one block-start call:
 
 ### Header commitments
 
-| Field                          | Non-genesis Etna rule                                                                                  |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `parentBeaconBlockRoot`        | Nonzero. It is the execution state root of the L1 block at the final `anchorBlockNumber`.              |
-| `extraData`                    | Exactly 13 bytes: `[100(1) \| generation(6) \| anchorBlockNumber(6)]` under the Etna production rules. |
-| `withdrawalsRoot`              | The empty withdrawals root; the body carries no withdrawals.                                           |
-| `blobGasUsed`, `excessBlobGas` | `0`.                                                                                                   |
-| `requestsHash`                 | `sha256("")`.                                                                                          |
-| `difficulty`                   | The block's zk gas (`0` for an empty block).                                                           |
+| Field                          | Non-genesis Etna rule                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `parentBeaconBlockRoot`        | Nonzero. It is the execution state root of the L1 block at the final `anchorBlockNumber`.                                |
+| `extraData`                    | Exactly 29 bytes: `[100(1) \| generation(6) \| anchorBlockNumber(6) \| missBitmap(16)]` under the Etna production rules. |
+| `withdrawalsRoot`              | The empty withdrawals root; the body carries no withdrawals.                                                             |
+| `blobGasUsed`, `excessBlobGas` | `0`.                                                                                                                     |
+| `requestsHash`                 | `sha256("")`.                                                                                                            |
+| `difficulty`                   | The block's zk gas (`0` for an empty block).                                                                             |
 
 Of the root and `extraData`, the execution layer checks only that the root is nonzero, that
-`extraData` has 13 bytes and that its byte 0 is 100 (below). It decodes `generation` only to build
-the [block-start call](#block-start-staking-call)'s calldata and never validates its value. It does
-not fetch L1 data, decode the anchor number, compare anchors with the parent's, or check the
-generation. The Etna client (the taiko-client-rs ABCI application) derives and checks every field
-under SPEC.md sections 3.2–3.4, and prover guests authenticate the anchor against L1 headers. The
-root is the L1 anchor's execution state root, not its block hash. `l1Origin` is driver bookkeeping;
-the Etna client records the anchor's number and hash there.
+`extraData` has 29 bytes and that its byte 0 is 100 (below). It decodes `generation` and
+`missBitmap` only to build the [block-start call](#block-start-staking-call)'s calldata and never
+validates their values. It does not fetch L1 data, decode the anchor number, compare anchors with
+the parent's, check the generation, or recompute `missBitmap`. The Etna client (the taiko-client-rs
+ABCI application) computes `missBitmap` and derives and checks every field under SPEC.md sections
+3.2–3.4, and prover guests authenticate the anchor against L1 headers. The root is the L1 anchor's
+execution state root, not its block hash. `l1Origin` is driver bookkeeping; the Etna client records
+the anchor's number and hash there.
 
 Offsets are zero-based and inclusive: `basefeeSharingPctg` is byte 0, `generation` bytes 1 through
-6, and `anchorBlockNumber` bytes 7 through 12. No bytes follow. SPEC.md section 3.2 fixes byte 0 at
-100, so the beneficiary receives every base fee; the EL applies byte 0 as the base-fee share and
-rejects any other value in non-genesis Etna headers and in Etna FCUv3 attributes. Both `uint48`
-fields are big-endian and must fit without truncation, and `anchorBlockNumber` is the final value
-after validation and inheritance. Shasta and Unzen headers keep the 7-byte
+6, `anchorBlockNumber` bytes 7 through 12, and `missBitmap` bytes 13 through 28 (the Rust range
+`13..29`). SPEC.md section 3.2 fixes byte 0 at 100, so the beneficiary receives every base fee; the
+EL applies byte 0 as the base-fee share and rejects any other value in non-genesis Etna headers and
+in Etna FCUv3 attributes. Both `uint48` fields are big-endian and must fit without truncation, and
+`anchorBlockNumber` is the final value after validation and inheritance. `missBitmap` is a
+big-endian `uint128` in which seat s is bit s: seat 0 is the low bit of byte 28, the last byte, and
+seat 127 the high bit of byte 13. Shasta and Unzen headers keep the 7-byte
 `[basefeeSharingPctg | proposalId]` layout. The L2 genesis header keeps a zero root, is exempt from
 the `extraData` and body rules, and performs no EIP-4788 call and no block-start staking call.
 
 ### Block-start staking call
 
-In every non-genesis Etna block, the EL calls `onBlockStart(uint48 generation)` on the chain's
-`EtnaStaking` proxy once, after the EIP-2935 and then the EIP-4788 write and before the first
-transaction. The call stores the generation, the upper bound for double-sign evidence, and the
-candidate snapshot
-([SPEC.md section 3.2](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#32-block-header)
-and [section 4](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)).
+In every non-genesis Etna block, the EL calls `onBlockStart(uint48 generation, uint128 missBitmap)`
+on the chain's `EtnaStaking` proxy once, after the EIP-2935 and then the EIP-4788 write and before
+the first transaction. The call counts the missed signatures that `missBitmap` reports, applies
+the penalties they reach, and stores the candidate snapshot
+([SPEC.md section 3.2](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#32-block-header)
+and [section 4](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)).
 
 - **Caller and calldata.** The caller is the system address
-  `0xfffffffffffffffffffffffffffffffffffffffe`. The calldata is 36 bytes: the selector `0xaa28c32e`,
-  then `generation` from the block's own `extraData` as one 32-byte big-endian ABI word with zero
-  high bits.
+  `0xfffffffffffffffffffffffffffffffffffffffe`. The calldata is 68 bytes: the selector `0xea987592`,
+  then `generation` and `missBitmap` from the block's own `extraData`, each as one 32-byte
+  big-endian ABI word with zero high bits.
 - **Gas and fees.** The call's frame gets exactly 30,000,000 gas. No intrinsic gas is charged, the
   EIP-7825 transaction gas cap does not apply, no fee is paid, and the caller's nonce and balance
   never change.
@@ -104,7 +107,7 @@ and [section 4](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b325
   block executor's pre-execution step, which makes it once even when that step runs twice.
   Pre-Etna blocks and the L2 genesis make no call.
 
-[SPEC.md section 11](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#11-parameters)
+[SPEC.md section 11](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#11-parameters)
 requires the proxy address to be built in for the L2 chain id and to equal the `staking` address
 that the config hash commits. The EL reads it from neither L1 nor the genesis. The spec gives no
 formula: the `getConstantAddress` rule below is this version's, and follows the convention
@@ -123,9 +126,9 @@ call is a no-op. `alethia-reth node` refuses to start when its final chain spec,
 release that schedules Etna on either builds that chain's address in. Drivers read the address with
 [`taikoAuth_etnaStakingAddress`](#staking-address).
 
-This version makes the call and requires the 13-byte layout in every Etna block, which is ruleset 0
+This version makes the call and requires the 29-byte layout in every Etna block, which is ruleset 0
 of
-[SPEC.md section 10.1](https://github.com/taikoxyz/taiko-mono/blob/e62941a242747923b3257d00200245e4213f9b25/packages/protocol/docs/etna/SPEC.md#101-protocol-upgrades).
+[SPEC.md section 10.1](https://github.com/taikoxyz/taiko-mono/blob/178d7a7a66b14305c2f6467ae77163f93dd677cf/packages/protocol/docs/etna/SPEC.md#101-protocol-upgrades).
 The EL does not read the rules schedule, so a later ruleset that changes the call or the layout
 needs its own way for the EL to select its blocks.
 
@@ -166,7 +169,7 @@ address rule is this version's ([address table](#block-start-staking-call)).
 | Base-fee bounds                          | 5,000,000 wei (10,000,000 wei on mainnet) to 1,000,000,000 wei                                                                                                                                                                                                                 |
 | Block-start call frame gas               | 30,000,000, with no intrinsic gas, EIP-7825 cap or fee                                                                                                                                                                                                                         |
 | Block-start call caller                  | `0xfffffffffffffffffffffffffffffffffffffffe`                                                                                                                                                                                                                                   |
-| Block-start call selector and calldata   | `0xaa28c32e` (`onBlockStart(uint48)`), then `generation` as one 32-byte word: 36 bytes                                                                                                                                                                                         |
+| Block-start call selector and calldata   | `0xea987592` (`onBlockStart(uint48,uint128)`), then `generation` and `missBitmap` as two 32-byte words: 68 bytes                                                                                                                                                               |
 | `EtnaStaking` proxy address              | `getConstantAddress(chainId, 10003)`, none for mainnet and Taiko Hoodi ([address table](#block-start-staking-call))                                                                                                                                                            |
 
 The opcode and precompile multipliers, spawn estimates, intrinsic charge and block limit at
@@ -221,20 +224,20 @@ and no `parentBeaconBlockRoot`, although FCUv3 now carries a zero root. Both dri
 fingerprint with stored origins to detect blocks they already inserted, so a changed fingerprint
 would re-insert blocks preconfirmed before the upgrade. An Etna job's fingerprint is the same
 preimage with version byte 2 plus its nonzero `parentBeaconBlockRoot`, hashed between the withdrawals
-and the transaction-list hash; `extraData` is hashed for every job, so an Etna job's generation and
-anchor number are part of its fingerprint (`payload_id_pins_every_preimage_field` pins one). After
-`extraData`, an Etna job hashes `0x01 ‖ u64_be(maxBlockBytes)` (big-endian, eight bytes), so jobs
-with different byte bounds get distinct IDs. Pre-Etna jobs carry no byte bound, so their IDs are
-unchanged.
+and the transaction-list hash; `extraData` is hashed for every job, so an Etna job's `missBitmap` is
+part of its fingerprint, and Etna payload IDs differ from those of the earlier 13-byte layout
+(`payload_id_pins_every_preimage_field` pins one). After `extraData`, an Etna job
+hashes `0x01 ‖ u64_be(maxBlockBytes)` (big-endian, eight bytes), so jobs with different byte
+bounds get distinct IDs. Pre-Etna jobs carry no byte bound, so their IDs are unchanged.
 alethia-reth stamps every payload ID this way, so its FCUv3 IDs for Unzen jobs keep their V2-era
 values. taiko-client-rs computes the fingerprint with alethia-reth's `payload_id_taiko`, so it must
 move to this alethia-reth version together with its FCUv3 switch: earlier versions also hash a zero
 root, which changes every Unzen fingerprint. taiko-geth's FCUv3 IDs carry version byte 3.
 
-On a chain that schedules Etna, this version also refuses to start without a built-in
-`EtnaStaking` address ([block-start staking call](#block-start-staking-call)), and it rejects every
-Etna `extraData` that is not exactly 13 bytes, in headers and in FCUv3 attributes alike, so a driver
-built against the 29-byte layout with a miss bitmap moves back to 13 bytes together with it.
+On a chain that schedules Etna, this version also rejects the 13-byte Etna `extraData` of earlier
+versions, in headers and in FCUv3 attributes alike, and refuses to start without a built-in
+`EtnaStaking` address ([block-start staking call](#block-start-staking-call)), so Etna drivers move
+to the 29-byte layout together with it.
 
 ### V5 normalization and V4 import
 
@@ -274,7 +277,7 @@ internal payload ranking still uses actual fees.
 | Malformed V4 arguments or unsupported payload properties                                                                                            | JSON-RPC `-32602`                                                                                                                                                               |
 | A nonzero root before Etna                                                                                                                          | JSON-RPC `-32602`                                                                                                                                                               |
 | FCUv3 attributes whose `blockMetadata.timestamp` differs from `payloadAttributes.timestamp`                                                         | JSON-RPC `-32602`                                                                                                                                                               |
-| Invalid Etna FCUv3 attributes, such as a zero root, a non-13-byte `extraData`, an `extraData[0]` other than 100, or a `txList` that does not decode | JSON-RPC `-32602` (current)                                                                                                                                                     |
+| Invalid Etna FCUv3 attributes, such as a zero root, a non-29-byte `extraData`, an `extraData[0]` other than 100, or a `txList` that does not decode | JSON-RPC `-32602` (current)                                                                                                                                                     |
 | Etna FCUv3 attributes without `maxBlockBytes` or with `maxBlockBytes` below 1,024                                                                   | JSON-RPC `-32602`                                                                                                                                                               |
 | FCUv3 attributes with `maxBlockBytes` before Etna                                                                                                   | JSON-RPC `-32602`                                                                                                                                                               |
 | An Etna payload with a zero root, withdrawals, blob gas, or nonempty side arrays                                                                    | JSON-RPC `-32602` (current)                                                                                                                                                     |
@@ -304,9 +307,9 @@ not reachable with valid attributes.
 
 Every FCUv3 request with attributes sends `withdrawals: []`, a `parentBeaconBlockRoot` (zero for
 Unzen and the nonzero anchor state root for Etna), and a `blockMetadata.timestamp` equal to
-`payloadAttributes.timestamp`. For an Etna target, also send no `anchorTransaction` and exactly 13
-bytes of `blockMetadata.extraData`: the block's own header value, from which the block-start call
-takes its argument. That field keeps its Base64 encoding; do not send hex.
+`payloadAttributes.timestamp`. For an Etna target, also send no `anchorTransaction` and exactly 29
+bytes of `blockMetadata.extraData`: the block's own header value, `missBitmap` included, from which
+the block-start call takes its arguments. That field keeps its Base64 encoding; do not send hex.
 
 Etna attributes carry one additional top-level member next to `anchorTransaction`:
 
@@ -349,7 +352,7 @@ receipt, or fee behind. An ordinary EVM revert or out-of-gas is included and cha
 The driver owns the forced-inclusion queue and sends `[FI, ordinary…]` as a given list; the EL
 applies the ordinary given-list rules. Only a completed empty build of `[FI]` alone on the same
 parent and attributes is skip evidence; an omission from a longer list or an RPC failure is not.
-The same attributes include the block's own 13-byte `extraData`, so the singleton build makes the
+The same attributes include the block's own 29-byte `extraData`, so the singleton build makes the
 block-start call exactly as the block does, after the two system writes.
 
 #### Byte limit

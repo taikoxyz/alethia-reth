@@ -31,17 +31,17 @@ pub const ENGINE_CANNOT_BUILD_ON_PARENT_CODE: i32 = -38_100;
 /// JSON-RPC error message paired with [`ENGINE_CANNOT_BUILD_ON_PARENT_CODE`].
 pub const ENGINE_CANNOT_BUILD_ON_PARENT_MESSAGE: &str = "cannot build on parent";
 
-/// Selector of `onBlockStart(uint48)`, `bytes4(keccak256("onBlockStart(uint48)"))`.
+/// Selector of `onBlockStart(uint48,uint128)`, `bytes4(keccak256("onBlockStart(uint48,uint128)"))`.
 ///
 /// The execution layer calls this function on the `EtnaStaking` contract once at the start of every
 /// non-genesis Etna block, after the EIP-2935 and EIP-4788 system writes and before the first
 /// transaction.
-pub const ETNA_BLOCK_START_SELECTOR: [u8; 4] = [0xaa, 0x28, 0xc3, 0x2e];
+pub const ETNA_BLOCK_START_SELECTOR: [u8; 4] = [0xea, 0x98, 0x75, 0x92];
 
 /// Length in bytes of the block-start call's calldata: [`ETNA_BLOCK_START_SELECTOR`], then
-/// `generation` from the block's own `extraData` as one 32-byte big-endian ABI word with zero high
-/// bits. No other bytes follow.
-pub const ETNA_BLOCK_START_CALLDATA_LEN: usize = 36;
+/// `generation` and `missBitmap` from the block's own `extraData`, each one 32-byte big-endian ABI
+/// word with zero high bits. No other bytes follow.
+pub const ETNA_BLOCK_START_CALLDATA_LEN: usize = 68;
 
 /// Gas available to the block-start call's frame.
 ///
@@ -85,8 +85,8 @@ pub fn validate_etna_root(
 /// Error returned when an activated non-genesis block breaks the Etna extra data layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidEtnaExtraData {
-    /// The extra data is not the 13-byte `[basefeeSharingPctg | generation | anchorBlockNumber]`
-    /// layout.
+    /// The extra data is not the 29-byte
+    /// `[basefeeSharingPctg | generation | anchorBlockNumber | missBitmap]` layout.
     Length {
         /// Height of the block whose extra data has the wrong length.
         block_number: u64,
@@ -109,7 +109,8 @@ impl fmt::Display for InvalidEtnaExtraData {
             Self::Length { block_number, len } => write!(
                 f,
                 "Etna block {block_number} requires {ETNA_EXTRA_DATA_LEN}-byte extraData \
-                 [basefeeSharingPctg | generation | anchorBlockNumber], got {len} bytes"
+                 [basefeeSharingPctg | generation | anchorBlockNumber | missBitmap], \
+                 got {len} bytes"
             ),
             Self::BasefeeSharingPctg { block_number, pctg } => write!(
                 f,
@@ -122,9 +123,9 @@ impl fmt::Display for InvalidEtnaExtraData {
 
 impl core::error::Error for InvalidEtnaExtraData {}
 
-/// Requires the 13-byte Etna extra data layout
-/// `[basefeeSharingPctg | generation | anchorBlockNumber]` after Etna, except for the genesis
-/// block.
+/// Requires the 29-byte Etna extra data layout
+/// `[basefeeSharingPctg | generation | anchorBlockNumber | missBitmap]` after Etna, except for the
+/// genesis block.
 ///
 /// Byte 0, the base-fee sharing percentage, is fixed at [`ETNA_BASEFEE_SHARING_PCTG`] (100), so the
 /// beneficiary receives every base fee. The execution layer is the only component that applies the
@@ -142,9 +143,9 @@ pub fn validate_etna_extra_data(
 }
 
 /// Checks the two parts of the Etna extra data layout the execution layer validates: the length is
-/// [`ETNA_EXTRA_DATA_LEN`] (13) and byte 0 is [`ETNA_BASEFEE_SHARING_PCTG`] (100).
+/// [`ETNA_EXTRA_DATA_LEN`] (29) and byte 0 is [`ETNA_BASEFEE_SHARING_PCTG`] (100).
 ///
-/// Nothing else is checked: `generation` and `anchorBlockNumber` may hold any value.
+/// Nothing else is checked: `generation`, `anchorBlockNumber` and `missBitmap` may hold any value.
 /// `block_number` only labels the returned error. Header validation and
 /// [`crate::extra_data::EtnaExtraData::decode`] share this check, so they accept the same bytes.
 pub(crate) fn check_etna_extra_data_layout(
@@ -311,7 +312,7 @@ mod tests {
         assert!(max_txs_payload_len(600, u64::MAX).is_some());
     }
 
-    /// Returns an Etna-shaped EL header with a 13-byte extraData and Cancun-era fields set.
+    /// Returns an Etna-shaped EL header with a 29-byte extraData and Cancun-era fields set.
     fn sample_header() -> Header {
         Header {
             beneficiary: Address::with_last_byte(0x11),
@@ -319,7 +320,7 @@ mod tests {
             gas_limit: 45_000_000,
             gas_used: 21_000,
             timestamp: 1_700_000_000,
-            extra_data: Bytes::from(vec![0xab; 13]),
+            extra_data: Bytes::from(vec![0xab; 29]),
             base_fee_per_gas: Some(10_000_000),
             withdrawals_root: Some(B256::with_last_byte(1)),
             blob_gas_used: Some(0),
@@ -433,19 +434,19 @@ mod tests {
     fn extra_data_requirement_applies_only_to_non_genesis_etna_blocks() {
         assert!(validate_etna_extra_data(false, 1, &[0; 7]).is_ok());
         assert!(validate_etna_extra_data(true, 0, &[]).is_ok());
-        let mut extra_data = [0; 13];
+        let mut extra_data = [0; 29];
         extra_data[0] = 100;
         assert!(validate_etna_extra_data(true, 1, &extra_data).is_ok());
-        for len in [0, 7, 12, 14, 29, 32] {
+        for len in [0, 7, 12, 13, 14, 28, 30, 32] {
             assert_eq!(
                 validate_etna_extra_data(true, 1, &vec![100; len]),
                 Err(InvalidEtnaExtraData::Length { block_number: 1, len })
             );
         }
         assert_eq!(
-            InvalidEtnaExtraData::Length { block_number: 1, len: 29 }.to_string(),
-            "Etna block 1 requires 13-byte extraData \
-             [basefeeSharingPctg | generation | anchorBlockNumber], got 29 bytes"
+            InvalidEtnaExtraData::Length { block_number: 1, len: 13 }.to_string(),
+            "Etna block 1 requires 29-byte extraData \
+             [basefeeSharingPctg | generation | anchorBlockNumber | missBitmap], got 13 bytes"
         );
         for pctg in [0, 99, 101, 255] {
             extra_data[0] = pctg;

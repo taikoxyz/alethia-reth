@@ -627,7 +627,10 @@ mod tests {
                 timestamp: U256::from(timestamp),
                 gas_limit: 30_000_000,
                 extra_data: if timestamp >= 100 {
-                    Bytes::from(vec![100, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 1])
+                    Bytes::from(vec![
+                        100, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0,
+                    ])
                 } else {
                     Bytes::from(vec![0, 0, 0, 0, 0, 0, 9])
                 },

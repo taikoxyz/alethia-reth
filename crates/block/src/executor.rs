@@ -422,13 +422,13 @@ where
     R: ReceiptBuilder<Transaction: Transaction + Encodable2718, Receipt: TxReceipt<Log = Log>>,
     <R::Transaction as TransactionEnvelope>::TxType: Send + 'static,
 {
-    /// Makes the Etna block-start call: `onBlockStart(generation)` on the spec's `EtnaStaking`
-    /// proxy, from [`ETNA_SYSTEM_CALLER`], with the generation from this block's own `extraData`
-    /// and exactly [`ETNA_BLOCK_START_CALL_GAS`] gas for the call's frame.
+    /// Makes the Etna block-start call: `onBlockStart(generation, missBitmap)` on the spec's
+    /// `EtnaStaking` proxy, from [`ETNA_SYSTEM_CALLER`], with both arguments from this block's own
+    /// `extraData` and exactly [`ETNA_BLOCK_START_CALL_GAS`] gas for the call's frame.
     ///
-    /// The call stores the generation and the candidate snapshot. Like the EIP-2935 and EIP-4788
-    /// writes it is block-start system processing: it changes neither the block's gas used, its
-    /// receipts nor its zk gas, and its logs reach no receipt.
+    /// The call counts the missed signatures and stores the candidate snapshot. Like the EIP-2935
+    /// and EIP-4788 writes it is block-start system processing: it changes neither the block's
+    /// gas used, its receipts nor its zk gas, and its logs reach no receipt.
     ///
     /// Its state is committed only when it succeeds. A revert or an exceptional halt, running out
     /// of gas included, drops the state and keeps the block valid. A call to an address without
@@ -982,7 +982,7 @@ mod test {
     }
 
     #[test]
-    fn etna_block_start_call_follows_both_system_writes_with_its_own_calldata() {
+    fn etna_block_start_call_follows_both_system_writes_with_its_own_arguments() {
         let staking = etna_test_staking_address();
         let parent_hash = B256::repeat_byte(0x77);
         let mut db = db_with_contracts(&[]);
@@ -997,6 +997,7 @@ mod test {
                 &[opcode::CALLDATASIZE],
                 &[opcode::PUSH1, 0, opcode::CALLDATALOAD, opcode::PUSH1, 224, opcode::SHR],
                 &[opcode::PUSH1, 4, opcode::CALLDATALOAD],
+                &[opcode::PUSH1, 36, opcode::CALLDATALOAD],
                 &call_with_word(&[opcode::TIMESTAMP], BEACON_ROOTS_ADDRESS),
                 &[opcode::PUSH1, 32, opcode::MLOAD],
                 &call_with_word(
@@ -1009,15 +1010,14 @@ mod test {
         let mut ctx = etna_execution_ctx(BLOCK_START_ROOT);
         ctx.parent_hash = parent_hash;
         ctx.extra_data =
-            Bytes::copy_from_slice(&EtnaExtraData::new(7, 258).expect("fields fit").encode());
+            Bytes::copy_from_slice(&EtnaExtraData::new(1, 258, 5).expect("fields fit").encode());
 
         let (mut state, _, _) = run_etna_block(db, ctx, &[]);
 
-        // Slot 0 is the whole 30,000,000 less the first GAS opcode's own 2. Slot 3 shows that no
-        // bytes follow the generation word. Slots 6 and 8 are the success flags of reading back
-        // the beacon root and the parent hash this block's two system writes stored, so both
-        // writes ran before the call.
-        let recorded: Vec<U256> = (0..10u64)
+        // Slot 0 is the whole 30,000,000 less the first GAS opcode's own 2. Slots 7 and 9 are the
+        // success flags of reading back the beacon root and the parent hash this block's two
+        // system writes stored, so both writes ran before the call.
+        let recorded: Vec<U256> = (0..11u64)
             .map(|slot| state.storage(staking, U256::from(slot)).expect("db read"))
             .collect();
         assert_eq!(
@@ -1026,9 +1026,10 @@ mod test {
                 U256::from(29_999_998u64),
                 address_word(ETNA_SYSTEM_CALLER),
                 address_word(ETNA_SYSTEM_CALLER),
-                U256::from(36u64),
-                U256::from(0xaa28_c32eu64),
-                U256::from(7u64),
+                U256::from(68u64),
+                U256::from(0xea98_7592u64),
+                U256::from(1u64),
+                U256::from(5u64),
                 U256::from(1u64),
                 U256::from_be_bytes(BLOCK_START_ROOT.0),
                 U256::from(1u64),
@@ -1378,8 +1379,8 @@ mod test {
             (Some(B256::ZERO), None, "beacon"),
             (Some(root), Some(Bytes::new()), "extraData"),
             (Some(root), Some(Bytes::from(vec![0; 7])), "extraData"),
-            (Some(root), Some(Bytes::from(vec![100; 29])), "extraData"),
-            (Some(root), Some(Bytes::from(vec![25; 13])), "basefeeSharingPctg"),
+            (Some(root), Some(Bytes::from(vec![100; 13])), "extraData"),
+            (Some(root), Some(Bytes::from(vec![25; 29])), "basefeeSharingPctg"),
         ];
         for (parent_beacon_block_root, extra_data, expected) in cases {
             let mut state = State::builder().with_database(db_with_contracts(&[])).build();

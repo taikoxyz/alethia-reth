@@ -86,11 +86,11 @@ fn cross_fork_lifecycle_checks_inputs_traces_and_reorgs() -> eyre::Result<()> {
         let status = v4(payload).await?;
         assert!(status.status.is_invalid(), "{status:?}");
         assert!(format!("{status:?}").contains("zk gas header difficulty mismatch"), "{status:?}");
-        // A Shasta-shaped extraData and one with 16 bytes after the anchor block number are
-        // INVALID.
-        let mut with_tail = activation.block.extra_data.to_vec();
-        with_tail.resize(with_tail.len() + 16, 0);
-        for extra_data in [Bytes::from_static(&[0; 7]), Bytes::from(with_tail)] {
+        // A Shasta-shaped extraData and the old 13-byte layout without a miss bitmap are INVALID.
+        for extra_data in [
+            Bytes::from_static(&[0; 7]),
+            Bytes::from_static(&[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+        ] {
             let mut short = activation.block.clone().into_block();
             short.header.extra_data = extra_data;
             let mut payload = activation.payload.clone();
@@ -389,22 +389,21 @@ fn reorg_below_the_persisted_tip_unwinds_the_disk_and_builds_on_c() -> eyre::Res
     })
 }
 
-/// Attributes of the first Etna block in the block-start call tests: one plain transaction and
-/// generation 1.
+/// Attributes of the first Etna block in the block-start call tests: one plain transaction,
+/// generation 1 and miss bitmap 5.
 fn first_staking_block_attributes() -> TaikoPayloadAttributes {
     use alloy_primitives::{Address, Bytes};
     let tx = signed_tx(0, false, Address::with_last_byte(0x21), Bytes::new());
-    with_generation(with_txs(fixture_attributes(100), &[tx]), 1)
+    with_extra(with_txs(fixture_attributes(100), &[tx]), 1, 5)
 }
 
-/// Every Etna block calls the staking mock with the generation of its own `extraData` as the only
-/// argument, and the mock records it, the calldata length and the block number on the builder and
-/// on the importer.
+/// Every Etna block calls the staking mock with the generation and miss bitmap of its own
+/// `extraData`, and the mock records them and the block number on the builder and on the importer.
 /// The call stays out of the receipts, the logs bloom, gasUsed, zk gas and the block's call
 /// traces, leaves the system caller without nonce or balance, and the auth RPC names the address
 /// it targets.
 #[test]
-fn etna_block_start_call_takes_its_generation_from_each_block() -> eyre::Result<()> {
+fn etna_block_start_call_takes_its_arguments_from_each_block() -> eyre::Result<()> {
     run_live_test(async {
         use alethia_reth_primitives::etna::ETNA_SYSTEM_CALLER;
         use alloy_primitives::{Address, Bloom, U256, address};
@@ -438,9 +437,8 @@ fn etna_block_start_call_takes_its_generation_from_each_block() -> eyre::Result<
             canonicalize(client, genesis, &block1).await?;
         }
         let one = U256::from(1);
-        let calldata_len = U256::from(36);
         for node in [&a, &b] {
-            assert_eq!(staking_mock_record(node), (one, calldata_len, one, one));
+            assert_eq!(staking_mock_record(node), (one, U256::from(5), one, one));
             let caller = node.provider.latest()?.basic_account(&ETNA_SYSTEM_CALLER)?;
             assert!(
                 caller.is_none_or(|caller| caller.nonce == 0 && caller.balance.is_zero()),
@@ -463,13 +461,13 @@ fn etna_block_start_call_takes_its_generation_from_each_block() -> eyre::Result<
             .await?;
         assert_eq!(traces.as_array().map(Vec::len), Some(1), "{traces}");
 
-        // An empty block still makes the call, with its own generation and outside gas and zk gas.
+        // An empty block still makes the call, with its own arguments and outside gas and zk gas.
         let block2 = build_on(
             &ca,
             spec.clone(),
             block1.block.header(),
             0,
-            with_generation(fixture_attributes(101), 2),
+            with_extra(fixture_attributes(101), 2, 6),
         )
         .await?;
         for client in [&ca, &cb] {
@@ -478,7 +476,7 @@ fn etna_block_start_call_takes_its_generation_from_each_block() -> eyre::Result<
         assert_eq!((block2.block.gas_used, block2.block.difficulty), (0, U256::ZERO));
         let two = U256::from(2);
         for node in [&a, &b] {
-            assert_eq!(staking_mock_record(node), (two, calldata_len, two, two));
+            assert_eq!(staking_mock_record(node), (two, U256::from(6), two, two));
         }
         Ok(())
     })
@@ -515,7 +513,7 @@ fn failed_and_singleton_block_start_calls_keep_blocks_valid() -> eyre::Result<()
             spec.clone(),
             block1.block.header(),
             0,
-            with_generation(fixture_attributes(101), 0xdead),
+            with_extra(fixture_attributes(101), 0xdead, 6),
         )
         .await?;
         // B imports the block VALID, and neither node keeps any of the call's writes.
@@ -524,7 +522,7 @@ fn failed_and_singleton_block_start_calls_keep_blocks_valid() -> eyre::Result<()
         }
         let one = U256::from(1);
         for node in [&a, &b] {
-            assert_eq!(staking_mock_record(node), (one, U256::from(36), one, one));
+            assert_eq!(staking_mock_record(node), (one, U256::from(5), one, one));
         }
         assert_execution_parity(&b, &block2).await?;
         // Only the call reaches the sink, after the mock's writes, so the sink in the witness shows
@@ -538,22 +536,23 @@ fn failed_and_singleton_block_start_calls_keep_blocks_valid() -> eyre::Result<()
         );
 
         // The given list's only transaction reuses block 1's nonce, so the builder drops it and
-        // each block holds only the call, whose generation then decides the state root.
+        // each block holds only the call, whose miss bitmap then decides the state root.
         let spent = signed_tx(0, false, Address::with_last_byte(0x21), Bytes::new());
-        let singleton = |generation| {
+        let singleton = |miss_bitmap| {
             build_on(
                 &ca,
                 spec.clone(),
                 block2.block.header(),
                 block1.block.timestamp,
-                with_generation(
+                with_extra(
                     with_txs(fixture_attributes(102), std::slice::from_ref(&spent)),
-                    generation,
+                    3,
+                    miss_bitmap,
                 ),
             )
         };
-        let first = singleton(3).await?;
-        let second = singleton(4).await?;
+        let first = singleton(5).await?;
+        let second = singleton(6).await?;
         for built in [&first, &second] {
             assert!(built.block.body().transactions.is_empty(), "{:?}", built.block.body());
         }

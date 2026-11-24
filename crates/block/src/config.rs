@@ -80,7 +80,7 @@ impl std::error::Error for MissingUnzenHeaderDifficulty {}
 /// Carries an Etna header's base-fee share into the EVM environment, so replay paths keep fee
 /// sharing.
 ///
-/// Only a 29-byte `extraData` sets it. This never fails: rejecting a malformed Etna header is left
+/// Only a 13-byte `extraData` sets it. This never fails: rejecting a malformed Etna header is left
 /// to consensus and the block executor.
 fn with_taiko_fee_context(
     block_env: BlockEnv,
@@ -508,11 +508,7 @@ mod tests {
             gas_limit: 30_000_000,
             beneficiary: Address::with_last_byte(0xBB),
             base_fee_per_gas: Some(10_000_000),
-            extra_data: vec![
-                percentage, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0,
-            ]
-            .into(),
+            extra_data: vec![percentage, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1].into(),
             ..Default::default()
         }
     }
@@ -526,12 +522,12 @@ mod tests {
             config_with_etna_at(100).evm_env(&header).unwrap().block_env.base_fee_share_pctg,
             None
         );
-        header.extra_data = vec![0; 29].into();
+        header.extra_data = vec![0; 13].into();
         assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, Some(0));
         // A malformed Etna header still builds an environment; consensus rejects it instead.
         header.extra_data = vec![25, 0, 0, 0, 0, 0, 1].into();
         assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, None);
-        header.extra_data = vec![25; 13].into();
+        header.extra_data = vec![25; 29].into();
         assert_eq!(config.evm_env(&header).unwrap().block_env.base_fee_share_pctg, None);
         let genesis_env = config.evm_env(config.chain_spec().genesis_header()).unwrap();
         assert_eq!(genesis_env.cfg_env.spec, TaikoSpecId::ETNA);

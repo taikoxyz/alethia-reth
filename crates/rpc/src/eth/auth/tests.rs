@@ -364,11 +364,7 @@ fn scans_past_etna_blocks_to_uncached_legacy_batches() {
     // extraData carries that batch ID. Block 3, the head, is an empty Etna block whose generation
     // bytes also equal that batch ID.
     let legacy_extra: Bytes = vec![0x2a, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06].into();
-    let etna_extra: Bytes = vec![
-        100, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
-    ]
-    .into();
+    let etna_extra: Bytes = vec![100, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0, 0, 0, 0, 0, 9].into();
     let blocks = [
         (1, legacy_extra.clone(), vec![build_test_anchor_tx(&input)]),
         (2, legacy_extra, vec![build_test_anchor_tx(&input)]),

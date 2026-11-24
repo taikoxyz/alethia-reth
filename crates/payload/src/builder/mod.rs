@@ -442,10 +442,7 @@ mod tests {
                 timestamp: U256::from(100),
                 mix_hash: B256::repeat_byte(0x55),
                 tx_list,
-                extra_data: Bytes::from_static(&[
-                    100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0,
-                ]),
+                extra_data: Bytes::from_static(&[100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
             },
             l1_origin: RpcL1Origin {
                 block_id: U256::ZERO,
@@ -469,7 +466,7 @@ mod tests {
         spec
     }
 
-    /// Normalizes an Etna pool job with a 45M gas limit, a 1 gwei base fee, 29-byte extraData and
+    /// Normalizes an Etna pool job with a 45M gas limit, a 1 gwei base fee, 13-byte extraData and
     /// a non-zero beacon root, and returns its parent with it.
     fn etna_job() -> (SealedHeader, TaikoPayloadBuilderAttributes) {
         let mut config = test_payload_config(None);

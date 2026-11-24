@@ -58,15 +58,15 @@ fn fixture_staking_address() -> Address {
 /// this body with them, and the mock-slot assertions ([`staking_mock_record`]) with checks of
 /// their storage.
 ///
-/// The mock reverts unless its caller is the system caller. It then stores the call's first
-/// argument (the generation) in slot 0, its second (the miss bitmap) in slot 1 and the block
-/// number in slot 2, calls the sink with all its gas, and emits one log. It reverts when the
-/// generation is `0xdead` and stops otherwise. The sink stores the block number in its slot 0.
+/// The mock reverts unless its caller is the system caller. It then stores the call's argument
+/// (the generation) in slot 0, the calldata length in slot 1 and the block number in slot 2,
+/// calls the sink with all its gas, and emits one log. It reverts when the generation is `0xdead`
+/// and stops otherwise. The sink stores the block number in its slot 0.
 pub fn fixture_staking_alloc() -> Vec<(Address, GenesisAccount)> {
     use reth_revm::state::bytecode::opcode;
     // Jump destinations: offsets of the two `JUMPDEST`s below.
     const AUTHORIZED: u8 = 0x1f;
-    const REVERTS: u8 = 0x64;
+    const REVERTS: u8 = 0x62;
     let staking = [
         &[
             opcode::CALLER,
@@ -90,12 +90,10 @@ pub fn fixture_staking_alloc() -> Vec<(Address, GenesisAccount)> {
             opcode::PUSH1,
             0,
             opcode::SSTORE, // slot 0 = generation
-            opcode::PUSH1,
-            36,
-            opcode::CALLDATALOAD, // the miss bitmap word
+            opcode::CALLDATASIZE,
             opcode::PUSH1,
             1,
-            opcode::SSTORE, // slot 1 = miss bitmap
+            opcode::SSTORE, // slot 1 = calldata length
             opcode::NUMBER,
             opcode::PUSH1,
             2,
@@ -202,10 +200,9 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
             timestamp: U256::from(timestamp),
             mix_hash: B256::ZERO,
             tx_list: Some(Bytes::from_static(&[0xc0])),
-            // Etna targets carry the full base-fee share, generation 0, L1 anchor block 1 and an
-            // empty miss bitmap.
+            // Etna targets carry the full base-fee share, generation 0 and L1 anchor block 1.
             extra_data: if timestamp >= 100 {
-                Bytes::copy_from_slice(&EtnaExtraData::new(0, 1, 0).unwrap().encode())
+                Bytes::copy_from_slice(&EtnaExtraData::new(0, 1).unwrap().encode())
             } else {
                 Bytes::from_static(&[0; 7])
             },
@@ -225,22 +222,20 @@ pub fn fixture_attributes(timestamp: u64) -> TaikoPayloadAttributes {
     }
 }
 
-/// Returns `attrs` with Etna `extraData` carrying `generation`, L1 anchor block 1 and
-/// `miss_bitmap`, the block-start call's two arguments.
-pub fn with_extra(
+/// Returns `attrs` with Etna `extraData` carrying `generation`, the block-start call's argument,
+/// and L1 anchor block 1.
+pub fn with_generation(
     mut attrs: TaikoPayloadAttributes,
     generation: u64,
-    miss_bitmap: u128,
 ) -> TaikoPayloadAttributes {
-    let extra_data =
-        EtnaExtraData::new(generation, 1, miss_bitmap).expect("generation fits 48 bits");
+    let extra_data = EtnaExtraData::new(generation, 1).expect("generation fits 48 bits");
     attrs.block_metadata.extra_data = Bytes::copy_from_slice(&extra_data.encode());
     attrs
 }
 
 /// What the staking mock of [`fixture_staking_alloc`] has recorded at the node's latest block:
-/// its slots 0 (generation), 1 (miss bitmap) and 2 (block number), then the sink's slot 0 (block
-/// number). An unset slot reads as zero.
+/// its slots 0 (generation), 1 (calldata length) and 2 (block number), then the sink's slot 0
+/// (block number). An unset slot reads as zero.
 pub fn staking_mock_record(node: &TestNode) -> (U256, U256, U256, U256) {
     use reth_storage_api::{StateProvider, StateProviderFactory};
     let state = node.provider.latest().unwrap();

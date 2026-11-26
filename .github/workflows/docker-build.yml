@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Build exactly the reviewed runtime, independent of this CI wrapper commit.
-          ref: 53f33b708d869cfb3f8cccd597381fa2e92a5be5
+          ref: aa89a01aad2f127e342e39fd069352b2e4ebcf86
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -46,9 +46,9 @@ jobs:
           images: |
             ${{ env.REGISTRY_IMAGE_ALETHIA }}
           tags: |
-            type=raw,value=sha-53f33b7
+            type=raw,value=sha-aa89a01
           labels: |
-            org.opencontainers.image.revision=53f33b708d869cfb3f8cccd597381fa2e92a5be5
+            org.opencontainers.image.revision=aa89a01aad2f127e342e39fd069352b2e4ebcf86
 
       - name: Build and push by digest
         id: build
@@ -109,9 +109,9 @@ jobs:
           images: |
             ${{ env.REGISTRY_IMAGE_ALETHIA }}
           tags: |
-            type=raw,value=sha-53f33b7
+            type=raw,value=sha-aa89a01
           labels: |
-            org.opencontainers.image.revision=53f33b708d869cfb3f8cccd597381fa2e92a5be5
+            org.opencontainers.image.revision=aa89a01aad2f127e342e39fd069352b2e4ebcf86
 
       - name: Create manifest lists and push
         working-directory: /tmp/digests

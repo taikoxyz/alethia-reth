@@ -38,7 +38,7 @@ jobs:
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          model: "claude-sonnet-4-5-20250929"
+          model: "claude-sonnet-5-5"
 
           # Direct prompt for automated review (no @claude mention needed)
           direct_prompt: |

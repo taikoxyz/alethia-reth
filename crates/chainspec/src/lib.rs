@@ -23,6 +23,11 @@ pub mod spec;
 pub const TAIKO_DEVNET_GENESIS_HASH: B256 =
     b256!("0x0ab9db72570aa79341b50c888abaf2e64395d5ce31d3753b738b7e5abec132c4");
 
+/// Genesis hash for the Taiko Devnet network when the library Unzen override pushes the Unzen
+/// activation past genesis, leaving genesis as a Shanghai-era block (no blob/requests fields).
+pub const TAIKO_DEVNET_GENESIS_HASH_SHANGHAI: B256 =
+    b256!("0xc417ef878f13238b8c19696b2ef043149b423f8450cab1e0dd3ca845ee16688d");
+
 /// Genesis hash for the Taiko Hoodi network.
 pub const TAIKO_HOODI_GENESIS_HASH: B256 =
     b256!("0x8e3d16acf3ecc1fbe80309b04e010b90c9ccb3da14e98536cfe66bb93407d228");

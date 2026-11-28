@@ -187,12 +187,6 @@ pub trait TaikoZkGasEvm {
     /// reset would corrupt by wiping the intrinsic charged before execution.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool);
 
-    /// Starts cumulative execution gas accounting for pool selection without changing zk charges.
-    fn start_selection_execution_tracking(&mut self);
-
-    /// Returns tracked execution gas, including work discarded on zk overflow.
-    fn selection_execution_gas(&self) -> u64;
-
     /// Discards any in-flight zk gas recorded for the current transaction.
     fn reset_transaction_zk_gas(&mut self);
 
@@ -232,18 +226,6 @@ where
     /// Enables or disables the automatic in-flight zk gas reset at the start of every transact.
     fn set_per_transact_zk_gas_reset_enabled(&mut self, enabled: bool) {
         self.reset_zk_gas_per_transact = enabled;
-    }
-
-    /// Starts tracking on whichever zk meter is active for this EVM.
-    fn start_selection_execution_tracking(&mut self) {
-        if let Some(meter) = self.meter_mut() {
-            meter.start_selection_execution_tracking();
-        }
-    }
-
-    /// Reads the selection counter independently of the in-flight zk gas total.
-    fn selection_execution_gas(&self) -> u64 {
-        self.meter().map_or(0, ZkGasMeter::selection_execution_gas)
     }
 
     /// Discards any in-flight zk gas recorded for the current transaction.
@@ -719,15 +701,14 @@ mod tests {
 
     /// Builds an anchor-shaped transaction: golden touch calling the treasury at the given
     /// nonce, paying exactly the basefee.
-    fn anchor_tx(treasury: Address, nonce: u64, chain_id: u64) -> TxEnv {
+    fn anchor_tx(treasury: Address, nonce: u64) -> TxEnv {
         TxEnv::builder()
             .caller(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS))
             .kind(TxKind::Call(treasury))
             .nonce(nonce)
             .gas_limit(1_000_000)
             .gas_price(u128::from(REPLAY_BASEFEE))
-            .gas_priority_fee(Some(0))
-            .chain_id(Some(chain_id))
+            .chain_id(None)
             .build()
             .expect("valid anchor tx env")
     }
@@ -773,7 +754,7 @@ mod tests {
         let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
 
         let result = evm
-            .transact(anchor_tx(treasury, 7, chain_id))
+            .transact(anchor_tx(treasury, 7))
             .expect("anchor must execute during replay without a prior anchor system call");
         assert!(result.result.is_success(), "anchor replay must succeed: {:?}", result.result);
 
@@ -797,11 +778,10 @@ mod tests {
 
         let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
 
-        evm.transact_commit(anchor_tx(treasury, 7, chain_id))
-            .expect("anchor must execute during replay");
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
 
         let err = evm
-            .transact(anchor_tx(treasury, 8, chain_id))
+            .transact(anchor_tx(treasury, 8))
             .expect_err("a follow-up golden-touch tx must not inherit the anchor exemption");
         assert!(
             matches!(err, EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })),
@@ -825,8 +805,7 @@ mod tests {
         );
         let mut evm = TaikoEvmFactory.create_evm(db, replay_env(chain_id));
 
-        evm.transact_commit(anchor_tx(treasury, 7, chain_id))
-            .expect("anchor must execute during replay");
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
 
         let result = evm.transact(user_tx(alice, 0)).expect("funded user tx must execute");
         assert!(result.result.is_success(), "user tx must succeed: {:?}", result.result);
@@ -858,8 +837,7 @@ mod tests {
         // EVM #1 replays the real anchor (nonce 7) and commits it, advancing the golden-touch
         // nonce to 8 in the shared database.
         let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
-        evm.transact_commit(anchor_tx(treasury, 7, chain_id))
-            .expect("anchor must execute during replay");
+        evm.transact_commit(anchor_tx(treasury, 7)).expect("anchor must execute during replay");
         let (db, env) = evm.finish();
 
         // EVM #2 mirrors tracing a later crafted golden-touch -> treasury transaction: a fresh
@@ -867,7 +845,7 @@ mod tests {
         // `derived_anchor_context_only_exempts_the_snapshot_nonce` does not carry over.
         let mut fresh_evm = TaikoEvmFactory.create_evm(db, env);
         let result = fresh_evm
-            .transact(anchor_tx(treasury, 8, chain_id))
+            .transact(anchor_tx(treasury, 8))
             .expect("fresh EVM wrongly exempts the crafted tx (see known limitation above)");
         assert!(result.result.is_success(), "crafted tx executes: {:?}", result.result);
         assert_eq!(

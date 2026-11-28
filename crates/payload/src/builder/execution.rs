@@ -93,7 +93,7 @@ pub(super) fn execute_payload_anchor(
     Ok(())
 }
 
-/// Executes the provided user transactions after the legacy-mode anchor.
+/// Executes the provided transactions after any separately validated anchor.
 ///
 /// Preserves legacy mode: validation errors are skipped, fatal errors abort
 /// the build, and cancellation short-circuits the loop.

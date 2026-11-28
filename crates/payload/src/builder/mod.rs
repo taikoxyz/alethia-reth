@@ -134,11 +134,15 @@ where
 /// Normalizes engine-facing payload config into the Taiko builder attribute shape.
 fn normalize_payload_config(
     config: &PayloadConfig<TaikoPayloadAttributes>,
+    require_list_anchor: bool,
 ) -> Result<TaikoPayloadBuilderAttributes, PayloadBuilderError> {
-    let mut attributes = TaikoPayloadBuilderAttributes::try_new(
-        config.parent_header.hash(),
-        config.attributes.clone(),
-    )
+    let parent = config.parent_header.hash();
+    let attributes = config.attributes.clone();
+    let mut attributes = if require_list_anchor {
+        TaikoPayloadBuilderAttributes::try_new_with_required_list_anchor(parent, attributes)
+    } else {
+        TaikoPayloadBuilderAttributes::try_new(parent, attributes)
+    }
     .map_err(PayloadBuilderError::other)?;
     attributes.id = config.payload_id;
     Ok(attributes)
@@ -213,10 +217,13 @@ where
         cancel,
         best_payload: _,
     } = args;
-    let attributes = normalize_payload_config(&config)?;
+    let chain_spec = client.chain_spec();
+    let block_timestamp = config.attributes.block_metadata.timestamp.to();
+    let require_list_anchor = chain_spec.is_shasta_active(block_timestamp);
+    let attributes = normalize_payload_config(&config, require_list_anchor)?;
     let PayloadConfig { parent_header, attributes: _, payload_id, .. } = config;
 
-    ensure_amsterdam_inactive(&client.chain_spec(), attributes.timestamp())?;
+    ensure_amsterdam_inactive(&chain_spec, block_timestamp)?;
 
     // Execution reads go through the execution cache when one is supplied; `finish` roots the block
     // through the uncached provider, since the cache only serves EVM reads.
@@ -272,25 +279,22 @@ where
             if cancel.is_cancelled() {
                 return Ok(BuildOutcome::Cancelled);
             }
-            let chain_spec = client.chain_spec();
-            let user_transactions = match transactions.split_first() {
-                Some((anchor, rest)) => {
-                    execute_payload_anchor(
-                        &mut builder,
-                        anchor,
-                        chain_spec.as_ref(),
-                        AnchorValidationContext {
-                            timestamp: attributes.timestamp(),
-                            block_number: parent_header.number + 1,
-                            base_fee_per_gas: base_fee,
-                        },
-                    )?;
-                    rest
-                }
-                None if chain_spec.is_shasta_active(attributes.timestamp()) => {
-                    return Err(PayloadBuilderError::MissingPayload);
-                }
-                None => transactions,
+            let user_transactions = if require_list_anchor {
+                let (anchor, rest) =
+                    transactions.split_first().ok_or(PayloadBuilderError::MissingPayload)?;
+                execute_payload_anchor(
+                    &mut builder,
+                    anchor,
+                    &chain_spec,
+                    AnchorValidationContext {
+                        timestamp: block_timestamp,
+                        block_number: parent_header.number + 1,
+                        base_fee_per_gas: base_fee,
+                    },
+                )?;
+                rest
+            } else {
+                transactions
             };
             match execute_provided_transactions(&mut builder, user_transactions, base_fee, &cancel)?
             {
@@ -366,7 +370,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alethia_reth_chainspec::TAIKO_MAINNET;
+    use alethia_reth_chainspec::{TAIKO_DEVNET, TAIKO_MAINNET};
     use alethia_reth_primitives::payload::attributes::{RpcL1Origin, TaikoBlockMetadata};
     use alloy_consensus::Header;
     use alloy_genesis::{ChainConfig, Genesis};
@@ -374,6 +378,8 @@ mod tests {
     use alloy_rpc_types_engine::{PayloadAttributes as EthPayloadAttributes, PayloadId};
     use reth_basic_payload_builder::PayloadConfig;
     use reth_primitives_traits::SealedHeader;
+    use reth_provider::test_utils::MockEthProvider;
+    use reth_transaction_pool::noop::NoopTransactionPool;
     use std::sync::Arc;
 
     fn test_payload_config(
@@ -426,15 +432,34 @@ mod tests {
     #[test]
     fn fixed_transaction_lists_freeze_payload_builds() {
         let config = test_payload_config(Some(Bytes::new()), U256::from(1u64), None);
-        let attributes = normalize_payload_config(&config).expect("config should normalize");
+        let attributes = normalize_payload_config(&config, false).expect("config should normalize");
 
         assert!(attributes.transactions.is_some());
     }
 
     #[test]
+    fn shasta_payload_with_an_empty_given_list_is_rejected() {
+        let config = test_payload_config(Some(Bytes::from_static(&[0xc0])), U256::from(1), None);
+        let spec = Arc::clone(&TAIKO_DEVNET);
+        let client =
+            MockEthProvider::<EthPrimitives>::default().with_chain_spec(spec.as_ref().clone());
+        let builder = TaikoPayloadBuilder::new(
+            client,
+            NoopTransactionPool::default(),
+            TaikoEvmConfig::new(spec),
+        );
+        let args =
+            BuildArguments::new(Default::default(), None, None, config, Default::default(), None);
+        let Err(err) = builder.try_build(args) else {
+            panic!("an empty Shasta list must fail the build");
+        };
+        assert!(err.to_string().contains("missing anchor transaction"), "{err}");
+    }
+
+    #[test]
     fn mempool_mode_also_freezes_payload_builds() {
         let config = test_payload_config(None, U256::from(1u64), None);
-        let attributes = normalize_payload_config(&config).expect("config should normalize");
+        let attributes = normalize_payload_config(&config, false).expect("config should normalize");
 
         assert!(attributes.transactions.is_none());
     }

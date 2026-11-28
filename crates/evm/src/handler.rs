@@ -6,9 +6,7 @@ use reth_revm::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{HaltReason, InvalidTransaction},
     },
-    context_interface::{
-        journaled_state::account::JournaledAccountTr, transaction::TransactionType,
-    },
+    context_interface::journaled_state::account::JournaledAccountTr,
     handler::{
         EthFrame, EvmTr, EvmTrError, FrameResult, FrameTr, Handler, PrecompileProvider,
         instructions::InstructionProvider,
@@ -169,7 +167,10 @@ fn reward_beneficiary<CTX: ContextTr>(
         // anchor system call: a context derived for replay-style execution carries no
         // basefee-share percentage (it comes from block extra data), so redistribution stays
         // disabled there, matching pre-existing replay behavior.
-        if !is_anchor_transaction(context.tx(), &ctx, context.cfg().chain_id(), basefee) {
+        if ctx.anchor_caller_address() != tx_caller ||
+            ctx.anchor_caller_nonce() != tx_nonce ||
+            context.tx().kind().to() != Some(&get_treasury_address(context.cfg().chain_id()))
+        {
             if ctx.is_from_anchor_system_call() {
                 // Total base fee income; guard against underflow if refunded exceeds spent.
                 let spent_minus_refund =
@@ -222,7 +223,9 @@ pub fn validate_against_state_and_deduct_caller<
     debug!(target: "taiko_evm", "Validating state, sender account: {:?} nonce: {:?} at block: {:?}", tx.caller(), tx.nonce(), block.number());
 
     let is_anchor_transaction = extra_execution_ctx.as_ref().is_some_and(|ctx| {
-        is_anchor_transaction(tx, ctx, cfg.chain_id(), u128::from(block.basefee()))
+        ctx.anchor_caller_address() == tx.caller() &&
+            ctx.anchor_caller_nonce() == tx.nonce() &&
+            tx.kind().to() == Some(&get_treasury_address(cfg.chain_id()))
     });
 
     // Load caller's account.
@@ -275,21 +278,6 @@ pub fn validate_against_state_and_deduct_caller<
     Ok(())
 }
 
-/// Identifies the fee-exempt transaction using the block-start anchor nonce and envelope.
-fn is_anchor_transaction(
-    tx: &impl Transaction,
-    ctx: &TaikoEvmExtraExecutionCtx,
-    chain_id: u64,
-    base_fee: u128,
-) -> bool {
-    tx.tx_type() == TransactionType::Eip1559 as u8 &&
-        ctx.anchor_caller_address() == tx.caller() &&
-        ctx.anchor_caller_nonce() == tx.nonce() &&
-        tx.kind().to() == Some(&get_treasury_address(chain_id)) &&
-        tx.max_fee_per_gas() == base_fee &&
-        tx.value().is_zero()
-}
-
 /// Reimburses the caller for unused gas.
 /// NOTE: if the current transaction is an Anchor transaction, we do not reimburse the caller.
 #[inline]
@@ -305,9 +293,10 @@ pub fn reimburse_caller<CTX: ContextTr>(
     let chain_id = context.cfg().chain_id();
     let (tx, _journal) = context.tx_journal_mut();
 
-    if extra_execution_ctx
-        .as_ref()
-        .is_some_and(|ctx| is_anchor_transaction(tx, ctx, chain_id, basefee))
+    if let Some(ctx) = extra_execution_ctx &&
+        ctx.anchor_caller_address() == tx.caller() &&
+        ctx.anchor_caller_nonce() == tx.nonce() &&
+        tx.kind().to() == Some(&get_treasury_address(chain_id))
     {
         debug!(
             target: "taiko_evm",

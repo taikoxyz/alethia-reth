@@ -53,12 +53,11 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     if parent_base_gas_target == 0 {
         return clamp_shasta_base_fee(parent_base_fee_per_gas, min_base_fee_to_clamp);
     }
-    // The percentage cap is at most the parent gas limit, so the minimum fits in u64.
+    // Match taiko-geth's uint64 multiplication before division.
     let parent_adjusted_gas_target = min(
-        u128::from(parent_base_gas_target) * u128::from(parent_block_time) /
-            u128::from(BLOCK_TIME_TARGET),
-        u128::from(parent_gas_limit) * u128::from(MAX_GAS_TARGET_PERCENT) / 100,
-    ) as u64;
+        parent_base_gas_target.wrapping_mul(parent_block_time) / BLOCK_TIME_TARGET,
+        parent_gas_limit.wrapping_mul(MAX_GAS_TARGET_PERCENT) / 100,
+    );
     let parent_gas_used = parent.gas_used();
     let mut base_fee = parent_base_fee_per_gas;
 
@@ -104,13 +103,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adjusts_gas_target_with_wide_intermediates() {
-        let parent =
-            Header { number: 1, gas_limit: 30_000_000, gas_used: 28_500_000, ..Default::default() };
-        let base_fee = SHASTA_INITIAL_BASE_FEE;
+    fn zero_gas_target_returns_clamped_parent_fee() {
+        let parent = Header { number: 1, gas_limit: 1, gas_used: 1, ..Default::default() };
         assert_eq!(
-            calculate_next_block_eip4396_base_fee(&parent, u64::MAX, base_fee, MIN_BASE_FEE),
-            base_fee
+            calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET, 1, MIN_BASE_FEE),
+            MIN_BASE_FEE
+        );
+    }
+
+    #[test]
+    fn adjusted_target_wraps_before_division_as_in_geth() {
+        let parent =
+            Header { number: 1, gas_limit: 30_000_000, gas_used: 15_000_000, ..Default::default() };
+        assert_eq!(
+            calculate_next_block_eip4396_base_fee(
+                &parent,
+                1 << 63,
+                SHASTA_INITIAL_BASE_FEE,
+                MIN_BASE_FEE,
+            ),
+            28_125_000
         );
     }
 

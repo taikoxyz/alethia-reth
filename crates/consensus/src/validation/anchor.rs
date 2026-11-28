@@ -19,7 +19,7 @@ pub struct AnchorValidationContext {
     pub timestamp: u64,
     /// Block number for hardfork selection and gas limit rules.
     pub block_number: u64,
-    /// Block base fee per gas, which the anchor fee cap must equal.
+    /// Block base fee per gas used to validate the anchor fees.
     pub base_fee_per_gas: u64,
 }
 
@@ -29,17 +29,30 @@ pub fn validate_anchor_transaction(
     chain_spec: &TaikoChainSpec,
     ctx: AnchorValidationContext,
 ) -> Result<(), ConsensusError> {
-    if !anchor_transaction.is_eip1559() {
-        return Err(ConsensusError::msg("Anchor transaction must use an EIP-1559 envelope"));
-    }
-    let anchor_address = get_treasury_address(chain_spec.inner.chain.id());
-    if anchor_transaction.to() != Some(anchor_address) {
-        return Err(ConsensusError::msg(format!("Anchor transaction must call {anchor_address}")));
-    }
-
     let is_shasta = chain_spec.is_shasta_active(ctx.timestamp);
     let is_pacaya = chain_spec.is_pacaya_active_at_block(ctx.block_number);
     if is_shasta {
+        if !anchor_transaction.is_eip1559() {
+            return Err(ConsensusError::msg("Anchor transaction must use an EIP-1559 envelope"));
+        }
+        let anchor_address = get_treasury_address(chain_spec.inner.chain.id());
+        if anchor_transaction.to() != Some(anchor_address) {
+            return Err(ConsensusError::msg(format!(
+                "Anchor transaction must call {anchor_address}"
+            )));
+        }
+        if anchor_transaction.max_fee_per_gas() != u128::from(ctx.base_fee_per_gas) {
+            return Err(ConsensusError::msg(format!(
+                "Anchor transaction max_fee_per_gas mismatch: expected {}, got {}",
+                ctx.base_fee_per_gas,
+                anchor_transaction.max_fee_per_gas()
+            )));
+        }
+        if anchor_transaction.max_priority_fee_per_gas() != Some(0) {
+            return Err(ConsensusError::msg(
+                "Anchor transaction max_priority_fee_per_gas mismatch: expected zero",
+            ));
+        }
         validate_input_selector(anchor_transaction.input(), ANCHOR_V4_SELECTOR)?;
     } else if is_pacaya {
         validate_input_selector(anchor_transaction.input(), ANCHOR_V3_SELECTOR)?;
@@ -64,11 +77,8 @@ pub fn validate_anchor_transaction(
         )));
     }
 
-    if anchor_transaction.max_fee_per_gas() != u128::from(ctx.base_fee_per_gas) {
-        return Err(ConsensusError::msg(format!(
-            "Anchor transaction max fee must equal the base fee ({})",
-            ctx.base_fee_per_gas
-        )));
+    if !is_shasta && anchor_transaction.effective_tip_per_gas(ctx.base_fee_per_gas) != Some(0) {
+        return Err(ConsensusError::msg("Anchor transaction effective tip must be zero"));
     }
 
     // The golden-touch account signs the anchor, which calls the treasury address.

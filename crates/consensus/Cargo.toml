@@ -53,3 +53,7 @@ reth-consensus-common = { workspace = true, default-features = false, optional =
 reth-ethereum-consensus = { workspace = true, default-features = false, optional = true }
 reth-ethereum-primitives = { workspace = true, default-features = false, optional = true }
 reth-execution-types = { workspace = true, default-features = false, optional = true }
+
+[dev-dependencies]
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }

@@ -116,9 +116,6 @@ pub enum SelectionOutcome {
 /// Default threshold for triggering the zlib guard check.
 pub const DEFAULT_DA_ZLIB_GUARD_BYTES: u64 = 4 * 1024;
 
-/// Minimum execution-gas charge per failed attempt, accounting for transaction setup.
-const MIN_OVERFLOW_WORK_GAS: u64 = 21_000;
-
 /// Selects and executes transactions from the pool.
 ///
 /// This function iterates through the best transactions in the pool, applying
@@ -134,12 +131,11 @@ const MIN_OVERFLOW_WORK_GAS: u64 = 21_000;
 ///
 /// - A remembered transaction is skipped without running while the state is the one it overflowed
 ///   at.
-/// - At any other state it runs again. Re-runs never stop selection, but once the measured
-///   execution gas of unsuccessful re-runs reaches `gas_limit_per_list`, remembered transactions
-///   are skipped instead. A re-run that fits is forgotten.
-/// - Selection stops once the measured execution gas of first-time overflows in this call reaches
-///   its own `gas_limit_per_list` allowance. Each overflow costs at least 21,000 gas units in
-///   either allowance.
+/// - At any other state it runs again. Re-runs never stop selection, but once the gas limits of
+///   re-runs that overflowed again in this call add up to `gas_limit_per_list`, remembered
+///   transactions are skipped instead. A re-run that fits is forgotten.
+/// - Selection stops once the gas limits of first-time overflows in this call add up to
+///   `gas_limit_per_list`.
 /// - Selection stops as soon as the block zk gas budget cannot pay another transaction's intrinsic
 ///   charge.
 ///
@@ -171,14 +167,14 @@ where
     B::Executor: TxSelectionExecutor,
     Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TransactionSigned>>,
 {
+    // Each zk gas overflow budget below sums transaction gas limits up to this cap.
     let overflow_gas_cap = config.gas_limit_per_list;
-    builder.executor_mut().start_selection_execution_tracking();
     overflows.retain(|tx_hash| pool.contains(tx_hash));
     // Digest of the execution state the next candidate runs against.
     let mut state = config.state_seed;
-    // Measured work from transactions that overflowed for the first time in this call.
+    // Gas limits of transactions that overflowed for the first time in this call.
     let mut first_time_overflow_gas = 0u64;
-    // Measured work from remembered transactions that ran and overflowed again in this call.
+    // Gas limits of remembered transactions that ran again and overflowed again in this call.
     let mut rerun_overflow_gas = 0u64;
 
     let mut best_txs = pool
@@ -304,26 +300,20 @@ where
         if remembered.is_some() {
             trace!(target: "tx_selection", ?tx_hash, "re-running transaction that overflowed the zk gas budget at another state");
         }
-        let execution_gas_before = builder.executor().selection_execution_gas();
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_output) => gas_output.tx_gas_used(),
             Err(err) if is_zk_gas_limit_exceeded(&err) => {
-                let overflow_work_gas = builder
-                    .executor()
-                    .selection_execution_gas()
-                    .saturating_sub(execution_gas_before)
-                    .max(MIN_OVERFLOW_WORK_GAS);
                 // Clear the exhaustion this candidate left so the next one can run, and remember
                 // the overflow at this state.
                 builder.executor_mut().clear_zk_gas_exhaustion();
                 overflows.record(tx_hash, state);
                 best_txs.mark_invalid(&pool_tx, zk_gas_budget_error());
                 if remembered.is_some() {
-                    rerun_overflow_gas = rerun_overflow_gas.saturating_add(overflow_work_gas);
+                    rerun_overflow_gas = rerun_overflow_gas.saturating_add(pool_tx.gas_limit());
                     trace!(target: "tx_selection", ?tx_hash, rerun_overflow_gas, "skipping transaction that overflowed the zk gas budget again");
                 } else {
                     first_time_overflow_gas =
-                        first_time_overflow_gas.saturating_add(overflow_work_gas);
+                        first_time_overflow_gas.saturating_add(pool_tx.gas_limit());
                     if first_time_overflow_gas >= overflow_gas_cap {
                         trace!(target: "tx_selection", ?tx_hash, first_time_overflow_gas, "stopping selection: first-time zk gas overflows reached the cap");
                         break;
@@ -414,7 +404,8 @@ mod tests {
     /// First address byte of the callers that send zk gas overflowing transactions.
     const FIRST_LIMIT_CALLER: u8 = 0x40;
 
-    /// Returns a selection config with a 30M gas limit per list.
+    /// Returns a selection config with a 30M gas limit per list. Every test transaction has a 5M
+    /// gas limit, so six first-time overflows reach the cap.
     fn overflow_test_config(max_lists: usize, state_seed: B256) -> TxSelectionConfig {
         TxSelectionConfig {
             base_fee: 0,
@@ -636,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn tx_selection_charges_measured_work_for_first_time_overflows() {
+    fn tx_selection_stops_at_first_time_overflow_cap_and_skips_them_at_the_same_state() {
         let limit_txs = overflowing_txs((55..=60).rev());
         let limit_hashes = hashes(&limit_txs);
         let success = recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 10);
@@ -647,7 +638,7 @@ mod tests {
         let seed = B256::with_last_byte(7);
         let overflows = ZkOverflowMemory::default();
 
-        // The failed executions cost less work than the sum of their gas limits.
+        // Six first-time overflows reach the cap before the success tx gets to run.
         let (lists, receipts) = select_on_fresh_builder(
             &accounts,
             0,
@@ -656,14 +647,15 @@ mod tests {
             &overflows,
         );
         assert_eq!(lists.len(), 1);
-        assert_eq!(list_hashes(&lists[0]), vec![success_hash]);
-        assert_eq!(receipts, 1);
+        assert!(lists[0].transactions.is_empty());
+        assert_eq!(receipts, 0);
         assert_eq!(overflows.len(), 6);
         for hash in &limit_hashes {
             assert_eq!(overflows.state(hash), Some(seed));
         }
 
-        // With the same starting state, selection skips the cached overflows before execution.
+        // At the same state the remembered overflows are left out again and stay remembered,
+        // without stopping selection, so the success tx is included.
         let (lists, receipts) = select_on_fresh_builder(
             &accounts,
             0,
@@ -743,7 +735,7 @@ mod tests {
 
     #[test]
     fn tx_selection_reruns_remembered_overflows_within_allowance_without_stopping() {
-        let limit_txs = overflowing_txs((58..=60).rev());
+        let limit_txs = overflowing_txs((54..=60).rev());
         let limit_hashes = hashes(&limit_txs);
         let success = recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 10);
         let success_hash = *success.tx_hash();
@@ -757,19 +749,23 @@ mod tests {
             overflows.record(*hash, earlier);
         }
 
-        let config =
-            TxSelectionConfig { gas_limit_per_list: 5_000_000, ..overflow_test_config(1, seed) };
-        let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
+        let (lists, receipts) = select_on_fresh_builder(
+            &accounts,
+            0,
+            &pool,
+            &overflow_test_config(1, seed),
+            &overflows,
+        );
 
-        // Two re-runs exhaust the work allowance, but selection keeps going.
+        // Six re-runs overflow again and use up the allowance, but selection keeps going.
         assert_eq!(lists.len(), 1);
         assert_eq!(list_hashes(&lists[0]), vec![success_hash]);
         assert_eq!(receipts, 1);
-        for hash in &limit_hashes[..2] {
+        for hash in &limit_hashes[..6] {
             assert_eq!(overflows.state(hash), Some(seed));
         }
-        // The third is skipped without running once the allowance is used up.
-        assert_eq!(overflows.state(&limit_hashes[2]), Some(earlier));
+        // The seventh is skipped without running once the allowance is used up.
+        assert_eq!(overflows.state(&limit_hashes[6]), Some(earlier));
     }
 
     #[test]

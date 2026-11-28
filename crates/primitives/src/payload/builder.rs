@@ -96,6 +96,24 @@ impl TaikoPayloadBuilderAttributes {
         parent: B256,
         attributes: TaikoPayloadAttributes,
     ) -> Result<Self, alloy_rlp::Error> {
+        Self::try_new_with_anchor_policy(parent, attributes, false)
+    }
+
+    /// Normalizes Shasta attributes and requires a recoverable anchor at the head of any given
+    /// transaction list. User transactions with invalid signatures are skipped.
+    pub fn try_new_with_required_list_anchor(
+        parent: B256,
+        attributes: TaikoPayloadAttributes,
+    ) -> Result<Self, alloy_rlp::Error> {
+        Self::try_new_with_anchor_policy(parent, attributes, true)
+    }
+
+    /// Normalizes attributes using the caller's fork-specific anchor requirement.
+    fn try_new_with_anchor_policy(
+        parent: B256,
+        attributes: TaikoPayloadAttributes,
+        require_list_anchor: bool,
+    ) -> Result<Self, alloy_rlp::Error> {
         // A non-zero caller root cannot survive the engine round-trip: `block_to_payload` emits
         // a V1 payload plus a sidecar with no beacon-root field, and `convert_payload_to_block`
         // rebuilds Unzen headers with the zero root, so a block built from one would be rejected
@@ -120,23 +138,19 @@ impl TaikoPayloadBuilderAttributes {
                 // New mode: transactions will be selected from mempool during payload building
                 None
             }
-            Some(tx_list_bytes) => {
-                // Preserve the first position before applying lenient user-transaction recovery.
-                let mut txs = decode_transactions(tx_list_bytes)
-                    .unwrap_or_else(|err| {
-                        debug!(target: "payload_builder", %err, "treating an undecodable transaction list as empty");
-                        Vec::new()
-                    })
-                    .into_iter();
+            Some(bytes) if require_list_anchor => {
+                let mut txs = decode_transactions(bytes)?.into_iter();
                 let anchor = txs
                     .next()
-                    .map(|tx| {
-                        tx.try_into_recovered()
-                            .map_err(|_| alloy_rlp::Error::Custom("anchor tx not recoverable"))
-                    })
-                    .transpose()?;
-                Some(anchor.into_iter().chain(txs.filter_map(recover_user_transaction)).collect())
+                    .ok_or(alloy_rlp::Error::Custom("missing anchor transaction"))?
+                    .try_into_recovered()
+                    .map_err(|_| alloy_rlp::Error::Custom("anchor tx not recoverable"))?;
+                Some(std::iter::once(anchor).chain(txs.filter_map(recover_user_transaction)).collect())
             }
+            Some(bytes) => Some(decode_recovered_transactions(bytes).unwrap_or_else(|err| {
+                debug!(target: "payload_builder", %err, "treating an undecodable transaction list as empty");
+                Vec::new()
+            })),
         };
 
         // Compute tx_list_hash based on whether tx_list is provided
@@ -281,8 +295,8 @@ fn recover_user_transaction(tx: TransactionSigned) -> Option<Recovered<Transacti
 mod test {
     use super::*;
     use crate::payload::attributes::{RpcL1Origin, TaikoBlockMetadata, TaikoPayloadAttributes};
-    use alloy_consensus::Header;
-    use alloy_primitives::{Address, Bytes, U256, hex};
+    use alloy_consensus::{Header, Signed, TxLegacy};
+    use alloy_primitives::{Address, Bytes, Signature, U256, hex};
     use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
     use reth_chainspec::ChainSpec;
     use reth_engine_local::LocalPayloadAttributesBuilder;
@@ -348,6 +362,43 @@ mod test {
             "0xf90220b901b302f901af83028c59808083989680830f424094167001000000000000000000000000000001000180b9014448080a450000000000000000000000000000000000000000000000000000000000000028d2c559ea42da728e0d0154b95699eeac543c768755611756ab0d1ce2b0abe95600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000003200000000000000000000000000000000000000000000000000000000004c4b4000000000000000000000000000000000000000000000000000000000502989660000000000000000000000000000000000000000000000000000000023c3460000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000000c080a079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798a060ad1bd4369cd9156712860a4aaf49c474fa9290bbbc600069f666de1fd28cbdf868808502540be400830186a0943edb876b8928dd168f3785576a79afa7d07dc7978080830518d5a072ae800154047cf587c08937484082b436a4a0d236bfdf731603dfe5c7580a64a054161df1ea94ec7933b643fd6fbfefbb453350a47dfe4a4ec3cd840c0c5f915c"
         )));
         assert!(!with_anchor_decoded.unwrap().is_empty());
+    }
+
+    #[test]
+    fn required_list_anchor_cannot_be_replaced_by_a_later_recoverable_transaction() {
+        let invalid: TransactionSigned = Signed::new_unhashed(
+            TxLegacy::default(),
+            Signature::new(U256::ZERO, U256::from(2), false),
+        )
+        .into();
+        let valid: TransactionSigned = Signed::new_unhashed(
+            TxLegacy::default(),
+            Signature::new(U256::from(1), U256::from(2), false),
+        )
+        .into();
+
+        let attributes = |txs: Vec<TransactionSigned>| {
+            let mut encoded = Vec::new();
+            txs.encode(&mut encoded);
+            create_payload_attrs(1, Some(encoded.into()), 1)
+        };
+        let invalid_first = attributes(vec![invalid.clone(), valid.clone()]);
+        let err = TaikoPayloadBuilderAttributes::try_new_with_required_list_anchor(
+            B256::ZERO,
+            invalid_first.clone(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("anchor tx not recoverable"));
+
+        let legacy = TaikoPayloadBuilderAttributes::try_new(B256::ZERO, invalid_first).unwrap();
+        let valid_first = attributes(vec![valid, invalid]);
+        let strict = TaikoPayloadBuilderAttributes::try_new_with_required_list_anchor(
+            B256::ZERO,
+            valid_first,
+        )
+        .unwrap();
+        assert_eq!(legacy.transactions.as_ref().unwrap().len(), 1);
+        assert_eq!(legacy.transactions, strict.transactions);
     }
 
     #[test]

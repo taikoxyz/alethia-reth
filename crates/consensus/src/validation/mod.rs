@@ -147,11 +147,8 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
         }
         validate_no_blob_transactions(block.body().transactions())?;
 
-        if self.chain_spec.is_shanghai_active_at_timestamp(block.timestamp()) {
+        if self.chain_spec.is_unzen_active(block.timestamp()) {
             validate_empty_withdrawals_root(block.header())?;
-            if block.body().withdrawals().is_some_and(|withdrawals| !withdrawals.is_empty()) {
-                return Err(ConsensusError::msg("Taiko blocks must have empty withdrawals"));
-            }
             validate_shanghai_withdrawals(block)?;
         }
 
@@ -219,8 +216,8 @@ where
             return Err(ConsensusError::SlotNumberUnexpected);
         }
 
-        validate_unzen_header_fields(header, is_unzen)?;
-        if self.chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) {
+        if is_unzen {
+            validate_unzen_header_fields(header)?;
             validate_empty_withdrawals_root(header)?;
         }
         if self.chain_spec.is_shasta_active(header.timestamp()) {
@@ -257,21 +254,20 @@ where
             let expected_base_fee = if parent.number() == 0 {
                 SHASTA_INITIAL_BASE_FEE
             } else {
-                validate_header_gas(parent.header())?;
                 validate_shasta_gas_target(parent.header().gas_limit())?;
                 let parent_base_fee =
                     parent.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
-                match parent_block_time(self.block_reader.as_ref(), parent) {
-                    Ok(block_time) => calculate_next_block_eip4396_base_fee(
-                        parent.header(),
-                        block_time,
-                        parent_base_fee,
-                        min_base_fee_to_clamp,
-                    ),
+                parent_block_time(self.block_reader.as_ref(), parent)
+                    .map(|block_time| {
+                        calculate_next_block_eip4396_base_fee(
+                            parent.header(),
+                            block_time,
+                            parent_base_fee,
+                            min_base_fee_to_clamp,
+                        )
+                    })
                     // The block reader may be missing the grandparent during sync.
-                    Err(ConsensusError::ParentUnknown { .. }) => header_base_fee,
-                    Err(err) => return Err(err),
-                }
+                    .unwrap_or(header_base_fee)
             };
 
             // Verify the block's base fee matches the expected value.
@@ -304,7 +300,7 @@ fn validate_shasta_gas_target(gas_limit: u64) -> Result<(), ConsensusError> {
     Ok(())
 }
 
-/// Enforces Taiko's empty withdrawals commitment wherever a Shanghai header is accepted.
+/// Enforces Taiko's empty withdrawals commitment for Unzen blocks.
 fn validate_empty_withdrawals_root(header: &impl BlockHeader) -> Result<(), ConsensusError> {
     let root = header.withdrawals_root().ok_or(ConsensusError::WithdrawalsRootMissing)?;
     if root != EMPTY_WITHDRAWALS {
@@ -316,20 +312,17 @@ fn validate_empty_withdrawals_root(header: &impl BlockHeader) -> Result<(), Cons
 }
 
 /// Checks that imported headers carry exactly the fork-defined Taiko values.
-fn validate_unzen_header_fields(
-    header: &impl BlockHeader,
-    is_unzen: bool,
-) -> Result<(), ConsensusError> {
-    if header.parent_beacon_block_root() != is_unzen.then_some(B256::ZERO) {
+fn validate_unzen_header_fields(header: &impl BlockHeader) -> Result<(), ConsensusError> {
+    if header.parent_beacon_block_root() != Some(B256::ZERO) {
         return Err(ConsensusError::msg("Noncanonical Taiko parent beacon block root"));
     }
-    if header.blob_gas_used() != is_unzen.then_some(0) {
+    if header.blob_gas_used() != Some(0) {
         return Err(ConsensusError::msg("Noncanonical Taiko blob gas used"));
     }
-    if header.excess_blob_gas() != is_unzen.then_some(0) {
+    if header.excess_blob_gas() != Some(0) {
         return Err(ConsensusError::msg("Noncanonical Taiko excess blob gas"));
     }
-    if header.requests_hash() != is_unzen.then_some(EMPTY_REQUESTS_HASH) {
+    if header.requests_hash() != Some(EMPTY_REQUESTS_HASH) {
         return Err(ConsensusError::msg("Noncanonical Taiko requests hash"));
     }
     Ok(())
@@ -388,12 +381,8 @@ where
         .block_timestamp_by_hash(grandparent_hash)
         .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?;
 
-    parent.header().timestamp().checked_sub(grandparent_timestamp).ok_or(
-        ConsensusError::TimestampIsInPast {
-            parent_timestamp: grandparent_timestamp,
-            timestamp: parent.header().timestamp(),
-        },
-    )
+    // Match taiko-geth's uint64 subtraction.
+    Ok(parent.header().timestamp().wrapping_sub(grandparent_timestamp))
 }
 
 #[inline]

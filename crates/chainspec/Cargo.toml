@@ -17,6 +17,7 @@ std = [
     "reth-evm/std",
     "reth-network-peers/std",
     "reth-primitives/std",
+    "reth-primitives-traits/std",
     "reth-revm/std",
 ]
 

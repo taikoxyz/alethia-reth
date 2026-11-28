@@ -380,8 +380,11 @@ where
 
 /// Decode an RLP transaction list and recover each transaction signer for EVM execution.
 ///
-/// Rejects oversized inputs (see [`check_tx_list_size`]) before decoding. Replay skips
-/// unrecoverable transactions, and a malformed top-level RLP list is reported as an error.
+/// Rejects oversized inputs (see [`check_tx_list_size`]) before decoding. Uses the same lenient
+/// ingestion as the payload builder ([`decode_recovered_transactions`]): transactions whose signer
+/// cannot be recovered are skipped rather than failing the request, so the replayed witness matches
+/// what the node would have executed for the same tx list. A malformed top-level RLP list is still
+/// reported as an error.
 fn decode_recovered_tx_list(
     tx_list: Bytes,
 ) -> Result<Vec<Recovered<TransactionSigned>>, EthApiError> {
@@ -512,7 +515,8 @@ mod tests {
     #[test]
     fn decode_recovered_tx_list_skips_unrecoverable_transactions() {
         // A legacy transaction with `r = 0` has an unrecoverable signature. Previously this aborted
-        // the whole request; debug replay remains lenient about signer recovery.
+        // the whole request; it must now be skipped, matching the payload builder's lenient tx-list
+        // ingestion so the replay reflects what the node would have executed.
         let tx = TxLegacy {
             chain_id: Some(1),
             nonce: 0,

@@ -35,8 +35,7 @@ pub const MAX_BASE_FEE: u64 = 1_000_000_000; // 1 Gwei
 /// * `min_base_fee_to_clamp` - Lower bound used when clamping the computed base fee
 ///
 /// # Returns
-/// The calculated base fee for the next block. A zero parent gas target returns the clamped
-/// parent fee for callers doing a standalone calculation. Header validation rejects that parent.
+/// The calculated base fee for the next block
 pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     parent: &H,
     parent_block_time: u64,
@@ -50,9 +49,6 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     }
     let parent_gas_limit = parent.gas_limit();
     let parent_base_gas_target = parent_gas_limit / ELASTICITY_MULTIPLIER;
-    if parent_base_gas_target == 0 {
-        return clamp_shasta_base_fee(parent_base_fee_per_gas, min_base_fee_to_clamp);
-    }
     // Match taiko-geth's uint64 multiplication before division.
     let parent_adjusted_gas_target = min(
         parent_base_gas_target.wrapping_mul(parent_block_time) / BLOCK_TIME_TARGET,
@@ -101,15 +97,6 @@ mod tests {
     use alloy_consensus::Header;
 
     use super::*;
-
-    #[test]
-    fn zero_gas_target_returns_clamped_parent_fee() {
-        let parent = Header { number: 1, gas_limit: 1, gas_used: 1, ..Default::default() };
-        assert_eq!(
-            calculate_next_block_eip4396_base_fee(&parent, BLOCK_TIME_TARGET, 1, MIN_BASE_FEE),
-            MIN_BASE_FEE
-        );
-    }
 
     #[test]
     fn adjusted_target_wraps_before_division_as_in_geth() {

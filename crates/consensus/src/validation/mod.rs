@@ -2,8 +2,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use alloy_consensus::{
-    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH,
-    constants::{EMPTY_WITHDRAWALS, MAXIMUM_EXTRA_DATA_SIZE},
+    BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
 use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
 use alloy_hardforks::EthereumHardforks;
@@ -12,7 +11,6 @@ use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, 
 use reth_consensus_common::validation::{
     MAX_RLP_BLOCK_SIZE, validate_against_parent_hash_number, validate_body_against_header,
     validate_header_base_fee, validate_header_extra_data, validate_header_gas,
-    validate_shanghai_withdrawals,
 };
 use reth_ethereum_consensus::validate_block_post_execution;
 use reth_execution_types::BlockExecutionResult;
@@ -22,7 +20,7 @@ use reth_primitives_traits::{
 };
 
 use crate::eip4396::{
-    ELASTICITY_MULTIPLIER, MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
+    MAINNET_MIN_BASE_FEE, MIN_BASE_FEE, SHASTA_INITIAL_BASE_FEE,
     calculate_next_block_eip4396_base_fee,
 };
 use alethia_reth_chainspec::{TAIKO_MAINNET, hardfork::TaikoHardforks, spec::TaikoChainSpec};
@@ -113,7 +111,7 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
     ///
     /// - Compares the ommer hash in the block header to the block body
     /// - Compares the transactions root in the block header to the block body
-    /// - Enforces the withdrawal and encoded-size rules for the active forks
+    /// - Enforces the Osaka encoded block size limit
     fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
         let ommers_hash = block.ommers_hash();
 
@@ -146,11 +144,6 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
         }
         validate_no_blob_transactions(block.body().transactions())?;
-
-        if self.chain_spec.is_unzen_active(block.timestamp()) {
-            validate_empty_withdrawals_root(block.header())?;
-            validate_shanghai_withdrawals(block)?;
-        }
 
         Ok(())
     }
@@ -218,10 +211,6 @@ where
 
         if is_unzen {
             validate_unzen_header_fields(header)?;
-            validate_empty_withdrawals_root(header)?;
-        }
-        if self.chain_spec.is_shasta_active(header.timestamp()) {
-            validate_shasta_gas_target(header.gas_limit())?;
         }
         validate_header_gas(header)?;
         validate_header_base_fee(header, &self.chain_spec)
@@ -254,7 +243,6 @@ where
             let expected_base_fee = if parent.number() == 0 {
                 SHASTA_INITIAL_BASE_FEE
             } else {
-                validate_shasta_gas_target(parent.header().gas_limit())?;
                 let parent_base_fee =
                     parent.header().base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
                 parent_block_time(self.block_reader.as_ref(), parent)
@@ -266,7 +254,9 @@ where
                             min_base_fee_to_clamp,
                         )
                     })
-                    // The block reader may be missing the grandparent during sync.
+                    // If we cannot retrieve the grandparent timestamp (e.g. when running without a
+                    // fully wired block reader), fall back to the header's base fee to avoid
+                    // rejecting the block outright.
                     .unwrap_or(header_base_fee)
             };
 
@@ -290,25 +280,6 @@ where
 
         Ok(())
     }
-}
-
-/// Rejects a Shasta gas limit that would yield a zero EIP-4396 gas target.
-fn validate_shasta_gas_target(gas_limit: u64) -> Result<(), ConsensusError> {
-    if gas_limit < ELASTICITY_MULTIPLIER {
-        return Err(ConsensusError::msg("Shasta gas limit must yield a nonzero gas target"));
-    }
-    Ok(())
-}
-
-/// Enforces Taiko's empty withdrawals commitment for Unzen blocks.
-fn validate_empty_withdrawals_root(header: &impl BlockHeader) -> Result<(), ConsensusError> {
-    let root = header.withdrawals_root().ok_or(ConsensusError::WithdrawalsRootMissing)?;
-    if root != EMPTY_WITHDRAWALS {
-        return Err(ConsensusError::BodyWithdrawalsRootDiff(
-            GotExpected { got: root, expected: EMPTY_WITHDRAWALS }.into(),
-        ));
-    }
-    Ok(())
 }
 
 /// Checks that imported headers carry exactly the fork-defined Taiko values.

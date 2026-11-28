@@ -13,6 +13,7 @@ default = ["full", "std"]
 full = [
     "dep:alethia-reth-chainspec",
     "dep:alethia-reth-evm",
+    "dep:alloy-eips",
     "dep:alloy-hardforks",
     "dep:reth-chainspec",
     "dep:reth-consensus",
@@ -38,7 +39,6 @@ std = [
 # Always available
 alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-consensus = { workspace = true }
-alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
 reth-primitives-traits = { workspace = true }
@@ -46,6 +46,7 @@ reth-primitives-traits = { workspace = true }
 # Only with "full"
 alethia-reth-chainspec = { path = "../chainspec", default-features = false, optional = true }
 alethia-reth-evm = { path = "../evm", default-features = false, optional = true }
+alloy-eips = { workspace = true, optional = true }
 alloy-hardforks = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, default-features = false, optional = true }
 reth-consensus = { workspace = true, default-features = false, optional = true }
@@ -53,7 +54,3 @@ reth-consensus-common = { workspace = true, default-features = false, optional =
 reth-ethereum-consensus = { workspace = true, default-features = false, optional = true }
 reth-ethereum-primitives = { workspace = true, default-features = false, optional = true }
 reth-execution-types = { workspace = true, default-features = false, optional = true }
-
-[dev-dependencies]
-alloy-signer = { workspace = true }
-alloy-signer-local = { workspace = true }

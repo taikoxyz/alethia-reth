@@ -49,9 +49,10 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     }
     let parent_gas_limit = parent.gas_limit();
     let parent_base_gas_target = parent_gas_limit / ELASTICITY_MULTIPLIER;
+    // Match taiko-geth's uint64 multiplication before division.
     let parent_adjusted_gas_target = min(
-        parent_base_gas_target * parent_block_time / BLOCK_TIME_TARGET,
-        parent_gas_limit * MAX_GAS_TARGET_PERCENT / 100,
+        parent_base_gas_target.wrapping_mul(parent_block_time) / BLOCK_TIME_TARGET,
+        parent_gas_limit.wrapping_mul(MAX_GAS_TARGET_PERCENT) / 100,
     );
     let parent_gas_used = parent.gas_used();
     let mut base_fee = parent_base_fee_per_gas;
@@ -96,6 +97,21 @@ mod tests {
     use alloy_consensus::Header;
 
     use super::*;
+
+    #[test]
+    fn adjusted_target_wraps_before_division_as_in_geth() {
+        let parent =
+            Header { number: 1, gas_limit: 30_000_000, gas_used: 15_000_000, ..Default::default() };
+        assert_eq!(
+            calculate_next_block_eip4396_base_fee(
+                &parent,
+                1 << 63,
+                SHASTA_INITIAL_BASE_FEE,
+                MIN_BASE_FEE,
+            ),
+            28_125_000
+        );
+    }
 
     #[test]
     fn test_calculate_next_block_eip4396_base_fee() {

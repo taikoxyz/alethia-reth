@@ -169,14 +169,7 @@ fn pre_unzen_header_still_rejects_nonzero_difficulty() {
 #[test]
 fn unzen_header_allows_nonzero_difficulty() {
     let consensus = test_consensus(unzen_chain_spec());
-    let header = Header {
-        timestamp: 1,
-        difficulty: U256::from(7_u64),
-        base_fee_per_gas: Some(1),
-        gas_limit: 30_000_000,
-        extra_data: shasta_extra_data(),
-        ..Default::default()
-    };
+    let header = Header { difficulty: U256::from(7_u64), ..canonical_unzen_header() };
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(header))
@@ -184,20 +177,65 @@ fn unzen_header_allows_nonzero_difficulty() {
 }
 
 #[test]
+fn unzen_headers_require_canonical_fork_fields() {
+    let consensus = test_consensus(unzen_chain_spec());
+    let header = canonical_unzen_header();
+    for noncanonical in [
+        Header { parent_beacon_block_root: None, ..header.clone() },
+        Header { blob_gas_used: Some(1), ..header.clone() },
+        Header { excess_blob_gas: None, ..header.clone() },
+        Header { requests_hash: Some(B256::ZERO), ..header.clone() },
+    ] {
+        assert!(consensus.validate_header(&SealedHeader::new_unhashed(noncanonical)).is_err());
+    }
+
+    let pre_unzen = test_consensus(pre_unzen_chain_spec());
+    pre_unzen.validate_header(&SealedHeader::new_unhashed(header)).unwrap();
+}
+
+#[test]
+fn osaka_rejects_blocks_above_the_encoded_size_limit() {
+    let mut spec = unzen_chain_spec();
+    spec.inner.hardforks.insert(EthereumHardfork::Osaka, ForkCondition::Timestamp(2));
+    let consensus = test_consensus(spec);
+    let make_block = |timestamp, input_len| {
+        let tx = Signed::new_unhashed(
+            TxLegacy { input: Bytes::from(vec![0; input_len]), ..Default::default() },
+            Signature::new(U256::from(1), U256::from(2), false),
+        );
+        let body = BlockBody {
+            transactions: vec![tx.into()],
+            withdrawals: Some(Default::default()),
+            ..Default::default()
+        };
+        let header = Header {
+            timestamp,
+            transactions_root: proofs::calculate_transaction_root(&body.transactions),
+            ..canonical_unzen_header()
+        };
+        SealedBlock::seal_slow(Block { header, body })
+    };
+    let oversized = make_block(2, MAX_RLP_BLOCK_SIZE);
+    let exact_input_len = 2 * MAX_RLP_BLOCK_SIZE - oversized.rlp_length();
+    let at_limit = make_block(2, exact_input_len);
+    assert_eq!(at_limit.rlp_length(), MAX_RLP_BLOCK_SIZE);
+    consensus.validate_block_pre_execution(&at_limit).unwrap();
+
+    let error = consensus.validate_block_pre_execution(&oversized).unwrap_err();
+    assert!(matches!(error, ConsensusError::BlockTooLarge { .. }));
+
+    let pre_osaka = make_block(1, exact_input_len + 1);
+    assert_eq!(pre_osaka.rlp_length(), MAX_RLP_BLOCK_SIZE + 1);
+    consensus.validate_block_pre_execution(&pre_osaka).unwrap();
+}
+
+#[test]
 fn shasta_header_requires_exact_extra_data_len() {
     let consensus = test_consensus(devnet_chain_spec());
-    let base = Header {
-        timestamp: 1,
-        base_fee_per_gas: Some(1),
-        gas_limit: 30_000_000,
-        ..Default::default()
-    };
+    let base = canonical_unzen_header();
 
     consensus
-        .validate_header(&SealedHeader::new_unhashed(Header {
-            extra_data: shasta_extra_data(),
-            ..base.clone()
-        }))
+        .validate_header(&SealedHeader::new_unhashed(base.clone()))
         .expect("the 7-byte extraData layout should validate");
 
     for (name, extra) in [
@@ -221,12 +259,7 @@ fn pre_shasta_header_has_no_extra_data_len_rule() {
     let mut chain_spec = devnet_chain_spec();
     chain_spec.inner.hardforks.insert(TaikoHardfork::Shasta, ForkCondition::Never);
     let consensus = test_consensus(chain_spec);
-    let header = Header {
-        timestamp: 1,
-        base_fee_per_gas: Some(1),
-        gas_limit: 30_000_000,
-        ..Default::default()
-    };
+    let header = Header { extra_data: Bytes::new(), ..canonical_unzen_header() };
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(header))
@@ -238,13 +271,7 @@ fn amsterdam_active_header_is_rejected_at_import() {
     let mut chain_spec = devnet_chain_spec();
     chain_spec.inner.hardforks.insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(100));
     let consensus = test_consensus(chain_spec);
-    let base = Header {
-        timestamp: 99,
-        base_fee_per_gas: Some(1),
-        gas_limit: 30_000_000,
-        extra_data: shasta_extra_data(),
-        ..Default::default()
-    };
+    let base = Header { timestamp: 99, ..canonical_unzen_header() };
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(base.clone()))
@@ -259,14 +286,7 @@ fn amsterdam_active_header_is_rejected_at_import() {
 #[test]
 fn pre_amsterdam_header_rejects_block_access_list_hash() {
     let consensus = test_consensus(devnet_chain_spec());
-    let header = Header {
-        timestamp: 1,
-        base_fee_per_gas: Some(1),
-        gas_limit: 30_000_000,
-        extra_data: shasta_extra_data(),
-        block_access_list_hash: Some(B256::ZERO),
-        ..Default::default()
-    };
+    let header = Header { block_access_list_hash: Some(B256::ZERO), ..canonical_unzen_header() };
 
     let err = consensus
         .validate_header(&SealedHeader::new_unhashed(header))
@@ -277,14 +297,7 @@ fn pre_amsterdam_header_rejects_block_access_list_hash() {
 #[test]
 fn pre_amsterdam_header_rejects_slot_number() {
     let consensus = test_consensus(devnet_chain_spec());
-    let header = Header {
-        timestamp: 1,
-        base_fee_per_gas: Some(1),
-        gas_limit: 30_000_000,
-        extra_data: shasta_extra_data(),
-        slot_number: Some(1),
-        ..Default::default()
-    };
+    let header = Header { slot_number: Some(1), ..canonical_unzen_header() };
 
     let err = consensus
         .validate_header(&SealedHeader::new_unhashed(header))
@@ -397,6 +410,22 @@ fn make_legacy_tx() -> TransactionSigned {
 
 fn test_consensus(chain_spec: TaikoChainSpec) -> TaikoBeaconConsensus {
     TaikoBeaconConsensus::new(Arc::new(chain_spec), Arc::new(NullBlockReader))
+}
+
+fn canonical_unzen_header() -> Header {
+    Header {
+        number: 1,
+        timestamp: 1,
+        gas_limit: 30_000_000,
+        base_fee_per_gas: Some(1),
+        extra_data: shasta_extra_data(),
+        withdrawals_root: Some(EMPTY_ROOT_HASH),
+        parent_beacon_block_root: Some(B256::ZERO),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+        requests_hash: Some(EMPTY_REQUESTS_HASH),
+        ..Default::default()
+    }
 }
 
 fn shasta_extra_data() -> Bytes {

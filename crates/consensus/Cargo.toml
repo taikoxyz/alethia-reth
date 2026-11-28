@@ -13,6 +13,7 @@ default = ["full", "std"]
 full = [
     "dep:alethia-reth-chainspec",
     "dep:alethia-reth-evm",
+    "dep:alloy-eips",
     "dep:alloy-hardforks",
     "dep:reth-chainspec",
     "dep:reth-consensus",
@@ -45,6 +46,7 @@ reth-primitives-traits = { workspace = true }
 # Only with "full"
 alethia-reth-chainspec = { path = "../chainspec", default-features = false, optional = true }
 alethia-reth-evm = { path = "../evm", default-features = false, optional = true }
+alloy-eips = { workspace = true, optional = true }
 alloy-hardforks = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, default-features = false, optional = true }
 reth-consensus = { workspace = true, default-features = false, optional = true }

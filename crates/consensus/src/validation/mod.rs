@@ -4,12 +4,13 @@ use std::{fmt::Debug, sync::Arc};
 use alloy_consensus::{
     BlockHeader as AlloyBlockHeader, EMPTY_OMMER_ROOT_HASH, constants::MAXIMUM_EXTRA_DATA_SIZE,
 };
+use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
 use alloy_hardforks::EthereumHardforks;
 use alloy_primitives::B256;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
-    validate_against_parent_hash_number, validate_body_against_header, validate_header_base_fee,
-    validate_header_extra_data, validate_header_gas,
+    MAX_RLP_BLOCK_SIZE, validate_against_parent_hash_number, validate_body_against_header,
+    validate_header_base_fee, validate_header_extra_data, validate_header_gas,
 };
 use reth_ethereum_consensus::validate_block_post_execution;
 use reth_execution_types::BlockExecutionResult;
@@ -110,6 +111,7 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
     ///
     /// - Compares the ommer hash in the block header to the block body
     /// - Compares the transactions root in the block header to the block body
+    /// - Enforces the Osaka encoded block size limit
     fn validate_block_pre_execution(&self, block: &SealedBlock<B>) -> Result<(), ConsensusError> {
         let ommers_hash = block.ommers_hash();
 
@@ -126,6 +128,16 @@ impl<B: Block> Consensus<B> for TaikoBeaconConsensus {
             return Err(ConsensusError::BodyOmmersHashDiff(
                 GotExpected { got: body_ommers_hash, expected: EMPTY_OMMER_ROOT_HASH }.into(),
             ));
+        }
+
+        if self.chain_spec.is_osaka_active_at_timestamp(block.timestamp()) {
+            let rlp_length = block.rlp_length();
+            if rlp_length > MAX_RLP_BLOCK_SIZE {
+                return Err(ConsensusError::BlockTooLarge {
+                    rlp_length,
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                });
+            }
         }
 
         if let Err(error) = block.ensure_transaction_root_valid() {
@@ -147,7 +159,8 @@ where
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
 
-        if !self.chain_spec.is_unzen_active(header.timestamp()) && !header.difficulty().is_zero() {
+        let is_unzen = self.chain_spec.is_unzen_active(header.timestamp());
+        if !is_unzen && !header.difficulty().is_zero() {
             return Err(ConsensusError::TheMergeDifficultyIsNotZero);
         }
 
@@ -196,6 +209,9 @@ where
             return Err(ConsensusError::SlotNumberUnexpected);
         }
 
+        if is_unzen {
+            validate_unzen_header_fields(header)?;
+        }
         validate_header_gas(header)?;
         validate_header_base_fee(header, &self.chain_spec)
     }
@@ -266,6 +282,23 @@ where
     }
 }
 
+/// Checks that imported headers carry exactly the fork-defined Taiko values.
+fn validate_unzen_header_fields(header: &impl BlockHeader) -> Result<(), ConsensusError> {
+    if header.parent_beacon_block_root() != Some(B256::ZERO) {
+        return Err(ConsensusError::msg("Noncanonical Taiko parent beacon block root"));
+    }
+    if header.blob_gas_used() != Some(0) {
+        return Err(ConsensusError::msg("Noncanonical Taiko blob gas used"));
+    }
+    if header.excess_blob_gas() != Some(0) {
+        return Err(ConsensusError::msg("Noncanonical Taiko excess blob gas"));
+    }
+    if header.requests_hash() != Some(EMPTY_REQUESTS_HASH) {
+        return Err(ConsensusError::msg("Noncanonical Taiko requests hash"));
+    }
+    Ok(())
+}
+
 /// Validates zk-gas-specific post-execution rules that depend on both the canonical body and the
 /// committed execution result.
 fn validate_zk_gas_post_execution<B, R>(
@@ -319,7 +352,8 @@ where
         .block_timestamp_by_hash(grandparent_hash)
         .ok_or(ConsensusError::ParentUnknown { hash: grandparent_hash })?;
 
-    Ok(parent.header().timestamp() - grandparent_timestamp)
+    // Match taiko-geth's uint64 subtraction.
+    Ok(parent.header().timestamp().wrapping_sub(grandparent_timestamp))
 }
 
 #[inline]

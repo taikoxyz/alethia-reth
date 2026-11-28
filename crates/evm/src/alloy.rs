@@ -8,12 +8,12 @@ pub use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
 use reth_revm::{
     Context, Inspector,
     context::{
-        BlockEnv, CfgEnv, ContextSetters, ContextTr, JournalTr, TxEnv,
+        CfgEnv, ContextSetters, ContextTr, JournalTr, TxEnv,
         result::{
             EVMError, ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
         },
     },
-    handler::{EthFrame, Handler, PrecompileProvider},
+    handler::{EthFrame, Handler, PrecompileProvider, pre_execution::load_accounts},
     inspector::InspectorHandler,
     interpreter::{InterpreterResult, interpreter::EthInterpreter},
     state::EvmState,
@@ -21,11 +21,12 @@ use reth_revm::{
 use tracing::debug;
 
 use crate::{
+    env::TaikoBlockEnv,
     evm::{TaikoEvm, TaikoEvmExtraExecutionCtx},
     handler::{TaikoEvmHandler, get_treasury_address},
     spec::TaikoSpecId,
     zk_gas::{
-        adapter::ZkGasInspector,
+        adapter::{ZK_GAS_LIMIT_ERR, ZkGasInspector},
         meter::{ZkGasMeter, ZkGasOutcome},
     },
 };
@@ -44,8 +45,8 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     inspect: bool,
     /// Whether [`Self::maybe_derive_anchor_execution_ctx`] may install a derived anchor
     /// context for replay-style execution. Enabled by default; the block executor turns it off
-    /// because it installs the authoritative context through the anchor system call, and a
-    /// missing pre-execution initialization must keep failing loudly there.
+    /// because it installs authoritative block context. Etna factories also disable derivation
+    /// so golden-touch calls follow ordinary transaction rules.
     derive_anchor_ctx: bool,
     /// Whether [`Evm::transact_raw`] discards in-flight zk gas before executing. Enabled by
     /// default so RPC-style consumers that reuse one EVM never accumulate zk gas across
@@ -57,12 +58,22 @@ pub struct TaikoEvmWrapper<DB: Database, I, P> {
     /// (reset, intrinsic charge, commit) and an entry reset here would wipe the intrinsic zk
     /// gas it charges before execution.
     reset_zk_gas_per_transact: bool,
+    /// Whether standalone Etna execution charges transaction intrinsic zk gas after resetting
+    /// the meter. System calls temporarily disable this because they are not block transactions.
+    /// The block executor disables the entry reset and owns its intrinsic charge separately.
+    charge_intrinsic_per_transact: bool,
 }
 
 impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// Creates a new [`TaikoEvmWrapper`] instance.
     pub const fn new(evm: BaseTaikoEvm<DB, I, P>, inspect: bool) -> Self {
-        Self { inner: evm, inspect, derive_anchor_ctx: true, reset_zk_gas_per_transact: true }
+        Self {
+            inner: evm,
+            inspect,
+            derive_anchor_ctx: true,
+            reset_zk_gas_per_transact: true,
+            charge_intrinsic_per_transact: true,
+        }
     }
 
     /// Consumes self and return the inner EVM instance.
@@ -115,7 +126,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     /// authoritative context is present and the incoming transaction is anchor-shaped
     /// (golden touch calling the network treasury).
     ///
-    /// Block execution installs the context through the anchor system call before any
+    /// Before Etna, block execution installs context through the anchor system call before any
     /// transaction runs, so this only fires on replay-style paths (`debug_trace*`, `trace_*`
     /// and the `eth_call` family) that execute block transactions without the block executor.
     /// Without a context those paths fail the anchor's balance check, which is what made every
@@ -157,7 +168,7 @@ impl<DB: Database, I, P> TaikoEvmWrapper<DB, I, P> {
     }
 }
 
-/// EVM extension trait controlling the replay-only anchor context derivation.
+/// EVM extension trait for block fee authority and legacy replay anchor derivation.
 pub trait TaikoAnchorEvm {
     /// Enables or disables on-the-fly anchor context derivation for replay-style execution.
     ///
@@ -166,12 +177,22 @@ pub trait TaikoAnchorEvm {
     /// initialization must keep failing loudly rather than silently falling back to derived
     /// replay semantics.
     fn set_anchor_ctx_derivation_enabled(&mut self, enabled: bool);
+
+    /// Installs an authoritative block fee percentage and disables legacy anchor derivation.
+    fn set_block_fee_context(&mut self, base_fee_share_pctg: u64);
 }
 
 impl<DB: Database, I, P> TaikoAnchorEvm for TaikoEvmWrapper<DB, I, P> {
     /// Enables or disables on-the-fly anchor context derivation for replay-style execution.
     fn set_anchor_ctx_derivation_enabled(&mut self, enabled: bool) {
         self.derive_anchor_ctx = enabled;
+    }
+
+    /// Sets fee sharing without granting anchor exemptions, including for a zero percentage.
+    fn set_block_fee_context(&mut self, base_fee_share_pctg: u64) {
+        self.base_evm_mut().extra_execution_ctx =
+            Some(TaikoEvmExtraExecutionCtx::for_anchorless_block(base_fee_share_pctg));
+        self.derive_anchor_ctx = false;
     }
 }
 
@@ -282,6 +303,89 @@ where
     }
 }
 
+/// EVM extension trait for a system call that runs with a transaction's frame semantics but none
+/// of a transaction's charges.
+pub trait TaikoSystemCallEvm: Evm {
+    /// Executes one message call from `caller` to `contract` with calldata `data`, and returns
+    /// its result and the state it leaves without committing anything.
+    ///
+    /// The call's frame follows these rules:
+    /// - It gets exactly `gas_limit` gas. No intrinsic gas is charged and no transaction gas cap
+    ///   (EIP-7825) applies, so the limit may exceed that cap.
+    /// - It pays no fee and transfers no value. The caller's nonce and balance do not change, and
+    ///   the block beneficiary receives nothing.
+    /// - It starts with the accessed addresses that EIP-2929 and EIP-3651 give a transaction from
+    ///   `caller` to `contract` at its start: the caller, `contract`, every active precompile and
+    ///   the block beneficiary. Nothing an earlier call or transaction on this EVM accessed stays
+    ///   warm.
+    /// - It starts with empty transient storage (EIP-1153).
+    /// - No inspector hook runs and no zk gas is metered, on plain and inspector-built EVMs alike.
+    ///   An installed zk gas meter keeps its in-flight and block totals unchanged.
+    ///
+    /// The call fails only when it reverts or halts exceptionally, running out of gas included;
+    /// the returned [`ExecutionResult`] reports either as `Revert` or `Halt`. A call to an address
+    /// without code succeeds and runs nothing. `Err` reports a fault of the database or the
+    /// environment, never a failed call, and comes with no state.
+    ///
+    /// The returned state holds every account the call loaded, the untouched caller included.
+    /// The invoker decides whether to commit it.
+    fn transact_unmetered_system_call(
+        &mut self,
+        caller: Address,
+        contract: Address,
+        data: Bytes,
+        gas_limit: u64,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error>;
+}
+
+impl<DB, I, P> TaikoSystemCallEvm for TaikoEvmWrapper<DB, I, P>
+where
+    DB: Database,
+    I: Inspector<TaikoEvmContext<DB>>,
+    P: PrecompileProvider<TaikoEvmContext<DB>, Output = InterpreterResult>,
+{
+    /// Runs the call on revm's system-call handler path, which skips validation, the fee
+    /// deduction, the refund and the beneficiary reward, with the production zk gas meter removed
+    /// so the frames run on the plain interpreter loop.
+    fn transact_unmetered_system_call(
+        &mut self,
+        caller: Address,
+        contract: Address,
+        data: Bytes,
+        gas_limit: u64,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        // Inspector-built EVMs keep their meter in the inspector, which this path never calls.
+        let meter = self.base_evm_mut().take_zk_gas_meter();
+        self.ctx_mut().set_tx(TxEnv {
+            caller,
+            kind: TxKind::Call(contract),
+            gas_limit,
+            data,
+            nonce: 0,
+            value: U256::ZERO,
+            gas_price: 0,
+            gas_priority_fee: None,
+            chain_id: None,
+            tx_type: 0,
+            access_list: Default::default(),
+            ..Default::default()
+        });
+        // The system-call handler skips pre-execution, so warm what a transaction's start warms:
+        // the active precompiles and the beneficiary here, `contract` when the first frame loads
+        // it, and the caller, loaded without being touched.
+        let result = load_accounts::<_, EVMError<DB::Error>>(&mut self.inner).and_then(|()| {
+            self.ctx_mut().journal_mut().load_account(caller).map_err(EVMError::Database)?;
+            TaikoEvmHandler::<_, EVMError<DB::Error>, EthFrame<EthInterpreter>>::new(None)
+                .run_system_call(&mut self.inner)
+        });
+        // Finalize and restore on every path before an error propagates, so the next execution
+        // starts from an empty journal with its meter in place.
+        let state = self.ctx_mut().journal_mut().finalize();
+        self.base_evm_mut().restore_zk_gas_meter(meter);
+        Ok(ResultAndState::new(result?, state))
+    }
+}
+
 impl<DB: Database, I, P> Deref for TaikoEvmWrapper<DB, I, P> {
     type Target = TaikoEvmContext<DB>;
 
@@ -299,7 +403,7 @@ impl<DB: Database, I, P> DerefMut for TaikoEvmWrapper<DB, I, P> {
 }
 
 /// Canonical Taiko EVM context type used by the Alloy adapter.
-pub type TaikoEvmContext<DB> = Context<BlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
+pub type TaikoEvmContext<DB> = Context<TaikoBlockEnv, TxEnv, CfgEnv<TaikoSpecId>, DB>;
 
 /// An instance of an ethereum virtual machine.
 ///
@@ -328,14 +432,14 @@ where
     /// which features are enabled.
     type Spec = TaikoSpecId;
     /// Block environment used by the EVM.
-    type BlockEnv = BlockEnv;
+    type BlockEnv = TaikoBlockEnv;
     /// Precompiles used by the EVM.
     type Precompiles = P;
     /// Evm inspector.
     type Inspector = I;
 
-    /// Reference to [`BlockEnv`].
-    fn block(&self) -> &BlockEnv {
+    /// Reference to the block fields and authoritative Taiko fee context.
+    fn block(&self) -> &TaikoBlockEnv {
         &self.block
     }
 
@@ -382,6 +486,14 @@ where
         // reach the meter through the block executor.
         if self.reset_zk_gas_per_transact {
             self.reset_transaction_zk_gas();
+            // Etna standalone simulations use the same transaction charge as block execution.
+            // Keep pre-Etna RPC accounting unchanged and let the block executor charge its own.
+            if self.charge_intrinsic_per_transact &&
+                self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
+                let Err(ZkGasOutcome::LimitExceeded) = self.charge_tx_intrinsic_zk_gas()
+            {
+                return Err(EVMError::Custom(ZK_GAS_LIMIT_ERR.to_string()));
+            }
         }
         self.maybe_derive_anchor_execution_ctx(&tx)?;
         self.ctx_mut().set_tx(tx);
@@ -418,8 +530,9 @@ where
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         // NOTE: we use this workaround to mark the Anchor transaction and base fee share percentage
-        // in this block.
-        if caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
+        // in this block. Etna EVMs ignore the marker, so it cannot restore anchor privileges.
+        if !self.cfg.spec.is_enabled_in(TaikoSpecId::ETNA) &&
+            caller == Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS) &&
             contract == get_treasury_address(self.chain_id())
         {
             let (base_fee_share_pctg, caller_nonce) = decode_anchor_system_call_data(&data)
@@ -488,6 +601,7 @@ where
         let mut gas_limit = tx.gas_limit;
         let mut basefee = 0;
         let mut disable_nonce_check = true;
+        let mut charge_intrinsic = false;
 
         // ensure the block gas limit is >= the tx
         core::mem::swap(&mut self.block.gas_limit, &mut gas_limit);
@@ -495,6 +609,7 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // disable the nonce check
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         let mut res = self.transact(tx);
 
@@ -504,6 +619,7 @@ where
         core::mem::swap(&mut self.block.basefee, &mut basefee);
         // swap back to the previous nonce check flag
         core::mem::swap(&mut self.cfg.disable_nonce_check, &mut disable_nonce_check);
+        core::mem::swap(&mut self.charge_intrinsic_per_transact, &mut charge_intrinsic);
 
         // NOTE: We assume that only the contract storage is modified. Revm currently marks the
         // caller and block beneficiary accounts as "touched" when we do the above transact calls,
@@ -581,16 +697,24 @@ pub fn decode_anchor_system_call_data(bytes: &Bytes) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
+    use alethia_reth_primitives::etna::ETNA_BLOCK_START_CALL_GAS;
+    use alloy_eips::{
+        eip2935::HISTORY_STORAGE_ADDRESS,
+        eip4788::{BEACON_ROOTS_ADDRESS, BEACON_ROOTS_CODE},
+    };
     use alloy_evm::{Evm, EvmEnv, EvmFactory};
-    use alloy_primitives::U256;
+    use alloy_primitives::{B256, U256};
     use reth_revm::{
+        DatabaseCommit,
         context::{ContextTr, result::InvalidTransaction},
         db::InMemoryDB,
-        state::AccountInfo,
+        handler::SYSTEM_ADDRESS,
+        interpreter::{CallInputs, CallOutcome, Interpreter},
+        state::{AccountInfo, Bytecode, bytecode::opcode},
     };
 
     use super::*;
-    use crate::{factory::TaikoEvmFactory, spec::TaikoSpecId};
+    use crate::{env::TaikoEvmEnv, factory::TaikoEvmFactory, spec::TaikoSpecId};
 
     fn encode_anchor_system_call_data(base_fee_share_pctg: u64, caller_nonce: u64) -> Bytes {
         let mut bytes = Vec::with_capacity(16);
@@ -615,7 +739,7 @@ mod tests {
             AccountInfo { nonce: 0, balance: U256::ZERO, ..Default::default() },
         );
 
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut env: TaikoEvmEnv = EvmEnv::default();
         env.cfg_env.chain_id = chain_id;
         let mut evm = TaikoEvmFactory.create_evm(db, env);
 
@@ -659,7 +783,7 @@ mod tests {
         // finalized as a successful one — revm's `ExecuteEvm::transact` finalizes
         // unconditionally for exactly this reason.
         let broke_caller = Address::with_last_byte(0xBC);
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+        let mut env: TaikoEvmEnv = EvmEnv::default();
         env.cfg_env.chain_id = 167_000;
         let mut evm = TaikoEvmFactory.create_evm(InMemoryDB::default(), env);
 
@@ -691,8 +815,8 @@ mod tests {
 
     /// Builds an [`EvmEnv`] the way RPC replay paths do: block context only, no anchor
     /// system call ever happens on the resulting EVM.
-    fn replay_env(chain_id: u64) -> EvmEnv<TaikoSpecId> {
-        let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+    fn replay_env(chain_id: u64) -> TaikoEvmEnv {
+        let mut env: TaikoEvmEnv = EvmEnv::default();
         env.cfg_env.chain_id = chain_id;
         env.block_env.basefee = REPLAY_BASEFEE;
         env.block_env.gas_limit = 30_000_000;
@@ -743,29 +867,126 @@ mod tests {
     }
 
     #[test]
+    fn etna_golden_touch_requires_funds_in_both_factories() {
+        let chain_id = 167_000;
+        let treasury = get_treasury_address(chain_id);
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        for inspected in [false, true] {
+            let mut env = replay_env(chain_id);
+            env.cfg_env.spec = TaikoSpecId::ETNA;
+            let mut evm = if inspected {
+                TaikoEvmFactory.create_evm_with_inspector(
+                    replay_db(7, treasury),
+                    env,
+                    reth_revm::inspector::NoOpInspector {},
+                )
+            } else {
+                TaikoEvmFactory.create_evm(replay_db(7, treasury), env)
+            };
+            // The legacy marker call cannot restore the anchor exemption either.
+            evm.transact_system_call(golden, treasury, encode_anchor_system_call_data(25, 7))
+                .unwrap();
+            assert!(evm.base_evm().extra_execution_ctx.is_none());
+            let err =
+                evm.transact(anchor_tx(treasury, 7)).expect_err("Etna has no anchor exemption");
+            assert!(matches!(
+                err,
+                EVMError::Transaction(InvalidTransaction::LackOfFundForMaxFee { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn etna_funded_golden_touch_pays_gas_and_receives_normal_refund() {
+        let chain_id = 167_000;
+        let golden = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
+        let treasury = get_treasury_address(chain_id);
+        let beneficiary = Address::with_last_byte(0xBB);
+        let balance = U256::from(100_000_000_000_000u64);
+        // An explicit zero share stays authoritative: the treasury receives the whole base fee.
+        for (percentage, treasury_fee, beneficiary_fee) in
+            [(25, 157_500_000_000u64, 52_500_000_000u64), (0, 210_000_000_000, 0)]
+        {
+            let mut outcomes = Vec::new();
+            for inspected in [false, true] {
+                let mut env = replay_env(chain_id);
+                env.cfg_env.spec = TaikoSpecId::ETNA;
+                env.block_env.beneficiary = beneficiary;
+                env.block_env = env.block_env.with_base_fee_share_pctg(percentage);
+                let mut db = replay_db(7, treasury);
+                db.insert_account_info(
+                    golden,
+                    AccountInfo { balance, nonce: 7, ..Default::default() },
+                );
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(
+                        db,
+                        env,
+                        reth_revm::inspector::NoOpInspector {},
+                    )
+                } else {
+                    TaikoEvmFactory.create_evm(db, env)
+                };
+                let result = evm.transact(anchor_tx(treasury, 7)).expect("funded ordinary call");
+                assert!(result.result.is_success());
+                assert_eq!(result.result.tx_gas_used(), 21_000);
+                // Upfront debit is 1e13 wei; 979,000 unused gas must be reimbursed.
+                assert_eq!(
+                    result.state[&golden].info.balance,
+                    balance - U256::from(210_000_000_000u64)
+                );
+                assert_eq!(result.state[&treasury].info.balance, U256::from(treasury_fee));
+                assert_eq!(
+                    result.state.get(&beneficiary).map_or(U256::ZERO, |a| a.info.balance),
+                    U256::from(beneficiary_fee)
+                );
+                outcomes.push(result);
+            }
+            for outcome in &outcomes[1..] {
+                assert_eq!(&outcomes[0], outcome);
+            }
+        }
+    }
+
+    #[test]
     fn replayed_anchor_transaction_executes_without_prior_system_call() {
         // RPC trace/replay paths (`debug_trace*`, `trace_*`) create the EVM straight from the
-        // factory and never issue the anchor system call, so the anchor exemption must be
-        // derivable from the transaction itself plus database state.
+        // factory, through the inspector variant for traces, and never issue the anchor system
+        // call, so the anchor exemption must be derivable from the transaction itself plus
+        // database state on every pre-Etna fork.
         let chain_id = 167_000;
         let golden_touch = Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS);
         let treasury = get_treasury_address(chain_id);
 
-        let mut evm = TaikoEvmFactory.create_evm(replay_db(7, treasury), replay_env(chain_id));
+        for spec in [TaikoSpecId::PACAYA, TaikoSpecId::SHASTA, TaikoSpecId::UNZEN] {
+            for inspected in [false, true] {
+                let mut env = replay_env(chain_id);
+                env.cfg_env.spec = spec;
+                let mut evm = if inspected {
+                    TaikoEvmFactory.create_evm_with_inspector(
+                        replay_db(7, treasury),
+                        env,
+                        reth_revm::inspector::NoOpInspector {},
+                    )
+                } else {
+                    TaikoEvmFactory.create_evm(replay_db(7, treasury), env)
+                };
 
-        let result = evm
-            .transact(anchor_tx(treasury, 7))
-            .expect("anchor must execute during replay without a prior anchor system call");
-        assert!(result.result.is_success(), "anchor replay must succeed: {:?}", result.result);
+                let result = evm.transact(anchor_tx(treasury, 7)).unwrap_or_else(|err| {
+                    panic!("{spec:?} inspected={inspected}: anchor replay must execute: {err:?}")
+                });
+                assert!(result.result.is_success(), "{spec:?}: {:?}", result.result);
 
-        let golden_touch_state =
-            result.state.get(&golden_touch).expect("golden touch must appear in the state");
-        assert_eq!(
-            golden_touch_state.info.balance,
-            U256::from(GOLDEN_TOUCH_DUST_BALANCE),
-            "anchor must not pay fees during replay"
-        );
-        assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the golden touch nonce");
+                let golden_touch_state =
+                    result.state.get(&golden_touch).expect("golden touch must appear in the state");
+                assert_eq!(
+                    golden_touch_state.info.balance,
+                    U256::from(GOLDEN_TOUCH_DUST_BALANCE),
+                    "{spec:?}: anchor must not pay fees during replay"
+                );
+                assert_eq!(golden_touch_state.info.nonce, 8, "anchor must bump the nonce");
+            }
+        }
     }
 
     #[test]
@@ -884,5 +1105,332 @@ mod tests {
             base_fee_income - coinbase_share,
             "treasury must receive the non-coinbase share of the basefee income"
         );
+    }
+
+    /// Address the unmetered system-call tests install their probe contracts at.
+    const PROBE: Address = Address::with_last_byte(0xC0);
+
+    /// `GAS PUSH1 0 SSTORE STOP`: stores the gas left after `GAS` in slot 0.
+    const GAS_PROBE: [u8; 5] = [opcode::GAS, opcode::PUSH1, 0, opcode::SSTORE, opcode::STOP];
+
+    /// Builds an Etna environment the way RPC replay paths do.
+    fn etna_env() -> TaikoEvmEnv {
+        let mut env = replay_env(167_001);
+        env.cfg_env.spec = TaikoSpecId::ETNA;
+        env
+    }
+
+    /// Installs `code` as the runtime bytecode of `address`.
+    fn insert_code(db: &mut InMemoryDB, address: Address, code: impl Into<Bytes>) {
+        let code = Bytecode::new_raw(code.into());
+        db.insert_account_info(
+            address,
+            AccountInfo { code_hash: code.hash_slow(), code: Some(code), ..Default::default() },
+        );
+    }
+
+    /// Returns the value `result` leaves in `slot` of `address`.
+    fn slot_value(result: &ResultAndState<HaltReason>, address: Address, slot: u64) -> U256 {
+        result.state[&address]
+            .storage
+            .get(&U256::from(slot))
+            .unwrap_or_else(|| panic!("slot {slot} of {address} was not accessed"))
+            .present_value
+    }
+
+    /// Counts the inspector hooks an execution reaches.
+    #[derive(Debug, Default)]
+    struct CountingInspector {
+        /// Number of `call` hooks.
+        calls: usize,
+        /// Number of `step` hooks.
+        steps: usize,
+    }
+
+    impl<CTX> Inspector<CTX> for CountingInspector {
+        fn step(&mut self, _interp: &mut Interpreter<EthInterpreter>, _context: &mut CTX) {
+            self.steps += 1;
+        }
+
+        fn call(&mut self, _context: &mut CTX, _inputs: &mut CallInputs) -> Option<CallOutcome> {
+            self.calls += 1;
+            None
+        }
+    }
+
+    #[test]
+    fn unmetered_system_call_frame_gets_exactly_its_gas_limit() {
+        let caller_balance = U256::from(10).pow(U256::from(18));
+        // No intrinsic gas: the frame starts with the whole limit, and gas used is the probe's
+        // own cost (GAS 2, PUSH1 3, a cold zero-to-nonzero SSTORE 22,100).
+        for (gas_limit, recorded) in [(ETNA_BLOCK_START_CALL_GAS, 29_999_998u64), (50_000, 49_998)]
+        {
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(
+                SYSTEM_ADDRESS,
+                AccountInfo { nonce: 3, balance: caller_balance, ..Default::default() },
+            );
+            insert_code(&mut db, PROBE, GAS_PROBE);
+            let mut evm = TaikoEvmFactory.create_evm(db, etna_env());
+
+            let result = evm
+                .transact_unmetered_system_call(SYSTEM_ADDRESS, PROBE, Bytes::new(), gas_limit)
+                .expect("the call must execute");
+
+            assert!(result.result.is_success(), "{:?}", result.result);
+            assert_eq!(slot_value(&result, PROBE, 0), U256::from(recorded));
+            assert_eq!(result.result.tx_gas_used(), 22_105);
+            let caller = result.state.get(&SYSTEM_ADDRESS);
+            assert!(caller.is_none_or(|account| !account.is_touched()), "caller was touched");
+            if let Some(caller) = caller {
+                assert_eq!(caller.info.nonce, 3);
+                assert_eq!(caller.info.balance, caller_balance);
+            }
+        }
+    }
+
+    #[test]
+    fn unmetered_system_call_starts_with_a_transaction_access_set() {
+        let beneficiary = Address::with_last_byte(0xBB);
+        let accessed = [
+            SYSTEM_ADDRESS,
+            beneficiary,
+            Address::with_last_byte(0x01),
+            PROBE,
+            BEACON_ROOTS_ADDRESS,
+            HISTORY_STORAGE_ADDRESS,
+            Address::with_last_byte(0x99),
+        ];
+        // For each address, stores the gas difference around `PUSH20 a BALANCE POP GAS`, which
+        // is the BALANCE cost plus 7: 107 for a warm address and 2,607 for a cold one.
+        let mut code = Vec::new();
+        for (slot, address) in (0u8..).zip(accessed) {
+            code.extend_from_slice(&[opcode::GAS, opcode::PUSH20]);
+            code.extend_from_slice(address.as_slice());
+            code.extend_from_slice(&[
+                opcode::BALANCE,
+                opcode::POP,
+                opcode::GAS,
+                opcode::SWAP1,
+                opcode::SUB,
+                opcode::PUSH1,
+                slot,
+                opcode::SSTORE,
+            ]);
+        }
+        code.push(opcode::STOP);
+        let mut db = InMemoryDB::default();
+        insert_code(&mut db, BEACON_ROOTS_ADDRESS, BEACON_ROOTS_CODE.clone());
+        insert_code(&mut db, PROBE, code);
+        let mut env = etna_env();
+        env.block_env.beneficiary = beneficiary;
+        let mut evm = TaikoEvmFactory.create_evm(db, env);
+
+        // The beacon-root write accesses its contract first; none of that may carry over.
+        let write = evm
+            .transact_system_call(SYSTEM_ADDRESS, BEACON_ROOTS_ADDRESS, B256::repeat_byte(1).into())
+            .expect("the beacon-root write must execute");
+        assert!(write.result.is_success(), "{:?}", write.result);
+        evm.db_mut().commit(write.state);
+
+        let result = evm
+            .transact_unmetered_system_call(
+                SYSTEM_ADDRESS,
+                PROBE,
+                Bytes::new(),
+                ETNA_BLOCK_START_CALL_GAS,
+            )
+            .expect("the call must execute");
+
+        assert!(result.result.is_success(), "{:?}", result.result);
+        let costs: Vec<_> =
+            (0..accessed.len() as u64).map(|slot| slot_value(&result, PROBE, slot)).collect();
+        assert_eq!(costs, [107u64, 107, 107, 107, 2_607, 2_607, 2_607].map(U256::from));
+    }
+
+    #[test]
+    fn unmetered_system_call_starts_with_empty_transient_storage() {
+        // Copies transient slot 0 into storage slot 0, then sets transient slot 0 to 1.
+        let mut db = InMemoryDB::default();
+        insert_code(
+            &mut db,
+            PROBE,
+            [
+                opcode::PUSH1,
+                0,
+                opcode::TLOAD,
+                opcode::PUSH1,
+                0,
+                opcode::SSTORE,
+                opcode::PUSH1,
+                1,
+                opcode::PUSH1,
+                0,
+                opcode::TSTORE,
+                opcode::STOP,
+            ],
+        );
+        let mut evm = TaikoEvmFactory.create_evm(db, etna_env());
+
+        for run in ["first", "second"] {
+            let result = evm
+                .transact_unmetered_system_call(
+                    SYSTEM_ADDRESS,
+                    PROBE,
+                    Bytes::new(),
+                    ETNA_BLOCK_START_CALL_GAS,
+                )
+                .expect("the call must execute");
+            assert!(result.result.is_success(), "{run} call: {:?}", result.result);
+            assert_eq!(
+                slot_value(&result, PROBE, 0),
+                U256::ZERO,
+                "{run} call saw transient storage"
+            );
+        }
+    }
+
+    #[test]
+    fn unmetered_system_call_is_not_zk_metered_and_restores_the_meter() {
+        // Hashes 64 KiB per iteration until the frame runs out of gas. Metered, this loop exceeds
+        // the block zk gas limit after about 3.2 million gas, so the transaction below proves that
+        // the call, given the same gas, would have exceeded it too. The gas stays below the
+        // call's real 30,000,000 because unoptimized test builds hash slowly.
+        let gas = 4_000_000;
+        let looper = Address::with_last_byte(0xC1);
+        let sender = Address::with_last_byte(0xA1);
+        let mut db = InMemoryDB::default();
+        insert_code(
+            &mut db,
+            looper,
+            [
+                opcode::JUMPDEST,
+                opcode::PUSH3,
+                0x01,
+                0x00,
+                0x00,
+                opcode::PUSH1,
+                0,
+                opcode::KECCAK256,
+                opcode::POP,
+                opcode::PUSH1,
+                0,
+                opcode::JUMP,
+            ],
+        );
+        db.insert_account_info(
+            sender,
+            AccountInfo { balance: U256::from(10).pow(U256::from(18)), ..Default::default() },
+        );
+        let mut evm = TaikoEvmFactory.create_evm(db, etna_env());
+
+        let result = evm
+            .transact_unmetered_system_call(SYSTEM_ADDRESS, looper, Bytes::new(), gas)
+            .expect("running out of gas is a failed call, not an error");
+
+        assert!(
+            matches!(result.result, ExecutionResult::Halt { reason: HaltReason::OutOfGas(_), .. }),
+            "{:?}",
+            result.result
+        );
+        let meter = evm.meter().expect("the production meter must be back");
+        assert_eq!(meter.tx_zk_gas_used(), 0);
+        assert_eq!(meter.block_zk_gas_used(), 0);
+        let metered = TxEnv::builder()
+            .caller(sender)
+            .kind(TxKind::Call(looper))
+            .gas_limit(gas)
+            .gas_price(u128::from(REPLAY_BASEFEE))
+            .chain_id(None)
+            .build()
+            .expect("valid tx env");
+        let err = evm.transact(metered).expect_err("a transaction running the loop is zk metered");
+        assert_eq!(err.to_string(), ZK_GAS_LIMIT_ERR);
+    }
+
+    #[test]
+    fn unmetered_system_call_reports_reverts_halts_and_missing_code() {
+        let reverter = Address::with_last_byte(0xC2);
+        let invalid = Address::with_last_byte(0xC3);
+        let absent = Address::with_last_byte(0xC4);
+        let mut db = InMemoryDB::default();
+        insert_code(&mut db, reverter, [opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::REVERT]);
+        insert_code(&mut db, invalid, [opcode::INVALID]);
+        let mut evm = TaikoEvmFactory.create_evm(db, etna_env());
+        let mut call = |contract| {
+            evm.transact_unmetered_system_call(
+                SYSTEM_ADDRESS,
+                contract,
+                Bytes::new(),
+                ETNA_BLOCK_START_CALL_GAS,
+            )
+            .expect("the call must execute")
+            .result
+        };
+
+        let reverted = call(reverter);
+        assert!(matches!(reverted, ExecutionResult::Revert { .. }), "{reverted:?}");
+        let halted = call(invalid);
+        assert!(
+            matches!(halted, ExecutionResult::Halt { reason: HaltReason::InvalidFEOpcode, .. }),
+            "{halted:?}"
+        );
+        let missing = call(absent);
+        assert!(missing.is_success(), "{missing:?}");
+        assert_eq!(missing.tx_gas_used(), 0);
+    }
+
+    #[test]
+    fn unmetered_system_call_bypasses_the_inspector_and_its_meter() {
+        let sender = Address::with_last_byte(0xA1);
+        let db = || {
+            let mut db = InMemoryDB::default();
+            insert_code(&mut db, PROBE, GAS_PROBE);
+            db.insert_account_info(
+                sender,
+                AccountInfo { balance: U256::from(10).pow(U256::from(18)), ..Default::default() },
+            );
+            db
+        };
+        let plain = TaikoEvmFactory
+            .create_evm(db(), etna_env())
+            .transact_unmetered_system_call(
+                SYSTEM_ADDRESS,
+                PROBE,
+                Bytes::new(),
+                ETNA_BLOCK_START_CALL_GAS,
+            )
+            .expect("the plain call must execute");
+        let mut evm = TaikoEvmFactory.create_evm_with_inspector(
+            db(),
+            etna_env(),
+            CountingInspector::default(),
+        );
+
+        let inspected = evm
+            .transact_unmetered_system_call(
+                SYSTEM_ADDRESS,
+                PROBE,
+                Bytes::new(),
+                ETNA_BLOCK_START_CALL_GAS,
+            )
+            .expect("the inspected call must execute");
+
+        assert!(inspected.result.is_success(), "{:?}", inspected.result);
+        assert_eq!(inspected.state[&PROBE].storage, plain.state[&PROBE].storage);
+        assert_eq!((evm.inspector().calls, evm.inspector().steps), (0, 0));
+        assert_eq!(evm.meter().expect("the inspector meter").tx_zk_gas_used(), 0);
+        // A transaction on the same EVM reaches the inspector and its meter.
+        let tx = TxEnv::builder()
+            .caller(sender)
+            .kind(TxKind::Call(PROBE))
+            .gas_limit(100_000)
+            .gas_price(u128::from(REPLAY_BASEFEE))
+            .chain_id(None)
+            .build()
+            .expect("valid tx env");
+        assert!(evm.transact(tx).expect("the transaction must execute").result.is_success());
+        assert!(evm.inspector().calls > 0 && evm.inspector().steps > 0);
+        assert!(evm.meter().expect("the inspector meter").tx_zk_gas_used() > 0);
     }
 }

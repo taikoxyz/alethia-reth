@@ -12,6 +12,7 @@ path = "src/lib.rs"
 default = ["serde", "net"]
 serde = [
     "dep:serde",
+    "dep:serde_json",
     "alloy-primitives/serde",
     "alloy-rpc-types-engine/serde",
     "alloy-rpc-types-eth/serde",
@@ -50,9 +51,7 @@ reth-ethereum-primitives = { workspace = true, default-features = false }
 reth-payload-primitives = { workspace = true, default-features = false, optional = true }
 reth-primitives-traits = { workspace = true }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 serde_with = { workspace = true, features = ["base64"] }
 sha2 = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }

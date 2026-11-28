@@ -17,7 +17,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use alloy_evm::{Evm as AlloyEvm, EvmEnv, EvmFactory};
+use alloy_evm::{Evm as AlloyEvm, EvmFactory};
 use alloy_primitives::{Address, Bytes, U64, U256, address};
 use reth_evm::precompiles::PrecompilesMap;
 use reth_revm::{
@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     alloy::{TaikoEvmContext, TaikoEvmWrapper},
+    env::TaikoEvmEnv,
     evm::TaikoEvm,
     factory::TaikoEvmFactory,
     spec::TaikoSpecId,
@@ -48,6 +49,7 @@ use crate::{
 
 use super::{
     adapter::{ZK_GAS_LIMIT_ERR, ZkGasInspector},
+    operands,
     schedule::ZkGasSchedule,
     trace::{
         TraceFactsInspector, TraceLog, TraceRecord, ZkGasTraceEvent, harness_lines, render,
@@ -338,7 +340,7 @@ fn harness_evm<I>(
 ) -> TaikoEvmWrapper<InMemoryDB, I, PrecompilesMap> {
     let env = harness_env(input);
     let spec_id = env.cfg_env.spec;
-    let evm = Context::mainnet()
+    let mut evm = Context::mainnet()
         .with_cfg(env.cfg_env)
         .with_block(env.block_env)
         .with_db(harness_db(&input.alloc))
@@ -346,6 +348,7 @@ fn harness_evm<I>(
         .with_precompiles(PrecompilesMap::from_static(Precompiles::new(
             PrecompileSpecId::from_spec_id(spec_id.into()),
         )));
+    operands::install(evm.instruction.instruction_table_mut(), true);
     let evm = TaikoEvm::new(evm);
     let evm = if inspect { evm } else { evm.with_zk_gas_schedule(Some(schedule)) };
     TaikoEvmWrapper::new(evm, inspect)
@@ -353,7 +356,7 @@ fn harness_evm<I>(
 
 /// Unzen environment with the tx gas cap and the block gas limit raised to `u64::MAX` and a zero
 /// base fee.
-fn harness_env(input: &HarnessInput) -> EvmEnv<TaikoSpecId> {
+fn harness_env(input: &HarnessInput) -> TaikoEvmEnv {
     let mut cfg_env = CfgEnv::new()
         .with_chain_id(HARNESS_CHAIN_ID)
         .with_spec_and_mainnet_gas_params(TaikoSpecId::UNZEN);
@@ -366,7 +369,7 @@ fn harness_env(input: &HarnessInput) -> EvmEnv<TaikoSpecId> {
         basefee: 0,
         ..Default::default()
     };
-    EvmEnv::new(cfg_env, block_env)
+    TaikoEvmEnv::new(cfg_env, block_env.into())
 }
 
 /// In-memory pre-state holding every `alloc` account.

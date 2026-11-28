@@ -4,10 +4,17 @@
 //! `alethia_reth_payload::builder::execution` tests to avoid duplicating EVM
 //! setup, chain spec creation, and bytecode generation.
 
+use core::{convert::Infallible, fmt};
+
+use alethia_reth_evm::env::TaikoEvmEnv;
 use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+use alloy_eips::{
+    eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
+    eip4788::{BEACON_ROOTS_ADDRESS, BEACON_ROOTS_CODE},
+};
 use alloy_evm::EvmEnv;
 use alloy_hardforks::ForkCondition;
-use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, address};
 use reth_ethereum_primitives::{EthPrimitives, Receipt, TransactionSigned};
 use reth_evm::{
     block::{BlockExecutionError, BlockExecutor},
@@ -19,6 +26,7 @@ use reth_revm::{
 };
 use reth_storage_api::StateProvider;
 use reth_trie_common::updates::TrieUpdates;
+use revm_database_interface::{DBErrorMarker, Database};
 
 use crate::factory::TaikoBlockExecutionCtx;
 use alethia_reth_chainspec::{TAIKO_DEVNET, hardfork::TaikoHardfork, spec::TaikoChainSpec};
@@ -46,8 +54,8 @@ pub fn unzen_chain_spec() -> TaikoChainSpec {
 }
 
 /// Returns an [`EvmEnv`] configured for Unzen execution.
-pub fn unzen_evm_env() -> EvmEnv<TaikoSpecId> {
-    let mut env: EvmEnv<TaikoSpecId> = EvmEnv::default();
+pub fn unzen_evm_env() -> TaikoEvmEnv {
+    let mut env: TaikoEvmEnv = EvmEnv::default();
     env.cfg_env.spec = TaikoSpecId::UNZEN;
     env.cfg_env.chain_id = 167;
     env.block_env.number = U256::from(1_u64);
@@ -69,6 +77,39 @@ pub fn unzen_execution_ctx<'a>() -> TaikoBlockExecutionCtx<'a> {
         expected_difficulty: None,
         finalized_block_zk_gas: Default::default(),
     }
+}
+
+/// Returns the Unzen test chain with Etna active from timestamp zero.
+pub fn etna_chain_spec() -> TaikoChainSpec {
+    let mut spec = unzen_chain_spec();
+    spec.inner.hardforks.insert(TaikoHardfork::Etna, ForkCondition::Timestamp(0));
+    spec
+}
+
+/// Returns an Etna environment with authoritative zero base-fee sharing.
+pub fn etna_evm_env() -> TaikoEvmEnv {
+    let mut env = unzen_evm_env();
+    env.cfg_env.spec = TaikoSpecId::ETNA;
+    env.block_env.base_fee_share_pctg = Some(0);
+    env
+}
+
+/// Returns an Etna execution context with 29-byte extraData (base-fee share 100) and the supplied
+/// beacon root.
+pub fn etna_execution_ctx<'a>(root: B256) -> TaikoBlockExecutionCtx<'a> {
+    let mut ctx = unzen_execution_ctx();
+    ctx.extra_data = vec![
+        100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]
+    .into();
+    ctx.parent_beacon_block_root = Some(root);
+    ctx
+}
+
+/// Returns the `EtnaStaking` proxy address built into the chain of [`etna_chain_spec`]: the
+/// decimal chain id 167001, zero padding, then `10003`.
+pub fn etna_test_staking_address() -> Address {
+    address!("0x1670010000000000000000000000000000010003")
 }
 
 /// Builds a recovered legacy transaction targeting `to` from `caller` with empty calldata,
@@ -162,6 +203,91 @@ pub fn insert_contract(db: &mut InMemoryDB, address: Address, bytecode: Bytecode
             ..Default::default()
         },
     );
+}
+
+/// Installs the EIP-4788 beacon roots and EIP-2935 history storage contracts at their system
+/// addresses, so the block-start writes store values that later code can read back.
+pub fn insert_system_contracts(db: &mut InMemoryDB) {
+    insert_contract(db, BEACON_ROOTS_ADDRESS, Bytecode::new_raw(BEACON_ROOTS_CODE.clone()));
+    insert_contract(db, HISTORY_STORAGE_ADDRESS, Bytecode::new_raw(HISTORY_STORAGE_CODE.clone()));
+}
+
+/// Returns bytecode that records one word per entry of `values` and then stops.
+///
+/// Each value is code that pushes exactly one word. The values run in order, and the word that
+/// value `i` pushes is stored in storage slot `i` before value `i + 1` runs, so value 0's first
+/// opcode is the contract's first. At most 256 values fit.
+///
+/// # Panics
+///
+/// If `values` has more than 256 entries.
+pub fn slot_recorder_bytecode(values: &[&[u8]]) -> Bytecode {
+    let mut code = Vec::new();
+    for (slot, value) in values.iter().enumerate() {
+        let slot = u8::try_from(slot).expect("the recorder stores at most 256 values");
+        code.extend_from_slice(value);
+        code.extend_from_slice(&[opcode::PUSH1, slot, opcode::SSTORE]);
+    }
+    code.push(opcode::STOP);
+    Bytecode::new_raw(code.into())
+}
+
+/// Database fault that [`FailingStorageDb`] injects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InjectedDbError;
+
+impl fmt::Display for InjectedDbError {
+    /// Names the injected fault.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("injected database fault")
+    }
+}
+
+impl core::error::Error for InjectedDbError {}
+
+impl DBErrorMarker for InjectedDbError {}
+
+/// In-memory database whose read of one storage slot fails with [`InjectedDbError`], so tests can
+/// check how a fault of the node's own database surfaces. Every other read is served by `inner`.
+#[derive(Debug)]
+pub struct FailingStorageDb {
+    /// Database that serves every read except the failing one.
+    pub inner: InMemoryDB,
+    /// Account and storage slot whose read fails.
+    pub failing: (Address, U256),
+}
+
+/// Turns the in-memory database's infallible result into this database's result type.
+fn infallible<T>(result: Result<T, Infallible>) -> Result<T, InjectedDbError> {
+    result.map_err(|never| match never {})
+}
+
+impl Database for FailingStorageDb {
+    /// The only fault is the injected one.
+    type Error = InjectedDbError;
+
+    /// Reads the account from `inner`.
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        infallible(self.inner.basic(address))
+    }
+
+    /// Reads the code from `inner`.
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        infallible(self.inner.code_by_hash(code_hash))
+    }
+
+    /// Fails for the `failing` slot and reads every other slot from `inner`.
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        if (address, index) == self.failing {
+            return Err(InjectedDbError);
+        }
+        infallible(self.inner.storage(address, index))
+    }
+
+    /// Reads the block hash from `inner`.
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        infallible(self.inner.block_hash(number))
+    }
 }
 
 /// Simple arithmetic bytecode: `PUSH1 1, PUSH1 2, ADD, STOP`.

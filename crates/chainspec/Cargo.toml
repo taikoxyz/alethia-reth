@@ -22,6 +22,7 @@ std = [
 ]
 
 [dependencies]
+alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-chains = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }

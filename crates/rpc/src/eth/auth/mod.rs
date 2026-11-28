@@ -40,7 +40,7 @@ use alethia_reth_block::{
         select_and_execute_pool_transactions, selection_state_seed,
     },
 };
-use alethia_reth_chainspec::spec::TaikoChainSpec;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
 use alethia_reth_db::model::{
     BatchToLastBlock, STORED_L1_HEAD_ORIGIN_KEY, StoredL1HeadOriginTable, StoredL1OriginTable,
 };
@@ -63,20 +63,29 @@ pub use types::{PreBuiltTxList, TxPoolContentParams, TxPoolContentWithMinTipPara
 /// transactions. Revisit this value if the anchor implementation changes substantially.
 const TX_POOL_ANCHOR_ZK_GAS_RESERVE: u64 = 2_000_000;
 
-/// Applies the anchor zk gas safety margin before tx-pool transaction simulation.
+/// Applies the legacy anchor zk-gas safety margin before tx-pool transaction simulation.
+///
+/// Preselection simulates under the parent's fork rules. A pre-Etna parent keeps the reserve for
+/// the mandatory anchor that preselection cannot execute, which stays conservative for the first
+/// Etna block; an Etna parent reserves nothing because no anchor follows it.
 fn reserve_anchor_zk_gas_for_tx_pool_selection<Evm, Spec, R>(
     executor: &mut TaikoBlockExecutor<'_, Evm, Spec, R>,
+    chain_spec: &TaikoChainSpec,
+    parent: &alloy_consensus::Header,
 ) -> Result<(), BlockExecutionError>
 where
     Evm: TaikoZkGasEvm,
     Spec: Clone,
     R: ReceiptBuilder,
 {
+    if chain_spec.is_etna_active(parent.timestamp()) {
+        return Ok(());
+    }
     executor.reserve_block_zk_gas(TX_POOL_ANCHOR_ZK_GAS_RESERVE)
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Computes the combined gas budget across all requested candidate tx lists, rejecting
 /// parameter combinations whose product does not fit in a `u64`.
@@ -148,6 +157,13 @@ pub trait TaikoAuthExtApi<T: RpcObject> {
         locals: Option<Vec<Address>>,
         max_transactions_lists: u64,
     ) -> RpcResult<Vec<PreBuiltTxList<T>>>;
+
+    /// Returns the built-in `EtnaStaking` proxy address that every Etna block's start call
+    /// targets, or `null` on a chain without one.
+    ///
+    /// Drivers compare it with the staking address their config hash commits.
+    #[method(name = "etnaStakingAddress")]
+    async fn etna_staking_address(&self) -> RpcResult<Option<Address>>;
 }
 
 /// A concrete implementation of the `TaikoAuthExtApi` trait.
@@ -194,6 +210,27 @@ impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, 
     }
 }
 
+impl<Pool, Eth, Evm, Provider: DatabaseProviderFactory> TaikoAuthExt<Pool, Eth, Evm, Provider>
+where
+    Evm: reth_evm::ConfigureEvm<
+            BlockExecutorFactory = TaikoBlockExecutorFactory<
+                RethReceiptBuilder,
+                Arc<TaikoChainSpec>,
+                TaikoEvmFactory,
+            >,
+        >,
+{
+    /// Returns the `EtnaStaking` proxy address from the block executor's spec, the source the
+    /// block-start call itself reads, so the RPC and the call always agree. `None` when the
+    /// executor's chain has no built-in address.
+    pub(super) fn read_etna_staking_address(&self) -> Option<Address> {
+        let spec: &TaikoChainSpec = self.evm_config.block_executor_factory().spec();
+        // Called by path: importing `TaikoExecutorSpec` here would clash with the
+        // `TaikoHardforks::is_etna_active` call this module already makes.
+        alethia_reth_chainspec::spec::TaikoExecutorSpec::etna_staking_address(spec)
+    }
+}
+
 #[async_trait]
 impl<Pool, Eth, Evm, Provider> TaikoAuthExtApiServer<RpcTransaction<Eth::Network>>
     for TaikoAuthExt<Pool, Eth, Evm, Provider>
@@ -202,7 +239,7 @@ where
     Eth: RpcConvert<Primitives: NodePrimitives<SignedTx = PoolConsensusTx<Pool>>> + 'static,
     Provider: DatabaseProviderFactory
         + BlockReaderIdExt<Header = alloy_consensus::Header>
-        + ChainSpecProvider
+        + ChainSpecProvider<ChainSpec: reth::chainspec::Hardforks>
         + StateProviderFactory
         + 'static,
     Evm: ConfigureEngineEvm<
@@ -350,6 +387,7 @@ where
             .ok_or(EthApiError::HeaderNotFound(BlockId::Number(BlockNumberOrTag::Latest)))?;
         let sealed_parent = parent_block.seal();
         let parent = sealed_parent.sealed_header();
+        let chain_spec = self.evm_config.block_executor_factory().spec();
 
         let state_provider = self.provider.state_by_block_hash(parent.hash()).map_err(|_| {
             EthApiError::EvmCustom("Failed to initialize EVM state provider".to_string())
@@ -361,7 +399,8 @@ where
 
         info!(target: "taiko_rpc_payload_builder", ?parent, "Building prebuilt transaction based on the parent block");
 
-        // Create the block builder based on the parent block and the provided attributes.
+        // Preselection simulates under the parent's fork rules and never runs pre-execution system
+        // calls, so it needs no beacon root.
         let env_attributes = TaikoNextBlockEnvAttributes {
             timestamp: parent.timestamp(),
             suggested_fee_recipient: beneficiary,
@@ -381,8 +420,12 @@ where
             EthApiError::EvmCustom("failed to create block builder from EVM config".to_string())
         })?;
 
-        reserve_anchor_zk_gas_for_tx_pool_selection(builder.executor_mut())
-            .map_err(|err| EthApiError::Internal(err.into()))?;
+        reserve_anchor_zk_gas_for_tx_pool_selection(
+            builder.executor_mut(),
+            chain_spec.as_ref(),
+            parent,
+        )
+        .map_err(|err| EthApiError::Internal(err.into()))?;
 
         info!(target: "taiko_rpc_payload_builder", ?base_fee, ?block_max_gas_limit, ?max_bytes_per_tx_list, ?locals, ?max_transactions_lists, "Building prebuilt transaction lists from the pool");
 
@@ -396,6 +439,7 @@ where
             min_tip,
             locals: locals.unwrap_or_default(),
             state_seed,
+            max_tx_bytes_per_list: None,
         };
 
         match select_and_execute_pool_transactions(
@@ -434,5 +478,10 @@ where
             }
             Err(err) => Err(EthApiError::Internal(err.into()).into()),
         }
+    }
+
+    /// Returns the block executor spec's built-in `EtnaStaking` proxy address.
+    async fn etna_staking_address(&self) -> RpcResult<Option<Address>> {
+        Ok(self.read_etna_staking_address())
     }
 }

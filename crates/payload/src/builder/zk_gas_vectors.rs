@@ -524,7 +524,7 @@ fn build(input: &BlockInput, txs: &[Recovered<EthTransactionSigned>]) -> BuildOu
         .apply_pre_execution_changes()
         .unwrap_or_else(|err| panic!("build: pre-execution changes failed: {err}"));
     let base_fee = builder.evm_mut().block.basefee;
-    match execute_provided_transactions(&mut builder, txs, base_fee, &Default::default()) {
+    match execute_provided_transactions(&mut builder, txs, base_fee, None, &Default::default()) {
         Ok(ExecutionOutcome::Completed(_)) => {}
         Ok(ExecutionOutcome::Cancelled) => panic!("build: cancelled"),
         Err(err) => panic!("build: tx execution failed: {err}"),
@@ -614,7 +614,7 @@ fn replay(
         .apply_pre_execution_changes()
         .unwrap_or_else(|err| panic!("replay: pre-execution changes failed: {err}"));
     let base_fee = builder.evm_mut().block.basefee;
-    match execute_provided_transactions(&mut builder, txs, base_fee, &Default::default()) {
+    match execute_provided_transactions(&mut builder, txs, base_fee, None, &Default::default()) {
         Ok(ExecutionOutcome::Completed(_)) => {}
         Ok(ExecutionOutcome::Cancelled) => panic!("replay: cancelled"),
         Err(err) => panic!("replay: tx execution failed: {err}"),

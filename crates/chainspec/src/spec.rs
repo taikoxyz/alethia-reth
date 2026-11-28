@@ -216,13 +216,24 @@ pub fn validate_etna_staking_address<S: TaikoExecutorSpec + EthChainSpec>(
 /// Helper trait for applying Taiko devnet specific overrides.
 pub trait TaikoDevnetConfigExt {
     /// Returns a cloned [`TaikoChainSpec`] with the Unzen hardfork activation timestamp updated
-    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks.
+    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks and when
+    /// `timestamp == 0` (canonical devnet already activates Unzen at genesis).
+    ///
+    /// This override and [`Self::clone_with_devnet_etna_timestamp`] are mutually exclusive. It
+    /// returns `None` when the spec schedules Etna (any activation other than
+    /// [`ForkCondition::Never`]), since `timestamp` could move Unzen, Cancun and Prague past Etna.
     fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized;
     /// Returns a devnet spec activating Etna at `timestamp`, preserving custom allocations.
     ///
     /// All Genesis fields outside `alloc` must match canonical devnet; otherwise returns `None`.
+    /// Zero activates Etna at genesis.
+    ///
+    /// This override and [`Self::clone_with_devnet_unzen_timestamp`] are mutually exclusive. It
+    /// rebuilds the fork table from canonical devnet, so it returns `None` when the spec activates
+    /// Unzen other than canonical devnet does instead of dropping that activation. A spec parsed
+    /// from Genesis JSON carries no Taiko forks and is accepted.
     fn clone_with_devnet_etna_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized;
@@ -230,13 +241,20 @@ pub trait TaikoDevnetConfigExt {
 
 impl TaikoDevnetConfigExt for TaikoChainSpec {
     /// Returns a cloned [`TaikoChainSpec`] with the Unzen hardfork activation timestamp updated
-    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks or when
-    /// `timestamp == 0` (the default devnet config already activates Unzen at genesis).
+    /// when the chainspec targets the Taiko devnet. Returns `None` for other networks and when
+    /// `timestamp == 0` (canonical devnet already activates Unzen at genesis).
+    ///
+    /// This override and [`Self::clone_with_devnet_etna_timestamp`] are mutually exclusive. It
+    /// returns `None` when the spec schedules Etna (any activation other than
+    /// [`ForkCondition::Never`]), since `timestamp` could move Unzen, Cancun and Prague past Etna.
     fn clone_with_devnet_unzen_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized,
     {
-        if timestamp == 0 || self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH {
+        if timestamp == 0 ||
+            self.genesis_hash() != TAIKO_DEVNET_GENESIS_HASH ||
+            self.taiko_fork_activation(TaikoHardfork::Etna) != ForkCondition::Never
+        {
             return None;
         }
 
@@ -272,10 +290,22 @@ impl TaikoDevnetConfigExt for TaikoChainSpec {
     ///
     /// Zero activates Etna at genesis. The canonical devnet activates Unzen at genesis, so every
     /// timestamp keeps Etna at or after Unzen.
+    ///
+    /// This override and [`Self::clone_with_devnet_unzen_timestamp`] are mutually exclusive. It
+    /// rebuilds the fork table from canonical devnet, so it returns `None` when the spec activates
+    /// Unzen other than canonical devnet does instead of dropping that activation. A spec parsed
+    /// from Genesis JSON carries no Taiko forks and is accepted.
     fn clone_with_devnet_etna_timestamp(&self, timestamp: u64) -> Option<Self>
     where
         Self: Sized,
     {
+        let unzen = self.taiko_fork_activation(TaikoHardfork::Unzen);
+        if unzen != ForkCondition::Never &&
+            unzen != TAIKO_DEVNET.taiko_fork_activation(TaikoHardfork::Unzen)
+        {
+            return None;
+        }
+
         let genesis = self.genesis().clone();
         let mut comparable_genesis = genesis.clone();
         comparable_genesis.alloc = TAIKO_DEVNET.genesis().alloc.clone();
@@ -400,6 +430,27 @@ mod test {
             "non-devnet overrides should be ignored"
         );
     }
+
+    #[test]
+    fn devnet_unzen_override_refuses_a_spec_from_the_etna_override() {
+        for etna in [0, 100] {
+            let spec = TAIKO_DEVNET.clone_with_devnet_etna_timestamp(etna).unwrap();
+            // The genesis hash alone would let the override through and move Unzen, Cancun and
+            // Prague past Etna.
+            assert_eq!(spec.genesis_hash(), crate::TAIKO_DEVNET_GENESIS_HASH);
+            assert_eq!(spec.clone_with_devnet_unzen_timestamp(etna + 42), None, "Etna at {etna}");
+        }
+    }
+
+    #[test]
+    fn devnet_etna_override_refuses_a_spec_from_the_unzen_override() {
+        let spec = TAIKO_DEVNET.clone_with_devnet_unzen_timestamp(42).unwrap();
+        // Rebuilding canonical devnet's fork table would drop the delayed Unzen.
+        for etna in [0, 42, 100] {
+            assert_eq!(spec.clone_with_devnet_etna_timestamp(etna), None, "Etna at {etna}");
+        }
+    }
+
     #[test]
     fn test_chain_spec_is_optimism() {
         let spec = TaikoChainSpec::default();

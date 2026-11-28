@@ -1206,7 +1206,7 @@ mod test {
         assert!(recorder.take_matching("block-start staking call").is_empty());
     }
 
-    /// Vectors 3.2 13.n and 13.o (CONS-3.2-13): when the staking address holds an empty account
+    /// Vectors 3.2 13.aa and 13.ab (CONS-3.2-13): when the staking address holds an empty account
     /// (zero nonce and balance, no code) with storage, which only a genesis can hold, the call runs
     /// no code but touches that address, so EIP-161 removes the account with its storage. The
     /// block stays valid, and the call changes no other state.
@@ -1233,7 +1233,7 @@ mod test {
             &[tx],
         );
 
-        // 13.n: the block is valid, and the account and its storage are gone (13.o rejects an EL
+        // 13.aa: the block is valid, and the account and its storage are gone (13.ab rejects an EL
         // that keeps either).
         assert_eq!(result.receipts.len(), 1);
         assert_eq!(state.basic(staking).expect("db read"), None);
@@ -1245,7 +1245,7 @@ mod test {
         assert_eq!(removed.info, None);
         assert_eq!(removed.storage_slot(slot), Some(U256::ZERO));
 
-        // 13.n: apart from that removal, the block's state, gas, receipts and zk gas are those of
+        // 13.aa: apart from that removal, the block's state, gas, receipts and zk gas are those of
         // the same block over a state without the account.
         baseline_state.merge_transitions(BundleRetention::Reverts);
         let baseline_bundle = baseline_state.take_bundle();

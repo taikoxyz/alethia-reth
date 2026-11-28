@@ -122,7 +122,8 @@ cannot save a forged checkpoint, and proofs resolve L1 roots through EIP-4788. T
 predeploy the `EtnaStaking` proxy at the chain's built-in address
 (`0x1670010000000000000000000000000000010003` for chain id 167001; see the
 [address table](docs/engine-api-etna.md#block-start-staking-call)), or every block-start call finds
-no code and changes nothing. From this repository, start a fresh node with the
+no code, writes no snapshot and leaves signing to the fallback keys. From this repository, start
+a fresh node with the
 [Etna override](docs/engine-api-etna.md#devnet-activation-override) at the genesis timestamp, `0`:
 
 ```sh

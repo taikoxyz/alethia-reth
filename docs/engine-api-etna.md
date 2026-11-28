@@ -7,14 +7,14 @@ The Engine API method change is not gated on Etna: it applies to Unzen traffic a
 runs this version (see [Breaking at deploy](#breaking-at-deploy)).
 
 Etna block production and validation follow taiko-mono's
-[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks),
-its [section 4](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)
+[`SPEC.md` section 3](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#3-consensus-and-blocks),
+its [section 4](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)
 on the staking contract that every Etna block calls, its
-[section 11](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#11-parameters)
+[section 11](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#11-parameters)
 on parameters, its
-[appendix A](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#appendix-a-encodings)
-and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/ANCHORLESS.md),
-as of `5cd86f0e6623ecb9fbbe3f06df099408325d087f`, the head of docs PR
+[appendix A](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#appendix-a-encodings)
+and its [anchorless design](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/ANCHORLESS.md),
+as of `797a708e57badb02dc4e974dcaf9167232aa2969`, the head of docs PR
 [taikoxyz/taiko-mono#22425](https://github.com/taikoxyz/taiko-mono/pull/22425), which is not merged
 yet.
 The older proposal-based `Derivation.md` describes the pre-Etna flow. Activation
@@ -78,8 +78,8 @@ on the chain's `EtnaStaking` proxy once, after the EIP-2935 and then the EIP-478
 the first transaction. The call counts the missed signatures that `missBitmap` reports, applies
 the penalties they reach, releases the seats of bonds that have missed too many blocks in a row,
 and stores the candidate snapshot
-([SPEC.md section 3.2](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#32-block-header)
-and [section 4](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)).
+([SPEC.md section 3.2](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#32-block-header)
+and [section 4](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#4-staking-and-committees)).
 
 - **Caller and calldata.** The caller is the system address
   `0xfffffffffffffffffffffffffffffffffffffffe`. The calldata is 68 bytes: the selector `0xea987592`,
@@ -100,7 +100,7 @@ and [section 4](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe
   touches that address, and SPEC.md's CONS-3.2-13 requires what follows: an empty account there
   (zero nonce and balance, no code), which only a genesis can hold, is removed with its storage
   (EIP-161), and the call changes no other state
-  ([vectors 3.2 13.n and 13.o](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/rules/vectors/3.2.md#cons-32-13)).
+  ([vectors 3.2 13.aa and 13.ab](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/rules/vectors/3.2.md#cons-32-13)).
 - **Node faults.** A fault of the node's own storage or environment during the call, such as a
   failed database read, is not a failure of the call. Execution stops with an internal error, and
   the node answers neither `VALID` nor `INVALID` on that basis ([error contract](#error-contract)).
@@ -111,7 +111,7 @@ and [section 4](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe
   block executor's pre-execution step, which makes it once even when that step runs twice.
   Pre-Etna blocks and the L2 genesis make no call.
 
-[SPEC.md section 11](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#11-parameters)
+[SPEC.md section 11](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#11-parameters)
 requires the proxy address to be built in for the L2 chain id and to equal the `staking` address
 that the config hash commits. The EL reads it from neither L1 nor the genesis. The spec gives no
 formula: the `getConstantAddress` rule below is this version's, and follows the convention
@@ -124,7 +124,8 @@ taiko-mono's genesis uses for its predeploy addresses.
 | Every other chain id, custom chainspecs included | `getConstantAddress(chainId, 10003)`: the chain id's decimal digits, then zero padding, then `10003`, 40 hex characters in all |
 
 A new network's genesis predeploys the proxy at its address; while the address holds no code, every
-call is a no-op. `alethia-reth node` refuses to start when its final chain spec, after the
+call runs no code and changes no state, except that it removes an empty account there (EIP-161).
+`alethia-reth node` refuses to start when its final chain spec, after the
 [devnet override](#devnet-activation-override), schedules Etna (any activation other than
 `ForkCondition::Never`) on a chain without an address. Mainnet and Taiko Hoodi have none yet; the
 release that schedules Etna on either builds that chain's address in. Drivers read the address with
@@ -132,7 +133,7 @@ release that schedules Etna on either builds that chain's address in. Drivers re
 
 This version makes the call and requires the 29-byte layout in every Etna block, which is ruleset 0
 of
-[SPEC.md section 10.1](https://github.com/taikoxyz/taiko-mono/blob/5cd86f0e6623ecb9fbbe3f06df099408325d087f/packages/protocol/docs/etna/SPEC.md#101-protocol-upgrades).
+[SPEC.md section 10.1](https://github.com/taikoxyz/taiko-mono/blob/797a708e57badb02dc4e974dcaf9167232aa2969/packages/protocol/docs/etna/SPEC.md#101-protocol-upgrades).
 The EL does not read the rules schedule, so a later ruleset that changes the call or the layout
 needs its own way for the EL to select its blocks.
 
@@ -398,7 +399,7 @@ genesis built with the [recipe](../README.md#custom-devnet-genesis-with-etna) wo
 On canonical devnet itself, the pre-Etna L2 `SignalService` keeps its checkpoint store open, so a
 golden-touch `anchorV4` can save forged checkpoints, and EIP-4788 and EIP-2935 have no code.
 Canonical devnet also has no code at its `EtnaStaking` address,
-`0x1670010000000000000000000000000000010003`, so every block-start call there is a no-op and the
+`0x1670010000000000000000000000000000010003`, so every block-start call there runs no code and the
 fallback keys sign every block. Offline commands such as `stage run` and `re-execute` cannot
 reproduce an overridden schedule.
 See the [custom genesis recipe](../README.md#custom-devnet-genesis-with-etna).

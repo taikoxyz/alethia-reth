@@ -11,7 +11,7 @@ use reth::{
 use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_evm::{
-    block::{BlockExecutionError, BlockValidationError, CommitChanges, TxResult},
+    block::{BlockExecutionError, BlockValidationError},
     execute::BlockBuilder,
 };
 use reth_payload_builder_primitives::PayloadBuilderError;
@@ -65,7 +65,13 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) zk_overflows: &'a ZkOverflowMemory,
 }
 
-/// Validates and commits the mandatory anchor only if its execution succeeds.
+/// Validates the mandatory anchor and executes it as the block's first transaction.
+///
+/// An anchor that fails validation or execution aborts the payload. One that executes but
+/// reverts is still committed with its failed receipt, as taiko-geth's sealing does: canonical
+/// history contains such anchors, for example the anchors of Taiko Mainnet blocks
+/// 4,990,435-4,990,744, the first 310 blocks after the Shasta activation, and re-deriving those
+/// blocks has to reproduce them.
 pub(super) fn execute_payload_anchor(
     builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
     anchor_tx: &Recovered<EthTransactionSigned>,
@@ -74,22 +80,7 @@ pub(super) fn execute_payload_anchor(
 ) -> Result<(), PayloadBuilderError> {
     validate_anchor_transaction(anchor_tx.inner(), chain_spec, context)
         .map_err(PayloadBuilderError::other)?;
-
-    let execution = builder
-        .execute_transaction_with_commit_condition(anchor_tx.clone(), |outcome| {
-            if outcome.result().result.is_success() {
-                CommitChanges::Yes
-            } else {
-                CommitChanges::No
-            }
-        })
-        .map_err(PayloadBuilderError::evm)?;
-
-    if execution.is_none() {
-        return Err(PayloadBuilderError::Internal(RethError::msg(
-            "anchor transaction execution did not succeed",
-        )));
-    }
+    builder.execute_transaction(anchor_tx.clone()).map_err(PayloadBuilderError::evm)?;
     Ok(())
 }
 
@@ -408,7 +399,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn execute_payload_anchor_leaves_no_receipt_when_the_call_reverts() {
+    fn execute_payload_anchor_commits_a_reverted_anchor() {
         let chain_spec = test_chain_spec();
         let mut db = db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]);
         insert_contract(
@@ -426,14 +417,45 @@ pub(super) mod tests {
         );
         let mut builder = ExecutorBackedBuilder { executor };
 
-        let error = execute_payload_anchor(
+        // Canonical history carries reverted anchors (mainnet blocks 4,990,435-4,990,744), so
+        // re-deriving it must commit the failed receipt rather than abort the payload.
+        execute_payload_anchor(
             &mut builder,
             &test_anchor_transaction(),
             &chain_spec,
             AnchorValidationContext { timestamp: 1, block_number: 1, base_fee_per_gas: 0 },
         )
-        .expect_err("a reverted anchor must fail the payload");
-        assert!(error.to_string().contains("anchor transaction execution did not succeed"));
+        .expect("a reverted anchor must still be committed");
+        let receipts = builder.executor.receipts();
+        assert_eq!(receipts.len(), 1);
+        assert!(!receipts[0].success);
+    }
+
+    #[test]
+    fn execute_payload_anchor_rejects_a_malformed_anchor_before_running_it() {
+        let chain_spec = test_chain_spec();
+        let mut state = State::builder()
+            .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
+            .with_bundle_update()
+            .build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            unzen_execution_ctx(),
+            chain_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+
+        // The fixture anchor's zero fee cap does not equal a base fee of 1.
+        let error = execute_payload_anchor(
+            &mut builder,
+            &test_anchor_transaction(),
+            &chain_spec,
+            AnchorValidationContext { timestamp: 1, block_number: 1, base_fee_per_gas: 1 },
+        )
+        .expect_err("a malformed anchor must fail the payload");
+        assert!(error.to_string().contains("max_fee_per_gas mismatch"), "{error}");
         assert!(builder.executor.receipts().is_empty());
     }
 

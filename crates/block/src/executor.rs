@@ -432,7 +432,8 @@ where
     ///
     /// Its state is committed only when it succeeds. A revert or an exceptional halt, running out
     /// of gas included, drops the state and keeps the block valid. A call to an address without
-    /// code succeeds and changes nothing.
+    /// code succeeds and runs no code; it touches that address, so an empty account there is
+    /// removed with its storage (EIP-161), and it changes no other state.
     ///
     /// # Errors
     ///
@@ -858,13 +859,13 @@ mod test {
 
     /// Executes one Etna block over `db` under [`etna_chain_spec`] and [`etna_evm_env`]:
     /// pre-execution, then each of `txs`, then `finish()`, each of which must succeed. Returns the
-    /// state, the block result and the block's finalized zk gas.
+    /// state, which records bundle transitions, the block result and the block's finalized zk gas.
     fn run_etna_block(
         db: InMemoryDB,
         ctx: TaikoBlockExecutionCtx<'_>,
         txs: &[Recovered<TransactionSigned>],
     ) -> (State<InMemoryDB>, BlockExecutionResult<Receipt>, u64) {
-        let mut state = State::builder().with_database(db).build();
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
         let evm = TaikoEvmFactory.create_evm(&mut state, etna_evm_env());
         let zk_gas = ctx.clone();
         let mut executor = TaikoBlockExecutor::new(
@@ -1203,6 +1204,56 @@ mod test {
         assert_eq!(result.receipts.len(), 1);
         assert_eq!(state.basic(staking).expect("db read"), None);
         assert!(recorder.take_matching("block-start staking call").is_empty());
+    }
+
+    /// Vectors 3.2 13.n and 13.o (CONS-3.2-13): when the staking address holds an empty account
+    /// (zero nonce and balance, no code) with storage, which only a genesis can hold, the call runs
+    /// no code but touches that address, so EIP-161 removes the account with its storage. The
+    /// block stays valid, and the call changes no other state.
+    #[test]
+    fn etna_block_start_call_removes_an_empty_staking_account_with_its_storage() {
+        let staking = etna_test_staking_address();
+        let caller = Address::with_last_byte(0x31);
+        let slot = U256::from(7u64);
+        let tx = recovered_tx(caller, BENCH_SUCCESS_TARGET, 0, 1);
+        let mut with_account = db_with_contracts(&[(caller, 0)]);
+        with_account.insert_account_info(staking, AccountInfo::default());
+        with_account.insert_account_storage(staking, slot, U256::from(9u64)).expect("db write");
+        assert_eq!(with_account.basic(staking).expect("db read"), Some(AccountInfo::default()));
+
+        let (mut state, result, zk_gas) = run_etna_block(
+            with_account,
+            etna_execution_ctx(BLOCK_START_ROOT),
+            std::slice::from_ref(&tx),
+        );
+        // The same block over the same state without the account.
+        let (mut baseline_state, baseline, baseline_zk_gas) = run_etna_block(
+            db_with_contracts(&[(caller, 0)]),
+            etna_execution_ctx(BLOCK_START_ROOT),
+            &[tx],
+        );
+
+        // 13.n: the block is valid, and the account and its storage are gone (13.o rejects an EL
+        // that keeps either).
+        assert_eq!(result.receipts.len(), 1);
+        assert_eq!(state.basic(staking).expect("db read"), None);
+        assert_eq!(state.storage(staking, slot).expect("db read"), U256::ZERO);
+        state.merge_transitions(BundleRetention::Reverts);
+        let mut bundle = state.take_bundle();
+        let removed = bundle.state.remove(&staking).expect("the call changes the staking address");
+        assert!(removed.was_destroyed(), "{removed:?}");
+        assert_eq!(removed.info, None);
+        assert_eq!(removed.storage_slot(slot), Some(U256::ZERO));
+
+        // 13.n: apart from that removal, the block's state, gas, receipts and zk gas are those of
+        // the same block over a state without the account.
+        baseline_state.merge_transitions(BundleRetention::Reverts);
+        let baseline_bundle = baseline_state.take_bundle();
+        assert_eq!(bundle.state, baseline_bundle.state);
+        assert_eq!(bundle.contracts, baseline_bundle.contracts);
+        assert_eq!(result.gas_used, baseline.gas_used);
+        assert_eq!(result.receipts, baseline.receipts);
+        assert_eq!(zk_gas, baseline_zk_gas);
     }
 
     #[test]

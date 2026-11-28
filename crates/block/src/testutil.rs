@@ -38,6 +38,10 @@ pub const BENCH_NEAR_LIMIT_TARGET: Address = Address::with_last_byte(0x23);
 /// sets its switch, and a call without calldata exceeds the zk gas limit until the switch is set.
 pub const BENCH_SWITCH_TARGET: Address = Address::with_last_byte(0x24);
 
+/// Target address for [`failed_point_evaluation_bytecode`], whose execution exceeds the zk gas
+/// limit even under a 1M gas limit.
+pub const BENCH_SMALL_LIMIT_TARGET: Address = Address::with_last_byte(0x25);
+
 /// Returns a [`TaikoChainSpec`] with Unzen activated at timestamp 0.
 pub fn unzen_chain_spec() -> TaikoChainSpec {
     let mut chain_spec = (*TAIKO_DEVNET).as_ref().clone();
@@ -106,10 +110,18 @@ pub fn recovered_tx_with_chain_id(
     legacy_recovered_tx(caller, to, nonce, gas_price, chain_id, Bytes::default())
 }
 
+/// Builds a recovered legacy transaction like [`recovered_tx`], with an explicit gas limit.
+pub fn recovered_tx_with_gas_limit(
+    caller: Address,
+    to: Address,
+    nonce: u64,
+    gas_price: u64,
+    gas_limit: u64,
+) -> Recovered<TransactionSigned> {
+    signed_legacy_tx(caller, to, nonce, gas_price, 167, Bytes::default(), gas_limit)
+}
+
 /// Builds a recovered legacy transaction with a 5M gas limit and a placeholder signature.
-///
-/// The transaction hash is a placeholder too: the caller's last address byte, with the nonce in
-/// the first eight bytes, so one caller's transactions at different nonces have distinct hashes.
 fn legacy_recovered_tx(
     caller: Address,
     to: Address,
@@ -118,11 +130,27 @@ fn legacy_recovered_tx(
     chain_id: u64,
     input: Bytes,
 ) -> Recovered<TransactionSigned> {
+    signed_legacy_tx(caller, to, nonce, gas_price, chain_id, input, 5_000_000)
+}
+
+/// Builds a recovered legacy transaction with a placeholder signature.
+///
+/// The transaction hash is a placeholder too: the caller's last address byte, with the nonce in
+/// the first eight bytes, so one caller's transactions at different nonces have distinct hashes.
+fn signed_legacy_tx(
+    caller: Address,
+    to: Address,
+    nonce: u64,
+    gas_price: u64,
+    chain_id: u64,
+    input: Bytes,
+    gas_limit: u64,
+) -> Recovered<TransactionSigned> {
     let tx = TxLegacy {
         chain_id: Some(ChainId::from(chain_id)),
         nonce,
         gas_price: gas_price.into(),
-        gas_limit: 5_000_000,
+        gas_limit,
         to: TxKind::Call(to),
         value: U256::ZERO,
         input,
@@ -140,6 +168,7 @@ pub fn db_with_contracts(accounts: &[(Address, u64)]) -> InMemoryDB {
     insert_contract(&mut db, BENCH_LIMIT_TARGET, limit_exceeding_keccak_bytecode());
     insert_contract(&mut db, BENCH_NEAR_LIMIT_TARGET, near_limit_keccak_bytecode());
     insert_contract(&mut db, BENCH_SWITCH_TARGET, switch_keccak_bytecode());
+    insert_contract(&mut db, BENCH_SMALL_LIMIT_TARGET, failed_point_evaluation_bytecode());
     for &(address, nonce) in accounts {
         db.insert_account_info(
             address,
@@ -196,6 +225,26 @@ pub fn limit_exceeding_keccak_bytecode() -> Bytecode {
         opcode::PUSH1,
         0x00,         // jump destination 0
         opcode::JUMP, // loop
+    ]))
+}
+
+/// Bytecode that calls the point evaluation precompile (`0x0a`) with every gas unit left and an
+/// empty input.
+///
+/// The precompile rejects the input and keeps all the gas it was given, which is charged at its
+/// 859 multiplier, so the call exceeds the 100M block zk gas budget under any gas limit from
+/// roughly 120k up.
+pub fn failed_point_evaluation_bytecode() -> Bytecode {
+    Bytecode::new_raw(Bytes::from(vec![
+        opcode::PUSH0, // return size
+        opcode::PUSH0, // return offset
+        opcode::PUSH0, // input size
+        opcode::PUSH0, // input offset
+        opcode::PUSH1,
+        0x0a,        // point evaluation precompile
+        opcode::GAS, // forward all remaining gas
+        opcode::STATICCALL,
+        opcode::STOP,
     ]))
 }
 

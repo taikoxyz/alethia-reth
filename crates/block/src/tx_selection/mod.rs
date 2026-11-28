@@ -116,6 +116,13 @@ pub enum SelectionOutcome {
 /// Default threshold for triggering the zlib guard check.
 pub const DEFAULT_DA_ZLIB_GUARD_BYTES: u64 = 4 * 1024;
 
+/// Largest gas limit, in gas units, that draws on the small-transaction first-time overflow
+/// allowance; larger transactions draw on the large-transaction allowance.
+///
+/// The two allowances are separate so that a few overflowing transactions with large gas limits
+/// can use up only their own allowance and cannot stop selection for smaller transactions.
+const SMALL_TRANSACTION_GAS_LIMIT: u64 = 1_000_000;
+
 /// Selects and executes transactions from the pool.
 ///
 /// This function iterates through the best transactions in the pool, applying
@@ -134,8 +141,11 @@ pub const DEFAULT_DA_ZLIB_GUARD_BYTES: u64 = 4 * 1024;
 /// - At any other state it runs again. Re-runs never stop selection, but once the gas limits of
 ///   re-runs that overflowed again in this call add up to `gas_limit_per_list`, remembered
 ///   transactions are skipped instead. A re-run that fits is forgotten.
-/// - Selection stops once the gas limits of first-time overflows in this call add up to
-///   `gas_limit_per_list`.
+/// - First-time overflows draw on one of two allowances by gas limit, each `gas_limit_per_list` in
+///   summed gas limits. Once the allowance for transactions with a gas limit above 1M is used up,
+///   later such transactions are skipped without running unless remembered, and selection continues
+///   with smaller ones. Selection stops once the allowance for transactions with a gas limit of at
+///   most 1M is used up.
 /// - Selection stops as soon as the block zk gas budget cannot pay another transaction's intrinsic
 ///   charge.
 ///
@@ -172,8 +182,10 @@ where
     overflows.retain(|tx_hash| pool.contains(tx_hash));
     // Digest of the execution state the next candidate runs against.
     let mut state = config.state_seed;
-    // Gas limits of transactions that overflowed for the first time in this call.
-    let mut first_time_overflow_gas = 0u64;
+    // Gas limits of transactions that overflowed for the first time in this call, split by
+    // whether the gas limit is above `SMALL_TRANSACTION_GAS_LIMIT`.
+    let mut small_first_time_overflow_gas = 0u64;
+    let mut large_first_time_overflow_gas = 0u64;
     // Gas limits of remembered transactions that ran again and overflowed again in this call.
     let mut rerun_overflow_gas = 0u64;
 
@@ -252,6 +264,14 @@ where
             best_txs.mark_invalid(&pool_tx, zk_gas_budget_error());
             continue;
         }
+        // Skip an unremembered large candidate once large first-time overflows used up their
+        // allowance, before the list checks so that it opens no list.
+        let is_large = pool_tx.gas_limit() > SMALL_TRANSACTION_GAS_LIMIT;
+        if remembered.is_none() && is_large && large_first_time_overflow_gas >= overflow_gas_cap {
+            trace!(target: "tx_selection", ?tx_hash, large_first_time_overflow_gas, "skipping large transaction: large first-time overflow allowance used up");
+            best_txs.mark_invalid(&pool_tx, zk_gas_budget_error());
+            continue;
+        }
 
         // 6. Check if transaction fits in current list; if not, try starting a new one
         let current_index = lists.len().saturating_sub(1);
@@ -311,14 +331,18 @@ where
                 if remembered.is_some() {
                     rerun_overflow_gas = rerun_overflow_gas.saturating_add(pool_tx.gas_limit());
                     trace!(target: "tx_selection", ?tx_hash, rerun_overflow_gas, "skipping transaction that overflowed the zk gas budget again");
+                } else if is_large {
+                    large_first_time_overflow_gas =
+                        large_first_time_overflow_gas.saturating_add(pool_tx.gas_limit());
+                    trace!(target: "tx_selection", ?tx_hash, large_first_time_overflow_gas, "skipping large transaction that overflowed the zk gas budget");
                 } else {
-                    first_time_overflow_gas =
-                        first_time_overflow_gas.saturating_add(pool_tx.gas_limit());
-                    if first_time_overflow_gas >= overflow_gas_cap {
-                        trace!(target: "tx_selection", ?tx_hash, first_time_overflow_gas, "stopping selection: first-time zk gas overflows reached the cap");
+                    small_first_time_overflow_gas =
+                        small_first_time_overflow_gas.saturating_add(pool_tx.gas_limit());
+                    if small_first_time_overflow_gas >= overflow_gas_cap {
+                        trace!(target: "tx_selection", ?tx_hash, small_first_time_overflow_gas, "stopping selection: small first-time zk gas overflows reached the cap");
                         break;
                     }
-                    trace!(target: "tx_selection", ?tx_hash, first_time_overflow_gas, "skipping transaction that overflowed the zk gas budget");
+                    trace!(target: "tx_selection", ?tx_hash, small_first_time_overflow_gas, "skipping transaction that overflowed the zk gas budget");
                 }
                 continue;
             }
@@ -378,15 +402,16 @@ mod tests {
     };
 
     use super::{
-        ExecutedTxList, SelectionOutcome, TxSelectionConfig, ZkOverflowMemory,
-        advance_selection_state, select_and_execute_pool_transactions,
+        ExecutedTxList, SMALL_TRANSACTION_GAS_LIMIT, SelectionOutcome, TxSelectionConfig,
+        ZkOverflowMemory, advance_selection_state, select_and_execute_pool_transactions,
     };
     use crate::{
         executor::TaikoBlockExecutor,
         testutil::{
-            BENCH_LIMIT_TARGET, BENCH_NEAR_LIMIT_TARGET, BENCH_SUCCESS_TARGET, BENCH_SWITCH_TARGET,
-            ExecutorBackedBuilder, db_with_contracts, recovered_tx, recovered_tx_with_input,
-            unzen_chain_spec, unzen_evm_env, unzen_execution_ctx,
+            BENCH_LIMIT_TARGET, BENCH_NEAR_LIMIT_TARGET, BENCH_SMALL_LIMIT_TARGET,
+            BENCH_SUCCESS_TARGET, BENCH_SWITCH_TARGET, ExecutorBackedBuilder, db_with_contracts,
+            recovered_tx, recovered_tx_with_gas_limit, recovered_tx_with_input, unzen_chain_spec,
+            unzen_evm_env, unzen_execution_ctx,
         },
     };
     use alethia_reth_evm::{
@@ -403,9 +428,12 @@ mod tests {
     const BENCH_SETTER_CALLER: Address = Address::with_last_byte(0x36);
     /// First address byte of the callers that send zk gas overflowing transactions.
     const FIRST_LIMIT_CALLER: u8 = 0x40;
+    /// First address byte of the callers that send 1M gas limit zk gas overflowing transactions.
+    const FIRST_SMALL_LIMIT_CALLER: u8 = 0x50;
 
-    /// Returns a selection config with a 30M gas limit per list. Every test transaction has a 5M
-    /// gas limit, so six first-time overflows reach the cap.
+    /// Returns a selection config with a 30M gas limit per list. Test transactions have a 5M gas
+    /// limit unless built with an explicit one, so six 5M first-time overflows reach the
+    /// large-transaction cap.
     fn overflow_test_config(max_lists: usize, state_seed: B256) -> TxSelectionConfig {
         TxSelectionConfig {
             base_fee: 0,
@@ -627,18 +655,28 @@ mod tests {
     }
 
     #[test]
-    fn tx_selection_stops_at_first_time_overflow_cap_and_skips_them_at_the_same_state() {
-        let limit_txs = overflowing_txs((55..=60).rev());
+    fn tx_selection_skips_large_candidates_once_large_first_time_overflows_reach_the_cap() {
+        let limit_txs = overflowing_txs((54..=60).rev());
         let limit_hashes = hashes(&limit_txs);
-        let success = recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 10);
-        let success_hash = *success.tx_hash();
-        let accounts = senders(limit_txs.iter().chain([&success]));
+        let large = recovered_tx(BENCH_LATE_CALLER, BENCH_SUCCESS_TARGET, 0, 20);
+        let large_hash = *large.tx_hash();
+        let small = recovered_tx_with_gas_limit(
+            BENCH_SUCCESS_CALLER,
+            BENCH_SUCCESS_TARGET,
+            0,
+            10,
+            SMALL_TRANSACTION_GAS_LIMIT,
+        );
+        let small_hash = *small.tx_hash();
+        let accounts = senders(limit_txs.iter().chain([&large, &small]));
         let pool = testing_pool();
-        add_to_pool(&pool, limit_txs.into_iter().chain([success]));
+        add_to_pool(&pool, limit_txs.into_iter().chain([large, small]));
         let seed = B256::with_last_byte(7);
         let overflows = ZkOverflowMemory::default();
 
-        // Six first-time overflows reach the cap before the success tx gets to run.
+        // Six 5M first-time overflows use up the large-transaction allowance. The seventh and the
+        // large success tx are skipped without running, but selection goes on to include the
+        // small tx.
         let (lists, receipts) = select_on_fresh_builder(
             &accounts,
             0,
@@ -647,26 +685,65 @@ mod tests {
             &overflows,
         );
         assert_eq!(lists.len(), 1);
-        assert!(lists[0].transactions.is_empty());
-        assert_eq!(receipts, 0);
+        assert_eq!(list_hashes(&lists[0]), vec![small_hash]);
+        assert_eq!(receipts, 1);
         assert_eq!(overflows.len(), 6);
-        for hash in &limit_hashes {
+        for hash in &limit_hashes[..6] {
             assert_eq!(overflows.state(hash), Some(seed));
         }
+        assert_eq!(overflows.state(&limit_hashes[6]), None);
 
-        // At the same state the remembered overflows are left out again and stay remembered,
-        // without stopping selection, so the success tx is included.
+        // At the same state the six remembered overflows are skipped without using the
+        // allowance, so the seventh runs and overflows, and both success txs are included.
         let (lists, receipts) = select_on_fresh_builder(
             &accounts,
             0,
             &pool,
-            &overflow_test_config(2, seed),
+            &overflow_test_config(1, seed),
             &overflows,
         );
         assert_eq!(lists.len(), 1);
-        assert_eq!(list_hashes(&lists[0]), vec![success_hash]);
-        assert_eq!(receipts, 1);
-        assert_eq!(overflows.len(), 6);
+        assert_eq!(list_hashes(&lists[0]), vec![large_hash, small_hash]);
+        assert_eq!(receipts, 2);
+        assert_eq!(overflows.state(&limit_hashes[6]), Some(seed));
+    }
+
+    #[test]
+    fn tx_selection_stops_once_small_first_time_overflows_reach_the_cap() {
+        let limit_txs: Vec<_> = (0..3_u8)
+            .map(|i| {
+                recovered_tx_with_gas_limit(
+                    Address::with_last_byte(FIRST_SMALL_LIMIT_CALLER + i),
+                    BENCH_SMALL_LIMIT_TARGET,
+                    0,
+                    60 - u64::from(i),
+                    SMALL_TRANSACTION_GAS_LIMIT,
+                )
+            })
+            .collect();
+        let small = recovered_tx_with_gas_limit(
+            BENCH_SUCCESS_CALLER,
+            BENCH_SUCCESS_TARGET,
+            0,
+            10,
+            SMALL_TRANSACTION_GAS_LIMIT,
+        );
+        let accounts = senders(limit_txs.iter().chain([&small]));
+        let pool = testing_pool();
+        add_to_pool(&pool, limit_txs.into_iter().chain([small]));
+        let config = TxSelectionConfig {
+            gas_limit_per_list: 3 * SMALL_TRANSACTION_GAS_LIMIT,
+            ..overflow_test_config(1, B256::with_last_byte(8))
+        };
+        let overflows = ZkOverflowMemory::default();
+
+        // Three 1M first-time overflows reach the 3M small-transaction allowance, so selection
+        // stops before the small success tx runs.
+        let (lists, receipts) = select_on_fresh_builder(&accounts, 0, &pool, &config, &overflows);
+        assert_eq!(lists.len(), 1);
+        assert!(lists[0].transactions.is_empty());
+        assert_eq!(receipts, 0);
+        assert_eq!(overflows.len(), 3);
     }
 
     #[test]

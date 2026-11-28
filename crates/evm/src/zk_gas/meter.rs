@@ -23,6 +23,8 @@ pub struct ZkGasMeter<'a> {
     tx_zk_gas_used: u64,
     /// Remaining block zk gas budget after finalized and in-flight transaction charges.
     remaining_zk_gas: u64,
+    /// Cumulative unweighted metering charges for transaction selection, including discarded work.
+    selection_execution_gas: Option<u64>,
     /// Test-only receiver of every zk gas event; see [`super::trace`].
     #[cfg(any(test, feature = "zk-gas-trace"))]
     trace: Option<Box<dyn ZkGasTraceSink>>,
@@ -36,6 +38,7 @@ impl<'a> ZkGasMeter<'a> {
             block_zk_gas_used: 0,
             tx_zk_gas_used: 0,
             remaining_zk_gas: schedule.block_limit,
+            selection_execution_gas: None,
             #[cfg(any(test, feature = "zk-gas-trace"))]
             trace: None,
         }
@@ -61,6 +64,7 @@ impl<'a> ZkGasMeter<'a> {
                 .block_limit
                 .saturating_sub(block_zk_gas_used)
                 .saturating_sub(tx_zk_gas_used),
+            selection_execution_gas: None,
             trace: None,
         }
     }
@@ -139,9 +143,28 @@ impl<'a> ZkGasMeter<'a> {
         self.tx_zk_gas_used
     }
 
+    /// Starts cumulative execution gas tracking for the next pool selection pass.
+    pub(crate) fn start_selection_execution_tracking(&mut self) {
+        self.selection_execution_gas = Some(0);
+    }
+
+    /// Returns unweighted opcode and precompile gas observed since tracking started.
+    pub(crate) fn selection_execution_gas(&self) -> u64 {
+        self.selection_execution_gas.unwrap_or_default()
+    }
+
+    /// Records work before checking the zk budget so a refused charge still counts.
+    #[inline(always)]
+    fn record_execution_gas(&mut self, gas: u64) {
+        if let Some(total) = &mut self.selection_execution_gas {
+            *total = total.saturating_add(gas);
+        }
+    }
+
     /// Charges zk gas for a single opcode execution.
     #[inline(always)]
     pub fn charge_opcode(&mut self, opcode: u8, raw_gas: u64) -> Result<(), ZkGasOutcome> {
+        self.record_execution_gas(raw_gas);
         let multiplier = u64::from(self.schedule.opcode_multipliers[usize::from(opcode)]);
         let charge = raw_gas.checked_mul(multiplier).ok_or(ZkGasOutcome::LimitExceeded)?;
         self.charge_amount(charge)
@@ -160,6 +183,7 @@ impl<'a> ZkGasMeter<'a> {
         address: &Address,
         gas_used: u64,
     ) -> Result<(), ZkGasOutcome> {
+        self.record_execution_gas(gas_used);
         let multiplier = u64::from(self.schedule.precompile_multiplier(address));
         let charge = gas_used.checked_mul(multiplier).ok_or(ZkGasOutcome::LimitExceeded)?;
         self.charge_amount(charge)

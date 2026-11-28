@@ -175,12 +175,54 @@ fn unzen_header_allows_nonzero_difficulty() {
         base_fee_per_gas: Some(1),
         gas_limit: 30_000_000,
         extra_data: shasta_extra_data(),
-        ..Default::default()
+        ..canonical_unzen_header()
     };
 
     consensus
         .validate_header(&SealedHeader::new_unhashed(header))
         .expect("Unzen headers should allow nonzero difficulty");
+}
+
+#[test]
+fn unzen_headers_require_canonical_fork_fields() {
+    let consensus = test_consensus(unzen_chain_spec());
+    let header = canonical_unzen_header();
+    for noncanonical in [
+        Header { parent_beacon_block_root: None, ..header.clone() },
+        Header { blob_gas_used: Some(1), ..header.clone() },
+        Header { excess_blob_gas: None, ..header.clone() },
+        Header { requests_hash: Some(B256::ZERO), ..header.clone() },
+        Header { withdrawals_root: None, ..header.clone() },
+    ] {
+        assert!(consensus.validate_header(&SealedHeader::new_unhashed(noncanonical)).is_err());
+    }
+
+    let pre_unzen = test_consensus(pre_unzen_chain_spec());
+    assert!(pre_unzen.validate_header(&SealedHeader::new_unhashed(header)).is_err());
+}
+
+#[test]
+fn shasta_anchor_validation_requires_a_transaction() {
+    let block = Block { header: canonical_unzen_header(), body: BlockBody::default() };
+    let block = RecoveredBlock::new_unhashed(block, vec![]);
+    let err = validate_anchor_transaction_in_block(&block, &unzen_chain_spec()).unwrap_err();
+    assert!(err.to_string().contains("missing its anchor transaction"));
+}
+
+#[test]
+fn shanghai_execution_requires_the_empty_withdrawals_body() {
+    let consensus = test_consensus(unzen_chain_spec());
+    let header = canonical_unzen_header();
+    let missing =
+        SealedBlock::seal_slow(Block { header: header.clone(), body: BlockBody::default() });
+    assert!(matches!(
+        consensus.validate_block_pre_execution(&missing),
+        Err(ConsensusError::BodyWithdrawalsMissing)
+    ));
+
+    let body = BlockBody { withdrawals: Some(Default::default()), ..Default::default() };
+    let block = SealedBlock::seal_slow(Block { header, body });
+    consensus.validate_block_pre_execution(&block).expect("canonical empty withdrawals");
 }
 
 #[test]
@@ -190,7 +232,7 @@ fn shasta_header_requires_exact_extra_data_len() {
         timestamp: 1,
         base_fee_per_gas: Some(1),
         gas_limit: 30_000_000,
-        ..Default::default()
+        ..canonical_unzen_header()
     };
 
     consensus
@@ -225,7 +267,7 @@ fn pre_shasta_header_has_no_extra_data_len_rule() {
         timestamp: 1,
         base_fee_per_gas: Some(1),
         gas_limit: 30_000_000,
-        ..Default::default()
+        ..canonical_unzen_header()
     };
 
     consensus
@@ -243,7 +285,7 @@ fn amsterdam_active_header_is_rejected_at_import() {
         base_fee_per_gas: Some(1),
         gas_limit: 30_000_000,
         extra_data: shasta_extra_data(),
-        ..Default::default()
+        ..canonical_unzen_header()
     };
 
     consensus
@@ -265,7 +307,7 @@ fn pre_amsterdam_header_rejects_block_access_list_hash() {
         gas_limit: 30_000_000,
         extra_data: shasta_extra_data(),
         block_access_list_hash: Some(B256::ZERO),
-        ..Default::default()
+        ..canonical_unzen_header()
     };
 
     let err = consensus
@@ -283,7 +325,7 @@ fn pre_amsterdam_header_rejects_slot_number() {
         gas_limit: 30_000_000,
         extra_data: shasta_extra_data(),
         slot_number: Some(1),
-        ..Default::default()
+        ..canonical_unzen_header()
     };
 
     let err = consensus
@@ -397,6 +439,22 @@ fn make_legacy_tx() -> TransactionSigned {
 
 fn test_consensus(chain_spec: TaikoChainSpec) -> TaikoBeaconConsensus {
     TaikoBeaconConsensus::new(Arc::new(chain_spec), Arc::new(NullBlockReader))
+}
+
+fn canonical_unzen_header() -> Header {
+    Header {
+        number: 1,
+        timestamp: 1,
+        gas_limit: 30_000_000,
+        base_fee_per_gas: Some(1),
+        extra_data: shasta_extra_data(),
+        withdrawals_root: Some(EMPTY_WITHDRAWALS),
+        parent_beacon_block_root: Some(B256::ZERO),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+        requests_hash: Some(EMPTY_REQUESTS_HASH),
+        ..Default::default()
+    }
 }
 
 fn shasta_extra_data() -> Bytes {

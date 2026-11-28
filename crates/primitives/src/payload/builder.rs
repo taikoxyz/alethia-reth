@@ -121,17 +121,21 @@ impl TaikoPayloadBuilderAttributes {
                 None
             }
             Some(tx_list_bytes) => {
-                // Legacy mode: decode and recover the provided transactions, skipping any that
-                // fail signer recovery. If the list itself cannot be decoded, mine an empty block.
-                let txs = decode_recovered_transactions(tx_list_bytes).unwrap_or_else(|e| {
-                    debug!(
-                        target: "payload_builder",
-                        "Failed to decode transactions: {e}, bytes: {:?}, mining empty block",
-                        tx_list_bytes
-                    );
-                    Vec::new()
-                });
-                Some(txs)
+                // Preserve the first position before applying lenient user-transaction recovery.
+                let mut txs = decode_transactions(tx_list_bytes)
+                    .unwrap_or_else(|err| {
+                        debug!(target: "payload_builder", %err, "treating an undecodable transaction list as empty");
+                        Vec::new()
+                    })
+                    .into_iter();
+                let anchor = txs
+                    .next()
+                    .map(|tx| {
+                        tx.try_into_recovered()
+                            .map_err(|_| alloy_rlp::Error::Custom("anchor tx not recoverable"))
+                    })
+                    .transpose()?;
+                Some(anchor.into_iter().chain(txs.filter_map(recover_user_transaction)).collect())
             }
         };
 
@@ -259,16 +263,18 @@ fn decode_transactions(bytes: &[u8]) -> Result<Vec<TransactionSigned>, alloy_rlp
 pub fn decode_recovered_transactions(
     bytes: &[u8],
 ) -> Result<Vec<Recovered<TransactionSigned>>, alloy_rlp::Error> {
-    Ok(decode_transactions(bytes)?
-        .into_iter()
-        .filter_map(|tx| match tx.try_into_recovered() {
-            Ok(recovered) => Some(recovered),
-            Err(e) => {
-                debug!("Failed to recover transaction: {e}, skipping invalid transaction");
-                None
-            }
-        })
-        .collect())
+    Ok(decode_transactions(bytes)?.into_iter().filter_map(recover_user_transaction).collect())
+}
+
+/// Recovers a user transaction, skipping the entry when its signer is invalid.
+fn recover_user_transaction(tx: TransactionSigned) -> Option<Recovered<TransactionSigned>> {
+    match tx.try_into_recovered() {
+        Ok(recovered) => Some(recovered),
+        Err(err) => {
+            debug!(%err, "skipping user transaction whose signer could not be recovered");
+            None
+        }
+    }
 }
 
 #[cfg(all(test, feature = "net"))]

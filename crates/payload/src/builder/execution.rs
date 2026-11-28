@@ -11,7 +11,7 @@ use reth::{
 use reth_errors::RethError;
 use reth_ethereum::{EthPrimitives, TransactionSigned as EthTransactionSigned};
 use reth_evm::{
-    block::{BlockExecutionError, BlockValidationError},
+    block::{BlockExecutionError, BlockValidationError, CommitChanges, TxResult},
     execute::BlockBuilder,
 };
 use reth_payload_builder_primitives::PayloadBuilderError;
@@ -65,7 +65,35 @@ pub(super) struct PoolExecutionContext<'a> {
     pub(super) zk_overflows: &'a ZkOverflowMemory,
 }
 
-/// Executes the provided transaction list in legacy mode.
+/// Validates and commits the mandatory anchor only if its execution succeeds.
+pub(super) fn execute_payload_anchor(
+    builder: &mut impl BlockBuilder<Primitives = EthPrimitives>,
+    anchor_tx: &Recovered<EthTransactionSigned>,
+    chain_spec: &TaikoChainSpec,
+    context: AnchorValidationContext,
+) -> Result<(), PayloadBuilderError> {
+    validate_anchor_transaction(anchor_tx.inner(), chain_spec, context)
+        .map_err(PayloadBuilderError::other)?;
+
+    let execution = builder
+        .execute_transaction_with_commit_condition(anchor_tx.clone(), |outcome| {
+            if outcome.result().result.is_success() {
+                CommitChanges::Yes
+            } else {
+                CommitChanges::No
+            }
+        })
+        .map_err(PayloadBuilderError::evm)?;
+
+    if execution.is_none() {
+        return Err(PayloadBuilderError::Internal(RethError::msg(
+            "anchor transaction execution did not succeed",
+        )));
+    }
+    Ok(())
+}
+
+/// Executes the provided user transactions after the legacy-mode anchor.
 ///
 /// Preserves legacy mode: validation errors are skipped, fatal errors abort
 /// the build, and cancellation short-circuits the loop.
@@ -142,38 +170,17 @@ where
 {
     debug!(target: "payload_builder", id=%ctx.payload_id, "injecting anchor transaction");
 
-    let chain_spec = client.chain_spec();
-    validate_anchor_transaction(
-        ctx.anchor_tx.inner(),
-        chain_spec.as_ref(),
+    // The anchor contributes neither priority fees nor bytes to the user transaction list.
+    execute_payload_anchor(
+        builder,
+        ctx.anchor_tx,
+        client.chain_spec().as_ref(),
         AnchorValidationContext {
             timestamp: ctx.block_timestamp,
             block_number: ctx.parent_header.number + 1,
             base_fee_per_gas: ctx.base_fee,
         },
-    )
-    .map_err(PayloadBuilderError::other)?;
-
-    // Execute the anchor transaction as the first transaction in the block
-    // NOTE: anchor transaction does not contribute to the total DA size limit calculation.
-    match builder.execute_transaction(ctx.anchor_tx.clone()) {
-        Ok(gas_output) => {
-            // Note: Anchor transaction has zero priority fee (tip), so no fees to add
-            debug!(target: "payload_builder", id=%ctx.payload_id, gas_used = gas_output.tx_gas_used(), "anchor transaction executed successfully");
-        }
-        Err(err) if is_zk_gas_limit_exceeded(&err) => {
-            debug!(
-                target: "payload_builder",
-                id=%ctx.payload_id,
-                "stopping new-mode payload after anchor hit the zk gas limit"
-            );
-            return Err(PayloadBuilderError::evm(err));
-        }
-        Err(err) => {
-            warn!(target: "payload_builder", id=%ctx.payload_id, %err, "failed to execute anchor transaction");
-            return Err(PayloadBuilderError::evm(err));
-        }
-    }
+    )?;
 
     // Use the shared transaction selection logic for pool transactions. Selection starts after
     // the anchor, so the anchor hash is part of the state seed.
@@ -252,24 +259,25 @@ pub(super) mod tests {
     use alethia_reth_chainspec::spec::TaikoChainSpec;
     use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, ANCHOR_V4_SELECTOR};
     use alethia_reth_evm::factory::TaikoEvmFactory;
-    use alethia_reth_primitives::addresses::TAIKO_GOLDEN_TOUCH_ADDRESS;
+    use alethia_reth_primitives::addresses::{TAIKO_GOLDEN_TOUCH_ADDRESS, get_treasury_address};
 
+    const TEST_CHAIN_ID: u64 = 167;
     const BENCH_SUCCESS_CALLER: Address = Address::with_last_byte(0x30);
     const BENCH_LIMIT_CALLER: Address = Address::with_last_byte(0x31);
     const BENCH_LATE_CALLER: Address = Address::with_last_byte(0x32);
     pub(in crate::builder) const GOLDEN_TOUCH_PRIVATE_KEY: &str =
         "0x92954368afd3caa1f3ce3ead0069c1af414054aefe1ef9aeacc1bf426222ce38";
 
-    fn test_anchor_transaction(to: Address) -> Recovered<EthTransactionSigned> {
+    fn test_anchor_transaction() -> Recovered<EthTransactionSigned> {
         let signer: PrivateKeySigner =
             GOLDEN_TOUCH_PRIVATE_KEY.parse().expect("golden touch private key should parse");
         let tx = TxEip1559 {
-            chain_id: 167,
+            chain_id: TEST_CHAIN_ID,
             nonce: 0,
             gas_limit: ANCHOR_V3_V4_GAS_LIMIT,
             max_fee_per_gas: 0,
             max_priority_fee_per_gas: 0,
-            to: to.into(),
+            to: get_treasury_address(TEST_CHAIN_ID).into(),
             value: U256::ZERO,
             access_list: Default::default(),
             input: Bytes::copy_from_slice(ANCHOR_V4_SELECTOR),
@@ -280,6 +288,12 @@ pub(super) mod tests {
         let signed: EthTransactionSigned = Signed::new_unchecked(tx, signature, tx_hash).into();
 
         signed.try_into_recovered().expect("fixture anchor transaction should be recoverable")
+    }
+
+    fn test_chain_spec() -> Arc<TaikoChainSpec> {
+        let mut chain_spec = unzen_chain_spec();
+        chain_spec.inner.chain = reth_chainspec::Chain::from_id(TEST_CHAIN_ID);
+        Arc::new(chain_spec)
     }
 
     fn test_client(chain_spec: TaikoChainSpec) -> MockEthProvider<EthPrimitives, TaikoChainSpec> {
@@ -357,7 +371,7 @@ pub(super) mod tests {
 
     #[test]
     fn execute_provided_transactions_stops_on_zk_gas_error() {
-        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_spec = test_chain_spec();
         let mut state = State::builder()
             .with_database(db_with_contracts(&[
                 (BENCH_SUCCESS_CALLER, 0),
@@ -394,8 +408,38 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn execute_payload_anchor_leaves_no_receipt_when_the_call_reverts() {
+        let chain_spec = test_chain_spec();
+        let mut db = db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]);
+        insert_contract(
+            &mut db,
+            get_treasury_address(TEST_CHAIN_ID),
+            Bytecode::new_raw(Bytes::from_static(&[0x5f, 0x5f, 0xfd])),
+        );
+        let mut state = State::builder().with_database(db).with_bundle_update().build();
+        let evm = TaikoEvmFactory.create_evm(&mut state, unzen_evm_env());
+        let executor = TaikoBlockExecutor::new(
+            evm,
+            unzen_execution_ctx(),
+            chain_spec.clone(),
+            RethReceiptBuilder::default(),
+        );
+        let mut builder = ExecutorBackedBuilder { executor };
+
+        let error = execute_payload_anchor(
+            &mut builder,
+            &test_anchor_transaction(),
+            &chain_spec,
+            AnchorValidationContext { timestamp: 1, block_number: 1, base_fee_per_gas: 0 },
+        )
+        .expect_err("a reverted anchor must fail the payload");
+        assert!(error.to_string().contains("anchor transaction execution did not succeed"));
+        assert!(builder.executor.receipts().is_empty());
+    }
+
+    #[test]
     fn execute_anchor_and_pool_transactions_errors_when_anchor_hits_zk_gas_limit() {
-        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_spec = test_chain_spec();
         let mut state = State::builder()
             .with_database(db_with_contracts(&[(Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0)]))
             .with_bundle_update()
@@ -411,7 +455,7 @@ pub(super) mod tests {
             inner: ExecutorBackedBuilder { executor },
             fail_next_execution: true,
         };
-        let anchor_tx = test_anchor_transaction(BENCH_LIMIT_TARGET);
+        let anchor_tx = test_anchor_transaction();
         let client = test_client((*chain_spec).clone());
         let pool = NoopTransactionPool::default();
         let cancel = CancelOnDrop::default();
@@ -454,7 +498,7 @@ pub(super) mod tests {
 
     #[test]
     fn new_mode_keeps_selecting_after_a_pool_zk_gas_overflow() {
-        let chain_spec = Arc::new(unzen_chain_spec());
+        let chain_spec = test_chain_spec();
         let mut state = State::builder()
             .with_database(db_with_contracts(&[
                 (Address::from(TAIKO_GOLDEN_TOUCH_ADDRESS), 0),
@@ -474,7 +518,7 @@ pub(super) mod tests {
             RethReceiptBuilder::default(),
         );
         let mut builder = ExecutorBackedBuilder { executor };
-        let anchor_tx = test_anchor_transaction(BENCH_SUCCESS_TARGET);
+        let anchor_tx = test_anchor_transaction();
         let limit = recovered_tx(BENCH_LIMIT_CALLER, BENCH_LIMIT_TARGET, 0, 20);
         let success = recovered_tx(BENCH_SUCCESS_CALLER, BENCH_SUCCESS_TARGET, 0, 10);
         let [limit_hash, success_hash] = [&limit, &success].map(|tx| *tx.tx_hash());
@@ -604,8 +648,8 @@ pub(super) mod tests {
 
     #[test]
     fn new_mode_reruns_a_remembered_overflow_once_the_timestamp_changes() {
-        let chain_spec = Arc::new(unzen_chain_spec());
-        let anchor_tx = test_anchor_transaction(BENCH_SUCCESS_TARGET);
+        let chain_spec = test_chain_spec();
+        let anchor_tx = test_anchor_transaction();
         let switch = recovered_tx(BENCH_LIMIT_CALLER, BENCH_TIMESTAMP_TARGET, 0, 10);
         let switch_hash = *switch.tx_hash();
         let pool = testing_pool();

@@ -35,7 +35,8 @@ pub const MAX_BASE_FEE: u64 = 1_000_000_000; // 1 Gwei
 /// * `min_base_fee_to_clamp` - Lower bound used when clamping the computed base fee
 ///
 /// # Returns
-/// The calculated base fee for the next block
+/// The calculated base fee for the next block. A zero parent gas target returns the clamped
+/// parent fee for callers doing a standalone calculation. Header validation rejects that parent.
 pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     parent: &H,
     parent_block_time: u64,
@@ -49,10 +50,15 @@ pub fn calculate_next_block_eip4396_base_fee<H: BlockHeader>(
     }
     let parent_gas_limit = parent.gas_limit();
     let parent_base_gas_target = parent_gas_limit / ELASTICITY_MULTIPLIER;
+    if parent_base_gas_target == 0 {
+        return clamp_shasta_base_fee(parent_base_fee_per_gas, min_base_fee_to_clamp);
+    }
+    // The percentage cap is at most the parent gas limit, so the minimum fits in u64.
     let parent_adjusted_gas_target = min(
-        parent_base_gas_target * parent_block_time / BLOCK_TIME_TARGET,
-        parent_gas_limit * MAX_GAS_TARGET_PERCENT / 100,
-    );
+        u128::from(parent_base_gas_target) * u128::from(parent_block_time) /
+            u128::from(BLOCK_TIME_TARGET),
+        u128::from(parent_gas_limit) * u128::from(MAX_GAS_TARGET_PERCENT) / 100,
+    ) as u64;
     let parent_gas_used = parent.gas_used();
     let mut base_fee = parent_base_fee_per_gas;
 
@@ -96,6 +102,17 @@ mod tests {
     use alloy_consensus::Header;
 
     use super::*;
+
+    #[test]
+    fn adjusts_gas_target_with_wide_intermediates() {
+        let parent =
+            Header { number: 1, gas_limit: 30_000_000, gas_used: 28_500_000, ..Default::default() };
+        let base_fee = SHASTA_INITIAL_BASE_FEE;
+        assert_eq!(
+            calculate_next_block_eip4396_base_fee(&parent, u64::MAX, base_fee, MIN_BASE_FEE),
+            base_fee
+        );
+    }
 
     #[test]
     fn test_calculate_next_block_eip4396_base_fee() {

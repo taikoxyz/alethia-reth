@@ -26,8 +26,8 @@ use alethia_reth_block::{
     factory::TaikoBlockExecutorFactory,
     tx_selection::{ZkOverflowMemory, selection_state_seed},
 };
-use alethia_reth_chainspec::spec::TaikoChainSpec;
-use alethia_reth_consensus::validation::ANCHOR_V3_V4_GAS_LIMIT;
+use alethia_reth_chainspec::{hardfork::TaikoHardforks, spec::TaikoChainSpec};
+use alethia_reth_consensus::validation::{ANCHOR_V3_V4_GAS_LIMIT, AnchorValidationContext};
 use alethia_reth_evm::factory::TaikoEvmFactory;
 use alethia_reth_primitives::payload::{
     attributes::TaikoPayloadAttributes, builder::TaikoPayloadBuilderAttributes,
@@ -35,7 +35,7 @@ use alethia_reth_primitives::payload::{
 
 use self::execution::{
     ExecutionOutcome, PoolExecutionContext, execute_anchor_and_pool_transactions,
-    execute_provided_transactions,
+    execute_payload_anchor, execute_provided_transactions,
 };
 
 /// Transaction-phase execution helpers for legacy/new-mode payload construction.
@@ -269,7 +269,31 @@ where
     let total_fees = match &attributes.transactions {
         Some(transactions) => {
             debug!(target: "payload_builder", id=%payload_id, tx_count=transactions.len(), "using provided transaction list");
-            match execute_provided_transactions(&mut builder, transactions, base_fee, &cancel)? {
+            if cancel.is_cancelled() {
+                return Ok(BuildOutcome::Cancelled);
+            }
+            let chain_spec = client.chain_spec();
+            let user_transactions = match transactions.split_first() {
+                Some((anchor, rest)) => {
+                    execute_payload_anchor(
+                        &mut builder,
+                        anchor,
+                        chain_spec.as_ref(),
+                        AnchorValidationContext {
+                            timestamp: attributes.timestamp(),
+                            block_number: parent_header.number + 1,
+                            base_fee_per_gas: base_fee,
+                        },
+                    )?;
+                    rest
+                }
+                None if chain_spec.is_shasta_active(attributes.timestamp()) => {
+                    return Err(PayloadBuilderError::MissingPayload);
+                }
+                None => transactions,
+            };
+            match execute_provided_transactions(&mut builder, user_transactions, base_fee, &cancel)?
+            {
                 ExecutionOutcome::Cancelled => return Ok(BuildOutcome::Cancelled),
                 ExecutionOutcome::Completed(fees) => fees,
             }

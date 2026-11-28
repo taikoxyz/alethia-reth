@@ -38,6 +38,7 @@ std = [
 # Always available
 alethia-reth-primitives = { path = "../primitives", default-features = false }
 alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-sol-types = { workspace = true }
 reth-primitives-traits = { workspace = true }

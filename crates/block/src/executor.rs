@@ -251,6 +251,12 @@ where
 /// Block import, sealing and prover execution never use these hooks, so they keep stopping at the
 /// first zk gas overflow.
 pub trait TxSelectionExecutor {
+    /// Starts measuring execution gas for this selection pass.
+    fn start_selection_execution_tracking(&mut self);
+
+    /// Returns the gas measured so far, including work on discarded transactions.
+    fn selection_execution_gas(&self) -> u64;
+
     /// Clears the zk gas exhaustion an overflowed transaction left, so the next candidate can run.
     /// Only transaction selection may call this; block execution must keep stopping at the first
     /// overflow. Call it only between transactions, after an overflow error: it discards the
@@ -265,6 +271,16 @@ pub trait TxSelectionExecutor {
 impl<Evm: TaikoZkGasEvm, Spec: Clone, R: ReceiptBuilder> TxSelectionExecutor
     for TaikoBlockExecutor<'_, Evm, Spec, R>
 {
+    /// Starts tracking work on the executor's active EVM meter.
+    fn start_selection_execution_tracking(&mut self) {
+        self.evm.start_selection_execution_tracking();
+    }
+
+    /// Returns the cumulative gas observed by the EVM's selection meter.
+    fn selection_execution_gas(&self) -> u64 {
+        self.evm.selection_execution_gas()
+    }
+
     /// Drops the sticky exhaustion flag and discards the overflowed transaction's in-flight zk
     /// gas, keeping the committed block total.
     fn clear_zk_gas_exhaustion(&mut self) {
@@ -623,9 +639,9 @@ fn decode_post_ontake_extra_data(extradata: Bytes) -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxEip1559};
     use alloy_evm::EvmFactory;
-    use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U64, U256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U64, U256};
     use reth_ethereum_primitives::TransactionSigned;
     use reth_evm::{ConfigureEvm, block::BlockExecutor};
     use reth_evm_ethereum::RethReceiptBuilder;
@@ -1052,10 +1068,12 @@ mod test {
             )
         };
 
-        let tx = TxLegacy {
-            chain_id: Some(ChainId::from(chain_spec.inner.chain().id())),
+        let tx = TxEip1559 {
+            chain_id: chain_spec.inner.chain().id(),
             nonce,
-            gas_price: 1,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 0,
+            access_list: Default::default(),
             gas_limit: 21_000,
             to: TxKind::Call(treasury),
             value: U256::ZERO,
